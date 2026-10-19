@@ -57,7 +57,7 @@ import {
   type OpFailure,
   type RemovalPlan,
 } from "./instructions/ops.js"
-import { query } from "./instructions/query.js"
+import { findCollapse, namedFinds, query, rowTypes } from "./instructions/query.js"
 import { replaceText } from "./instructions/text-edit.js"
 import {
   applies,
@@ -125,9 +125,10 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
 
 const FindDescription =
-  "Find instruction rows: one \"id | badges | from\" line per row, filtered by key:value terms in where.\n" +
-  "Returns { total, columns, rows }; fields picks the columns after id (label, tokens, text, …). " +
-  "where example: \"agent:alpha item:tool state:off\" (grammar in skill instructions-tools). limit defaults to 40."
+  "Find instruction rows: one \"id | badges | from\" line per thing; every parameter given must match.\n" +
+  "Each row appears once, at its most specific level (what runs here). Without agent or team, agents' copies with the same on/off and text are one row, ending \"(+N agents)\"; agent \"*\" lists each. " +
+  "level, in, type section|preset and is (each level's own edits) show the rest. " +
+  "e.g. {agent:\"build\",type:\"tool\",state:\"off\"}, {is:\"review\"}. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
 
 const ReadDescription =
   "Read one row: its text and where it comes from (view resolved, the default).\n" +
@@ -215,7 +216,26 @@ const Sort = Schema.Union([
 ])
 
 const FindInput = Schema.Struct({
-  where: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(Schema.String).annotate({
+    description: "An agent or team member by name, ignoring case; * stands for any text.",
+  }),
+  team: Schema.optionalKey(Schema.String).annotate({ description: "A team: its rows and its members' rows." }),
+  level: Schema.optionalKey(Schema.Literals(["project", "global", "defaults", "preset"])).annotate({
+    description: "Only this level. Without it, each row at the most specific level it has (what runs here).",
+  }),
+  type: Schema.optionalKey(Schema.Literals(rowTypes)),
+  name: Schema.optionalKey(Schema.String).annotate({
+    description: "A row's own name: tool, skill, rule, setting, section or agent name, ignoring case; * stands for any text.",
+  }),
+  in: Schema.optionalKey(Schema.String).annotate({ description: "Only rows under this row id, e.g. a tool's parameters and rules." }),
+  state: Schema.optionalKey(Schema.Literals(["on", "off"])),
+  text: Schema.optionalKey(Schema.String).annotate({ description: "Rows whose text contains this, ignoring case." }),
+  is: Schema.optionalKey(Schema.Literals(namedFinds)).annotate({
+    description:
+      "Rows holding an edit: review (what it was based on changed since), changed (any; reset drops it), " +
+      "hidden (a more specific level overrides it), orphaned (its row is gone).",
+  }),
+  where: Schema.optionalKey(Schema.String).annotate({ description: "More key:value terms (skill instructions-tools)." }),
   fields: Schema.optionalKey(Schema.Array(Field)),
   sort: Schema.optionalKey(Sort),
   limit: Schema.optionalKey(Schema.Number),
@@ -506,15 +526,24 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
           const columns = ["id" as const, ...(input.fields ?? lineFields).filter((field) => field !== "id")]
+          // The parameters are the filter terms the TUI and CLI type, each value quoted whole.
+          const where = [
+            ...(["agent", "team", "level", "type", "name", "in", "state", "is", "text"] as const).flatMap((key) => {
+              const value = input[key]
+              return value === undefined || value === "" ? [] : [`${key}:"${value.replace(/[\\"]/g, "\\$&")}"`]
+            }),
+            input.where ?? "",
+          ].join(" ")
           const queried = yield* Effect.try({
             try: () =>
               query(memo, {
-                ...(input.where === undefined ? {} : { where: input.where }),
+                where,
                 fields: columns,
                 ...(input.sort === undefined ? {} : { sort: input.sort }),
                 limit: input.limit ?? 40,
                 ...(input.offset === undefined ? {} : { offset: input.offset }),
                 withoutAliases: true,
+                collapse: findCollapse(where),
               }),
             catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
           })
@@ -522,7 +551,12 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             output: {
               total: queried.total,
               columns: columns.join(" | "),
-              rows: queried.rows.map((row) => columns.map((field) => cell(row[field])).join(" | ")),
+              // A row standing for other agents' same copies says how many, after where it comes from.
+              rows: queried.rows.map((row) => {
+                const more = row.copies === undefined ? "" : ` (+${row.copies} agent${row.copies === 1 ? "" : "s"})`
+                const at = columns.includes("from") ? "from" : "badges"
+                return columns.map((field) => cell(row[field]) + (field === at ? more : "")).join(" | ")
+              }),
             },
           }
         }),
@@ -788,7 +822,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
   })
 }
 
-// list's default columns: what agents asked for most.
+// find's default columns: what agents asked for most.
 const lineFields = ["id", "badges", "from"] as const
 
 // One value of a line: "-" for nothing, arrays comma-joined, objects as JSON.
@@ -799,7 +833,7 @@ function cell(value: unknown): string {
   return String(value)
 }
 
-// A child row of show's listing, in list's default columns. Groups add their
+// A child row of read's listing, in find's default columns. Groups add their
 // on count ("3/7 on") and settings their value.
 function childLine(node: TreeNode): string {
   const badges = [

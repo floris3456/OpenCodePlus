@@ -1597,6 +1597,61 @@ test("registered list and log tools return persisted rows and history", async ()
   expect(logged.entries.some((entry) => entry.op === "mutate")).toBe(true)
 })
 
+test("find takes structured parameters and answers one row per thing", async () => {
+  const { project } = await tempProject()
+  await Bun.write(path.join(project, ".opencode", "agent", "alpha.md"), formatMarkdown({}, "Alpha role.\n"))
+  await Bun.write(path.join(project, ".opencode", "agent", "beta.md"), formatMarkdown({}, "Beta role.\n"))
+  await linkToBuild(project, "project", ["alpha", "beta"])
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("build"), agentInfo("alpha"), agentInfo("beta")],
+    tools: [
+      { id: "reader", description: "# One\nread things\n\n# Two\nSecond part.\n", options: { codemode: false } },
+      { id: "skill", description: "Load a skill", options: { codemode: false } },
+    ],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const find = async (input: Record<string, unknown>) => (await runOk(need(tools, "instructions_find"), { limit: 500, ...input })) as { rows: string[]; total: number }
+  const ids = async (input: Record<string, unknown>) => rowIds(await find(input))
+  const reader = "item:project:alpha:tool:reader"
+
+  // One agent's tools: each once, at the most specific level, without sections or presets.
+  const alphaTools = await ids({ agent: "alpha", type: "tool" })
+  expect(alphaTools.filter((id) => id.endsWith(":tool:reader"))).toEqual([reader])
+  expect(alphaTools.every((id) => id.startsWith("item:project:alpha:tool:"))).toBe(true)
+  // agent is the exact name ignoring case; * stands for any text.
+  expect(await ids({ agent: "alp", type: "tool" })).toEqual([])
+  expect(await ids({ agent: "ALP*", type: "tool", name: "reader" })).toEqual([reader])
+  // A native agent has a row at every level: without level, the most specific one; level picks one.
+  expect(await ids({ agent: "build", type: "tool", name: "reader" })).toEqual(["item:project:build:tool:reader"])
+  expect(await ids({ agent: "build", type: "tool", name: "reader", level: "global" })).toEqual(["item:global:build:tool:reader"])
+  // Without an agent, the agents' copies with the same value are one row that says how many more.
+  expect((await find({ type: "skill" })).rows).toEqual([
+    "item:project:build:skill:notes | on | OpenCode (+2 agents)",
+    "item:defaults::skill:notes | off | off by default",
+  ])
+  expect(await ids({ type: "skill", agent: "*" })).toEqual(["item:project:build:skill:notes", "item:project:alpha:skill:notes", "item:project:beta:skill:notes"])
+  // An edit makes alpha's copy a row of its own; is:changed names the row holding it.
+  await runOk(need(tools, "instructions_edit"), { id: reader, oldString: "read things", newString: "scan things" })
+  expect((await find({ type: "tool", name: "reader" })).rows).toEqual([
+    "item:project:build:tool:reader | on | OpenCode (+1 agent)",
+    `${reader} | on modified | from preset Build`,
+    "item:defaults::tool:reader | off | off by default",
+  ])
+  expect(await ids({ is: "changed" })).toEqual([reader])
+  expect(await ids({ type: "tool", text: "SCAN" })).toEqual([reader])
+  // Sections show for type section, a name, or in; their item row carries a text match.
+  expect(await ids({ agent: "alpha", text: "Second part" })).toEqual([reader])
+  expect(await ids({ agent: "alpha", type: "section", text: "Second part" })).toEqual([`section:project:alpha:tool:reader:two`])
+  expect(await ids({ agent: "alpha", name: "two" })).toEqual([`section:project:alpha:tool:reader:two`])
+  expect(await ids({ in: reader })).toEqual([`section:project:alpha:tool:reader:one`, `section:project:alpha:tool:reader:two`, "item:project:alpha:toolmode:reader"])
+  // A value is passed whole, quotes and backslashes included.
+  expect((await find({ text: 'say "hi" \\ there' })).total).toBe(0)
+  // A key that does not exist names the one that does.
+  expect((await runFail(need(tools, "instructions_find"), { where: "member:alpha" })).message).toContain("use agent:<member>")
+})
+
 test("protected agent creation refuses before writing a file or log line", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["build"] }))
@@ -2047,9 +2102,13 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const snapshot = await snapshotOf(api)
   const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "perm:shell:git-push")
   if (row === undefined) throw new Error("missing perm:shell:git-push row")
-  const listed = (await runOk(need(tools, "instructions_find"), { where: "item:perm tool:shell" })) as { rows: readonly string[]; total: number }
+  const listed = (await runOk(need(tools, "instructions_find"), { where: "item:perm tool:shell", limit: 200 })) as { rows: readonly string[]; total: number }
   expect(listed.total).toBeGreaterThan(0)
-  expect(rowIds(listed)).toContain(row.id)
+  // Without an agent, the shared Defaults row stands for alpha's identical copy.
+  expect(rowIds(listed)).toContain("item:defaults::perm:shell:git-push")
+  expect(rowIds(listed)).not.toContain(row.id)
+  const alphas = (await runOk(need(tools, "instructions_find"), { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] }
+  expect(rowIds(alphas)).toContain(row.id)
   const shown = (await runOk(need(tools, "instructions_read"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
   expect(shown.patterns).toEqual(["git push *"])
   expect(shown.keywords).toContain("git push")

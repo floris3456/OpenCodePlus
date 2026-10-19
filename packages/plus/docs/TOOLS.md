@@ -37,37 +37,48 @@ The `instructions` namespace is entirely Code Mode
 
 ## 2. `instructions` namespace
 
-Eight tools are registered (`packages/plus/src/tools.ts:231`,
-`packages/plus/src/tools.ts:256`, `packages/plus/src/tools.ts:270`,
-`packages/plus/src/tools.ts:297`, `packages/plus/src/tools.ts:320`,
-`packages/plus/src/tools.ts:347`, `packages/plus/src/tools.ts:359`,
-`packages/plus/src/tools.ts:384`). Writes carry the actor
+`registerInstructionTools` (`packages/plus/src/tools.ts`) registers thirteen
+tools: the ones below plus `batch`, `clipboard`, `link` and `move`. Writes carry the actor
 `{ type: "tool", agent, sessionID, messageID }`
 (`packages/plus/src/tools.ts:415`), pass `actor: tool`, and retry once when the
 snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 
 | Tool | Inputs | Output |
 | --- | --- | --- |
-| `instructions_find` | `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | Query result (`packages/plus/src/tools.ts:133`, `packages/plus/src/tools.ts:248`) |
+| `instructions_find` | `agent`, `team`, `level`, `type`, `name`, `in`, `state`, `text`, `is` (`review`/`changed`/`hidden`/`orphaned`), `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | `{ total, columns, rows }`, one `id \| badges \| from` line per thing (`FindDescription` in `packages/plus/src/tools.ts`) |
 | `instructions_read` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
 | `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming`, `interval`, `prompt`, `effort` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
+| `instructions_edit` | `id`, `oldString`, `newString`, `replaceAll` | `{ id, status, replacements }`; saves like `set({ id, text })` under `set`'s permission rows |
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
 | `instructions_create` | `kind` plus kind fields (`packages/plus/src/tools.ts:181`) | `{ …created, id, item }` per kind (§4) |
 | `instructions_delete` | `id`, `confirm`, `force` (User preset linked only from other projects) | Removal result plus `status` (`packages/plus/src/tools.ts:217`, `packages/plus/src/tools.ts:1359`) |
 | `instructions_log` | `where`, `limit`, `offset` | Change-log entries, newest first (`packages/plus/src/tools.ts:222`, `packages/plus/src/tools.ts:104`) |
 
-`where` uses `key:value` terms; the structural keys (`kind`, `item`
-(… `model`, `modeldefault`, …), `tool`, `group`, `server`, `namespace`,
-`level`, `catalogue`, `agent`, `state`, `team`, `run`, …) are listed in the `instructions-tools` teaching text
-(`packages/plus/src/instructions/teaching.ts:48`,
-`packages/plus/src/instructions/query.ts:933`). The `server:` filter matches
+`find`'s parameters are filter terms: the tool quotes each value whole and
+joins them with `where`'s own `key:value` terms, the language the TUI filter
+and the CLI share (`opencodeplus instructions find --agent build --type tool`).
+`type`, `name`, `in` and `is` are keys of that language too; `agent` is the
+exact name ignoring case with `*`/`%` wildcards (`_` is the shared rows), and
+`tool:<id>` takes in the tool's own rows (the tool, its parameters, rules and
+offering). The other keys are listed in the `instructions-tools` skill
+(`packages/plus/src/instructions/teaching.ts`, `packages/plus/src/instructions/query.ts`).
+
+`find` answers one row per thing (`findCollapse` in `query.ts`; the TUI filter
+does not collapse): each row at its most specific level, chosen before
+filtering so it shows what runs here (`level` picks one); without `agent` or
+`team`, agents' copies with the same on/off and text fold into one row whose
+`from` ends `(+N agents)` (the shared Defaults row when it is one of them);
+sections only for `type: "section"`, `name` or `in`; Presets rows only for
+`level`/`type` `preset`; Description rows only by `id`. `is` and the other
+record keys keep every level, preset and copy, since each level's edit is its
+own answer; `in` and `id` turn every part off. The `server:` filter matches
 both tool rows that carry a `server` and the `mcp:<name>` inventory row itself
 (`packages/plus/src/instructions/query.ts:914`–`packages/plus/src/instructions/query.ts:925`).
 
 Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 
-### 2.1 `show` per row kind
+### 2.1 `read` per row kind
 
 - Item rows render resolved text (default), upstream text, `mine`, `diff`
   (two unified diffs plus a one-line summary), `record`, or section ids
@@ -105,7 +116,7 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   `state on|off` as the warming switch; it writes through `modelSettings.set`,
   not the inventory mutate. `reset` and `delete` (with `confirm: true`) clear
   every field, removing the row (`packages/plus/src/tools.ts` `setModelDefaults`,
-  `packages/plus/src/tools.ts` `clearModelDefaults`). `show` returns the
+  `packages/plus/src/tools.ts` `clearModelDefaults`). `read` returns the
   stored `record` and, for `resolved`, a `summary` with each effective value
   and the layer it came from. Each such row holds four field rows
   (`item:defaults:/models:modelsetting:<field>:<* or provider/model>`): `set`
@@ -218,7 +229,7 @@ exist only at `defaults` (`packages/plus/src/instructions/tree.ts:486`–
 
 `create` accepts thirteen `kind` literals (`CreateInput` in `packages/plus/src/tools.ts`).
 Twelve create and return `{ …created, id, item }`; `instruction` is refused.
-`id` is the tree row id that `show`, `set` and `delete` accept; `item` is the
+`id` is the tree row id that `read`, `set`, `edit` and `delete` accept; `item` is the
 created item's own id (`packages/plus/src/tools.ts:94`,
 `packages/plus/src/instructions/ops.ts:159`–`packages/plus/src/instructions/ops.ts:162`).
 
@@ -247,7 +258,7 @@ instruction and mcp create one file both catalogues list
 `packages/plus/src/instructions/model.ts:303`).
 
 A create never formats an id: it resolves the row through the same tree that
-`show`, `set` and `delete` read, retrying 12 times at 100 ms, and fails
+`read`, `set` and `delete` read, retrying 12 times at 100 ms, and fails
 `create.failed:` if the row never appears
 (`packages/plus/src/tools.ts:1319`–`packages/plus/src/tools.ts:1346`).
 
@@ -291,12 +302,12 @@ whose message lists the linked row ids. Links whose owner is gone are orphans:
 they are removed together with the preset instead of blocking it. Links held
 only by other projects (listed as
 `<directory> › <row id>`) are deleted over with `force: true`; those owners
-then show the badge `missing preset` (and `linkMissing: true` in `show`) and
+then show the badge `missing preset` (and `linkMissing: true` in `read`) and
 their rows fall through until relinked. OpenCode and Plus presets are read-only
 (`preset.readonly`); their rows are editable and, like every preset row, not
 guarded by `protectedAgents` (presets are not agents). Every row badge carries
 `from` (where its state came from), `fromLabel` in words and `reviewOf` (which
-parts are to review); `show` returns `from`, `list` projects it with
+parts are to review); `read` returns `from`, `find` projects it with
 `fields: ["from"]`.
 
 ### 4.4 The `instruction.disabled` contract
@@ -309,7 +320,7 @@ handlers `instruction.create` and `instruction.delete` return code
 `true` (`packages/plus/src/index.ts:2197`, `packages/plus/src/index.ts:814`–
 `packages/plus/src/index.ts:815`, `packages/plus/src/index.ts:849`–
 `packages/plus/src/index.ts:850`). The remaining eight kinds create, and each
-returned `id` round-trips through `show`, `set` and `delete` with no
+returned `id` round-trips through `read`, `set` and `delete` with no
 `row.unknown` (`packages/plus/src/tools.ts:94`,
 `packages/plus/src/tools.ts:1113`–`packages/plus/src/tools.ts:1314`).
 

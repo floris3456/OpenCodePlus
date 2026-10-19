@@ -10,7 +10,7 @@ import {
   type SplitRecord,
 } from "../src/instructions/model.js"
 import { buildMemo, type TeamInput } from "../src/instructions/resolve-memo.js"
-import { matchedTree, query } from "../src/instructions/query.js"
+import { findCollapse, matchedTree, query } from "../src/instructions/query.js"
 import { itemOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, type TreeNode } from "../src/instructions/tree.js"
@@ -212,11 +212,12 @@ test("agent matches the row owner and _ the shared rows", () => {
   expect(ids("agent:_")).not.toContain(bash)
 })
 
-test("agent is a case-insensitive substring match with exact _ sentinel", () => {
-  expect(ids("agent:impl")).toContain(bash)
-  expect(ids("agent:IMPL")).toContain(bash)
+test("agent is the exact name ignoring case, * a pattern, _ the shared rows", () => {
+  expect(ids("agent:impl")).not.toContain(bash)
   expect(ids("agent:IMPLEMENTER")).toContain(bash)
-  expect(ids("agent:impl")).not.toContain("item:global:Helper:tool:bash")
+  expect(ids("agent:impl*")).toContain(bash)
+  expect(ids("agent:%MENT%")).toContain(bash)
+  expect(ids("agent:impl*")).not.toContain("item:global:Helper:tool:bash")
   expect(ids("agent:_")).toContain(sharedPlus)
   expect(ids("agent:_")).not.toContain(bash)
   const withUnderscore = input({ agents: [...agents(), { id: "my_agent", scope: "project", base: "gpt" }] })
@@ -226,7 +227,7 @@ test("agent is a case-insensitive substring match with exact _ sentinel", () => 
   expect(sharedIds).toContain(sharedPlus)
   expect(sharedIds).not.toContain(underscoreItem)
   expect(sharedIds).not.toContain(underscoreAgent)
-  const subIds = query(withUnderscore, { where: "agent:my_" }).rows.map((row) => row.id)
+  const subIds = query(withUnderscore, { where: "agent:my_*" }).rows.map((row) => row.id)
   expect(subIds).toContain(underscoreItem)
   expect(subIds).toContain(underscoreAgent)
   expect(subIds).not.toContain(sharedPlus)
@@ -435,6 +436,98 @@ test("shadowed pins an override a more specific level wins", () => {
   expect(ids("shadowed:true")).not.toContain("item:project:Implementer:tool:plus-one")
   expect(ids("shadowed:false")).toContain("item:project:Implementer:tool:plus-one")
   expect(ids("shadowed:false")).toContain(bash)
+})
+
+test("type and name say what a row is and what it is called", () => {
+  expect(ids("type:tool agent:Implementer name:bash level:project")).toEqual([bash])
+  // agent is the name ignoring case, so the Basic team preset's implementer seat matches too.
+  expect(ids("type:tool agent:Implementer name:bash")).toEqual([bash, "item:preset:basic/:implementer:tool:bash"])
+  expect(ids("type:skill agent:Implementer").every((id) => id.includes(":skill:"))).toBe(true)
+  expect(ids("type:base agent:Implementer")).toContain("item:project:Implementer:base:gpt")
+  expect(ids("type:system agent:Implementer")).toContain("item:project:Implementer:system:role")
+  expect(ids("type:section agent:Implementer name:usage")).toEqual(["section:project:Implementer:system:role:usage"])
+  expect(ids("type:mcp")).toContain("item:defaults::mcp:sample")
+  expect(ids("type:team")).toContain("team:project:crew")
+  expect(ids("type:member")).toContain("team:project:crew:CrewMate")
+  expect(ids("type:preset")).toContain("team:preset:basic")
+  expect(ids("type:preset")).toContain("agent:preset:build")
+  // A label with a space is quoted; * stands for any text; case does not matter.
+  expect(ids('name:"code review" agent:Implementer level:project')).toEqual(["item:project:Implementer:skill:review"])
+  expect(ids("name:CODE* agent:Implementer type:tool level:project")).toEqual(["item:project:Implementer:tool:coder"])
+  // The older keys take a type value too.
+  expect(ids("kind:member")).toEqual(ids("type:member"))
+})
+
+test("agent reaches a team member's row and the groups under an agent", () => {
+  expect(ids("type:member agent:CrewMate")).toEqual(["team:project:crew:CrewMate"])
+  expect(ids("type:group agent:Implementer level:project").length).toBeGreaterThan(0)
+  expect(ids("type:group agent:Implementer level:project").every((id) => id.startsWith("group:project:Implementer:"))).toBe(true)
+  // A team preset's member seat owns the groups under it.
+  expect(ids("type:group agent:Implementer level:preset").every((id) => id.startsWith("group:preset:basic/:implementer:"))).toBe(true)
+})
+
+test("tool takes in the tool's own rows: the tool, its parameters and rules", () => {
+  const withRule = input({
+    items: [...items(), makeItem({ id: "perm:bash:git-push", kind: "perm", group: "native", title: "git push", permTool: "bash", text: "" })],
+  })
+  const found = query(withRule, { where: "tool:bash agent:Implementer" }).rows.map((row) => row.id)
+  expect(found).toContain(bash)
+  expect(found).toContain("item:project:Implementer:perm:bash:git-push")
+  expect(query(withRule, { where: "type:rule name:git-push agent:Implementer level:project" }).rows.map((row) => row.id)).toEqual(["item:project:Implementer:perm:bash:git-push"])
+})
+
+test("in lists the rows under a row", () => {
+  expect(ids("in:item:project:Implementer:system:role")).toEqual(["section:project:Implementer:system:role:purpose", "section:project:Implementer:system:role:usage"])
+  expect(ids("in:item:project:Implementer:system:role name:usage")).toEqual(["section:project:Implementer:system:role:usage"])
+})
+
+test("is names the rows holding an edit", () => {
+  // review: the row's own review, not the groups and agents that count it.
+  expect(ids("is:review")).toContain("item:project:Implementer:tool:plus-one")
+  expect(ids("is:review").some((id) => id.startsWith("group:") || id.startsWith("root:") || id.startsWith("agent:"))).toBe(false)
+  // changed: an edit stored on the row.
+  expect(ids("is:changed")).toContain(bash)
+  expect(ids("is:changed")).toContain("item:project:Implementer:skill:native-one")
+  expect(ids("is:changed")).not.toContain("item:project:CrewMate:tool:bash")
+  // hidden: an agent's own text or on/off a more specific level sets too; a
+  // shared edit one agent overrides still applies to the others.
+  const shadowedState = input({
+    records: [
+      makeRecord({ level: "global", agent: "Helper", item: "tool:bash", state: "off" }),
+      makeRecord({ level: "project", agent: "Helper", item: "tool:bash", state: "on" }),
+    ],
+  })
+  expect(query(shadowedState, { where: "is:hidden", withoutAliases: true }).rows.map((row) => row.id)).toEqual(["item:global:Helper:tool:bash"])
+  expect(ids("is:hidden")).not.toContain(sharedPlus)
+  expect(ids("is:orphaned").sort()).toEqual(ids("orphan:true").sort())
+})
+
+test("findCollapse turns off each part a question asks past", () => {
+  const all = { sections: true, descriptions: true, presets: true, levels: true, copies: true }
+  expect(findCollapse("")).toEqual(all)
+  expect(findCollapse('type:"tool" state:"off"')).toEqual(all)
+  expect(findCollapse('type:"section"')).toEqual({ ...all, sections: false })
+  expect(findCollapse('name:"usage"')).toEqual({ ...all, sections: false })
+  expect(findCollapse('level:"preset"')).toEqual({ ...all, presets: false, levels: false })
+  expect(findCollapse('agent:"alpha"')).toEqual({ ...all, copies: false })
+  expect(findCollapse("!agent:alpha")).toEqual(all)
+  expect(findCollapse('is:"changed"')).toEqual({ ...all, presets: false, levels: false, copies: false })
+  expect(findCollapse('in:"item:project:a:tool:x"')).toEqual({ ...all, sections: false, presets: false, levels: false, copies: false })
+  expect(findCollapse("id:item:project:")).toEqual({ sections: false, descriptions: false, presets: false, levels: false, copies: false })
+})
+
+test("find's collapse answers each thing once", () => {
+  const find = (where: string) => query(input(), { where, collapse: findCollapse(where) }).rows
+  // Each skill once: copies with the same value fold into one row that counts the rest.
+  const skills = find("type:skill")
+  expect(new Set(skills.map((row) => row.id)).size).toBe(skills.length)
+  expect(skills.some((row) => (row.copies ?? 0) > 0)).toBe(true)
+  expect(skills.some((row) => row.id.includes(":preset:"))).toBe(false)
+  // Implementer's own edit is its own row.
+  expect(find("type:tool name:bash").map((row) => row.id)).toContain(bash)
+  // Sections only when asked; the item carries a text match.
+  expect(find("agent:Implementer text:b").some((row) => row.id.startsWith("section:"))).toBe(false)
+  expect(find("agent:Implementer type:section").some((row) => row.id.startsWith("section:"))).toBe(true)
 })
 
 test("orphan synthesizes rows for stale records only when asked", () => {
@@ -673,7 +766,14 @@ test("query badges match the tree badges for every row", () => {
 })
 
 test("unknown keys and malformed comparisons throw naming the term", () => {
-  expect(() => query(input(), { where: "foo:bar" })).toThrow('unknown filter key in "foo:bar"')
+  expect(() => query(input(), { where: "foo:bar" })).toThrow('unknown filter key "foo" in "foo:bar"; keys: agent, team, level, type, name, in, state, is, text')
+  // The keys agents reached for name what says it instead.
+  expect(() => query(input(), { where: "member:Planner" })).toThrow("a team member is an agent: use agent:<member>, with team:<team>")
+  expect(() => query(input(), { where: "preset:build-seat" })).toThrow("use type:preset name:<preset>")
+  expect(() => query(input(), { where: "system:role" })).toThrow("use type:system name:<name>")
+  expect(() => query(input(), { where: "item:system:role" })).toThrow("item takes a type; for one row use type:system name:role")
+  expect(() => query(input(), { where: "item:perm:team_delegate" })).toThrow("use type:rule name:team_delegate")
+  expect(() => query(input(), { where: "type:banana" })).toThrow('bad type value in "type:banana"')
   expect(() => query(input(), { where: "tokens:>x" })).toThrow('bad numeric comparison in "tokens:>x"')
   expect(() => query(input(), { where: "kind:banana" })).toThrow('bad kind value in "kind:banana"')
   expect(() => query(input(), { where: "sort:nope" })).toThrow('bad sort key in "sort:nope"')

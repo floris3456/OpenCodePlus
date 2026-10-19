@@ -1017,7 +1017,7 @@ full `ChainContext` (`scopesOf(agents)` plus links, entries, the catalogue and
 of any record list. Every production resolution reads the full context:
 publish (`buildActiveModels`, apply, specials, team role overrides, baselines,
 the fingerprint view), discovery's base badge, `instructions.assembled`, the
-memo behind the tree/query/ops, the tools' `show`, and the TUI state and
+memo behind the tree/query/ops, the tools' `read`, and the TUI state and
 inspector (`snapshot.ts` `contextOfSnapshot`, `memoInputOf`).
 
 A member's link carries its team (`L/A@T`). The tree's member rows carry
@@ -2300,8 +2300,27 @@ successful write is logged with actor `tool`.
 ```ts
 export type ToolView = "resolved" | "upstream" | "mine" | "record" | "sections" | "diff" | "assembled"
 export type ToolResolve = "keep" | "take" | "edit"
-export interface ListInput { readonly where?: string; readonly fields?: readonly Field[]; readonly sort?: Sort; readonly limit?: number; readonly offset?: number }
-export interface ShowInput { readonly id: string; readonly view?: ToolView }
+// query.ts rowTypes, the filter's `type:` values.
+export type RowType = "agent" | "team" | "member" | "preset" | "entry" | "tool" | "param" | "rule" | "skill" | "system" | "base" | "model" | "setting" | "compaction" | "mcp" | "section" | "group"
+// find's parameters compile to filter terms (each value quoted whole) before where's own.
+export interface FindInput {
+  readonly agent?: string
+  readonly team?: string
+  readonly level?: Level
+  readonly type?: RowType
+  readonly name?: string
+  readonly in?: string
+  readonly state?: "on" | "off"
+  readonly text?: string
+  readonly is?: "review" | "changed" | "hidden" | "orphaned"
+  readonly where?: string
+  readonly fields?: readonly Field[]
+  readonly sort?: Sort
+  readonly limit?: number
+  readonly offset?: number
+}
+export interface ReadInput { readonly id: string; readonly view?: ToolView }
+export interface EditInput { readonly id: string; readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
 // A preset as tools name it: "<id>" (agent preset), "<team>/<member>" (member preset), or the RPC PresetRef.
 export type PresetInput = string | PresetRef
 export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
@@ -2322,7 +2341,7 @@ export type CreateInput =
   | { readonly kind: "model"; readonly providerID: string; readonly modelID: string; readonly variant?: string; readonly level?: "project" | "global" | "defaults" | "preset"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
   | { readonly kind: "rule"; readonly tool: string; readonly id: string; readonly label: string; readonly patterns: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly level?: "project" | "global" | "defaults"; readonly agent?: string; readonly catalogue?: "agents" | "teams" }
 // Every kind resolves to CreatedRow: { id, item }, where id is the row id
-// show/set/delete accept and item names the created thing inside its row kind
+// read/set/edit/delete accept and item names the created thing inside its row kind
 // (`skill:…`, `model:…`, `perm:…`, or the agent/team/member id). The RPC's own
 // fields (path, name, level, agent, tool, providerID, modelID, …) pass through
 // beside them. A create whose written row is not in the tree fails with
@@ -2331,9 +2350,18 @@ export interface CreatedRow { readonly id: string; readonly item: string }
 export interface DeleteInput { readonly id: string; readonly confirm: true }
 ```
 
-- `list` returns the matching row ids (default projection `id, badges,
-  source, tokens`; `limit` defaults to 40, and since every tool lists its
-  catalog rows an agent's perm rows run well past it). Filters (`where`) support `server:<name>`, which matches both the `mcp:<name>` server row and its tool rows (e.g. `where: "server:search"` returns `mcp:search` and all search tools). `show` defaults to view
+- `find` returns `{ total, columns, rows }`, one `id | badges | from` line
+  per thing (`fields` picks other columns; `limit` defaults to 40). Its
+  parameters and `where` are the TUI filter's terms; `findCollapse` answers
+  each thing once: at its most specific level (chosen before filtering, so
+  the row shows what runs here), agents' same copies folded into one row
+  ending `(+N agents)` unless `agent`/`team` is given, sections and Presets
+  rows only when asked for, and every level and copy kept for the record
+  keys (`is`, `modified`, `review`, …). Filters support `server:<name>`, which matches both the `mcp:<name>` server row and its tool rows (e.g. `where: "server:search"` returns `mcp:search` and all search tools).
+- `edit` replaces `oldString` with `newString` in the row's current text
+  (exactly once unless `replaceAll`) and saves like `set({ id, text })`,
+  governed by `set`'s permission rows.
+- `read` defaults to view
   `resolved`. On a perm row every view but `record` returns the rule view
   (`tool`, `rule`, `label`, `patterns`, `keywords`, `provenance`, `custom`,
   `enabled`, `source`, `category`, `kind` — the row's `permKind`, `rule` when
@@ -2376,7 +2404,7 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   `split` boundaries are `{ id, name, start }` with
   character offsets into the row text; `add: { name, text }` appends a new
   trailing section; perm and model rows cannot be split. `create` writes one row per call and returns `CreatedRow` fields: `id` is the
-  row id `show`, `set` and `delete` accept for that row, `item` names the
+  row id `read`, `set`, `edit` and `delete` accept for that row, `item` names the
   created thing inside its row kind (`skill:…`, `base:…`, `mcp:…`, `model:…`,
   `perm:…`, or the agent/team/member id), and the RPC's own fields pass through
   beside them. `create` with `kind: "agent"` needs `id` (`scope`
@@ -3009,7 +3037,7 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 ### Errors
 
 | error | meaning |
-| `row.unknown` | no row has that id; `list` again for the current id |
+| `row.unknown` | no row has that id; `find` again for the current id |
 | `create.failed` | the write landed but its row is not in the tree; re-read with `instructions_find` |
 | `agent.protected` | that agent is in `protectedAgents` and the write's actor is a tool; data is `{ agent, id?, reason }` |
 | `delete.unconfirmed` | retry with `confirm: true` |

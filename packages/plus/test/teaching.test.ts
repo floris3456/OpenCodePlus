@@ -17,7 +17,7 @@ import {
   parseModelSettingItemId,
 } from "../src/instructions/model-settings.js"
 import { discover } from "../src/instructions/discover.js"
-import { query } from "../src/instructions/query.js"
+import { query, rowTypes } from "../src/instructions/query.js"
 import { teachingFilePath, teachingItemId, teachingSkillId } from "../src/instructions/paths.js"
 import { installTeaching, seedSystemInstruction, teachingContent, teachingSkillContent } from "../src/instructions/teaching.js"
 import { context } from "./harness.js"
@@ -93,10 +93,10 @@ test("the instruction content stays within its size budget", async () => {
     "section:…:<sectionId>",
     "agent:<level>:<id>",
     "team:<level>:<name>",
-    'find({where:"review:true"})',
+    'find({is:"review"})',
     'read({id,view:"diff"})',
     'set({id,resolve:"keep"})',
-    'find({where:"agent:X item:tool"})',
+    'find({agent:"X",type:"tool"})',
     "edit({id,oldString,newString})",
     "id | badges | from",
     "instructions-tools",
@@ -107,7 +107,7 @@ test("the instruction content stays within its size budget", async () => {
 
 test("the skill content covers the tool surface", async () => {
   for (const phrase of [
-    "find({ where?, fields?, sort?, limit?, offset? })",
+    "find({ agent?, team?, level?, type?, name?, in?, state?, text?, is?, where?, fields?, sort?, limit?, offset? })",
     'read({ id, view? })',
     "edit({ id, oldString, newString, replaceAll? })",
     "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, prompt?, effort? })",
@@ -143,20 +143,33 @@ test("every filter expression in the skill parses in the real query engine", asy
   }
 })
 
-test("declared structural key values validate against the real query engine", async () => {
-  const line = teachingSkillContent.split("\n").find((entry) => entry.includes("Structural keys:")) ?? ""
-  expect(line).toContain("Structural keys:")
-  const declarations = [...line.matchAll(/`([A-Za-z]+)`\s*\(([^)]+)\)/g)].map((match) => ({ key: match[1] ?? "", raw: match[2] ?? "" }))
-  expect(declarations.some((declaration) => declaration.key === "kind")).toBe(true)
-  expect(declarations.some((declaration) => declaration.key === "item")).toBe(true)
+// find's parameters are the filter's terms, so each example call is checked
+// as the terms the find tool builds from it.
+test("every find example in the skill names real keys and values", async () => {
+  // The signature (`find({ agent?, … })`) is not an example.
+  const calls = [...teachingSkillContent.matchAll(/find\(\{([^}]*)\}\)/g)].map((match) => match[1] ?? "").filter((call) => !call.includes("?"))
+  expect(calls.length).toBeGreaterThan(5)
   const snapshot = { items: [], records: [], agents: [], teams: [] }
+  for (const call of calls) {
+    const terms = [...call.matchAll(/(\w+):\s*"((?:[^"\\]|\\.)*)"/g)].map((match) => (match[1] === "where" ? (match[2] ?? "") : `${match[1]}:"${match[2]}"`))
+    expect(terms.length).toBeGreaterThan(0)
+    expect(() => query(snapshot, { where: terms.join(" ") })).not.toThrow()
+  }
+})
+
+test("declared key values validate against the real query engine", async () => {
+  const snapshot = { items: [], records: [], agents: [], teams: [] }
+  const listed = (key: string) => {
+    const line = teachingSkillContent.split("\n").find((entry) => entry.startsWith(`- \`${key}\`:`)) ?? ""
+    return (line.match(/^- `\w+`: ([^.;]+)/)?.[1] ?? "").split(/, | or /).map((value) => value.trim())
+  }
+  expect(listed("type")).toEqual([...rowTypes])
+  expect(listed("level")).toEqual(["project", "global", "defaults", "preset"])
+  for (const type of listed("type")) expect(() => query(snapshot, { where: `type:${type}` })).not.toThrow()
+  expect(teachingSkillContent).toContain("`_` is the shared rows")
+  const line = teachingSkillContent.split("\n").find((entry) => entry.includes("More keys:")) ?? ""
+  const declarations = [...line.matchAll(/`([A-Za-z]+)`\s*\(([^)]+)\)/g)].map((match) => ({ key: match[1] ?? "", raw: match[2] ?? "" }))
   const validated = declarations.flatMap((declaration) => {
-    if (declaration.key === "agent") {
-      expect(declaration.raw).toContain("_")
-      const agentShared = query(snapshot, { where: "agent:_" })
-      expect(agentShared.total).toBe(agentShared.rows.length)
-      return ["agent:_"]
-    }
     const values = declaration.raw
       .split("|")
       .map((value) => value.trim())

@@ -84,6 +84,11 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
       op: "find",
       input: { limit: 2.5, offset: 1 },
     })
+    expect(await parse(["find", "--agent", "alpha", "--type=tool", "--is", "review", "--in", "item:project:alpha:tool:reader"])).toEqual({
+      kind: "run",
+      op: "find",
+      input: { agent: "alpha", type: "tool", is: "review", in: "item:project:alpha:tool:reader" },
+    })
     expect(await parse(["move", "row", "--into", "folder", "--before", "first", "--after=last"])).toEqual({
       kind: "run",
       op: "move",
@@ -129,10 +134,10 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
     expect((await runInstructionsCommand(["link", "row", "--target", "other", "--type", "oneway"], deps)).exitCode).toBe(2)
     expect((await runInstructionsCommand(["set", "row", "--state=invalid"], deps)).exitCode).toBe(2)
     expect((await runInstructionsCommand(["find", "--limit=5"], deps)).exitCode).toBe(0)
-    const listed = JSON.parse((await runInstructionsCommand(["find", "--limit=6082"], deps)).stdout) as {
+    const listed = JSON.parse((await runInstructionsCommand(["find", "--agent", "alpha", "--name", "reader", "--type", "tool"], deps)).stdout) as {
       rows: string[]
     }
-    const id = listed.rows.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
+    const id = listed.rows[0]?.split(" | ")[0]
     if (id === undefined) throw new Error("fixture has no reader row")
     const refused = await runInstructionsCommand(["set", id, "--text", "blocked"], deps)
     expect(refused.exitCode).toBe(1)
@@ -181,9 +186,12 @@ test("edit through the CLI changes part of a row's text and logs the cli actor",
     run: (op: string, input: Record<string, unknown>) => Effect.runPromise(handlers["instructions.run"]({ op, input }, rpcContext)),
   }
   try {
-    const listed = JSON.parse((await runInstructionsCommand(["find", "--where", "item:tool", "--limit=6082"], deps)).stdout) as { rows: string[] }
-    const id = listed.rows.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.endsWith(":tool:reader"))
-    if (id === undefined) throw new Error("fixture has no reader row")
+    // find's parameters are flags: one agent's one tool is one row.
+    const listed = JSON.parse((await runInstructionsCommand(["find", "--agent", "alpha", "--type", "tool", "--name=reader"], deps)).stdout) as { rows: string[] }
+    expect(listed.rows).toHaveLength(1)
+    const id = listed.rows[0]?.split(" | ")[0] ?? ""
+    expect(id).toEndWith(":alpha:tool:reader")
+    expect((await runInstructionsCommand(["find", "--type", "banana"], deps)).exitCode).toBe(2)
     const edited = await runInstructionsCommand(["edit", id, "--oldString", "read", "--newString", "scan"], deps)
     expect(edited.exitCode).toBe(0)
     expect(JSON.parse(edited.stdout)).toMatchObject({ id, replacements: 1 })

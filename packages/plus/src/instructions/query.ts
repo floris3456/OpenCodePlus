@@ -55,7 +55,87 @@ export interface QueryOptions {
    * when its item row matched too: the two carry the same text and state.
    */
   readonly withoutAliases?: boolean
+  /** find's one row per thing (see Collapse). */
+  readonly collapse?: Collapse
 }
+
+/**
+ * How find narrows a match to one row per thing (`findCollapse` picks the
+ * parts a question does not ask past).
+ */
+export interface Collapse {
+  /** Leave out section rows: their item row carries the same match. */
+  readonly sections: boolean
+  /** Leave out Description rows: each is its item's whole text again. */
+  readonly descriptions: boolean
+  /** Leave out rows at the Presets level. */
+  readonly presets: boolean
+  /**
+   * One row per thing across project, global and defaults: its most specific
+   * level, chosen before filtering, so a row shows what runs here.
+   */
+  readonly levels: boolean
+  /**
+   * Agents' copies of a row with the same on/off and text are one row: the
+   * shared Defaults row when it is one of them; `QueryRow.copies` counts the rest.
+   */
+  readonly copies: boolean
+}
+
+// Keys that ask about an edit stored at one level rather than what runs: each
+// level's row (presets too) is its own answer, so they keep every level and
+// every copy.
+const recordKeys = new Set(["is", "modified", "review", "overridden", "shadowed", "acked", "orphan", "updated", "identical", "dead"])
+
+/**
+ * find's collapse for a where: each part is on unless a positive term asks
+ * for what it leaves out. `in:` and `id:` name rows outright.
+ */
+export function findCollapse(where: string): Collapse {
+  const terms = splitTerms(where).flatMap((raw) => {
+    const colon = indexOfColon(raw)
+    if (raw.startsWith("!") || colon === -1) return []
+    return [{ key: lower(raw.slice(0, colon)), value: lower(raw.slice(colon + 1)) }]
+  })
+  const asks = (keys: readonly string[], value?: string) =>
+    terms.some((term) => keys.includes(term.key) && (value === undefined || term.value.includes(value)))
+  const named = asks(["in", "id"])
+  const record = terms.some((term) => recordKeys.has(term.key)) || asks(["has"], "record")
+  return {
+    // A section's name is its own, so a name asks for sections too.
+    sections: !named && !asks(["type", "kind"], "section") && !asks(["has"], "sections") && !asks(["name"]),
+    descriptions: !asks(["id"]),
+    presets: !named && !record && !asks(["level", "type", "kind"], "preset"),
+    levels: !named && !record && !asks(["level"]),
+    copies: !named && !record && !asks(["agent", "team"]),
+  }
+}
+
+/** find's row types (`type:`). */
+export const rowTypes = [
+  "agent",
+  "team",
+  "member",
+  "preset",
+  "entry",
+  "tool",
+  "param",
+  "rule",
+  "skill",
+  "system",
+  "base",
+  "model",
+  "setting",
+  "compaction",
+  "mcp",
+  "section",
+  "group",
+] as const
+
+export type RowType = (typeof rowTypes)[number]
+
+/** find's named finds (`is:`). */
+export const namedFinds = ["review", "changed", "hidden", "orphaned"] as const
 
 export interface QueryRow {
   readonly id: string
@@ -71,16 +151,23 @@ export interface QueryRow {
   readonly sections?: readonly string[]
   /** Where the row's value comes from, in words ("from preset Orchestrator"). */
   readonly from?: string
+  /** Other agents' copies with the same value that this row stands for (Collapse.copies). */
+  readonly copies?: number
 }
 
 export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { rows: QueryRow[]; total: number } {
   const active = memo ?? buildMemo(input)
   const state = queryState(active)
   const parsed = parseWhere(options?.where ?? "", state)
-  const candidates = collectCandidates(state, parsed)
-  const found = candidates.filter((candidate) => parsed.filters.every((filter) => filter.negate !== filter.test(candidate)))
+  const collapse = options?.collapse
+  const candidates = collectCandidates(state, parsed, parsed.wantsChains, collapse)
+  const found = (collapse?.levels === true ? mostSpecific(candidates) : candidates).filter(
+    (candidate) => !(collapse?.descriptions === true && isDescriptionAlias(candidate)) && parsed.filters.every((filter) => filter.negate !== filter.test(candidate)),
+  )
   const ids = options?.withoutAliases === true ? new Set(found.map((candidate) => candidate.id)) : undefined
-  const matched = ids === undefined ? found : found.filter((candidate) => !isDescriptionAlias(candidate) || !ids.has(candidate.id.slice(0, -":description".length)))
+  const unaliased = ids === undefined ? found : found.filter((candidate) => !isDescriptionAlias(candidate) || !ids.has(candidate.id.slice(0, -":description".length)))
+  const copies = collapse?.copies === true ? foldCopies(state, unaliased) : undefined
+  const matched = copies === undefined ? unaliased : unaliased.filter((candidate) => candidate.address === undefined || copies.has(candidate))
   const sorted = sortCandidates(state, matched, parseSort(options?.sort) ?? parsed.sort)
   const total = sorted.length
   const offset = options?.offset ?? 0
@@ -88,12 +175,56 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   if (!Number.isInteger(offset) || offset < 0) throw new Error(`bad query offset "${offset}"`)
   if (!Number.isInteger(limit) || limit < 0) throw new Error(`bad query limit "${limit}"`)
   const fields = options?.fields ?? (["id", "badges", "source", "tokens"] as const satisfies readonly Field[])
-  return { rows: sorted.slice(offset, offset + limit).map((candidate) => project(state, candidate, fields)), total }
+  const rows = sorted.slice(offset, offset + limit).map((candidate) => {
+    const row = project(state, candidate, fields)
+    const more = copies?.get(candidate) ?? 0
+    return more === 0 ? row : { ...row, copies: more }
+  })
+  return { rows, total }
 }
 
 // tree.ts descriptionRow: a section row at its item's whole address.
 function isDescriptionAlias(candidate: Candidate): boolean {
   return candidate.kind === "section" && candidate.address?.section === null && candidate.id.endsWith(":description")
+}
+
+// Agents' copies of a row (one item or section) with the same on/off and
+// text fold into one: the shared Defaults row when it is one of them (the
+// Teams catalogue's shared row with it), else the first. Answers each kept
+// row and how many agents' copies it stands for.
+function foldCopies(state: QueryState, candidates: readonly Candidate[]): Map<Candidate, number> {
+  const groups = new Map<string, Candidate[]>()
+  for (const candidate of candidates) {
+    const address = candidate.address
+    if (address === undefined) continue
+    const key = JSON.stringify([address.item, address.section, nodeOf(state, candidate)?.badges.state ?? null, resolvedTextOf(state, candidate)])
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [candidate])
+    else group.push(candidate)
+  }
+  return new Map(
+    [...groups.values()].map((group) => {
+      const kept = group.find((candidate) => candidate.address?.agent === null) ?? group[0]!
+      return [kept, group.filter((candidate) => candidate !== kept && candidate.address?.agent !== null).length]
+    }),
+  )
+}
+
+// The same row at project, global and defaults (its id differs only in the
+// level segment) is one thing: keep its most specific level. Presets are
+// their own things.
+function mostSpecific(candidates: readonly Candidate[]): Candidate[] {
+  const rank = { project: 3, global: 2, defaults: 1 } as Record<string, number>
+  const thing = (candidate: Candidate) => candidate.id.split(":").map((part, index) => (index === 1 ? "*" : part)).join(":")
+  const best = new Map<string, Candidate>()
+  for (const candidate of candidates) {
+    const level = rank[levelOf(candidate) ?? ""]
+    if (level === undefined) continue
+    const current = best.get(thing(candidate))
+    if (current === undefined || level > (rank[levelOf(current) ?? ""] ?? 0)) best.set(thing(candidate), candidate)
+  }
+  const kept = new Set(best.values())
+  return candidates.filter((candidate) => kept.has(candidate) || rank[levelOf(candidate) ?? ""] === undefined)
 }
 
 interface QueryState {
@@ -220,6 +351,8 @@ interface Parsed {
   readonly filters: Filter[]
   readonly sort: SortSpec | undefined
   readonly wantsOrphans: boolean
+  /** An `in:` term reads each candidate's ancestors. */
+  readonly wantsChains: boolean
 }
 
 function queryState(memo: Memo): QueryState {
@@ -302,7 +435,7 @@ function lookupItem(state: QueryState, itemId: string, owner: string | null, con
 // `chains` records each candidate's ancestor path from the walk's depth stack,
 // so a filtered row set can include its ancestors without a second whole-tree
 // walk. It costs one array per candidate, so only the filter path asks for it.
-function collectCandidates(state: QueryState, parsed: Parsed, chains = false): Candidate[] {
+function collectCandidates(state: QueryState, parsed: Parsed, chains = false, collapse?: Collapse): Candidate[] {
   const out: Candidate[] = []
   const seen = new Set<string>()
   const stack: Candidate[] = []
@@ -321,7 +454,7 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
     out.push(next)
     if (chains) stack.push(next)
   }
-  const skipRows = parsed.filters.some((filter) => filter.excludesSections)
+  const skipRows = collapse?.sections === true || parsed.filters.some((filter) => filter.excludesSections)
   const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
@@ -377,9 +510,9 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false): C
   }
   const roots = parsed.filters.flatMap((filter) => (filter.roots === undefined ? [] : [filter.roots]))
   for (const root of skeletonOf(state.memo))
-    if (roots.every((allowed) => allowed.has(root.id.slice("root:".length)))) visit(root)
+    if (roots.every((allowed) => allowed.has(root.id.slice("root:".length))) && !(collapse?.presets === true && root.id === "root:preset")) visit(root)
   if (parsed.wantsOrphans) pushOrphans(state, push, skipRows)
-  return out
+  return collapse?.presets === true ? out.filter((candidate) => levelOf(candidate) !== "preset") : out
 }
 
 const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool", "folder"])
@@ -662,6 +795,69 @@ function itemKindOf(state: QueryState, candidate: Candidate): string | undefined
   return prefix === undefined || prefix === "" ? undefined : prefix
 }
 
+// What find calls a row (type:). Rows of no type (roots, how a tool is
+// offered, a model's field rows) answer undefined.
+function typeOf(state: QueryState, candidate: Candidate): RowType | undefined {
+  if (candidate.kind === "section") return "section"
+  if (candidate.kind === "group") return "group"
+  if (candidate.kind === "agent" || candidate.kind === "team") {
+    const owner = candidate.lazy?.owner
+    if (owner?.preset !== undefined) return "preset"
+    if (owner?.entry !== undefined) return "entry"
+    if (candidate.kind === "agent" || candidate.id.includes(":special:")) return "agent"
+    return candidate.id.split(":").length > 3 ? "member" : "team"
+  }
+  const kind = itemKindOf(state, candidate)
+  if (kind === "perm") return "rule"
+  if (kind === "modeldefault") return "model"
+  return (rowTypes as readonly string[]).includes(kind ?? "") ? (kind as RowType) : undefined
+}
+
+// A row's own names: its label, and the item or section id it is saved under
+// (`read` for tool:read, `git-push` and `shell:git-push` for perm:shell:git-push).
+function namesOf(candidate: Candidate): string[] {
+  const address = candidate.address
+  if (address === undefined) return [candidate.label, candidate.id.split(":").at(-1) ?? ""]
+  if (address.section !== null) return [candidate.label, address.section]
+  const rest = address.item.slice(address.item.indexOf(":") + 1)
+  return [candidate.label, rest, rest.split(":").at(-1) ?? rest]
+}
+
+// Equal ignoring case; * or % stand for any text.
+function matches(value: string, pattern: string): boolean {
+  if (!/[*%]/.test(pattern)) return lower(value) === lower(pattern)
+  const source = pattern.split(/[*%]/).map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")
+  return new RegExp(`^${source}$`, "i").test(value)
+}
+
+// The tool a row belongs to: the tool itself, its parameters, rules and offering.
+function toolOfItem(item: string): string | undefined {
+  const [kind, tool] = item.split(":")
+  return kind === "tool" || kind === "param" || kind === "perm" || kind === "toolmode" ? tool : undefined
+}
+
+// The agent an unaddressed row stands for or sits under: a team member row
+// (`team:<level>:<team>:<member>`) or a group under an agent or member.
+function ownerAgentOf(state: QueryState, candidate: Candidate): string | null {
+  if (candidate.address !== undefined) return null
+  const parts = candidate.id.split(":")
+  if (candidate.kind === "team" && parts.length > 3 && candidate.lazy?.owner?.preset === undefined) return parts.at(-1) ?? null
+  if (candidate.kind !== "group" || parts.length < 4) return null
+  if (parts[2]?.endsWith("/")) return parts[3] ?? null
+  return state.agents.has(parts[2] ?? "") ? (parts[2] ?? null) : null
+}
+
+// Each named find answers for the row that holds the edit, not the rows that
+// inherit it or the groups that count it: review is the row's own review,
+// changed an edit stored on the row (what reset drops).
+function isOf(state: QueryState, candidate: Candidate, what: string): boolean {
+  if (what === "orphaned") return candidate.orphan
+  // A shared edit one agent overrides still applies to the others.
+  if (what === "hidden") return candidate.address?.agent !== null && shadowedOf(state, candidate)
+  if (what === "review") return candidate.lazy?.selfReview() ?? nodeOf(state, candidate)?.badges.review === true
+  return candidate.address !== undefined && (actionsOf(state, candidate).reset || nodeOf(state, candidate)?.badges.modified === true)
+}
+
 function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
   if (candidate.address?.team !== undefined) {
     return [candidate.address.team.team]
@@ -700,14 +896,18 @@ function updatedOf(state: QueryState, candidate: Candidate): string | undefined 
 }
 
 // Precedence (model.ts resolutionChain): project/agent > global/agent > defaults/agent > defaults/shared.
+// An own text or on/off that a more specific level sets too, so it never applies.
 function shadowedOf(state: QueryState, candidate: Candidate): boolean {
   const address = candidate.address
   if (address === undefined) return false
   const own = ownOf(state, address)
-  if (own?.text === undefined) return false
+  if (own === undefined || (own.text === undefined && own.state === undefined)) return false
   const rank = specificity(address.level, address.agent)
   return recsAt(state, address.item, address.section).some(
-    (record) => record.text !== undefined && sameScope(record, address) && specificity(record.level, record.agent) > rank,
+    (record) =>
+      sameScope(record, address) &&
+      specificity(record.level, record.agent) > rank &&
+      ((own.text !== undefined && record.text !== undefined) || (own.state !== undefined && record.state !== undefined)),
   )
 }
 
@@ -784,6 +984,7 @@ function parseWhere(where: string, state: QueryState): Parsed {
   const filters: Filter[] = []
   let sort: SortSpec | undefined
   let wantsOrphans = false
+  let wantsChains = false
   for (const raw of splitTerms(where)) {
     const parsed = parseTerm(raw, state)
     if (parsed === undefined) continue
@@ -793,11 +994,12 @@ function parseWhere(where: string, state: QueryState): Parsed {
     }
     filters.push(parsed)
     if (parsed.wantsOrphans) wantsOrphans = true
+    if (parsed.wantsChains) wantsChains = true
   }
-  return { filters: filters.sort((left, right) => left.rank - right.rank), sort, wantsOrphans }
+  return { filters: filters.sort((left, right) => left.rank - right.rank), sort, wantsOrphans, wantsChains }
 }
 
-type TermOut = (Filter & { wantsOrphans: boolean }) | { sort: SortSpec }
+type TermOut = (Filter & { wantsOrphans: boolean; wantsChains: boolean }) | { sort: SortSpec }
 
 function parseTerm(raw: string, state: QueryState): TermOut | undefined {
   if (raw === "") return undefined
@@ -808,10 +1010,12 @@ function parseTerm(raw: string, state: QueryState): TermOut | undefined {
     body = body.slice(1)
   }
   const colon = indexOfColon(body)
-  if (colon === -1) {
+  // A word with a colon that names no key (`Basic/:Planner`, a row id
+  // fragment) is a word, not a key.
+  if (colon === -1 || !/^[a-z_]+$/i.test(body.slice(0, colon))) {
     const word = unescape(body)
     if (word === "") throw new Error(`empty filter term in "${raw}"`)
-    return { negate, rank: 0, excludesSections: false, mentionsSections: false, propagating: false, test: (candidate) => contains(candidate.label, word) || contains(candidate.id, word), wantsOrphans: false }
+    return { negate, rank: 0, excludesSections: false, mentionsSections: false, propagating: false, test: (candidate) => contains(candidate.label, word) || contains(candidate.id, word), wantsOrphans: false, wantsChains: false }
   }
   const key = body.slice(0, colon).toLowerCase()
   const alts = splitValue(body.slice(colon + 1), raw)
@@ -822,7 +1026,8 @@ function parseTerm(raw: string, state: QueryState): TermOut | undefined {
   }
   const roots = rootsFor(key, alts, negate)
   const idPrefixes = !negate && key === "id" ? alts.map(lower) : undefined
-  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: key === "has" && alts.some((alt) => lower(alt) === "sections"), mentionsGroups: !negate && key === "kind" && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans: key === "orphan" && wantsTrue(alts, negate) }
+  const wantsOrphans = (key === "orphan" && wantsTrue(alts, negate)) || (key === "is" && !negate && alts.some((alt) => lower(alt) === "orphaned"))
+  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
 }
 
 // The roots a positive `level:` or `id:` term can match under: every row id
@@ -834,6 +1039,8 @@ function rootsFor(key: string, alts: readonly string[], negate: boolean): Readon
   if (negate) return undefined
   const levels = ["project", "global", "defaults", "preset"]
   if (key === "level") return new Set(alts.map(lower))
+  // A row's subtree is at the row's own level.
+  if (key === "in") return new Set(alts.flatMap((alt) => levels.filter((level) => level === lower(alt).split(":")[1])))
   if (key !== "id") return undefined
   const matched = alts.map((alt) => {
     const parts = lower(alt).split(":")
@@ -849,6 +1056,7 @@ function excludesSections(key: string, alts: readonly string[], negate: boolean)
   if (key === "has" && alts.length === 1 && lower(alts[0] ?? "") === "sections") return true
   if (key === "can" && alts.every((alt) => lower(alt) === "split" || lower(alt) === "remove")) return true
   if (key === "kind" && !alts.some((alt) => lower(alt) === "section")) return true
+  if (key === "type" && !alts.some((alt) => lower(alt) === "section")) return true
   return false
 }
 
@@ -866,17 +1074,35 @@ function rankFor(key: string, term: string): number {
     key === "active" ||
     key === "inactive" ||
     key === "unsupported" ||
-    key === "pinned"
+    key === "pinned" ||
+    key === "is"
   )
     return 1
   const textKeys = ["identical", "tokens", "delta", "text", "upstream"]
   const index = textKeys.indexOf(key)
   if (index !== -1) return 2 + index
-  if (!structuralKeys.has(key)) throw new Error(`unknown filter key in "${term}"`)
+  if (!structuralKeys.has(key)) throw new Error(unknownKeyMessage(key, term))
   return 0
 }
 
+// The keys agents reach for that do not exist, and what says it instead.
+const keyHints: Record<string, string> = {
+  member: "a team member is an agent: use agent:<member>, with team:<team>",
+  preset: "use type:preset name:<preset>",
+  entry: "use type:entry name:<name>",
+  perm: "use type:rule, with tool:<tool> and name:<rule>",
+  rule: "use type:rule, with tool:<tool> and name:<rule>",
+}
+
+function unknownKeyMessage(key: string, term: string): string {
+  const hint = keyHints[key] ?? ((rowTypes as readonly string[]).includes(key) ? `use type:${key} name:<name>` : undefined)
+  return `unknown filter key "${key}" in "${term}"; ${hint ?? "keys: agent, team, level, type, name, in, state, is, text, tool and more (skill instructions-tools)"}`
+}
+
 const structuralKeys = new Set([
+  "type",
+  "name",
+  "in",
   "kind",
   "item",
   "tool",
@@ -1105,22 +1331,43 @@ function numberMatches(value: number, alt: string, term: string): boolean {
 
 function testFor(key: string, alts: readonly string[], term: string, state: QueryState): (candidate: Candidate) => boolean {
   switch (key) {
+    case "type": {
+      const allowed = oneOf(key, alts.map((alt) => (lower(alt) === "perm" ? "rule" : alt)), rowTypes, term)
+      return (candidate) => allowed.some((alt) => typeOf(state, candidate) === lower(alt))
+    }
+    // The older structural keys keep their values; a type value works there too.
     case "kind": {
-      const allowed = oneOf(key, alts, ["root", "group", "agent", "team", "item", "section"], term)
-      return (candidate) => allowed.some((alt) => candidate.kind === lower(alt))
+      const kinds = ["root", "group", "agent", "team", "item", "section"]
+      const allowed = oneOf(key, alts, [...new Set([...kinds, ...rowTypes])], term)
+      return (candidate) => allowed.some((alt) => (kinds.includes(lower(alt)) ? candidate.kind === lower(alt) : typeOf(state, candidate) === lower(alt)))
     }
     case "item": {
-      const allowed = oneOf(key, alts, ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "modelsetting", "perm", "param", "setting", "compaction"], term)
+      const kinds = ["tool", "base", "skill", "system", "mcp", "model", "modeldefault", "modelsetting", "perm", "param", "setting", "compaction"]
+      const named = alts.find((alt) => alt.includes(":"))
+      if (named !== undefined) {
+        const [type, ...name] = named.split(":")
+        throw new Error(`bad item value in "${term}": item takes a type; for one row use type:${type === "perm" ? "rule" : type} name:${name.at(-1)}`)
+      }
+      const allowed = oneOf(key, alts, kinds, term)
       return (candidate) => allowed.some((alt) => itemKindOf(state, candidate) === lower(alt))
     }
+    case "name": {
+      return (candidate) => alts.some((alt) => namesOf(candidate).some((name) => matches(name, alt)))
+    }
+    case "in": {
+      return (candidate) => alts.some((alt) => candidate.ancestors?.some((ancestor) => lower(ancestor.id) === lower(alt)) === true)
+    }
+    case "is": {
+      const allowed = oneOf(key, alts, namedFinds, term)
+      return (candidate) => allowed.some((alt) => isOf(state, candidate, lower(alt)))
+    }
+    // A tool's own rows: the tool row, its parameters, its rules and how it is offered.
     case "tool": {
       return (candidate) => {
         const address = candidate.address
         if (address === undefined) return false
-        const item = lookupItem(state, address.item, address.agent)
-        if (item === undefined) return false
-        if (item.kind !== "perm" || item.permTool === undefined) return false
-        return alts.some((alt) => lower(item.permTool as string) === lower(alt))
+        const tool = toolOfItem(address.item)
+        return tool !== undefined && alts.some((alt) => matches(tool, alt))
       }
     }
     case "group": {
@@ -1167,13 +1414,14 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
         return allowed.some((alt) => catalogue === lower(alt))
       }
     }
+    // The agent's name exactly, ignoring case; * or % stand for any text. `_` is the shared row.
     case "agent": {
       return (candidate) => {
-        const agent = agentOf(candidate)
+        const agent = agentOf(candidate) ?? ownerAgentOf(state, candidate)
         return alts.some((alt) => {
           if (alt === "_") return agent === null
           if (agent === null) return false
-          return lower(agent).includes(lower(alt))
+          return matches(agent, alt)
         })
       }
     }
