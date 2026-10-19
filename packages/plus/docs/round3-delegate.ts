@@ -266,6 +266,8 @@ export function hostBridge(options: HostBridgeOptions): HostBridge {
         return dataOf(body, "POST", requestPath) as SessionInbox.Compaction
       }),
     // Model hooks stay in the host process; the bridge carries session calls only.
+    // The delegate only drives sessions it creates, so it never lists them.
+    list: () => Effect.die("the round3 delegate does not list sessions"),
     hook: () => Effect.succeed({ dispose: Effect.void }),
   }
 

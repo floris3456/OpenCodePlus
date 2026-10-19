@@ -53,7 +53,8 @@ process.exitCode = results.find((code) => code !== 0) ?? 0
 
 async function run(argv: string[]) {
   const child = Bun.spawn({
-    cmd: [process.execPath, "test", "--only-failures", ...argv],
+    // The 30s default timeout matches cli and tui; npm.test's Git package installs ran past Bun's 5s default on Windows.
+    cmd: [process.execPath, "test", "--only-failures", "--timeout=30000", ...argv],
     env: environment,
     stdin: "inherit",
     stdout: "inherit",

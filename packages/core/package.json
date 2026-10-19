@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "2.0.26",
+  "version": "2.0.32",
   "name": "@opencode/core",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
     "update-models-snapshot": "bun run script/update-models-snapshot.ts",
     "test": "bun run script/test.ts",
     "test:timings": "bun run script/test.ts --parallel --timings=test/timings.json --update-timings",
-    "typecheck": "tsgo -b tsconfig.json tsconfig.tests.json"
+    "typecheck": "tsc -b tsconfig.json tsconfig.tests.json"
   },
   "exports": {
     "./*": "./src/*.ts"
@@ -119,7 +119,7 @@
     "@parcel/watcher": "2.5.1",
     "@silvia-odwyer/photon-node": "0.3.4",
     "@standard-schema/spec": "catalog:",
-    "bun-pty": "0.4.9",
+    "bun-pty": "0.4.11",
     "diff": "catalog:",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",

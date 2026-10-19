@@ -10,11 +10,11 @@ import { Bus } from "./bus.js"
 import { Environment } from "./environment/index.js"
 import { Instructions } from "./instructions/index.js"
 import { Location } from "./location.js"
-import { AbsolutePath } from "./schema.js"
 import { State } from "./state.js"
 
 export class File extends Schema.Class<File>("InstructionDiscovery.File")({
-  path: AbsolutePath,
+  // An absolute file path, or the URL of a configured remote instruction.
+  path: Schema.String,
   content: Schema.String,
 }) {}
 
@@ -47,7 +47,7 @@ export const Event = {
 }
 
 export type Data = {
-  files: Map<AbsolutePath, Types.DeepMutable<File>>
+  files: Map<string, Types.DeepMutable<File>>
   // Explicitly removed paths keep a removal notice until the file returns. Rebuilds
   // replay transforms, so a plugin `remove` re-records its tombstone every rebuild
   // while a re-added file clears it; silent disk disappearances stay silent.
@@ -99,14 +99,14 @@ export const layer = (options?: Options) =>
             editor.removed.delete(file.path)
           },
           update: (path, update) => {
-            const current = editor.files.get(AbsolutePath.make(path))
+            const current = editor.files.get(path)
             if (!current) return
             update(current)
-            current.path = AbsolutePath.make(path)
+            current.path = path
           },
           remove: (path) => {
-            if (!editor.files.delete(AbsolutePath.make(path))) return
-            editor.removed.add(AbsolutePath.make(path))
+            if (!editor.files.delete(path)) return
+            editor.removed.add(path)
           },
           unavailable: () => {
             editor.available = false

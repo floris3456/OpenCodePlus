@@ -1,14 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@opencode/tui",
-  "version": "2.0.26",
+  "version": "2.0.32",
   "private": true,
   "type": "module",
   "license": "MIT",
   "scripts": {
     "test": "bun test --parallel --timings=test/timings.json --timeout 30000 --only-failures",
     "test:timings": "bun test --parallel --timings=test/timings.json --update-timings --timeout 30000 --only-failures",
-    "typecheck": "tsgo -b"
+    "typecheck": "tsc -b"
   },
   "exports": {
     ".": "./src/index.tsx",
@@ -78,6 +78,6 @@
   "devDependencies": {
     "@tsconfig/bun": "catalog:",
     "@types/bun": "catalog:",
-    "@typescript/native-preview": "catalog:"
+    "@typescript/native": "catalog:"
   }
 }

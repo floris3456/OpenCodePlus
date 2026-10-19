@@ -39,7 +39,6 @@ import { Snapshot } from "@opencode/schema/snapshot"
 import { Vcs } from "@opencode/schema/vcs"
 import { WebSearch } from "@opencode/schema/websearch"
 import { Workspace } from "@opencode/schema/workspace"
-import { SessionsCursor } from "@opencode/protocol/groups/session"
 import { Effect, Schema } from "effect"
 import { join } from "node:path"
 
@@ -89,7 +88,6 @@ const effectTypeReferences = [
   typeReference("AgentAttachment", "@opencode/schema/prompt", AgentAttachment),
   typeReference("AbsolutePath", "@opencode/schema/schema", AbsolutePath),
   typeReference("RelativePath", "@opencode/schema/schema", RelativePath),
-  typeReference("SessionsCursor", "@opencode/protocol/groups/session", SessionsCursor),
 ]
 
 export async function generate(clientRoot: string) {

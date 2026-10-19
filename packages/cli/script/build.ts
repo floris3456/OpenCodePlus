@@ -4,6 +4,7 @@ import { $ } from "bun"
 import { mkdir, rm } from "fs/promises"
 import path from "path"
 import { Script } from "@opencode/script"
+import { embed } from "@opencode/script/highlights"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import type { BunPlugin } from "bun"
 import pkg from "../package.json"
@@ -11,6 +12,7 @@ import { discoverPluginRuntimeSpecifiers, pluginRuntimeLoaderCode } from "@openc
 import { buildAppArchive } from "./app-assets"
 import { verifyArtifact, verifySimulationGraph } from "./verify-artifact"
 import { resolveOpencodePty } from "./opencode-pty"
+import { NativeArch } from "../../../script/native-arch"
 
 export const allTargets: {
   os: string
@@ -151,6 +153,7 @@ export async function build(options: BuildOptions = {}) {
   const skipInstall = options.skipInstall ?? process.argv.includes("--skip-install")
   const skipWebUi = options.skipWebUi ?? process.argv.includes("--skip-web-ui")
   const solidPlugin = createSolidTransformPlugin()
+  const highlights = Script.preview ? undefined : embed(process.env.OPENCODE_RELEASE_NOTES)
 
   const targets =
     requestedTarget !== undefined
@@ -279,6 +282,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       },
       define: {
         ...config.define,
+        ...(highlights ? { OPENCODE_RELEASE_HIGHLIGHTS: JSON.stringify(highlights) } : {}),
         OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "undefined",
         FFF_LIBC: item.os === "linux" ? `'${item.abi ?? "gnu"}'` : "undefined",
         ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
@@ -290,6 +294,10 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       process.exit(1)
     }
     verifySimulationGraph(simulationInputs)
+    await NativeArch.verify(
+      path.join(outdir, name, "bin", item.os === "win32" ? `${config.binary}.exe` : config.binary),
+      item.arch,
+    )
 
     await Bun.write(
       path.join(outdir, name, "package.json"),

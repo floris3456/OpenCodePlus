@@ -8,7 +8,7 @@ import type { ConfigDiscovery } from "./discovery.js"
 
 /**
  * What this Location watches for config changes. Only service-wide sources:
- * the global config directory, the global `~/.claude` and `~/.agents` roots,
+ * the system config directory, the global config directory, the global `~/.claude` and `~/.agents` roots,
  * and the explicit CLI file. Project sources (a project's `opencode.json`
  * files, `.opencode` directories, `.claude`/`.agents` directories) are read
  * at boot and re-read on demand (the next chat, or `/refresh`): with one
@@ -28,8 +28,12 @@ export function plan(
   ]
   const isGlobal = (candidate: string) =>
     globalRoots.some((root) => candidate === root || FSUtil.contains(root, candidate))
-  const directories = [...(sources.global ? [sources.global] : [])]
+  const directories = [
+    ...(sources.system?.present ? [sources.system.path] : []),
+    ...(sources.global ? [sources.global] : []),
+  ]
   const files = [
+    ...(sources.system ? [sources.system.path] : []),
     ...(sources.explicit ? [sources.explicit] : []),
     ...sources.claude.filter(isGlobal),
     ...sources.agents.filter(isGlobal),
@@ -44,7 +48,7 @@ export function plan(
       ...directories.map((path) => ({
         path,
         type: "directory" as const,
-        ignore: ["node_modules", ".git", "**/{node_modules,.git}/**"],
+        ignore: FSUtil.ignoreGlobs,
       })),
       ...Array.from(parents, ([parent, files]) => ({
         path: parent,

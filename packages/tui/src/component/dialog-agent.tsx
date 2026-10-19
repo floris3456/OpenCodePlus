@@ -60,6 +60,8 @@ export function DialogAgent(props: DialogAgentProps = {}) {
   return (
     <DialogSelect
       title={props.title ?? "Select agent or team"}
+      searchInTitle
+      titlePlaceholder="Search agents"
       current={local.agent.current()?.id}
       options={options()}
       onSelect={(option) => {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "2.0.26",
+  "version": "2.0.32",
   "name": "@opencode/sdk",
   "type": "module",
   "license": "MIT",
@@ -25,7 +25,7 @@
     "build": "bun run script/build.ts",
     "test": "bun test --parallel --timings=test/timings.json --timeout 5000",
     "test:timings": "bun test --parallel --timings=test/timings.json --update-timings --timeout 5000",
-    "typecheck": "tsgo -b",
+    "typecheck": "tsc -b",
     "verify:package": "bun run script/verify-package.ts"
   },
   "dependencies": {
@@ -43,6 +43,6 @@
     "@opencode/protocol": "workspace:*",
     "@tsconfig/bun": "catalog:",
     "@types/bun": "catalog:",
-    "@typescript/native-preview": "catalog:"
+    "@typescript/native": "catalog:"
   }
 }

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import type { ConfigDiscovery } from "@opencode/core/config/discovery"
 import { ConfigWatch } from "@opencode/core/config/watch"
 import { AbsolutePath } from "@opencode/core/schema"
+import { FSUtil } from "@opencode/util/fs-util"
 
 const project = path.resolve("watch-plan-project")
 const root = AbsolutePath.make(path.join(project, ".opencode"))
@@ -23,7 +24,27 @@ describe("ConfigWatch.plan", () => {
     // .claude/.agents directories load at boot and on demand, but are never
     // watched. Every loaded folder shares the same global targets instead.
     expect(Array.from(ConfigWatch.plan(sources, scope).values())).toEqual([
-      { path: globalConfig, type: "directory", ignore: ["node_modules", ".git", "**/{node_modules,.git}/**"] },
+      { path: globalConfig, type: "directory", ignore: FSUtil.ignoreGlobs },
+      { path: home, type: "entries", names: [".agents", ".claude"] },
+    ])
+  })
+
+  test("watches the system config directory, and its parent so it can appear or go", () => {
+    const system = AbsolutePath.make(path.resolve("watch-plan-system", "opencode"))
+    const parent = { path: path.dirname(system), type: "entries" as const, names: ["opencode"] }
+    expect(
+      Array.from(ConfigWatch.plan({ ...sources, system: { path: system, present: false } }, scope).values()),
+    ).toEqual([
+      { path: globalConfig, type: "directory", ignore: FSUtil.ignoreGlobs },
+      parent,
+      { path: home, type: "entries", names: [".agents", ".claude"] },
+    ])
+    expect(
+      Array.from(ConfigWatch.plan({ ...sources, system: { path: system, present: true } }, scope).values()),
+    ).toEqual([
+      { path: system, type: "directory", ignore: FSUtil.ignoreGlobs },
+      { path: globalConfig, type: "directory", ignore: FSUtil.ignoreGlobs },
+      parent,
       { path: home, type: "entries", names: [".agents", ".claude"] },
     ])
   })

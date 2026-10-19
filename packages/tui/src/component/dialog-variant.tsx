@@ -2,6 +2,7 @@ import { createMemo, onCleanup } from "solid-js"
 import { useLocal } from "../context/local"
 import { DialogSelect } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
+import { useNewDesigns } from "../config"
 
 export function DialogVariant() {
   const local = useLocal()
@@ -17,6 +18,7 @@ export function DialogVariant() {
     local.model.pick()
   }
   onCleanup(pick)
+  const newDesigns = useNewDesigns()
 
   const options = createMemo(() => [
     {
@@ -46,6 +48,7 @@ export function DialogVariant() {
     <DialogSelect<string>
       options={options()}
       title={"Select variant"}
+      renderFilter={!newDesigns()}
       current={local.model.variant.current() ?? "default"}
       flat={true}
     />

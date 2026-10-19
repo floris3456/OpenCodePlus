@@ -2,7 +2,7 @@
 import { InputRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
-import { onMount } from "solid-js"
+import { onMount, type JSX } from "solid-js"
 import { ConfigProvider, resolve, type Info, type Interface } from "../../../src/config"
 import { CommandPaletteDialog } from "../../../src/component/command-palette"
 import { DialogConfig, registerSetting } from "../../../src/component/dialog-config"
@@ -27,7 +27,7 @@ function config() {
   return service
 }
 
-async function renderDialog(component: () => unknown) {
+async function renderDialog(component: () => JSX.Element) {
   function Fixture() {
     const dialog = useDialog()
     onMount(() => dialog.replace(component))

@@ -18,6 +18,9 @@ export const Info = Schema.Struct({
   // Present when remote access is on. The route is generated, never user-set: the secret subdomain the service is
   // served on.
   remote: Schema.optional(Schema.Struct({ route: Schema.String })),
+  // Set once the user has accepted exposing the service to the internet, or had remote access on before, so turning
+  // remote access off and on again does not ask a second time.
+  remoteAccepted: Schema.optional(Schema.Literal(true)),
   hostname: Schema.optional(Schema.String),
   port: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65_535))),
   password: Schema.optional(Schema.String),
@@ -42,11 +45,19 @@ export function filename(channel?: string) {
   return `service-${selected.replace(/[^a-zA-Z0-9._-]/g, "-")}.json`
 }
 
-export function defaultPort(channel?: string) {
-  const selected = channel ?? (Product.namespace === "opencodeplus" ? Product.channel : OPENCODE_CHANNEL)
-  if (selected === "latest" || selected === "dev" || selected === "beta" || selected === "next" || selected === "plus") return 0xc0de
-  if (selected === "local") return 0xc0df
-  return 10_000 + (Number.parseInt(Hash.fast(selected).slice(0, 8), 16) % 50_000)
+export function defaultPort(channel?: string, platform = process.platform) {
+  const port = channelPort(channel ?? (Product.namespace === "opencodeplus" ? Product.channel : OPENCODE_CHANNEL))
+  // Windows hands out 0xC000-0xFFFF for outgoing connections, and Hyper-V and WinNAT reserve blocks of that range at
+  // boot, so a port there can fail as in use while nothing listens on it. Moving into the 0xB000 block keeps the low
+  // 12 bits: 0xC0DE becomes 0xB0DE, which is 0xC0DE - 4096, a nod to the v1 port.
+  if (platform === "win32" && port >= 0xc000) return 0xb000 | (port & 0xfff)
+  return port
+}
+
+function channelPort(channel: string) {
+  if (channel === "latest" || channel === "dev" || channel === "beta" || channel === "next" || channel === "plus") return 0xc0de
+  if (channel === "local") return 0xc0df
+  return 10_000 + (Number.parseInt(Hash.fast(channel).slice(0, 8), 16) % 50_000)
 }
 
 export function legacyFilename(channel?: string) {
@@ -182,6 +193,17 @@ export const password = Effect.fn("cli.service-config.password")(function* (valu
   return next
 })
 
+export const acceptRemote = Effect.fn("cli.service-config.accept-remote")(function* () {
+  yield* write({ ...(yield* read()), remoteAccepted: true })
+})
+
+// Disabling forgets the address, so enabling again issues a new unguessable one. Having had it on counts as
+// accepting remote access.
+const disableRemote = Effect.fnUntraced(function* () {
+  const { remote, ...next } = yield* read()
+  yield* write(remote === undefined ? next : { ...next, remoteAccepted: true })
+})
+
 // Turns remote access on and returns its route, created once and kept so the remote URL survives restarts.
 export const remote = Effect.fn("cli.service-config.remote")(function* () {
   const existing = yield* read()
@@ -247,9 +269,7 @@ export const set = Effect.fn("cli.service-config.set")(function* (key: string, v
         yield* remote()
         return
       }
-      // Disabling forgets the address, so enabling again issues a new unguessable one.
-      const { remote: _remote, ...next } = yield* read()
-      yield* write(next)
+      yield* disableRemote()
       return
     }
     case "hostname": {
@@ -303,8 +323,7 @@ export const unset = Effect.fn("cli.service-config.unset")(function* (key: strin
     }
     case "remote": {
       yield* Service.stop(yield* options())
-      const { remote: _remote, ...next } = yield* read()
-      yield* write(next)
+      yield* disableRemote()
       return
     }
     case "hostname": {

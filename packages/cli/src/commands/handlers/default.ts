@@ -13,7 +13,7 @@ import { PlusUpdate } from "../../services/plus-update"
 import { Product } from "@opencode/util/product"
 import { UpdatePreflight } from "../../services/update-preflight"
 import { Npm } from "@opencode/util/npm"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../../version"
+import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_HIGHLIGHTS, OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../../version"
 import { Env } from "../../env"
 import { Service } from "@opencode/client/effect/service"
 import { OpenCode } from "@opencode/client/promise"
@@ -108,6 +108,7 @@ export default Runtime.handler(Commands, (input) =>
         version: OPENCODE_VERSION,
         channel: process.env.OPENCODE_TUI_CHANNEL ?? OPENCODE_CHANNEL,
         ...(OPENCODE_UPSTREAM === undefined ? {} : { upstream: OPENCODE_UPSTREAM }),
+        highlights: OPENCODE_HIGHLIGHTS,
       },
       server: {
         endpoint: server.endpoint,

@@ -9,6 +9,7 @@ import { oneCellSpinnerStory } from "./one-cell-spinner"
 import { monitorStory, monitorPagesStory, monitorPayloadsStory } from "./monitor"
 import { linkClicksStory } from "./link-clicks"
 import { plusPanelsStory } from "./plus-panels"
+import { highlightsStory } from "./highlights"
 
 /**
  * A story is a full-screen, fixture-driven simulation of a real production component. Stories own
@@ -30,6 +31,7 @@ const stories: Story[] = [
   monitorPayloadsStory,
   linkClicksStory,
   plusPanelsStory,
+  highlightsStory,
 ]
 
 function Commands(props: { context: Plugin.Context }) {

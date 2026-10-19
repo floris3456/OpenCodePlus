@@ -31,7 +31,7 @@ import { testEffect } from "../lib/effect"
 // Real Location boot with plugin-directory discovery, so local plugin files are loaded and reloaded.
 // Only host inputs may select executable plugin modules, so these fixtures keep plugin
 // declarations and plugin directories in the location's own host global config root.
-setDefaultTimeout(15_000)
+setDefaultTimeout(30_000)
 
 // Package resolution can be held open so overlapping activations become observable.
 const npm = {

@@ -181,6 +181,7 @@ function permissionDomain(): PermissionDomain {
     get: die("unused permission.get"),
     reply: die("unused permission.reply"),
     hook: die("unused permission.hook"),
+    assert: die("unused permission.assert"),
   }
 }
 
@@ -831,6 +832,7 @@ function sessionDomain(overrides: Partial<SessionDomain> = {}): SessionDomain {
   return {
     create: overrides.create ?? die("unused session.create"),
     get: overrides.get ?? die("unused session.get"),
+    list: overrides.list ?? die("unused session.list"),
     active: overrides.active ?? die("unused session.active"),
     remove: overrides.remove ?? die("unused session.remove"),
     switchAgent: overrides.switchAgent ?? die("unused session.switchAgent"),
@@ -873,6 +875,7 @@ export function context(overrides: Overrides = {}): Context {
     provider: overrides.provider ?? providerDomain(),
     command: overrides.command ?? commandDomain(),
     config: overrides.config ?? configDomain(),
+    credential: overrides.credential ?? { activate: die("unused credential.activate") },
     event: overrides.event ?? eventDomain(),
     experimental: overrides.experimental ?? {
       terminal: { read: die("unused experimental.terminal.read") },

@@ -2,6 +2,7 @@ export * as ConfigVariable from "./variable.js"
 
 import path from "path"
 import { Effect } from "effect"
+import { type ParseError, parse } from "jsonc-parser"
 import { InvalidError } from "../v1/config/error.js"
 
 type ParseSource =
@@ -45,12 +46,17 @@ type SubstituteInput = ParseSource & {
 
 /** Apply {env:VAR} and {file:path} substitutions to config text. */
 export const substitute = Effect.fn("ConfigVariable.substitute")(function* (input: SubstituteInput) {
-  const text = input.text.replace(
-    /\{env:([^}]+)\}/g,
-    (_, varName: string) => (input.env?.[varName] ?? process.env[varName]) || "",
-  )
-  if (!text.includes("{file:")) return text
-  return yield* substituteFiles(input, text)
+  const env = (escape: boolean) =>
+    input.text.replace(/\{env:([^}]+)\}/g, (_, name: string) => {
+      const value = (input.env?.[name] ?? process.env[name]) || ""
+      return escape ? JSON.stringify(value).slice(1, -1) : value
+    })
+  // Escape only when raw values break the JSON (e.g. Windows paths), so configs that parse today keep their meaning.
+  const raw = yield* substituteFiles(input, env(false))
+  const errors: ParseError[] = []
+  if (input.text.includes("{env:")) parse(raw, errors, { allowTrailingComma: true })
+  if (!errors.length) return raw
+  return yield* substituteFiles(input, env(true))
 })
 
 /**
@@ -85,7 +91,15 @@ const substituteFiles = Effect.fnUntraced(function* (input: SubstituteInput, tex
     const resolvedPath = path.isAbsolute(expandedPath) ? expandedPath : path.resolve(configDir, expandedPath)
     const fileContent = yield* input.reader.read(resolvedPath).pipe(
       Effect.catch((error) => {
-        if (input.missing === "empty") return Effect.succeed("")
+        // Like a missing {env:VAR}, a missing or unreadable local file substitutes empty so one stale
+        // secret reference cannot take down every Location that loads this config.
+        if (input.missing === "empty")
+          return Effect.logWarning("config file reference is missing or unreadable", {
+            source: configSource,
+            reference: token,
+            path: resolvedPath,
+            cause: error.cause,
+          }).pipe(Effect.as(""))
 
         const message = `bad file reference: "${token}"`
         return Effect.fail(
