@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   AIError,
+  CacheHint,
   CompactionPart,
   CompactionCheckpointResponse,
   HttpContext,
@@ -2823,24 +2824,38 @@ describe("SessionRunnerLLM", () => {
 
         const normal = s.requests[1]
         const compact = s.requests[2]
-        expect(compact.messages.slice(0, normal.messages.length)).toEqual([...normal.messages])
+        const shared = compact.messages.slice(0, normal.messages.length)
+        const withoutMarks = (messages: readonly Message[]) =>
+          messages.map((message) => ({ ...message, content: message.content.map((part) => ({ ...part, cache: undefined })) }))
+        expect(withoutMarks(shared)).toEqual(withoutMarks(normal.messages))
+        // The summary request marks only where the shared prefix ends, so it reads what the last step wrote.
+        expect(shared.slice(0, -1)).toEqual(normal.messages.slice(0, -1))
+        const end = shared.at(-1)?.content.at(-1)
+        if (route === AnthropicMessages.route)
+          expect(end && "cache" in end ? end.cache : undefined).toEqual(new CacheHint({ type: "ephemeral" }))
         expect(compact.messages.at(-1)).toMatchObject({
           role: "user",
           content: [{ type: "text", text: SessionCompaction.buildPrompt(false) }],
         })
-        expect(userTexts(compact)).not.toContain("Retained recent request")
+        // The summary request extends the cached history, retained turns included; they are kept as recent context too.
+        if (reason === "auto") expect(userTexts(compact).slice(0, -1)).toEqual(["Review these changes", "Retained recent request"])
         for (const field of [
           "model",
-          "system",
           "tools",
           "generation",
           "providerOptions",
           "toolChoice",
-          "cache",
           "promptCacheKey",
           "http",
         ] as const)
           expect(compact[field]).toEqual(normal[field])
+        expect(compact.cache).toEqual({ tools: true, system: true, messages: { tail: 2 } })
+        // The system prompt is the same text; on Anthropic the summary request marks its first and last part.
+        const unmarked = (parts: readonly SystemPart[]) => parts.map((part) => ({ ...part, cache: undefined }))
+        expect(unmarked(compact.system)).toEqual(unmarked(normal.system))
+        expect(compact.system.flatMap((part, index) => (part.cache ? [index] : []))).toEqual(
+          route === AnthropicMessages.route ? [0, compact.system.length - 1] : [],
+        )
         expect(compact.toolChoice).toBeUndefined()
         expect(compact.system.map((part) => part.text)).toContain("Review the project carefully.")
         expect(requestAgents[2]).toBe(agentID)
@@ -2854,11 +2869,18 @@ describe("SessionRunnerLLM", () => {
         const before = yield* compileRequest(LLMRequest.update(normal, { cache: "none" }))
         const after = yield* compileRequest(LLMRequest.update(compact, { cache: "none" }))
         const key = route === OpenAIResponses.route ? "input" : "messages"
-        const input = Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))
+        // A breakpoint the summary request puts on a part stays on the wire even with cache "none".
+        const unbroken = (value: unknown): unknown =>
+          Array.isArray(value)
+            ? value.map(unbroken)
+            : typeof value === "object" && value !== null
+              ? Object.fromEntries(Object.entries(value).filter(([name]) => name !== "cache_control").map(([name, item]) => [name, unbroken(item)]))
+              : value
+        const input = (value: unknown) => Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(unbroken(value))
         const prefix = input(before.body[key])
         expect(input(after.body[key]).slice(0, prefix.length)).toEqual([...prefix])
-        expect(after.body).toMatchObject(
-          Object.fromEntries(Object.entries(before.body).filter(([name]) => name !== key)),
+        expect(unbroken(after.body)).toMatchObject(
+          Object.fromEntries(Object.entries(unbroken(before.body) as Record<string, unknown>).filter(([name]) => name !== key)),
         )
       })
     }

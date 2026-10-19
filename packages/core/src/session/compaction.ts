@@ -659,13 +659,14 @@ export const layer = Layer.effect(
      *   small:  [S1 + "E9 E10"][E11]              →  [S2 + "E9 E10 E11"] when the combined tail fits
      *   again:  [S1 + "E9 E10"][E11 … E18][E19]    →  [S2 + "E19"]      S2 covers S1, E9 E10, and E11–E18
      *
-     * The model is sent the older part, then the summary prompt:
+     * The model is sent the whole history, then the summary prompt, so the request extends the prefix
+     * the chat's last request cached instead of rewriting a shorter one:
      *
-     *   [system][S1 + "E9 E10"][E11 … E18][prompt]    plus one nudge if the reply skips the template
+     *   [system][S1 + "E9 E10"][E11 … E18][E19][prompt]    plus one nudge if the reply skips the template
      *
      * On the chat's own model the compaction system text, when one exists, leads the final user message:
      *
-     *   [chat system][S1 + "E9 E10"][E11 … E18][compaction system + prompt]
+     *   [chat system][S1 + "E9 E10"][E11 … E19][compaction system + prompt]
      *
      * Later requests open with the checkpoint as one user message:
      *
