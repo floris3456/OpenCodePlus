@@ -50,6 +50,11 @@ export interface QueryOptions {
   readonly sort?: Sort
   readonly limit?: number
   readonly offset?: number
+  /**
+   * Leave out a Description row (the tree's alias of its item's whole text)
+   * when its item row matched too: the two carry the same text and state.
+   */
+  readonly withoutAliases?: boolean
 }
 
 export interface QueryRow {
@@ -73,7 +78,9 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   const state = queryState(active)
   const parsed = parseWhere(options?.where ?? "", state)
   const candidates = collectCandidates(state, parsed)
-  const matched = candidates.filter((candidate) => parsed.filters.every((filter) => filter.negate !== filter.test(candidate)))
+  const found = candidates.filter((candidate) => parsed.filters.every((filter) => filter.negate !== filter.test(candidate)))
+  const ids = options?.withoutAliases === true ? new Set(found.map((candidate) => candidate.id)) : undefined
+  const matched = ids === undefined ? found : found.filter((candidate) => !isDescriptionAlias(candidate) || !ids.has(candidate.id.slice(0, -":description".length)))
   const sorted = sortCandidates(state, matched, parseSort(options?.sort) ?? parsed.sort)
   const total = sorted.length
   const offset = options?.offset ?? 0
@@ -82,6 +89,11 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
   if (!Number.isInteger(limit) || limit < 0) throw new Error(`bad query limit "${limit}"`)
   const fields = options?.fields ?? (["id", "badges", "source", "tokens"] as const satisfies readonly Field[])
   return { rows: sorted.slice(offset, offset + limit).map((candidate) => project(state, candidate, fields)), total }
+}
+
+// tree.ts descriptionRow: a section row at its item's whole address.
+function isDescriptionAlias(candidate: Candidate): boolean {
+  return candidate.kind === "section" && candidate.address?.section === null && candidate.id.endsWith(":description")
 }
 
 interface QueryState {

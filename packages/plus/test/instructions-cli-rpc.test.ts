@@ -146,7 +146,7 @@ test("run returns the same result as the tool implementation for a read op", asy
 test("show by id matches the tool operation", async () => {
   const fixture = await activatedFixture()
   try {
-    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082 })) as {
+    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082, format: "objects" })) as {
       rows?: Array<{ id: string }>
     }
     const id = listed.rows?.find((row) => row.id.includes("tool:reader"))?.id
@@ -162,7 +162,7 @@ test("show by id matches the tool operation", async () => {
 test("a write through the RPC records the actor as cli", async () => {
   const fixture = await activatedFixture()
   try {
-    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082 })) as {
+    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082, format: "objects" })) as {
       rows?: Array<{ id: string }>
     }
     const id = listed.rows?.find((row) => row.id.includes("tool:reader"))?.id

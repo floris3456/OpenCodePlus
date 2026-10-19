@@ -229,7 +229,7 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
   expect(listTool).toBeDefined()
 
   const listOutput = await Effect.runPromise(
-    listTool!.execute({ where: "server:search" }, toolContext()),
+    listTool!.execute({ where: "server:search", format: "objects" }, toolContext()),
   )
 
   const output = listOutput.output as { rows: readonly { id: string }[]; total: number }

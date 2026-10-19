@@ -1148,6 +1148,33 @@ test("edit changes one section of a headed row and refuses rows without text", a
   expect((await snapshotOf(api)).revision).toBe(before.revision)
 })
 
+test("show lists the rows under an agent and sends assembled only when it differs from text", async () => {
+  const { tools, project } = await freshFixture()
+  const show = need(tools, "instructions_show")
+  await runOk(need(tools, "instructions_create"), { kind: "agent", id: "showprobe", scope: "project" })
+  await linkToBuild(project, "project", ["showprobe"])
+  const agent = (await runOk(show, { id: "agent:project:showprobe" })) as { kind: string; link?: string; columns: string; rows: string[] }
+  expect(agent.kind).toBe("agent")
+  expect(agent.link).toBe("build")
+  expect(agent.columns).toBe("id | badges | from")
+  expect(agent.rows.some((row) => row.startsWith("group:project:showprobe:tools | "))).toBe(true)
+  const group = (await runOk(show, { id: "group:project:showprobe:tools" })) as { kind: string; rows: string[] }
+  expect(group.kind).toBe("group")
+  expect(group.rows.length).toBeGreaterThan(0)
+  expect((await runFail(show, { id: "agent:project:showprobe", view: "mine" })).message).toContain("resolved lists the rows under it")
+
+  const id = "item:project:showprobe:tool:reader"
+  const plain = (await runOk(show, { id })) as { text: string; assembled?: string }
+  expect(plain.text).toBe("read things")
+  expect("assembled" in plain).toBe(false)
+  await runOk(need(tools, "instructions_set"), { id, text: "Read a file.\n\n## Gate\nGATE_CANARY.\n" })
+  await runOk(need(tools, "instructions_set"), { id: "section:project:showprobe:tool:reader:gate", state: "off" })
+  const gated = (await runOk(show, { id })) as { text: string; assembled?: string }
+  expect(gated.text).toContain("GATE_CANARY")
+  expect(gated.assembled).toBeDefined()
+  expect(gated.assembled).not.toContain("GATE_CANARY")
+})
+
 test("edit refuses a protected agent's row", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencodeplus", "project.json"), JSON.stringify({ version: 1, protectedAgents: ["alpha"] }))
@@ -1548,9 +1575,21 @@ test("registered list and log tools return persisted rows and history", async ()
   const { api, tools } = await freshFixture()
   const id = await readerRowId(api)
   await runOk(need(tools, "instructions_set"), { id, text: "listed text" })
-  const list = (await runOk(need(tools, "instructions_list"), {})) as { rows: readonly { id: string }[]; total: number }
+  // Lines by default: one "id | badges | from" string per row.
+  const list = (await runOk(need(tools, "instructions_list"), {})) as { rows: readonly string[]; total: number; columns: string }
   expect(list.total).toBeGreaterThan(0)
-  expect(list.rows.some((row) => row.id === id)).toBe(true)
+  expect(list.columns).toBe("id | badges | from")
+  expect(list.rows).toContain(`${id} | off modified | off by default`)
+  // objects carries the same rows and values, one object each.
+  const objects = (await runOk(need(tools, "instructions_list"), { format: "objects", fields: ["id", "badges", "from"] })) as {
+    rows: readonly { id: string; badges?: string; from?: string }[]
+    total: number
+  }
+  expect(objects.total).toBe(list.total)
+  expect(objects.rows.map((row) => [row.id, row.badges || "-", row.from ?? "-"].join(" | "))).toEqual([...list.rows])
+  const labelled = (await runOk(need(tools, "instructions_list"), { where: `id:${id}`, fields: ["label", "tokens"] })) as { rows: readonly string[]; columns: string }
+  expect(labelled.columns).toBe("id | label | tokens")
+  expect(labelled.rows[0]).toMatch(new RegExp(`^${id} \\| reader \\| \\d+$`))
   const logged = (await runOk(need(tools, "instructions_log"), {})) as {
     entries: readonly { op: string }[]
     total: number
@@ -1807,7 +1846,7 @@ test("create model, activate through set, list with item:model and active, then 
   }
   expect(recordView.record?.type).toBe("model")
   expect(recordView.record?.active).toBe(true)
-  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true" })) as { rows: readonly { id: string }[] }
+  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true", format: "objects" })) as { rows: readonly { id: string }[] }
   expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
   // The effective model refuses deletion: activate a replacement first. r
   // clears only this level's active flag, so the candidate then deletes.
@@ -2009,7 +2048,7 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const snapshot = await snapshotOf(api)
   const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "perm:shell:git-push")
   if (row === undefined) throw new Error("missing perm:shell:git-push row")
-  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell" })) as { rows: readonly { id: string }[]; total: number }
+  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell", format: "objects" })) as { rows: readonly { id: string }[]; total: number }
   expect(listed.total).toBeGreaterThan(0)
   expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
   const shown = (await runOk(need(tools, "instructions_show"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
@@ -2167,7 +2206,7 @@ test("instructions_list returns a team member's own policy rows even for a tool 
   if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
   // Every tool now lists its catalog rows too, so the member's rows span
   // more than the default page of 40.
-  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}`, limit: 1000 })) as {
+  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}`, limit: 1000, format: "objects" })) as {
     rows: readonly { id: string }[]
     total: number
   }
@@ -3507,14 +3546,14 @@ test("instructions_set {preset} relinks and unlinks the row's owner; protected a
     preset: { kind: "member", team: "basic", id: "orchestrator" },
     status: 'Linked "helper" to member:basic/orchestrator',
   })
-  // The row now inherits from the preset.
+  // The row now inherits from the preset. Its Description row repeats it, so
+  // list leaves that out.
   const rows = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader", fields: ["id", "from"] })) as {
-    rows: { id: string; from?: string }[]
+    rows: string[]
   }
-  expect(rows.rows).toEqual([
-    { id: "item:project:helper:tool:reader", from: "from preset Basic › orchestrator" },
-    { id: "item:project:helper:tool:reader:description", from: "from preset Basic › orchestrator" },
-  ])
+  expect(rows.rows).toEqual(["item:project:helper:tool:reader | from preset Basic › orchestrator"])
+  const alias = (await runOk(need(tools, "instructions_list"), { where: "id:item:project:helper:tool:reader:description", fields: ["from"] })) as { rows: string[] }
+  expect(alias.rows).toEqual(["item:project:helper:tool:reader:description | from preset Basic › orchestrator"])
   await runOk(set, { id: "agent:project:helper", preset: { kind: "member", team: "basic", id: "implementer" } })
   expect((await snapshotOf(api)).links).toEqual([
     expect.objectContaining({ agent: "helper", preset: { kind: "member", team: "basic", id: "implementer" } }),

@@ -79,7 +79,8 @@ import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
 import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
-import { buildTreeMemo, lazyPath } from "./instructions/tree.js"
+import { buildTreeMemo, findLazy, lazyPath, materialize } from "./instructions/tree.js"
+import { badgeLabels } from "./instructions/from-label.js"
 import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { isModelPrompt } from "./instructions/system-order.js"
@@ -239,6 +240,9 @@ const ListInput = Schema.Struct({
   sort: Schema.optionalKey(Sort),
   limit: Schema.optionalKey(Schema.Number),
   offset: Schema.optionalKey(Schema.Number),
+  format: Schema.optionalKey(Schema.Literals(["lines", "objects"])).annotate({
+    description: 'lines (default): rows are "id | badges | from" strings in the order of columns; objects: one object per row with the fields as keys',
+  }),
 })
 
 const ShowInput = Schema.Struct({
@@ -524,18 +528,28 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         Effect.gen(function* () {
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
+          const lines = input.format !== "objects"
+          const columns = lines ? ["id" as const, ...(input.fields ?? lineFields).filter((field) => field !== "id")] : undefined
           const queried = yield* Effect.try({
             try: () =>
               query(memo, {
                 ...(input.where === undefined ? {} : { where: input.where }),
-                ...(input.fields === undefined ? {} : { fields: [...input.fields] }),
+                ...(columns !== undefined ? { fields: columns } : input.fields === undefined ? {} : { fields: [...input.fields] }),
                 ...(input.sort === undefined ? {} : { sort: input.sort }),
                 limit: input.limit ?? 40,
                 ...(input.offset === undefined ? {} : { offset: input.offset }),
+                withoutAliases: true,
               }),
             catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
           })
-          return { output: queried }
+          if (columns === undefined) return { output: queried }
+          return {
+            output: {
+              total: queried.total,
+              columns: columns.join(" | "),
+              rows: queried.rows.map((row) => columns.map((field) => cell(row[field])).join(" | ")),
+            },
+          }
         }),
     })
     editor.add({
@@ -797,6 +811,28 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         }),
     })
   })
+}
+
+// list's default columns as lines: what agents asked for most.
+const lineFields = ["id", "badges", "from"] as const
+
+// One value of a line: "-" for nothing, arrays comma-joined, objects as JSON.
+function cell(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "-"
+  if (Array.isArray(value)) return value.length === 0 ? "-" : value.join(",")
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+// A child row of show's listing, in list's default columns. Groups add their
+// on count ("3/7 on") and settings their value.
+function childLine(node: TreeNode): string {
+  const badges = [
+    ...badgeLabels(node),
+    ...(node.badges.summary === undefined ? [] : [`${node.badges.summary} on`]),
+    ...(node.badges.value === undefined ? [] : [`= ${node.badges.value}`]),
+  ]
+  return [node.id, cell(badges.join(" ")), cell(node.badges.fromLabel)].join(" | ")
 }
 
 // Rows whose text set saves as an override; models and their fields,
@@ -1880,7 +1916,8 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
   return Effect.gen(function* () {
     const snapshot = yield* snapshotOrFail(api)
     const memo = memoFromSnapshot(snapshot)
-    const node = findRow(memo, id)
+    const treeMemo = buildTreeMemo(memo)
+    const node = findRow(memo, id, treeMemo)
     if (node === undefined) return yield* Effect.fail(unknownError(id, memo))
     // A model row's field row renders one effective value with its source.
     const modelField = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
@@ -1975,8 +2012,28 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         },
       }
     }
+    // An agent, group or root has no text of its own: resolved lists the rows
+    // directly under it, one line each, as list does.
+    if (node.address === undefined && view === "resolved") {
+      const children = findLazy(treeMemo, id)?.children().map(materialize) ?? []
+      return {
+        output: {
+          id,
+          view,
+          kind: node.kind,
+          label: node.label,
+          ...(node.badges.state === undefined ? {} : { state: node.badges.state }),
+          // The preset as set({ preset }) names it: "<id>" or "<team>/<member>".
+          ...(node.owner?.link === undefined
+            ? {}
+            : { link: node.owner.link.kind === "member" ? `${node.owner.link.team}/${node.owner.link.id}` : node.owner.link.id }),
+          columns: "id | badges | from",
+          rows: children.map(childLine),
+        },
+      }
+    }
     if (node.address === undefined)
-      return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view needs an addressed row (got ${id})` }))
+      return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: ${view} view needs a row with text (got ${id}); resolved lists the rows under it` }))
     const address = node.address
     const customizations = memo.records.filter(
       (record): record is CustomizationRecord => record.type === "customization",
@@ -2034,12 +2091,14 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     const chain = { upstream, records: customizations, splits, scopes, address }
     if (view === "resolved") {
       const resolved = resolve(chain)
+      const text = address.section === null ? (resolved.fullText ?? resolved.text) : resolved.text
       return {
         output: {
           id,
           view,
-          text: address.section === null ? (resolved.fullText ?? resolved.text) : resolved.text,
-          assembled: resolved.assembled,
+          text,
+          // What reaches the model, only when gates or markers make it differ.
+          ...(resolved.assembled === text ? {} : { assembled: resolved.assembled }),
           enabled: resolved.enabled,
           source: resolved.source,
           stateFrom: resolved.from,

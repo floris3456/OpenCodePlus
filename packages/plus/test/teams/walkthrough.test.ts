@@ -274,8 +274,8 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       const ctx = toolContext("ses_walkthrough_20b", "orchestrator")
       const where = "agent:implementer item:perm"
       const fields = ["id", "label", "badges", "source"]
-      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500 }, ctx)
-      call("instructions_list", { where, fields, limit: 500 }, listed)
+      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500, format: "objects" }, ctx)
+      call("instructions_list", { where, fields, limit: 500, format: "objects" }, listed)
 
       const ids = listed.rows.map((row) => row.id)
       // The shared team rows every agent has, and the member's own Delegate to rows.
@@ -454,7 +454,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(childRun.startsWith("w-")).toBe(true)
       expect(await dirExists(delegated.directory)).toBe(true)
 
-      const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "text", "badges", "source"] }
+      const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "text", "badges", "source"], format: "objects" }
       const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_list"), scopeQuery, parent)
       call("instructions_list", scopeQuery, scopeRows)
       // T5: a project team member never appears under Defaults. The run
