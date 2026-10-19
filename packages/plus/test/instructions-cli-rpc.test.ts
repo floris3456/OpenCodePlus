@@ -146,10 +146,10 @@ test("run returns the same result as the tool implementation for a read op", asy
 test("show by id matches the tool operation", async () => {
   const fixture = await activatedFixture()
   try {
-    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082, format: "objects" })) as {
-      rows?: Array<{ id: string }>
+    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082 })) as {
+      rows?: string[]
     }
-    const id = listed.rows?.find((row) => row.id.includes("tool:reader"))?.id
+    const id = listed.rows?.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
     if (id === undefined) throw new Error("fixture listed no rows")
     const direct = await directTool(fixture.ctx, "instructions_show", { id, view: "resolved" })
     const viaRpc = await invoke(fixture.handlers, "instructions.run", { op: "show", input: { id, view: "resolved" } })
@@ -162,10 +162,10 @@ test("show by id matches the tool operation", async () => {
 test("a write through the RPC records the actor as cli", async () => {
   const fixture = await activatedFixture()
   try {
-    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082, format: "objects" })) as {
-      rows?: Array<{ id: string }>
+    const listed = (await directTool(fixture.ctx, "instructions_list", { limit: 6082 })) as {
+      rows?: string[]
     }
-    const id = listed.rows?.find((row) => row.id.includes("tool:reader"))?.id
+    const id = listed.rows?.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
     if (id === undefined) throw new Error("fixture has no tool:reader row")
     const result = (await invoke(fixture.handlers, "instructions.run", {
       op: "set",

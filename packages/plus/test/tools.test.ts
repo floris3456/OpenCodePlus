@@ -436,6 +436,11 @@ test("C1 registered inherited model edits plant only local fields and reset reve
   expect(shown).toMatchObject({ field: "compactionStrategy", value: "Remote · global" })
 })
 
+// The ids of list rows, each the first cell of its "id | …" line.
+function rowIds(list: { readonly rows: readonly string[] }): string[] {
+  return list.rows.map((row) => row.split(" | ")[0] ?? "")
+}
+
 function need(tools: Map<string, Tool.Info & { readonly id: string }>, id: string): Tool.Info & { readonly id: string } {
   const tool = tools.get(id)
   if (tool === undefined) throw new Error(`missing tool ${id}`)
@@ -1580,13 +1585,7 @@ test("registered list and log tools return persisted rows and history", async ()
   expect(list.total).toBeGreaterThan(0)
   expect(list.columns).toBe("id | badges | from")
   expect(list.rows).toContain(`${id} | off modified | off by default`)
-  // objects carries the same rows and values, one object each.
-  const objects = (await runOk(need(tools, "instructions_list"), { format: "objects", fields: ["id", "badges", "from"] })) as {
-    rows: readonly { id: string; badges?: string; from?: string }[]
-    total: number
-  }
-  expect(objects.total).toBe(list.total)
-  expect(objects.rows.map((row) => [row.id, row.badges || "-", row.from ?? "-"].join(" | "))).toEqual([...list.rows])
+  expect(list.rows.every((row) => row.split(" | ").length === 3)).toBe(true)
   const labelled = (await runOk(need(tools, "instructions_list"), { where: `id:${id}`, fields: ["label", "tokens"] })) as { rows: readonly string[]; columns: string }
   expect(labelled.columns).toBe("id | label | tokens")
   expect(labelled.rows[0]).toMatch(new RegExp(`^${id} \\| reader \\| \\d+$`))
@@ -1846,8 +1845,8 @@ test("create model, activate through set, list with item:model and active, then 
   }
   expect(recordView.record?.type).toBe("model")
   expect(recordView.record?.active).toBe(true)
-  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true", format: "objects" })) as { rows: readonly { id: string }[] }
-  expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
+  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:model active:true" })) as { rows: readonly string[] }
+  expect(rowIds(listed)).toContain(row.id)
   // The effective model refuses deletion: activate a replacement first. r
   // clears only this level's active flag, so the candidate then deletes.
   const refused = await runFail(need(tools, "instructions_delete"), { id: row.id, confirm: true })
@@ -2048,9 +2047,9 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   const snapshot = await snapshotOf(api)
   const row = expandedTree(memoFromSnapshot(snapshot)).find((node) => node.address?.item === "perm:shell:git-push")
   if (row === undefined) throw new Error("missing perm:shell:git-push row")
-  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell", format: "objects" })) as { rows: readonly { id: string }[]; total: number }
+  const listed = (await runOk(need(tools, "instructions_list"), { where: "item:perm tool:shell" })) as { rows: readonly string[]; total: number }
   expect(listed.total).toBeGreaterThan(0)
-  expect(listed.rows.some((entry) => entry.id === row.id)).toBe(true)
+  expect(rowIds(listed)).toContain(row.id)
   const shown = (await runOk(need(tools, "instructions_show"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
   expect(shown.patterns).toEqual(["git push *"])
   expect(shown.keywords).toContain("git push")
@@ -2206,12 +2205,12 @@ test("instructions_list returns a team member's own policy rows even for a tool 
   if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
   // Every tool now lists its catalog rows too, so the member's rows span
   // more than the default page of 40.
-  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}`, limit: 1000, format: "objects" })) as {
-    rows: readonly { id: string }[]
+  const listed = (await runOk(need(tools, "instructions_list"), { where: `item:perm agent:${member}`, limit: 1000 })) as {
+    rows: readonly string[]
     total: number
   }
   expect(listed.total).toBeGreaterThan(0)
-  const ids = listed.rows.map((entry) => entry.id)
+  const ids = rowIds(listed)
   expect(ids).toContain(`item:project:crew/:${member}:perm:edit:run:w-0000000000000007`)
   // No row carries a role: the former role rows are shared rows a preset sets.
   expect(ids.filter((id) => id.endsWith(":team-role") || id.endsWith(":role-ceiling") || id.endsWith(":team-tavily"))).toEqual([])

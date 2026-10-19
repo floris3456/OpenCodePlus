@@ -86,8 +86,7 @@ test("the instruction content stays within its size budget", async () => {
 
 test("the skill content covers the tool surface", async () => {
   for (const phrase of [
-    "list({ where?, fields?, sort?, limit?, offset?, format? })",
-    'format: "objects"',
+    "list({ where?, fields?, sort?, limit?, offset? })",
     'show({ id, view? })',
     "edit({ id, oldString, newString, replaceAll? })",
     "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, prompt?, effort? })",

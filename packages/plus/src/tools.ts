@@ -126,7 +126,7 @@ const options = { namespace, codemode: true, permission: "instructions" } as con
 
 const ListDescription =
   "Find instruction rows: one \"id | badges | from\" line per row, filtered by key:value terms in where.\n" +
-  "Returns { total, columns, rows }. fields picks the columns after id (label, tokens, text, …); format objects returns one object per row. " +
+  "Returns { total, columns, rows }; fields picks the columns after id (label, tokens, text, …). " +
   "where example: \"agent:alpha item:tool state:off\" (grammar in skill instructions-tools). limit defaults to 40."
 
 const ShowDescription =
@@ -220,9 +220,6 @@ const ListInput = Schema.Struct({
   sort: Schema.optionalKey(Sort),
   limit: Schema.optionalKey(Schema.Number),
   offset: Schema.optionalKey(Schema.Number),
-  format: Schema.optionalKey(Schema.Literals(["lines", "objects"])).annotate({
-    description: 'lines (default): rows are "id | badges | from" strings in the order of columns; objects: one object per row with the fields as keys',
-  }),
 })
 
 const ShowInput = Schema.Struct({
@@ -508,13 +505,12 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         Effect.gen(function* () {
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const lines = input.format !== "objects"
-          const columns = lines ? ["id" as const, ...(input.fields ?? lineFields).filter((field) => field !== "id")] : undefined
+          const columns = ["id" as const, ...(input.fields ?? lineFields).filter((field) => field !== "id")]
           const queried = yield* Effect.try({
             try: () =>
               query(memo, {
                 ...(input.where === undefined ? {} : { where: input.where }),
-                ...(columns !== undefined ? { fields: columns } : input.fields === undefined ? {} : { fields: [...input.fields] }),
+                fields: columns,
                 ...(input.sort === undefined ? {} : { sort: input.sort }),
                 limit: input.limit ?? 40,
                 ...(input.offset === undefined ? {} : { offset: input.offset }),
@@ -522,7 +518,6 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
               }),
             catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
           })
-          if (columns === undefined) return { output: queried }
           return {
             output: {
               total: queried.total,
@@ -793,7 +788,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
   })
 }
 
-// list's default columns as lines: what agents asked for most.
+// list's default columns: what agents asked for most.
 const lineFields = ["id", "badges", "from"] as const
 
 // One value of a line: "-" for nothing, arrays comma-joined, objects as JSON.

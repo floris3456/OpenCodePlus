@@ -229,13 +229,13 @@ test("real-handler server filter: instructions.list where:\"server:search\" retu
   expect(listTool).toBeDefined()
 
   const listOutput = await Effect.runPromise(
-    listTool!.execute({ where: "server:search", format: "objects" }, toolContext()),
+    listTool!.execute({ where: "server:search" }, toolContext()),
   )
 
-  const output = listOutput.output as { rows: readonly { id: string }[]; total: number }
+  const output = listOutput.output as { rows: readonly string[]; total: number }
   console.log("ACTUAL_INSTRUCTIONS_LIST_OUTPUT:\n" + JSON.stringify(output, null, 2))
 
-  const ids = output.rows.map((r) => r.id)
+  const ids = output.rows.map((row) => row.split(" | ")[0] ?? "")
   expect(ids).toContain("item:defaults::mcp:search")
   expect(ids.some((id) => id.includes("tool:exa_code_search"))).toBe(true)
   expect(ids.some((id) => id.includes("tool:tavily_search"))).toBe(true)

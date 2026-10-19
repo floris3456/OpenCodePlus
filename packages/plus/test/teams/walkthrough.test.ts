@@ -235,8 +235,9 @@ async function agePastStartMs(dir: string): Promise<void> {
 }
 
 interface ListRows {
-  rows: Array<{ id: string; label?: string; text?: string; badges?: string; source?: string }>
+  rows: string[]
   total: number
+  columns: string
 }
 
 interface StatusEntry {
@@ -274,10 +275,11 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
       const ctx = toolContext("ses_walkthrough_20b", "orchestrator")
       const where = "agent:implementer item:perm"
       const fields = ["id", "label", "badges", "source"]
-      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500, format: "objects" }, ctx)
-      call("instructions_list", { where, fields, limit: 500, format: "objects" }, listed)
+      const listed = await runOk<ListRows>(need(fixture.tools, "instructions_list"), { where, fields, limit: 500 }, ctx)
+      call("instructions_list", { where, fields, limit: 500 }, listed)
 
-      const ids = listed.rows.map((row) => row.id)
+      expect(listed.columns).toBe("id | label | badges | source")
+      const ids = listed.rows.map((row) => row.split(" | ")[0] ?? "")
       // The shared team rows every agent has, and the member's own Delegate to rows.
       for (const item of [
         "perm:team_finish:requirements.clean",
@@ -454,17 +456,22 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(childRun.startsWith("w-")).toBe(true)
       expect(await dirExists(delegated.directory)).toBe(true)
 
-      const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "text", "badges", "source"], format: "objects" }
+      // text last, so a " | " inside it stays in its cell.
+      const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "badges", "source", "text"] }
       const scopeRows = await runOk<ListRows>(need(fixture.tools, "instructions_list"), scopeQuery, parent)
       call("instructions_list", scopeQuery, scopeRows)
+      const scopeCells = scopeRows.rows.map((row) => {
+        const cells = row.split(" | ")
+        return { id: cells[0] ?? "", text: cells.slice(4).join(" | ") }
+      })
       // T5: a project team member never appears under Defaults. The run
       // edit-scope row is produced once, at the member's own `<team>/:<member>`
       // path; the host's Defaults echo of the installed member is not a
       // Defaults agent row and must not list there.
-      expect(scopeRows.rows.map((row) => row.id)).toEqual([
+      expect(scopeCells.map((row) => row.id)).toEqual([
         `item:project:${TEAM}/:implementer:perm:edit:run:${childRun}`,
       ])
-      const scopeRow = scopeRows.rows.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
+      const scopeRow = scopeCells.find((row) => row.id.endsWith(`perm:edit:run:${childRun}`))
       expect(scopeRow).toBeDefined()
       expect(scopeRow?.text).toContain("docs/note.md")
       expect(scopeRow?.text).toContain("remain protected")

@@ -89,6 +89,11 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
       op: "move",
       input: { id: "row", into: "folder", before: "first", after: "last" },
     })
+    expect(await parse(["edit", "row", "--oldString", "read things", "--newString=scan things", "--replaceAll"])).toEqual({
+      kind: "run",
+      op: "edit",
+      input: { id: "row", oldString: "read things", newString: "scan things", replaceAll: true },
+    })
     expect(await parse(["link", "row", "--target", "other", "--enabled=false", "--type", "shownWhenOff"])).toEqual({
       kind: "run",
       op: "link",
@@ -125,15 +130,70 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
     expect((await runInstructionsCommand(["set", "row", "--state=invalid"], deps)).exitCode).toBe(2)
     expect((await runInstructionsCommand(["list", "--limit=5"], deps)).exitCode).toBe(0)
     const listed = JSON.parse((await runInstructionsCommand(["list", "--limit=6082"], deps)).stdout) as {
-      rows: Array<{ id: string }>
+      rows: string[]
     }
-    const id = listed.rows.find((row) => row.id.includes("tool:reader"))?.id
+    const id = listed.rows.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.includes("tool:reader"))
     if (id === undefined) throw new Error("fixture has no reader row")
     const refused = await runInstructionsCommand(["set", id, "--text", "blocked"], deps)
     expect(refused.exitCode).toBe(1)
     expect(refused.stderr).toContain("agent.protected")
+    const refusedEdit = await runInstructionsCommand(["edit", id, "--oldString", "read", "--newString", "scan"], deps)
+    expect(refusedEdit.exitCode).toBe(1)
+    expect(refusedEdit.stderr).toContain("agent.protected")
     expect(await Bun.file(protectedFile).text()).toBe(before)
     expect(JSON.parse((await runInstructionsCommand(["log"], deps)).stdout).entries).toEqual([])
+  } finally {
+    await Effect.runPromise(deactivate(state))
+    if (prior === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = prior
+    await fs.rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("edit through the CLI changes part of a row's text and logs the cli actor", async () => {
+  const directory = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "cli-edit-"))
+  const prior = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = path.join(directory, "config")
+  const ctx = fullContext({
+    directory: path.join(directory, "project"),
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "reader", description: "read things", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const state = createState()
+  await Effect.runPromise(activate(ctx, state))
+  const handlers = createHandlers(ctx, state)
+  const rpcContext = {
+    error: (...args: unknown[]): never => {
+      throw new Error(args.join(": "))
+    },
+  }
+  const ops: OpDescriptor[] = JSON.parse(
+    JSON.stringify(await Effect.runPromise(handlers["instructions.ops"](undefined, rpcContext))),
+  ).ops
+  const deps = {
+    readFile: async () => "",
+    readStdin: async () => "",
+    productNamespace: "opencodeplus",
+    binaryName: "opencodeplus",
+    ops: async () => ops,
+    serverVersion: async () => "fixture",
+    run: (op: string, input: Record<string, unknown>) => Effect.runPromise(handlers["instructions.run"]({ op, input }, rpcContext)),
+  }
+  try {
+    const listed = JSON.parse((await runInstructionsCommand(["list", "--where", "item:tool", "--limit=6082"], deps)).stdout) as { rows: string[] }
+    const id = listed.rows.map((row) => row.split(" | ")[0] ?? "").find((rowId) => rowId.endsWith(":tool:reader"))
+    if (id === undefined) throw new Error("fixture has no reader row")
+    const edited = await runInstructionsCommand(["edit", id, "--oldString", "read", "--newString", "scan"], deps)
+    expect(edited.exitCode).toBe(0)
+    expect(JSON.parse(edited.stdout)).toMatchObject({ id, replacements: 1 })
+    expect(JSON.parse((await runInstructionsCommand(["show", id], deps)).stdout).text).toBe("scan things")
+    const missing = await runInstructionsCommand(["edit", id, "--oldString", "absent", "--newString", "x"], deps)
+    expect(missing.exitCode).toBe(1)
+    expect(missing.stderr).toContain("Could not find oldString")
+    expect((await runInstructionsCommand(["edit", id, "--oldString", "scan"], deps)).exitCode).toBe(2)
+    const log = JSON.parse((await runInstructionsCommand(["log"], deps)).stdout) as { entries: { actor: unknown }[] }
+    expect(log.entries[0]?.actor).toEqual({ type: "cli" })
   } finally {
     await Effect.runPromise(deactivate(state))
     if (prior === undefined) delete process.env.OPENCODE_CONFIG_DIR

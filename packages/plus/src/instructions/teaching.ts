@@ -56,7 +56,7 @@ An agent behaves exactly as its rows say; nothing is read from its name. A row i
 
 ## list
 
-\`list({ where?, fields?, sort?, limit?, offset?, format? })\`, \`limit\` defaults to 40. It returns \`{ total, columns, rows }\`: each row is one line in the order of \`columns\`, by default \`id | badges | from\`, with \`-\` for an empty value. \`fields\` picks the columns after \`id\`: \`label\`, \`badges\`, \`from\`, \`source\`, \`tokens\`, \`text\`, \`upstream\`, \`record\`, \`path\`, \`updated\`, \`sections\`. \`format: "objects"\` returns one object per row instead, for code that reads fields. A Description row that only repeats its item row is left out.
+\`list({ where?, fields?, sort?, limit?, offset? })\`, \`limit\` defaults to 40. It returns \`{ total, columns, rows }\`: each row is one line in the order of \`columns\`, by default \`id | badges | from\`, with \`-\` for an empty value, so \`row.split(" | ")[0]\` is its id. \`fields\` picks the columns after \`id\`: \`label\`, \`badges\`, \`from\`, \`source\`, \`tokens\`, \`text\`, \`upstream\`, \`record\`, \`path\`, \`updated\`, \`sections\`. A Description row that only repeats its item row is left out.
 
 \`where\` terms are ANDed; \`!key:value\` negates one; \`a,b\` is OR within one key; a bare word matches label or id, ignoring case; \`key:>7d\` and \`key:<N\` compare ages and counts.
 
