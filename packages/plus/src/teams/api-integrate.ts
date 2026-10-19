@@ -135,7 +135,7 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
     childRun: child.id,
     childBranch: child.branch,
     childHead,
-    expectedParentHead: args.expectedParentHead,
+    ...(args.expectedParentHead === undefined ? {} : { expectedParentHead: args.expectedParentHead }),
   }).then(
     (entry) => ({ ok: true as const, entry }),
     (error) => ({ ok: false as const, error: thrownError(error) }),

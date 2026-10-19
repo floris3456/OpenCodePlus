@@ -7,7 +7,7 @@ import { execute } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
-import { toolError } from "./schema.js"
+import { isExpectedHead, toolError } from "./schema.js"
 import type { Check, MergeState } from "./schema.js"
 import { errCode, io } from "./io.js"
 
@@ -33,7 +33,8 @@ export interface EnqueueInput {
   childRun: string
   childBranch: string
   childHead: string
-  expectedParentHead: string
+  /** Omitted or "HEAD": whatever the parent's HEAD is; otherwise a full or short commit it must be. */
+  expectedParentHead?: string
 }
 
 // Typed seam for the tools layer: the merge queue never spawns sessions or
@@ -191,10 +192,10 @@ export async function pending(root: string, parentRun: string): Promise<MergeEnt
 export async function enqueue(root: string, input: EnqueueInput): Promise<MergeEntry> {
   return lock(root, "state", `merge:${input.parentRun}`, async () => {
     const parentHead = await getHead(input.parentWorktree)
-    if (input.expectedParentHead !== parentHead)
+    if (!isExpectedHead(parentHead, input.expectedParentHead))
       throw toolError(
         "E_STALE_PARENT",
-        `Your HEAD is ${parentHead}; pass it as expectedParentHead (never the child's commit).`,
+        `Your HEAD is ${parentHead}; pass it as expectedParentHead or omit it (never the child's commit).`,
         parentHead,
       )
     const dirty = await trackedDirtyFiles(input.parentWorktree)
@@ -217,7 +218,7 @@ export async function enqueue(root: string, input: EnqueueInput): Promise<MergeE
       childRun: input.childRun,
       childBranch: input.childBranch,
       childHead: input.childHead,
-      expectedParentHead: input.expectedParentHead,
+      expectedParentHead: parentHead,
       state: "pending",
       at: now,
       updatedAt: now,

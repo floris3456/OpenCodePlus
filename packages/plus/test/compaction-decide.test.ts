@@ -219,14 +219,14 @@ function wiringSession(sessionID: string) {
   })
 }
 
-test("the cold plan names the chat's list, or the Instructions row that adds one", async () => {
+test("the cold plan names the chat's list, and the chat's own model to compact with", async () => {
   const sessionID = "ses_cold_plan"
   expect(await coldPlanOf(wiringSession(sessionID), coldState(["proxy/one", "proxy/two"]), sessionID)).toMatchObject({
     models: ["proxy/one", "proxy/two"],
   })
   expect(await coldPlanOf(wiringSession(sessionID), coldState([]), sessionID)).toEqual({
     models: [],
-    where: "Instructions › build › proxy/chat-model › Warming › Cold-cache models (a adds one)",
+    model: "proxy/chat-model",
   })
 })
 

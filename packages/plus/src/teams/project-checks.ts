@@ -191,9 +191,10 @@ function available(project: ProjectChecks | undefined): string {
 export function resolveChecks(inputs: readonly CheckSpec[], project: ProjectChecks | undefined): Check[] {
   if (inputs.length > MAX_CHECKS) refuse(`Use at most ${MAX_CHECKS} focused checks.`, project)
   const out: Check[] = []
-  for (const input of inputs) {
-    if (!ID.test(input.id)) refuse(`Check id "${input.id}" must be short kebab-case (a-z, 0-9, -).`, project)
-    if (out.some((check) => check.id === input.id)) refuse(`Checks need distinct ids; "${input.id}" is used twice (give one an id of your own and use).`, project)
+  for (const given of inputs) {
+    if (!ID.test(given.id)) refuse(`Check id "${given.id}" must be short kebab-case (a-z, 0-9, -).`, project)
+    const input = distinctID(given, out, project)
+    if (input === undefined) continue
     if (input.argv !== undefined) {
       if (input.use !== undefined || input.path !== undefined) refuse(`Check "${input.id}": give either argv or a project check (use/path), not both.`, project)
       const check: Check = { id: input.id, argv: [...input.argv], ...(input.cwd === undefined ? {} : { cwd: input.cwd }) }
@@ -220,6 +221,32 @@ export function resolveChecks(inputs: readonly CheckSpec[], project: ProjectChec
     })
   }
   return out
+}
+
+// A delegator naming one project check for two paths (test-file for two test
+// files) means two checks: the second gets an id of its own from its path, as
+// if it had given one with use. The same check on the same path, or the same
+// argv, twice is one; any other reused id is refused.
+function distinctID(input: CheckSpec, resolved: readonly Check[], project: ProjectChecks | undefined): CheckSpec | undefined {
+  const taken = (id: string) => resolved.some((check) => check.id === id)
+  if (!taken(input.id)) return input
+  const named = project?.checks.find((check) => check.id === (input.use ?? input.id))
+  const command = input.argv === undefined ? named?.argv.map((arg) => (arg === PATH_TOKEN ? (input.path ?? arg) : arg)) : input.argv
+  const cwd = input.argv === undefined ? named?.cwd : input.cwd
+  if (command !== undefined && resolved.some((check) => check.cwd === cwd && check.argv.join("\0") === command.join("\0")))
+    return undefined
+  if (input.argv !== undefined || input.use !== undefined || input.path === undefined)
+    refuse(`Checks need distinct ids; "${input.id}" is used twice. Give the second an id of its own, with use: "${input.use ?? input.id}" for a project check.`, project)
+  const stem = `${input.id}-${path
+    .basename(input.path)
+    .replace(/\.(test|spec)\.[cm]?[jt]sx?$/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")}`
+    .slice(0, 44)
+    .replace(/-+$/, "")
+  // At most MAX_CHECKS ids are taken, so one of these is free.
+  const id = [stem, ...Array.from({ length: MAX_CHECKS }, (_, n) => `${stem}-${n + 2}`)].find((candidate) => !taken(candidate))!
+  return { ...input, id, use: input.id }
 }
 
 // ── telling the delegator ─────────────────────────────────────────────────

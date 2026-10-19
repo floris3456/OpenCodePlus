@@ -380,7 +380,7 @@ test("successful cleanup records the actual original child head for history", as
   })
 })
 
-test("happy path lands the child commit in the parent worktree", async () => {
+test("happy path lands the child commit in the parent worktree, on its current HEAD when none is given", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -416,9 +416,11 @@ test("happy path lands the child commit in the parent worktree", async () => {
       await saveRun(root, parent)
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
-      const value = required(
-        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()),
-      ) as { entry: string; state: string; head: string | null }
+      const value = required(await integrateHandler(ctxFor(), { run: child.id }, callerFor(parent), shippedTable())) as {
+        entry: string
+        state: string
+        head: string | null
+      }
       expect(typeof value.entry).toBe("string")
       expect(value.state).toBe("landed")
       expect(value.head).toBe(childWork.head)
@@ -576,7 +578,7 @@ test("wrong expectedParentHead is refused with E_STALE_PARENT", async () => {
         await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: "0".repeat(40) }, callerFor(parent), shippedTable()),
       )
       expect(error.code).toBe("E_STALE_PARENT")
-      expect(error.message).toBe(`Your HEAD is ${parentHead}; pass it as expectedParentHead (never the child's commit).`)
+      expect(error.message).toBe(`Your HEAD is ${parentHead}; pass it as expectedParentHead or omit it (never the child's commit).`)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

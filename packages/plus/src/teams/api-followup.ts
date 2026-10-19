@@ -137,12 +137,14 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
       const explicit = args.compactWith?.trim()
       const cold = explicit || child.sessionID === null ? undefined : await coldPlanOf(ctx, state, child.sessionID)
       const models = explicit ? [explicit] : (cold?.models ?? [])
-      if (models.length === 0)
+      if (models.length === 0) {
+        const model = cold?.model ?? "<provider/model>"
         return fail(
           "E_STOPPED",
-          `Run ${child.id} is stopped and cold: pass compactWith to compact before resuming${cold === undefined ? "" : `, or add a model to ${cold.where}`}.`,
-          "compactWith",
+          `Run ${child.id} is stopped and its cache is cold. Call team_followup again with compactWith: "${model}" (its chat is compacted with that model before it resumes), or delegate a fresh run.`,
+          { compactWith: model },
         )
+      }
       if (child.sessionID === null)
         return fail("E_INTERNAL", `Run ${child.id} has no session to compact.`)
       armColdCompaction(child.sessionID, models)

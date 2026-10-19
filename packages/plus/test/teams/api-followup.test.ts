@@ -450,12 +450,24 @@ test("followup on a cold child the caller stopped fails E_STOPPED naming compact
       now: now - 300000,
       settings: { prompt: "ping", interval: 60000, duration: 120000 },
     }, {})
-    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+    const session = {
+      ...recordSession().domain,
+      get: () =>
+        Effect.succeed({
+          id: Session.ID.make(child.sessionID!),
+          agent: "implementer",
+          model: { providerID: "cliproxyapi", id: "gemini-3.8-flash-high" },
+        }),
+    } as unknown as SessionDomain
+    const api = createTeamApi(context({ session }), teamState())
     const result = await api.followup(followupInput({ run: child.id }), callerFor(parent))
     const error = rejected(result)
     expect(error.code).toBe("E_STOPPED")
-    expect(error.message).toContain("compactWith")
-    expect(error.message).toContain("Cold-cache models (a adds one)")
+    // What the parent can do itself: the call to make, with the child's model.
+    expect(error.message).toContain('team_followup again with compactWith: "cliproxyapi/gemini-3.8-flash-high"')
+    expect(error.message).toContain("or delegate a fresh run")
+    expect(error.message).not.toContain("Instructions ›")
+    expect(error.accepted).toEqual({ compactWith: "cliproxyapi/gemini-3.8-flash-high" })
   })
 })
 

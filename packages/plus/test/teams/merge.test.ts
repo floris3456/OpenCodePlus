@@ -219,7 +219,32 @@ describe("merge queue", () => {
       (e) => asErr(e),
     )
     expect(stale?.code).toBe("E_STALE_PARENT")
-    expect(stale?.message).toBe(`Your HEAD is ${p}; pass it as expectedParentHead (never the child's commit).`)
+    expect(stale?.message).toBe(`Your HEAD is ${p}; pass it as expectedParentHead or omit it (never the child's commit).`)
+    // A short commit, HEAD, or none expect the HEAD the parent has; the entry
+    // records the full commit.
+    for (const [n, expected] of [["51", p.slice(0, 7)], ["52", "HEAD"], ["53", undefined]] as const) {
+      const entry = await enqueue(stateDir, {
+        parentRun: `w-00000000000000${n}`,
+        parentWorktree: parent.dir,
+        childRun: `w-00000000000001${n}`,
+        childBranch: `child-${n}`,
+        childHead: p,
+        ...(expected === undefined ? {} : { expectedParentHead: expected }),
+      })
+      expect(entry.expectedParentHead).toBe(p)
+    }
+    const wrongShort = await enqueue(stateDir, {
+      parentRun: "w-0000000000000054",
+      parentWorktree: parent.dir,
+      childRun: "w-0000000000000154",
+      childBranch: "child-54",
+      childHead: p,
+      expectedParentHead: p.startsWith("0000000") ? "1111111" : "0000000",
+    }).then(
+      () => null,
+      (e) => asErr(e),
+    )
+    expect(wrongShort?.code).toBe("E_STALE_PARENT")
     await writeFile(join(parent.dir, "README.md"), "fixture modified\n")
     const dirty = await enqueue(
       stateDir,

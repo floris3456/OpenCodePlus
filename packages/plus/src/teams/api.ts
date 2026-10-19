@@ -67,6 +67,7 @@ import {
   StatusInput,
   StopInput,
   budgetExhaustion,
+  isExpectedHead,
   toolError,
   validateSummary,
   type Check,
@@ -645,7 +646,7 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
       const verified = receipt !== undefined ? verifyReceipt(receipt, checkDef, { head, tree }) : null
       if (receipt !== undefined && receipt.passed && verified?.ok) continue
       red.push(checkDef.id)
-      firstLines.set(checkDef.id, await firstLogLine(receipt?.outputPath))
+      firstLines.set(checkDef.id, await failureLine(receipt?.outputPath))
     }
     if (red.length > 0) {
       const first = red[0]
@@ -760,7 +761,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, tabl
   const key = await realpath(record.directory).catch(() => record.directory)
   return lock(root, "wt", key, async () => {
     const head = await git(record.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
-    if (head !== args.expectedHead) return fail("E_STALE_HEAD", `HEAD is ${head}, not ${args.expectedHead}.`)
+    if (!isExpectedHead(head, args.expectedHead)) return fail("E_STALE_HEAD", `HEAD is ${head}, not ${args.expectedHead}.`)
     for (const file of args.files) {
       const refusal = refusalOf(file)
       if (refusal !== undefined) return fail("E_SCOPE", refusal)
@@ -867,8 +868,7 @@ async function getContextHandler(ctx: Context, _args: GetContextInput, caller: T
       }
     }),
   )
-  const siblings =
-    record.task === null || !allows(table, record.role, "get_context", "contents.siblings") ? [] : await siblingsOf(root, record.task)
+  const siblings = allows(table, record.role, "get_context", "contents.siblings") ? await siblingsOf(root, record) : []
   const pending = await peek(root, record.id)
   const briefPath = brief === null ? null : path.join(root, "runs", record.id, "brief.md")
   const scope =
@@ -1149,12 +1149,20 @@ async function readChecks(root: string, runID: string): Promise<Check[]> {
   return data ?? []
 }
 
-async function firstLogLine(outputPath: string | undefined): Promise<string> {
+// What a red check's log says went wrong, short enough for a needs detail: its
+// first two error or failure lines (a runner's banner comes first and says
+// nothing), else its last line, which is usually the summary.
+async function failureLine(outputPath: string | undefined): Promise<string> {
   if (outputPath === undefined) return "failed"
-  const log = await readFile(outputPath, "utf8").catch(() => "")
-  const first = log.split("\n").find((line) => line.trim().length > 0) ?? ""
-  if (first.trim() === "") return "failed"
-  return first.trim().slice(0, 300)
+  const lines = (await readFile(outputPath, "utf8").catch(() => ""))
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  const failing = lines
+    .filter((line) => /\b(error|fail(ed|ure)?|assert(ion)?)\b/i.test(line) && !/^(\(pass\)|✓|ok\b|PASS\b)/.test(line))
+    .slice(0, 2)
+  const said = failing.length > 0 ? failing.join(" — ") : (lines.at(-1) ?? "")
+  return said === "" ? "failed" : said.slice(0, 200)
 }
 
 async function loadCommits(worktree: string, base: string): Promise<Array<{ sha: string; subject: string }>> {
@@ -1211,24 +1219,21 @@ async function taskStateOf(root: string, taskID: string): Promise<string | null>
   return null
 }
 
-async function siblingsOf(root: string, taskID: string): Promise<Array<{ task: string; paths: string[]; state: string }>> {
-  const dir = path.join(root, "tasks")
-  const entries = await readdir(dir).catch(() => [])
-  for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".")) continue
-    const graph = await readJson<{ tasks?: Record<string, { paths?: unknown; state?: unknown }> }>(path.join(dir, name))
-    const tasks = graph?.tasks
-    if (tasks === undefined || tasks[taskID] === undefined) continue
-    return Object.entries(tasks)
-      .filter(([id]) => id !== taskID)
-      .flatMap(([id, task]): Array<{ task: string; paths: string[]; state: string }> => {
-        if (typeof task.state !== "string") return []
-        const paths = Array.isArray(task.paths) ? task.paths.filter((entry): entry is string => typeof entry === "string") : []
-        return [{ task: id, paths, state: task.state }]
-      })
-  }
-  return []
+// The parent's other children still at work: who else may be changing which
+// files now. Not the task graph: every delegation adds its task to the one
+// install-wide ad-hoc graph, so its tasks are no run's siblings.
+async function siblingsOf(root: string, record: RunRecord): Promise<Array<{ run: string; role: string; paths: string[]; state: string }>> {
+  const parent = record.parent === null ? undefined : await loadRun(root, record.parent)
+  if (parent === undefined) return []
+  const runs = await Promise.all(parent.children.filter((id) => id !== record.id).map((id) => loadRun(root, id)))
+  return runs.flatMap((run) =>
+    run === undefined || run.worktree === "removed" || ENDED_RUN_STATES.has(run.state)
+      ? []
+      : [{ run: run.id, role: run.role, paths: [...run.paths], state: run.state }],
+  )
 }
+
+const ENDED_RUN_STATES = new Set<string>(["stopped", "dead", "superseded", "reaped"])
 
 async function statusOf(ctx: Context, root: string, id: string) {
   const record = await loadRun(root, id)

@@ -168,6 +168,14 @@ function field<S extends Schema.Constraint>(
 export const Head = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))
 export type Head = typeof Head.Type
 
+// A HEAD a caller expects: a full or abbreviated commit, or HEAD itself.
+const ExpectedHead = Schema.String.check(Schema.isPattern(/^(HEAD|[0-9a-f]{7,40})$/))
+
+/** Whether the live HEAD is the one a caller expects; omitted or "HEAD" expects whatever it is. */
+export function isExpectedHead(head: string, expected: string | undefined): boolean {
+  return expected === undefined || expected === "HEAD" || head.startsWith(expected)
+}
+
 export const RunID = Schema.String.check(Schema.isPattern(/^(main|w)-[0-9a-f]{16}$/))
 export type RunID = typeof RunID.Type
 
@@ -304,7 +312,7 @@ export const Need = Schema.Struct({
   kind: Schema.Literals(["path", "check", "info", "decision"]).annotate({
     description: "path: a file outside your scope. check: a failing or missing check. info: missing information. decision: a choice your parent must make.",
   }),
-  detail: Schema.String.check(Schema.isMaxLength(300)).annotate({ description: "Exactly what you need and why." }),
+  detail: Schema.String.check(Schema.isMaxLength(1000)).annotate({ description: "Exactly what you need and why." }),
 })
 export type Need = typeof Need.Type
 
@@ -350,7 +358,7 @@ export const Brief = Schema.Struct({
         () => [],
       ),
       decisions: field(
-        Schema.Array(Schema.String.check(Schema.isMaxLength(300)))
+        Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
           .check(Schema.isMaxLength(20))
           .annotate({ description: "Choices already made, so the child does not reopen them." }),
         () => [],
@@ -843,15 +851,15 @@ export type ReviewInput = typeof ReviewInput.Type
 
 export const IntegrateInput = Schema.Struct({
   run: RunID.annotate({ description: "The child run whose commits to land." }),
-  expectedParentHead: Head.annotate({
-    description: "Your own current HEAD (team_get_context head, or the head your last team_integrate returned); never the child's commit.",
+  expectedParentHead: Schema.optional(ExpectedHead).annotate({
+    description: "Omit to land on your current HEAD. Give your own HEAD (full or short; never the child's commit) to refuse if it moved.",
   }),
 })
 export type IntegrateInput = typeof IntegrateInput.Type
 
 export const CheckpointInput = Schema.Struct({
-  expectedHead: Head.annotate({
-    description: "Your current HEAD: team_get_context head, or the head your last team_checkpoint returned.",
+  expectedHead: Schema.optional(ExpectedHead).annotate({
+    description: "Omit to commit on your current HEAD. Give it (full or short) to refuse if it moved.",
   }),
   files: Schema.Array(Schema.String).check(Schema.isMinLength(1)).annotate({
     description: "Repository-relative files (or directories) to commit: inside your Brief's scope, or in a chat run, files you may edit.",

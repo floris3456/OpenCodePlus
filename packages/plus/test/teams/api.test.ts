@@ -16,7 +16,7 @@ import { lastReceipt } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
 import { gc, onSessionEvent } from "../../src/teams/lifecycle.js"
 import { byDirectory, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
-import { Brief, Report } from "../../src/teams/schema.js"
+import { Brief, CheckpointInput, IntegrateInput, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
 import { writeProjectChecks } from "../../src/teams/project-checks.js"
 import { read } from "../../src/project.js"
@@ -927,6 +927,49 @@ test("checkpoint commits an in-scope file and moves HEAD", async () => {
   })
 })
 
+test("checkpoint takes its HEAD as a short commit, HEAD or nothing, and refuses one it moved past", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = childInRepo("w-abababababababab", repo)
+      await saveRun(root, child)
+      await fs.mkdir(path.join(repo.dir, "docs"), { recursive: true })
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const heads = [repo.head]
+      for (const expected of ["short", "HEAD", undefined] as const) {
+        await fs.writeFile(path.join(repo.dir, "docs", "notes.md"), `# notes ${heads.length}\n`)
+        const value = required(
+          await api.checkpoint(
+            {
+              ...(expected === undefined ? {} : { expectedHead: expected === "short" ? heads.at(-1)!.slice(0, 7) : expected }),
+              files: ["docs/notes.md"],
+              message: "fix: update notes",
+            },
+            callerFor(child),
+          ),
+        ) as { head: string; committed: boolean }
+        expect(value.committed).toBe(true)
+        heads.push(value.head)
+      }
+      await fs.writeFile(path.join(repo.dir, "docs", "notes.md"), "# moved past\n")
+      const error = rejected(
+        await api.checkpoint({ expectedHead: repo.head.slice(0, 7), files: ["docs/notes.md"], message: "fix: update notes" }, callerFor(child)),
+      )
+      expect(error.code).toBe("E_STALE_HEAD")
+      // The tool schemas take the same forms, and nothing git would have to resolve.
+      for (const schema of [CheckpointInput, IntegrateInput]) {
+        const key = schema === CheckpointInput ? "expectedHead" : "expectedParentHead"
+        const base = schema === CheckpointInput ? { files: ["a.md"], message: "fix: a" } : { run: child.id }
+        for (const ok of [undefined, "HEAD", repo.head, repo.head.slice(0, 7)])
+          expect(() => Schema.decodeUnknownSync(schema)({ ...base, ...(ok === undefined ? {} : { [key]: ok }) })).not.toThrow()
+        for (const bad of ["HEAD~1", "main", repo.head.slice(0, 6)]) expect(() => Schema.decodeUnknownSync(schema)({ ...base, [key]: bad })).toThrow()
+      }
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
 test("checkpoint rejects an out-of-scope file with E_SCOPE", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
@@ -1097,12 +1140,14 @@ test("finish re-runs a dirty-tree receipt at the commit and fails E_CHECKS_RED w
       if (receipt === undefined) throw new Error("missing receipt after finish re-run")
       expect(receipt.head).toBe(head)
       expect(receipt.passed).toBe(false)
-      const log = await fs.readFile(receipt.outputPath, "utf8")
-      const first = log.split("\n").find((line) => line.trim().length > 0) ?? ""
-      const line = first.trim() === "" ? "failed" : first.trim().slice(0, 300)
-      expect(error.message).toBe(
-        `Cannot report done: checks red at HEAD ${head}: [t]. Fix and finish again, or finish with status "blocked" and needs=[{kind:"check",detail:"t fails: ${line}"}].`,
+      // The suggested detail names what failed, not the runner's banner.
+      expect(error.message).toStartWith(
+        `Cannot report done: checks red at HEAD ${head}: [t]. Fix and finish again, or finish with status "blocked" and needs=[{kind:"check",detail:"t fails: error: expect(received).toBe(expected) — (fail) ok`,
       )
+      expect(error.message).not.toContain("bun test v")
+      const detail = (error.accepted as { needs: Array<{ detail: string }> }).needs[0]!.detail
+      expect(detail.length).toBeLessThanOrEqual(1000)
+      expect(error.message).toContain(`detail:"${detail}"`)
     } finally {
       await removeRepo(repo.dir)
     }
@@ -1232,6 +1277,32 @@ test("get_context leaves the brief out while the session still holds the Brief m
       expect(value).not.toHaveProperty("brief")
       expect(value.briefPath).toBe(path.join(root, "runs", delegated.run, "brief.md"))
       expect(value.scope).toEqual({ paths: ["packages/plus/src/*"], forbidden: [] })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("get_context lists the parent's other open children as siblings, not other parents' runs", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parentFor = (id: string, sessionID: string) =>
+        baseRun({ id, kind: "main", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID })
+      const parent = parentFor("main-0123456789abcdef", "ses_parent_sib")
+      const other = parentFor("main-fedcba9876543210", "ses_other_sib")
+      await saveRun(root, parent)
+      await saveRun(root, other)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const delegate = async (caller: RunRecord, requestID: string) =>
+        (required(await api.delegate(delegateInput({ requestID }), callerFor((await loadRun(root, caller.id))!))) as { run: string }).run
+      const first = await delegate(parent, "sib-1")
+      const second = await delegate(parent, "sib-2")
+      await delegate(other, "sib-3")
+      const child = await loadRun(root, first)
+      if (child === undefined) throw new Error("missing child run")
+      const value = required(await api.get_context({}, callerFor(child))) as { siblings: Array<{ run: string; role: string; paths: string[] }> }
+      expect(value.siblings).toEqual([{ run: second, role: "implementer", paths: ["packages/plus/src/*"], state: expect.any(String) }])
     } finally {
       await removeRepo(repo.dir)
     }

@@ -76,6 +76,41 @@ test("a project check by name resolves to the command the project wrote", () => 
   ])
 })
 
+test("one project check named for two paths becomes two checks; the same one twice is one", () => {
+  expect(
+    resolveChecks(
+      [
+        { id: "pytest-file", path: "tests/test_auth.py" },
+        { id: "pytest-file", path: "tests/recurring.test.ts" },
+        { id: "pytest-file", path: "tests/db" },
+        { id: "pytest-file", path: "tests/db" },
+        { id: "lint" },
+        { id: "lint" },
+        { id: "unit", argv: ["bun", "test", "a.test.ts"] },
+        { id: "unit", argv: ["bun", "test", "a.test.ts"] },
+      ],
+      project,
+    ),
+  ).toEqual([
+    { id: "pytest-file", argv: ["pytest", "tests/test_auth.py"] },
+    { id: "pytest-file-recurring", argv: ["pytest", "tests/recurring.test.ts"] },
+    { id: "pytest-file-db", argv: ["pytest", "tests/db"] },
+    { id: "lint", argv: ["ruff", "check", "."], cwd: "src" },
+    { id: "unit", argv: ["bun", "test", "a.test.ts"] },
+  ])
+  // Two paths with one name still get distinct ids.
+  expect(
+    resolveChecks(
+      [
+        { id: "pytest-file", path: "a/db" },
+        { id: "pytest-file", path: "b/db" },
+        { id: "pytest-file", path: "c/db" },
+      ],
+      project,
+    ).map((check) => check.id),
+  ).toEqual(["pytest-file", "pytest-file-db", "pytest-file-db-2"])
+})
+
 test("a refused check names what this project has, so the next call is right", () => {
   const unknown = refusal(() => resolveChecks([{ id: "e2e" }], project))
   expect(unknown.code).toBe("E_CHECKS")
@@ -87,7 +122,10 @@ test("a refused check names what this project has, so the next call is right", (
   expect(refusal(() => resolveChecks([{ id: "f", use: "pytest-file" }], project)).message).toContain("needs path")
   expect(refusal(() => resolveChecks([{ id: "unit", path: "tests" }], project)).message).toContain("takes no path")
   for (const bad of ["../etc", "/abs", "tests/*", "-k"]) expect(refusal(() => resolveChecks([{ id: "f", use: "pytest-file", path: bad }], project)).code).toBe("E_CHECKS")
-  expect(refusal(() => resolveChecks([{ id: "unit" }, { id: "unit" }], project)).message).toContain("distinct ids")
+  expect(refusal(() => resolveChecks([{ id: "unit" }, { id: "unit", use: "lint" }], project)).message).toContain("distinct ids")
+  expect(
+    refusal(() => resolveChecks([{ id: "unit", argv: ["bun", "test", "a.test.ts"] }, { id: "unit", argv: ["bun", "test", "b.test.ts"] }], project)).message,
+  ).toContain('"unit" is used twice')
   expect(refusal(() => resolveChecks(Array.from({ length: 13 }, (_, n) => ({ id: `c${n}`, argv: ["bun", "test", "a.test.ts"] })), project)).message).toContain(
     "at most 12",
   )

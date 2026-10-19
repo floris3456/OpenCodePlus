@@ -942,7 +942,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       label: "Contents",
       kind: "team",
       summary: "What get_context returns besides the run's own brief, checks, inbox and budget.",
-      rows: [{ id: "siblings", label: "Sibling runs of the same task", on: true }],
+      rows: [{ id: "siblings", label: "Sibling runs (its parent's other open runs)", on: true }],
     },
     // Read by team_delegate and team_followup for the member a brief or a
     // correction is addressed to, never for the caller.
