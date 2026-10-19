@@ -8,7 +8,7 @@ import {
   type ProviderMetadata,
 } from "@opencode/ai"
 import type { Model } from "@opencode/schema/model"
-import { Option, Schema } from "effect"
+import { DateTime, Option, Schema } from "effect"
 import { fileURLToPath } from "url"
 import { SessionMessage } from "../message.js"
 import { SessionProviderContext } from "../provider-context.js"
@@ -344,4 +344,27 @@ export const toLLMMessages = (
   messages: readonly SessionMessage.Info[],
   model: Model.Ref,
   providerMetadataKey: string = model.providerID,
-) => messages.flatMap((message) => toLLMMessage(message, model, providerMetadataKey))
+) => afterInFlightSteps(messages).flatMap((message) => toLLMMessage(message, model, providerMetadataKey))
+
+// A model switch that lands while a step is already running is projected before that step's
+// assistant message, although the step was sent and answered with the previous model. Keeping
+// it there would claim the earlier answer used the new effort and would put the effort update
+// between messages the provider has already cached, so it follows the assistant messages
+// created before it.
+function afterInFlightSteps(messages: readonly SessionMessage.Info[]) {
+  const held: SessionMessage.ModelSelected[] = []
+  const ordered: SessionMessage.Info[] = []
+  for (const message of messages) {
+    if (message.type === "model-switched") {
+      held.push(message)
+      continue
+    }
+    const inFlight =
+      message.type === "assistant" &&
+      held.length > 0 &&
+      DateTime.toEpochMillis(message.time.created) < DateTime.toEpochMillis(held[0].time.created)
+    if (!inFlight) ordered.push(...held.splice(0))
+    ordered.push(message)
+  }
+  return [...ordered, ...held]
+}

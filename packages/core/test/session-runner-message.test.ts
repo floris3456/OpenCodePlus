@@ -261,6 +261,43 @@ Earlier work
       ])
     })
 
+    test("an effort switch that lands while a step runs follows that step's answer", () => {
+      const at = (millis: number) => DateTime.makeUnsafe(millis)
+      const user = SessionMessage.User.make({ id: id("user"), type: "user", text: "Fix the sidebar", time: { created: at(0) } })
+      const answer = (value: string, millis: number, variant: string) =>
+        SessionMessage.Assistant.make({
+          id: id(value),
+          type: "assistant",
+          agent: build,
+          model: ref(variant),
+          content: [SessionMessage.AssistantText.make({ type: "text", text: value })],
+          time: { created: at(millis), completed: at(millis + 1) },
+        })
+      // Projected between the prompt and the first answer, though that answer started first.
+      const switch_ = SessionMessage.ModelSelected.make({
+        id: id("switch"),
+        type: "model-switched",
+        model: ref("high"),
+        previous: ref("xhigh"),
+        time: { created: at(126) },
+      })
+      const first = answer("first", 38, "xhigh")
+      const second = answer("second", 3_000, "high")
+      const order = (messages: SessionMessage.Info[]) =>
+        toLLMMessages(messages, ref("high")).map((message) => message.id ?? "effort")
+
+      // The request after the first answer appends the update; the next one keeps it there.
+      expect(order([user, switch_, first])).toEqual([id("user"), id("first"), "effort"])
+      expect(order([user, switch_, first, second])).toEqual([id("user"), id("first"), "effort", id("second")])
+      expect(toLLMMessages([user, switch_, first], ref("high")).at(-1)).toEqual(
+        Message.effort({ effort: "high", previous: "xhigh" }),
+      )
+      // A switch made between turns stays where it was made.
+      const later = SessionMessage.User.make({ id: id("later"), type: "user", text: "Again", time: { created: at(5_000) } })
+      const between = SessionMessage.ModelSelected.make({ ...switch_, time: { created: at(4_000) } })
+      expect(order([user, first, between, later])).toEqual([id("user"), id("first"), "effort", id("later")])
+    })
+
     test("ignores switches that are not effort changes on the requested model", () => {
       const other = Model.Ref.make({ id: Model.ID.make("other"), providerID: Provider.ID.make("provider") })
       expect(toLLMMessages([switched(ref("low"))], ref("low"))).toEqual([])
