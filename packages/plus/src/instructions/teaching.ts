@@ -136,7 +136,7 @@ Texts compare without their final newline, and units without trailing whitespace
 - Instructions that belong to a tool, skill or rule go in \`system:tools-and-rules\`, one section per row, with a \`<!-- requires: … -->\` line under the heading so they follow that row.
 - \`split({ id, boundaries?, add? })\`: \`boundaries\` \`[{ id, name, start }]\` sets manual sections by character offset; \`add: { name, text }\` appends one. \`move\` on a section reorders it within its item.
 - \`link({ id, target?, type?, enabled? })\`: without \`target\` it lists the row's links; with it, stores one: \`either\` (turning one on switches the other off), \`shownWhenOn\` / \`shownWhenOff\` (the target is sent only while \`id\` is on / off). \`enabled: false\` masks the pair at this level.
-- Folders are display only: \`create({ kind: "folder", name, id: "<tab or folder row id>" })\`, \`set({ id, rename })\`, \`move({ id, into | before | after })\`, \`delete({ id, confirm: true })\`.
+- Folders are display only: \`create({ kind: "folder", name, id: "<tab or folder row id>" })\`, \`set({ id, rename })\`, \`move({ id, into | before | after })\`, \`delete({ id, confirm: true })\`. A tab without folders and order of its own shows the first ones down its chain (preset, Defaults, Global); its first change copies them. When they change above after that, the tab is to review (layout): \`set({ id: "<tab id>", resolve: "keep" })\` keeps yours, \`"take"\` drops yours.
 
 ## create and delete
 

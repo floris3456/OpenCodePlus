@@ -37,7 +37,19 @@ import type {
   ReviewPart,
   TeamRef,
 } from "./model.js"
-import { folderIdOfRef, folderRef, groupScope, orderOf, tabOfGroupId, teamsOwnerSegment, type FolderRecord } from "./folders.js"
+import {
+  folderIdOfRef,
+  folderRef,
+  groupScope,
+  hasOwnLayout,
+  layoutPrint,
+  layoutSource,
+  orderOf,
+  ownerGroupIds,
+  tabOfGroupId,
+  teamsOwnerSegment,
+  type FolderRecord,
+} from "./folders.js"
 import { fromLabel } from "./from-label.js"
 import {
   COLD_ITEM_SEGMENT,
@@ -1273,6 +1285,21 @@ function withFolders(memo: Memo, groups: readonly Lazy[]): readonly Lazy[] {
   return groups.map((group) => arrangeTab(memo, group))
 }
 
+// A list's order: its own, else for a list inside a tab the same list of the
+// first owner down the tab's chain that orders it.
+function listOrder(memo: Memo, id: string): readonly string[] | undefined {
+  const own = orderOf(memo.ctx.orders, groupScope(id))?.items
+  if (own !== undefined) return own
+  const tabs = tabsOf(memo)
+  const prefix = id
+    .split(":")
+    .map((_, index, parts) => parts.slice(0, index + 1).join(":"))
+    .find((candidate) => candidate !== id && tabs.has(candidate))
+  if (prefix === undefined) return undefined
+  const rest = id.slice(prefix.length)
+  return tabs.get(prefix)?.slice(1).map((owner) => orderOf(memo.ctx.orders, groupScope(`${owner}${rest}`))?.items).find((items) => items !== undefined)
+}
+
 // The display token a lazy contributes to a `group:<id>` order: an item id, a
 // folder ref, or an owner row id (agent, team, member). Group headings have none.
 function lazyListToken(lazy: Lazy): string | undefined {
@@ -1288,7 +1315,7 @@ function lazyListToken(lazy: Lazy): string | undefined {
 function arrangeList(memo: Memo, id: string, home: readonly Lazy[]): readonly Lazy[] {
   // A System group's order record holds slot ids, already applied by lazySystem.
   if (id.endsWith(":system")) return home
-  const listed = orderOf(memo.ctx.orders, groupScope(id))?.items
+  const listed = listOrder(memo, id)
   if (listed === undefined || listed.length === 0) return home
   return [
     ...listed.flatMap((ref) => home.filter((lazy) => lazyListToken(lazy) === ref)),
@@ -1299,15 +1326,79 @@ function arrangeList(memo: Memo, id: string, home: readonly Lazy[]): readonly La
   ]
 }
 
+/**
+ * The layout a tab shows. `source` is the tab whose folders and order it
+ * reads: its own, else the first down its owner's chain that has one (a
+ * preset's, Defaults', Global's), else undefined, the legacy layout.
+ * `inherited` is what it would read without its own. Its own copy is to
+ * review once what it inherits is no longer what the copy was based on.
+ */
+export function tabLayout(memo: Memo, tabId: string): { readonly source: string | undefined; readonly inherited: string | undefined; readonly own: boolean; readonly review: boolean } {
+  const tab = tabOfGroupId(tabId)
+  const layout = { folders: memo.ctx.folders, orders: memo.ctx.orders }
+  const owners = layoutOwners(memo, tabId)
+  const inherited = layoutSource(layout, owners.slice(1))
+  const own = hasOwnLayout(layout, tabId)
+  const basedOn = orderOf(memo.ctx.orders, groupScope(tabId))?.basedOn
+  const review = own && tab !== undefined && basedOn !== undefined && layoutPrint(layout, inherited, tab) !== basedOn
+  return { source: own ? tabId : inherited, inherited, own, review }
+}
+
+// A tab, then the same tab of each owner down its chain: the chain its rows
+// resolve through, so layouts flow from presets and Defaults to Global and
+// Project as text and on/off do.
+function layoutOwners(memo: Memo, tabId: string): string[] {
+  const tab = tabOfGroupId(tabId)
+  const address = tab === undefined ? undefined : ownerAddressOfTab(tabId, tab)
+  if (tab === undefined || address === undefined) return [tabId]
+  return [...new Set([tabId, ...resolutionChain(address, memo.ctx.scopes).flatMap((node) => ownerGroupIds(node, tab))])]
+}
+
+// The owner a tab id names (`group:<level>:<owner>:<tab>`), as the address its
+// rows resolve with: an agent, a member (`<team>/:<member>`), a team's Special
+// agent (`<team>/:special:<id>`), or the shared inventory ('' or `/teams`).
+function ownerAddressOfTab(tabId: string, tab: string): Address | undefined {
+  const level = tabId.split(":")[1]
+  if (level !== "project" && level !== "global" && level !== "defaults" && level !== "preset") return undefined
+  const owner = tabId.slice(`group:${level}:`.length, -(tab.length + 1))
+  const at = { level, item: "", section: null } as const
+  if (owner === "") return { ...at, agent: null }
+  if (owner === teamsOwnerSegment) return { ...at, agent: null, catalogue: "teams" }
+  const special = owner.indexOf("/:special:")
+  if (special !== -1) return { ...at, agent: owner.slice(special + "/:special:".length), team: { level, team: owner.slice(0, special) } }
+  const member = owner.indexOf("/:")
+  if (member === -1) return { ...at, agent: owner }
+  const team: TeamRef = { level, team: owner.slice(0, member) }
+  return level === "preset" ? { ...at, agent: owner.slice(member + 2), team } : { ...at, agent: owner.slice(member + 2), memberOf: team }
+}
+
+// Each arranged tab's owners down its chain (layoutOwners), so the lists
+// inside it (Tools › OpenCode, …) read their order down the same chain.
+const tabOwners = new WeakMap<Memo, Map<string, readonly string[]>>()
+
+function tabsOf(memo: Memo): Map<string, readonly string[]> {
+  const known = tabOwners.get(memo)
+  if (known !== undefined) return known
+  const created = new Map<string, readonly string[]>()
+  tabOwners.set(memo, created)
+  return created
+}
+
+// A tab whose own layout is to review counts as a row to review, and says what.
+function withLayoutReview(group: Lazy): Lazy {
+  return { ...group, selfReview: () => true, partial: () => ({ ...group.partial(), reviewOf: ["layout"] }) }
+}
+
 function arrangeTab(memo: Memo, group: Lazy): Lazy {
   if (group.id.endsWith(":system")) return group
   const tab = tabOfGroupId(group.id)
   if (tab === undefined) return group
-  const own = orderOf(memo.ctx.orders, groupScope(group.id))
-  const scoped = own !== undefined || memo.ctx.folders.some((folder) => folder.owner === group.id)
-  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab && folder.owner === (scoped ? group.id : undefined))
-  const listed = (own ?? orderOf(memo.ctx.orders, `tab:${tab}`))?.items ?? []
-  if (folders.length === 0 && listed.length === 0) return group
+  const layout = tabLayout(memo, group.id)
+  tabsOf(memo).set(group.id, layoutOwners(memo, group.id))
+  const folders = memo.ctx.folders.filter((folder) => folder.tab === tab && folder.owner === layout.source)
+  const listed = orderOf(memo.ctx.orders, layout.source === undefined ? `tab:${tab}` : groupScope(layout.source))?.items ?? []
+  const reviewed = layout.review ? withLayoutReview(group) : group
+  if (folders.length === 0 && listed.length === 0) return reviewed
   const byItem = new Map(folders.flatMap((folder) => folder.items.filter((entry) => folderIdOfRef(entry) === undefined).map((item) => [item, folder.id] as const)))
   const referenced = new Set(folders.flatMap((folder) => folder.items.flatMap((entry) => folderIdOfRef(entry) ?? [])))
   const folderPrefix = `${group.id}:folder:`
@@ -1316,7 +1407,7 @@ function arrangeTab(memo: Memo, group: Lazy): Lazy {
     return lazy.address?.section === null ? lazy.address.item : undefined
   }
   return {
-    ...group,
+    ...reviewed,
     children: () => {
       const home = group.children()
       const rows = indexRows(home, byItem)

@@ -6,8 +6,8 @@
 // order stored for a System group (a layout OrderRecord whose items are slot
 // ids) reorders the request the same way. With no stored order nothing moves.
 import path from "node:path"
-import { groupScope, orderOf, teamsOwnerSegment, type OrderRecord } from "./folders.js"
-import { catalogueOf, type ChainNode, type Item } from "./model.js"
+import { groupScope, orderOf, ownerGroupIds, type OrderRecord } from "./folders.js"
+import type { ChainNode, Item } from "./model.js"
 import { guidanceItemId, guidancePath, isModelPromptFile, isUserSystemFile, teachingFilePath, teachingItemId } from "./paths.js"
 
 export const firstSlot = "first"
@@ -148,26 +148,10 @@ export function arrangeBySlot<T>(parts: readonly T[], slotOf: (part: T, index: n
   return complete.flatMap((slot) => units.filter((unit) => unit.slot === slot).flatMap((unit) => unit.parts))
 }
 
-/**
- * The System group ids a chain node's owner lists its System parts under
- * (tree.ts lazySystem). A team-scoped node is a member, a member preset, a
- * Teams entry, or a team's Special agent; shipped nodes hold no records.
- */
-export function systemGroupIds(node: ChainNode): string[] {
-  if (node.shipped !== undefined) return []
-  if (node.agent === null)
-    return node.team === undefined ? [`group:${node.level}:${catalogueOf(node.catalogue) === "teams" ? teamsOwnerSegment : ""}:system`] : []
-  if (node.team === undefined) return [`group:${node.level}:${node.agent}:system`]
-  return [
-    `group:${node.level}:${node.team.team}/:${node.agent}:system`,
-    `group:${node.level}:${node.team.team}/:special:${node.agent}:system`,
-  ]
-}
-
 /** The slots of the first System order stored along the chain; undefined when none is (the default order). */
 export function storedSystemOrder(orders: readonly OrderRecord[], chain: readonly ChainNode[]): readonly string[] | undefined {
   return chain
-    .flatMap(systemGroupIds)
+    .flatMap((node) => ownerGroupIds(node, "system"))
     .map((id) => orderOf(orders, groupScope(id))?.items.filter(isSlot) ?? [])
     .find((items) => items.length > 0)
 }

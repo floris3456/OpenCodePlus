@@ -12,7 +12,7 @@ import type {
   TeamRef,
 } from "./model.js"
 import { buildMemo, rowTeamOf, sectionResolveOf, splitOf, wholeOf, type Memo, type MemoInput } from "./resolve-memo.js"
-import { lazyControl, materialize, skeletonOf, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
+import { lazyControl, materialize, skeletonOf, tabLayout, toolParameters, toolPermissions, type Lazy, type TreeNode, type TreeNodeActions, type TreeNodeKind } from "./tree.js"
 import { changedLines } from "./diff-lines.js"
 import { isModelDefaultRowId, parseModelDefaultItemId, parseModelSettingItemId, settingsFor, type ModelSettingsRecord } from "./model-settings.js"
 import { groupScope, orderOf, tabOfItem, teamsOwnerSegment } from "./folders.js"
@@ -1524,8 +1524,9 @@ function testFor(key: string, alts: readonly string[], term: string, state: Quer
         // System (Base included) lists the request's parts in order and has no folders.
         if (tab === "system" || tab === "base") return false
         const owner = `group:${candidate.id.slice(candidate.id.indexOf(":") + 1, candidate.id.indexOf(`:${address.item}`))}:${tab}`
-        const own = orderOf(state.memo.ctx.orders, groupScope(owner)) !== undefined || state.memo.ctx.folders.some((folder) => folder.owner === owner)
-        const name = state.memo.ctx.folders.find((folder) => folder.owner === (own ? owner : undefined) && folder.items.includes(address.item))?.name
+        // The folders the tab shows: its own or the ones it inherits.
+        const source = tabLayout(state.memo, owner).source
+        const name = state.memo.ctx.folders.find((folder) => folder.owner === source && folder.items.includes(address.item))?.name
         return name !== undefined && alts.some((alt) => lower(name) === lower(alt))
       }
     }

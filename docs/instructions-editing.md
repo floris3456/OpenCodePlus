@@ -13,7 +13,9 @@ model, the runtime consumers, tool queries, and the TUI must agree.
   selected row. Match structural identities, never a coincidentally equal label.
   Report incompatible or refused targets instead of silently treating them as
   changed. An action outside the selection remains a single-row action.
-- Copy is a snapshot of configuration, not a live link. Pasting into a different
+- Copy is a snapshot of configuration, not a live link, except that a value
+  equal to what the destination row already inherits is no edit and stores
+  nothing. Pasting into a different
   agent updates its existing corresponding row without duplicating a tool. An
   attempted duplicate of a tool within its current agent reports that the agent
   already has that tool. Rows that can meaningfully be duplicated, such as text
@@ -31,6 +33,12 @@ model, the runtime consumers, tool queries, and the TUI must agree.
 - Categories and placements are saved, owner-scoped structure visible through
   the same agent-tool query and mutation surface as the TUI. Existing global
   display-folder records require compatibility handling, not deletion.
+- A tab without folders and order of its own shows the first ones down its
+  owner's chain (preset, Defaults, Global, then Project), as text and on/off
+  flow; the lists inside a tab inherit their order the same way. The tab's
+  first change copies what it shows; when that changes above afterwards, the
+  copy is to review (layout) until it is kept or taken (tree.ts `tabLayout`,
+  ops.ts `planLayoutReview`).
 - Successful mutations from either surface update an open TUI and produce
   short-lived stacked change notifications. Saved changes, pending edits, and
   failures remain distinguishable; one underlying change must not generate

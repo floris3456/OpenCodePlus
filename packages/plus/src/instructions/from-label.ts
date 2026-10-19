@@ -66,5 +66,7 @@ export function badgeLabels(node: TreeNode): string[] {
   // "to review", or "to review (state)" when the part under review is not
   // the text alone (§3.6); a model row's review carries no parts.
   else if (node.badges.review === true) labels.push(node.badges.reviewOf === undefined ? "review" : reviewLabel(node.badges.reviewOf))
+  // A tab's own layout to review is its own, apart from the rows it counts.
+  if (count > 0 && node.badges.reviewOf?.includes("layout") === true) labels.push(reviewLabel(["layout"]))
   return labels
 }

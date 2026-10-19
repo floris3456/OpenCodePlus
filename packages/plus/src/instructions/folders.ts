@@ -1,6 +1,9 @@
 // Saved category membership shared by the TUI and Instructions tools. New
-// categories belong to one owner's tab; ownerless records retain the legacy
-// global layout until an owner edits it, at which point it is copied locally.
+// categories belong to one owner's tab. A tab without its own layout shows the
+// first one down its owner's chain (tree.ts tabLayout), else the ownerless
+// legacy layout; editing it copies that layout to the tab.
+
+import { catalogueOf, fingerprint, type ChainNode } from "./model.js"
 
 /** One folder in a tab. `items` are item ids and child folders (`folder:<id>`), in display order. */
 export interface FolderRecord {
@@ -22,6 +25,13 @@ export interface OrderRecord {
   readonly level: "global" | "project"
   readonly scope: string
   readonly items: readonly string[]
+  /**
+   * A tab's own layout (scope `group:<tab id>`): the fingerprint of the layout
+   * it inherited when it took its own copy, or when it was last kept
+   * (layoutPrint). The copy is to review while what it inherits differs.
+   * Absent: never reviewed.
+   */
+  readonly basedOn?: string
   readonly updated: string
 }
 
@@ -220,34 +230,80 @@ export function layoutLevel(owner: string): "project" | "global" {
   return owner.startsWith("group:project:") ? "project" : "global"
 }
 
-/** Isolate one owner before planning; materialize legacy membership on first edit. */
-export function ownerLayout(layout: { readonly folders: readonly FolderRecord[]; readonly orders: readonly OrderRecord[] }, owner: string) {
+type Layout = { readonly folders: readonly FolderRecord[]; readonly orders: readonly OrderRecord[] }
+
+/**
+ * The tab ids a chain node's owner lists `tab` under (tree.ts). A
+ * team-scoped node is a member, a member preset, a Teams entry or a team's
+ * Special agent; shipped nodes hold no records.
+ */
+export function ownerGroupIds(node: ChainNode, tab: string): string[] {
+  if (node.shipped !== undefined) return []
+  if (node.agent === null)
+    return node.team === undefined ? [`group:${node.level}:${catalogueOf(node.catalogue) === "teams" ? teamsOwnerSegment : ""}:${tab}`] : []
+  if (node.team === undefined) return [`group:${node.level}:${node.agent}:${tab}`]
+  return [`group:${node.level}:${node.team.team}/:${node.agent}:${tab}`, `group:${node.level}:${node.team.team}/:special:${node.agent}:${tab}`]
+}
+
+/** Whether a tab keeps a layout of its own: an order record or a folder. */
+export function hasOwnLayout(layout: Layout, owner: string): boolean {
+  return layout.orders.some((order) => order.scope === groupScope(owner)) || layout.folders.some((folder) => folder.owner === owner)
+}
+
+/** The tab whose layout `owners` (a tab, then the tabs down its chain) shows: the first with one, else undefined, the legacy layout. */
+export function layoutSource(layout: Layout, owners: readonly string[]): string | undefined {
+  return owners.find((owner) => hasOwnLayout(layout, owner))
+}
+
+/** A tab's layout as one fingerprint: its folders and order, or with no owner the legacy layout of `tab`. */
+export function layoutPrint(layout: Layout, owner: string | undefined, tab: string): string {
+  const folders = layout.folders
+    .filter((folder) => folder.tab === tab && folder.owner === owner)
+    .map((folder) => [folder.id, folder.name, folder.parent ?? null, folder.items] as const)
+    .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+  return fingerprint(JSON.stringify([folders, orderOf(layout.orders, owner === undefined ? `tab:${tab}` : groupScope(owner))?.items ?? []]))
+}
+
+/**
+ * Isolate one tab's layout before planning. A tab without its own reads
+ * `from`'s (the tab its layout comes from down the chain, or undefined for the
+ * legacy layout); finishing copies it to the tab, remembering what it was
+ * based on so a later change there is to review.
+ */
+export function ownerLayout(layout: Layout, owner: string, from?: string) {
   const tab = tabOfGroupId(owner)
   if (tab === undefined) throw new Error(`Not a category: ${owner}`)
-  const own = layout.orders.some((order) => order.scope === groupScope(owner)) || layout.folders.some((folder) => folder.owner === owner)
-  const source = layout.folders.filter((folder) => folder.tab === tab && folder.owner === (own ? owner : undefined))
-  const ids = new Map(source.map((folder) => [folder.id, own ? folder.id : `${owner}/${folder.id}`]))
+  const own = hasOwnLayout(layout, owner)
+  const source = own ? owner : from
+  const sourceFolders = layout.folders.filter((folder) => folder.tab === tab && folder.owner === source)
+  const ids = new Map(sourceFolders.map((folder) => [folder.id, own ? folder.id : copiedId(folder.id, owner, from)]))
   const token = (value: string) => {
     const id = folderIdOfRef(value)
     return id === undefined ? value : folderRef(ids.get(id) ?? id)
   }
-  const folders = source.map((folder) => ({
+  const folders = sourceFolders.map((folder) => ({
     ...folder, id: ids.get(folder.id)!, owner, level: layoutLevel(owner), items: folder.items.map(token),
     ...(folder.parent === undefined ? {} : { parent: ids.get(folder.parent) ?? folder.parent }),
   }))
-  const order = orderOf(layout.orders, own ? groupScope(owner) : `tab:${tab}`)
-  const orders: OrderRecord[] = order === undefined ? [] : [{ ...order, scope: `tab:${tab}`, items: order.items.map(token) }]
+  const order = orderOf(layout.orders, source === undefined ? `tab:${tab}` : groupScope(source))
+  const orders: OrderRecord[] = order === undefined ? [] : [{ type: "order", level: order.level, scope: `tab:${tab}`, items: order.items.map(token), updated: order.updated }]
+  const basedOn = own ? orderOf(layout.orders, groupScope(owner))?.basedOn : layoutPrint(layout, from, tab)
   return {
     folders, orders, token,
-    finish: (next: { readonly folders: readonly FolderRecord[]; readonly orders: readonly OrderRecord[] }, updated: string) => ({
+    finish: (next: Layout, updated: string) => ({
       folders: [...layout.folders.filter((folder) => folder.owner !== owner), ...next.folders.map((folder) => ({ ...folder, owner, level: layoutLevel(owner) }))],
-      // Even an empty order marks this owner's layout as independent of legacy folders.
+      // Even an empty order marks this tab's layout as its own.
       orders: [...layout.orders.filter((entry) => entry.scope !== groupScope(owner)), {
         type: "order" as const, level: layoutLevel(owner), scope: groupScope(owner),
-        items: orderOf(next.orders, `tab:${tab}`)?.items ?? [], updated,
+        items: orderOf(next.orders, `tab:${tab}`)?.items ?? [], ...(basedOn === undefined ? {} : { basedOn }), updated,
       }],
     }),
   }
+}
+
+// A copied folder's id: the source tab's prefix swapped for this tab's.
+function copiedId(id: string, owner: string, from: string | undefined): string {
+  return from !== undefined && id.startsWith(`${from}:`) ? `${owner}:${id.slice(from.length + 1)}` : `${owner}/${id}`
 }
 
 export function splitLayout(records: readonly (FolderRecord | OrderRecord)[]): LayoutRecordSet {

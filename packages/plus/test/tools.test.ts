@@ -519,6 +519,29 @@ test("edit text through set matches saveText", async () => {
   expect(after.records.some((record) => record.type === "customization" && record.text === "custom description")).toBe(true)
 })
 
+test("folders flow down the chain; a copy reads to review when they change above, and set resolve settles it", async () => {
+  const { tools } = await freshFixture({ agents: [agentInfo("build")] })
+  const find = async (input: Record<string, unknown>) => rowIds((await runOk(need(tools, "instructions_find"), { limit: 200, ...input })) as { rows: string[] })
+  const global = "group:global:build:tools"
+  const project = "group:project:build:tools"
+  await runOk(need(tools, "instructions_create"), { kind: "folder", name: "Mine", id: global })
+  const globalFolder = (await find({ in: global, type: "group", name: "Mine" }))[0]
+  if (globalFolder === undefined) throw new Error("missing the global folder")
+  await runOk(need(tools, "instructions_move"), { id: "item:global:build:tool:reader", into: globalFolder })
+  // Project has no layout of its own: it shows Global's folder, with its own row in it.
+  const inherited = (await find({ in: project, type: "group", name: "Mine" }))[0]
+  expect(inherited).toBe(`${project}:folder:${globalFolder.split(":folder:")[1]}`)
+  expect(await find({ in: inherited, type: "tool" })).toEqual(["item:project:build:tool:reader"])
+  // Its first change takes its own copy; Global changing after puts it to review.
+  await runOk(need(tools, "instructions_move"), { id: "item:project:build:tool:skill", into: inherited })
+  expect(await find({ is: "review" })).toEqual([])
+  await runOk(need(tools, "instructions_set"), { id: globalFolder, rename: "Renamed" })
+  expect(await find({ is: "review" })).toEqual([project])
+  await runOk(need(tools, "instructions_set"), { id: project, resolve: "take" })
+  expect(await find({ is: "review" })).toEqual([])
+  expect(await find({ in: project, type: "group", name: "Renamed" })).toHaveLength(1)
+})
+
 test("an edit back to the inherited text stores nothing; a stored copy goes with the row's next save", async () => {
   const { api, tools, project } = await freshFixture()
   const id = await readerRowId(api)

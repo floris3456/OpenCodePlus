@@ -361,8 +361,8 @@ export type From =
   | { readonly kind: "upstream" }
   | { readonly kind: "off" }
 
-/** Which part of an own override is "to review": its text, its on/off state, or its pin (§3.6). */
-export type ReviewPart = "text" | "state" | "pin"
+/** Which part of an own override is "to review": its text, its on/off state, its pin (§3.6), or a tab's own layout (folders.ts). */
+export type ReviewPart = "text" | "state" | "pin" | "layout"
 
 export type AgentScope = "project" | "global" | "defaults"
 

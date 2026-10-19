@@ -88,6 +88,7 @@ import {
   folderRef,
   groupScope,
   layoutLevel,
+  layoutPrint,
   ownerLayout,
   renameFolderRecord,
   reparent,
@@ -104,7 +105,7 @@ import { linksTouching, switchedOff } from "./rowlinks.js"
 import { buildMemo } from "./resolve-memo.js"
 import type { Memo } from "./resolve-memo.js"
 import { requiresGateRecords, type RowlinkRecord } from "./rowlinks.js"
-import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf, systemOrderAt, systemSlotOf } from "./tree.js"
+import { buildTreeMemo, collectSkeleton, findLazy, groupToggleOf, groupToggleRows, lazyPath, materialize, skeletonOf, systemOrderAt, systemSlotOf, tabLayout } from "./tree.js"
 import { agentsFileMoveRefusal, agentsMdItemId, firstSlot, modelPromptMoveRefusal, toolsItemId, toolsMoveRefusal } from "./system-order.js"
 import type { MemoInput, TeamInput, TreeNode } from "./tree.js"
 import { derive, headingSpan, manual, parentIndexes, relocateHeadingSpan, slice, wrappingSection, type Boundary } from "./sections.js"
@@ -283,11 +284,13 @@ export function planRowMove(memo: MemoInput, layout: LayoutRecords, rowId: strin
   if (token === undefined || token.startsWith("tab:")) return { refusal: `"${node.label}" is built-in structure and cannot move` }
   const tab = path.slice(0, -1).findLast((row) => rowToken(row)?.startsWith("tab:"))
   if (tab === undefined) return { refusal: `"${node.label}" is not in a tab` }
-  const local = ownerLayout(layout, tab.id)
+  // A tab showing a layout it inherits takes its own copy with this move.
+  const shown = tabLayout(active, tab.id)
+  const local = ownerLayout(layout, tab.id, shown.inherited)
   const anchorOf = (id: string | undefined): Anchor | undefined => {
     if (id === undefined) return undefined
     const folder = folderOf(layout.folders, folderIdOfRef(id) ?? "")
-    if (folder !== undefined && (folder.tab !== tabOfGroupId(tab.id) || folder.owner !== undefined && folder.owner !== tab.id))
+    if (folder !== undefined && (folder.tab !== tabOfGroupId(tab.id) || folder.owner !== undefined && folder.owner !== shown.source))
       return { refusal: `Rows move only within ${tabOfGroupId(tab.id)} of the same owner` }
     if (id.startsWith("folder:") || id.startsWith("tab:")) return { token: id, label: folderOf(layout.folders, folderIdOfRef(id) ?? "")?.name ?? id }
     const anchorPath = lazyPath(active, id)
@@ -646,7 +649,8 @@ export function planGroupMove(
 export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: string, name: string, updated: string, sharedMemo?: Memo): LayoutChange {
   const trimmed = name.trim()
   if (trimmed === "") return { refusal: "a folder needs a name" }
-  const path = lazyPath(sharedMemo ?? buildTreeMemo(memo), rowId)
+  const active = sharedMemo ?? buildTreeMemo(memo)
+  const path = lazyPath(active, rowId)
   const node = path.at(-1)
   if (node === undefined) return { refusal: unknownRowRefusal(rowId) }
   if (path.some((row) => isSystemGroupId(row.id))) return { refusal: NO_SYSTEM_FOLDERS }
@@ -659,7 +663,7 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   const tab = token?.startsWith("tab:") === true ? token.slice("tab:".length) : parent?.tab
   if (tab === undefined) return { refusal: `"${node.label}" is not a tab or folder` }
   const owner = parent === undefined ? container.id : container.id.split(FOLDER_MARK)[0]!
-  const local = ownerLayout(layout, owner)
+  const local = ownerLayout(layout, owner, tabLayout(active, owner).inherited)
   const created = splitLayout(
     createFolderRecord([...local.folders, ...local.orders], { tab, name: trimmed, owner, ...(parent === undefined ? {} : { parent: folderIdOfRef(local.token(folderRef(parent.id)))! }) }, updated),
   )
@@ -670,9 +674,11 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: local.finish({ folders: created.folders, orders }, updated) }
 }
 
-export function planFolderRename(layout: LayoutRecords, id: string, name: string, updated: string, owner?: string): LayoutChange {
+// `owner` is the tab the folder shows in; `from` the tab its layout comes from
+// when it has none of its own (tree.ts tabLayout), copied with this change.
+export function planFolderRename(layout: LayoutRecords, id: string, name: string, updated: string, owner?: string, from?: string): LayoutChange {
   if (owner !== undefined) {
-    const local = ownerLayout(layout, owner)
+    const local = ownerLayout(layout, owner, from)
     const plan = planFolderRename(local, folderIdOfRef(local.token(folderRef(id)))!, name, updated)
     return "refusal" in plan ? plan : { ...plan, layout: local.finish(plan.layout, updated) }
   }
@@ -685,9 +691,9 @@ export function planFolderRename(layout: LayoutRecords, id: string, name: string
 }
 
 // A deleted folder's rows and child folders take its place in the list it sat in.
-export function planFolderDelete(layout: LayoutRecords, id: string, updated: string, owner?: string): LayoutChange {
+export function planFolderDelete(layout: LayoutRecords, id: string, updated: string, owner?: string, from?: string): LayoutChange {
   if (owner !== undefined) {
-    const local = ownerLayout(layout, owner)
+    const local = ownerLayout(layout, owner, from)
     const plan = planFolderDelete(local, folderIdOfRef(local.token(folderRef(id)))!, updated)
     return "refusal" in plan ? plan : { ...plan, layout: local.finish(plan.layout, updated) }
   }
@@ -696,6 +702,28 @@ export function planFolderDelete(layout: LayoutRecords, id: string, updated: str
   const where = folder.parent === undefined ? `the top level of ${folder.tab}` : `folder "${folderOf(layout.folders, folder.parent)?.name ?? folder.parent}"`
   const next = splitLayout(deleteFolderRecord([...layout.folders, ...layout.orders], id, updated))
   return { target: folderRef(id), status: `Deleted folder "${folder.name}"; its rows returned to ${where}`, layout: next }
+}
+
+// A tab whose own layout is to review (what it inherits changed since it took
+// its copy): keep records the inherited layout as seen and keeps the copy;
+// take drops the copy so the tab shows what it inherits again.
+export function planLayoutReview(memo: MemoInput, layout: LayoutRecords, rowId: string, resolution: "keep" | "take", updated: string, sharedMemo?: Memo): LayoutChange {
+  const tab = tabOfGroupId(rowId)
+  if (tab === undefined || rowId.endsWith(":system")) return { refusal: `"${rowId}" is not a tab` }
+  const shown = tabLayout(sharedMemo ?? buildTreeMemo(memo), rowId)
+  if (!shown.review) return { refusal: `"${rowId}" has no layout to review` }
+  if (resolution === "take")
+    return {
+      target: `tab:${tab}`,
+      status: `Took the inherited layout of ${tab}`,
+      layout: { folders: layout.folders.filter((folder) => folder.owner !== rowId), orders: layout.orders.filter((order) => order.scope !== groupScope(rowId)) },
+    }
+  const basedOn = layoutPrint(layout, shown.inherited, tab)
+  return {
+    target: `tab:${tab}`,
+    status: `Kept the layout of ${tab}`,
+    layout: { folders: layout.folders, orders: layout.orders.map((order) => (order.scope === groupScope(rowId) ? { ...order, basedOn, updated } : order)) },
+  }
 }
 
 export interface OpSuccess {

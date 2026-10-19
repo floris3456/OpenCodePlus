@@ -8,7 +8,7 @@ import { isValueRow } from "./permission-catalog.js"
 import { activateModelRow, addSection, planFolderCreate, planFolderDelete, planRowMove, removeModelRow, reset, rowToken, saveSplit, saveText, setEnabled, setPin, setRequires, type LayoutRecords, type OpResult } from "./ops.js"
 import { correspondingRow } from "./reflection.js"
 import { rowTeamOf, sectionResolveOf, splitOf, wholeOf } from "./resolve-memo.js"
-import { buildTreeMemo, collectSkeleton, findLazy, lazyPath, materialize, type Lazy, type Memo, type MemoInput } from "./tree.js"
+import { buildTreeMemo, collectSkeleton, findLazy, lazyPath, materialize, tabLayout, type Lazy, type Memo, type MemoInput } from "./tree.js"
 
 export interface Clipboard {
   readonly source: MemoInput
@@ -103,7 +103,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         if (refusal !== undefined) return refusal
       }
       if (clipboard.mode === "cut") {
-        const deleted = planFolderDelete(draft.layout, folder, new Date().toISOString(), origin.id.split(":folder:")[0])
+        const owner = origin.id.split(":folder:")[0]!
+        const deleted = planFolderDelete(draft.layout, folder, new Date().toISOString(), owner, tabLayout(buildTreeMemo({ ...draft.memo, ...draft.layout }), owner).inherited)
         if ("refusal" in deleted) return deleted.refusal
         layout(deleted.layout)
       }

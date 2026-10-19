@@ -1292,6 +1292,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const row = currentRow()
     if (node === undefined) return
+    if (node.badges.reviewOf?.includes("layout") === true) {
+      void reviewLayout(node)
+      return
+    }
     if (focus() === "nav") {
       if (row !== undefined && (row.role === "owner" || row.role === "every")) {
         right()
@@ -1437,6 +1441,21 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     })
     if (picked === undefined) return
     await state.resolveModel(node, picked)
+  }
+
+  // A tab whose own folders and order were arranged against a layout it
+  // inherits that has changed since: keep yours, or take the inherited one.
+  async function reviewLayout(node: TreeNode): Promise<void> {
+    const picked = await props.context.ui.dialog.select<"keep" | "take">({
+      title: `Review "${node.label}"`,
+      placeholder: "The folders and order this tab inherits changed since you arranged yours",
+      options: [
+        { title: "Keep yours", value: "keep", description: "Your folders and order stay; the change above is acknowledged" },
+        { title: "Take the inherited layout", value: "take", description: "Drop yours and show the inherited folders and order again" },
+      ],
+    })
+    if (picked === undefined) return
+    await state.resolveLayout(node, picked)
   }
 
   // Enter on a limit or bound row: the number is the row's text. Off (space)

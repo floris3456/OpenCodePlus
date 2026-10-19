@@ -19,7 +19,7 @@ import type {
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
 import { deltaOf, keyIdentity, recordIdentity, snapshotRecordOf, type Delta } from "../../instructions/delta.js"
 import type { StoredRecord } from "../../instructions/store.js"
-import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, lazyPath, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
+import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, lazyPath, tabLayout, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import {
   isDefaultSwitchField,
   isEvery,
@@ -72,6 +72,7 @@ import {
   planFolderCreate,
   planFolderDelete,
   planFolderRename,
+  planLayoutReview,
   planRowMove,
   rowToken,
   type LayoutChange,
@@ -1107,7 +1108,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(`"${node.label}" is not a folder`)
       return Promise.resolve(false)
     }
-    return layoutAction(planFolderRename(layoutNow(), id, to, new Date().toISOString(), node.id.split(":folder:")[0]))
+    const owner = node.id.split(":folder:")[0]!
+    return layoutAction(planFolderRename(layoutNow(), id, to, new Date().toISOString(), owner, inheritedLayout(owner)))
   }
 
   function deleteFolder(node: TreeNode): Promise<boolean> {
@@ -1116,7 +1118,19 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(`"${node.label}" is not a folder`)
       return Promise.resolve(false)
     }
-    return layoutAction(planFolderDelete(layoutNow(), id, new Date().toISOString(), node.id.split(":folder:")[0]))
+    const owner = node.id.split(":folder:")[0]!
+    return layoutAction(planFolderDelete(layoutNow(), id, new Date().toISOString(), owner, inheritedLayout(owner)))
+  }
+
+  // The tab a tab's layout comes from when it has none of its own (tree.ts tabLayout).
+  function inheritedLayout(tabId: string): string | undefined {
+    const memo = treeMemo()
+    return memo === undefined ? undefined : tabLayout(memo, tabId).inherited
+  }
+
+  // A tab whose own layout is to review: keep it, or take what it inherits.
+  function resolveLayout(node: TreeNode, resolution: "keep" | "take"): Promise<boolean> {
+    return layoutAction(planLayoutReview(memoInput(), layoutNow(), node.id, resolution, new Date().toISOString(), treeMemo()))
   }
 
   // T6: rename a renamable row through the same RPC path the palette and the
@@ -1958,6 +1972,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     reviewChoice,
     modelReview,
     resolveModel,
+    resolveLayout,
     editModelField: reflect(editModelField, "Model setting"),
     editModelSettings: reflect(editModelSettings, "Model setting"),
     setModelCompaction: reflect(setModelCompaction, "Compaction setting"),

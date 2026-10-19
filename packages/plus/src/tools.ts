@@ -27,6 +27,7 @@ import {
   planFolderCreate,
   planFolderDelete,
   planFolderRename,
+  planLayoutReview,
   planRowMove,
   planSectionMove,
   removalPlan,
@@ -79,7 +80,7 @@ import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
 import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
-import { buildTreeMemo, findLazy, lazyPath, materialize } from "./instructions/tree.js"
+import { buildTreeMemo, findLazy, lazyPath, materialize, tabLayout } from "./instructions/tree.js"
 import { badgeLabels } from "./instructions/from-label.js"
 import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
@@ -140,7 +141,7 @@ const SetDescription =
   "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
   "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
-  "resolve keep|take|edit settles a review; resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
+  "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
   "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
   "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
 
@@ -595,7 +596,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const folderId = folderIdOfRef(rowToken(node) ?? "")
           if (folderId !== undefined) {
             if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
-            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString(), node.id.split(":folder:")[0]), actor)
+            const owner = node.id.split(":folder:")[0]!
+            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString(), owner, tabLayout(treeMemo, owner).inherited), actor)
+            return { output: { id: input.id, ...applied } }
+          }
+          // A tab whose own layout is to review settles with keep or take.
+          if (node.badges.reviewOf?.includes("layout") === true && (input.resolve === "keep" || input.resolve === "take")) {
+            const applied = yield* applyLayout(api, snapshot, planLayoutReview(memo, layoutOf(snapshot), input.id, input.resolve, new Date().toISOString(), treeMemo), actor)
             return { output: { id: input.id, ...applied } }
           }
           if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
@@ -767,7 +774,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const folderId = folderIdOfInput(memo, input.id)
           if (folderId !== undefined) {
             const owner = input.id.includes(":folder:") ? input.id.split(":folder:")[0] : snapshot.folders?.find((folder) => folder.id === folderId)?.owner
-            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner), actor)
+            const from = owner === undefined ? undefined : tabLayout(buildTreeMemo(memo), owner).inherited
+            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner, from), actor)
             return { output: { id: input.id, ...applied } }
           }
           const node = findRow(memo, input.id)

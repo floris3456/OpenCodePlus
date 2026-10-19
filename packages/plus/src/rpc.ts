@@ -413,6 +413,8 @@ export const SnapshotOrderRecord = Schema.Struct({
   level: Schema.Literals(["global", "project"]),
   scope: Schema.String,
   items: Schema.Array(Schema.String),
+  /** A tab's own layout: the fingerprint of the layout it inherited when copied or last kept (folders.ts). */
+  basedOn: Schema.optionalKey(Schema.String),
   updated: Schema.String,
 }).annotate({ identifier: "Plus.SnapshotOrderRecord" })
 

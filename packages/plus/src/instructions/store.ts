@@ -349,6 +349,7 @@ const V2Order = Schema.Struct({
   level: Schema.Literals(["global", "project"]),
   scope: Schema.String,
   items: Schema.Array(Schema.String),
+  basedOn: Schema.optional(Schema.String),
   updated: Schema.String,
 })
 
@@ -1122,7 +1123,8 @@ function parseV2(lines: string[]) {
           updated: record.updated,
         },
       ]
-    if (record.type === "order") return [{ type: "order", level: record.level, scope: record.scope, items: [...record.items], updated: record.updated }]
+    if (record.type === "order")
+      return [{ type: "order", level: record.level, scope: record.scope, items: [...record.items], ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }), updated: record.updated }]
     if (record.type === "rowlink") {
       // Retired one-way switches become reversible conditions. Keep the pair,
       // owner, enabled state and provenance; persist via the existing migration gate.
@@ -1452,7 +1454,7 @@ export function stable(record: StoredRecord): StoredRecord {
       updated: record.updated,
     }
   if (record.type === "order")
-    return { type: "order", level: record.level, scope: record.scope, items: [...record.items], updated: record.updated }
+    return { type: "order", level: record.level, scope: record.scope, items: [...record.items], ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }), updated: record.updated }
   if (record.type === "rowlink")
     return {
       type: "rowlink",
