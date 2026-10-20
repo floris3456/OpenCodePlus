@@ -29,9 +29,9 @@ present-tense descriptions of the source, not a history.
   server untouched (`packages/plus/src/search/register.ts:33`).
 
 `codemode: false` registers a native tool; `codemode: true` registers a tool
-reachable through the Code Mode catalog. For the team namespace the split is
-policy data: `directTools` are native and `codeTools` are Code Mode
-(`packages/plus/src/teams/policy.ts:39`–`packages/plus/src/teams/policy.ts:53`).
+reachable through the Code Mode catalog. Every team tool is native
+(`teamTools` in `packages/plus/src/teams/policy.ts`); an Exposure row can move
+one into Code Mode.
 The `instructions` namespace is entirely Code Mode
 (`packages/plus/src/tools.ts:62`).
 
@@ -346,13 +346,13 @@ orchestrator (`sol-orchestrator`, `opus-orchestrator`), implementer
 (`packages/plus/src/teams/policy.ts:10`–`packages/plus/src/teams/policy.ts:21`).
 An unknown role is `E_ROLE` (`packages/plus/src/teams/policy.ts:25`).
 
-| Kind | Native (direct) | Code Mode |
-| --- | --- | --- |
-| planner | `delegate`, `followup`, `stop`, `finish` | `status`, `diff`, `list`, `get_context` |
-| orchestrator | `delegate`, `followup`, `integrate`, `set_checks`, `stop`, `finish` | `status`, `diff`, `list`, `get_context`, `check` |
-| implementer | `checkpoint`, `finish` | `status`, `diff`, `get_context`, `check` |
-| reviewer | `finish` | `status`, `diff`, `get_context` |
-| scout | `finish` | `status`, `diff`, `get_context` |
+| Kind | Team tools (all native) |
+| --- | --- |
+| planner | `delegate`, `followup`, `stop`, `finish`, `status`, `diff`, `list`, `get_context` |
+| orchestrator | `delegate`, `followup`, `integrate`, `set_checks`, `stop`, `finish`, `status`, `diff`, `list`, `get_context`, `check` |
+| implementer | `checkpoint`, `finish`, `status`, `diff`, `get_context`, `check` |
+| reviewer | `finish`, `status`, `diff`, `get_context` |
+| scout | `finish`, `status`, `diff`, `get_context` |
 
 Source: `packages/plus/src/teams/policy.ts:57`–`packages/plus/src/teams/policy.ts:82`.
 `delegate` accepts only the roles in `delegatedRoles`
@@ -371,11 +371,11 @@ implementer/reviewer/scout combinations checked in the API
 | `team_checkpoint` | native | `CheckpointInput` (`packages/plus/src/teams/schema.ts:631`) | Commit intended files after checking HEAD |
 | `team_set_checks` | native | `SetChecksInput` (`packages/plus/src/teams/schema.ts:638`) | Record the task's focused checks |
 | `team_stop` | native | `StopInput` (`packages/plus/src/teams/schema.ts:650`) | Stop an owned child, optionally with a reason kept on the run |
-| `team_status` | Code Mode | `StatusInput` (`packages/plus/src/teams/schema.ts:655`) | Self plus direct children status; `waitingOn` names the open children a waiting run waits on (there is no `team_wait`: a settling child wakes its parent) |
-| `team_diff` | Code Mode | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff |
-| `team_list` | Code Mode | `ListInput` (`packages/plus/src/teams/schema.ts:690`) | Runs visible to this caller |
-| `team_get_context` | Code Mode | `GetContextInput` (`packages/plus/src/teams/schema.ts:698`) | Brief, checks, siblings, inbox and budget |
-| `team_check` | Code Mode | `CheckInput` (`packages/plus/src/teams/schema.ts:701`) | Run one assigned focused check |
+| `team_status` | native | `StatusInput` (`packages/plus/src/teams/schema.ts:655`) | Self plus direct children status; `waitingOn` names the open children a waiting run waits on (there is no `team_wait`: a settling child wakes its parent) |
+| `team_diff` | native | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff |
+| `team_list` | native | `ListInput` (`packages/plus/src/teams/schema.ts:690`) | Runs visible to this caller |
+| `team_get_context` | native | `GetContextInput` (`packages/plus/src/teams/schema.ts:698`) | Scope, checks, HEAD, siblings (the parent's other open runs), inbox and budget; the Brief text again only once a compaction took it out of the chat |
+| `team_check` | native | `CheckInput` (`packages/plus/src/teams/schema.ts:701`) | Run one assigned check, or any project check (only assigned ones judge `finish`) |
 
 Registration lines: `packages/plus/src/teams/tools.ts:343` (`delegate`),
 `:352` (`finish`), `:361` (`followup`), `:370` (`integrate`), `:379`
@@ -398,8 +398,9 @@ Checks are at most 12, with distinct ids and explicit `bun test FILE` or
 (`packages/plus/src/teams/schema.ts:186`); `needs`, `concerns`, `deferred` max
 10 and `findings` max 50 (`packages/plus/src/teams/schema.ts:187`–
 `packages/plus/src/teams/schema.ts:196`). `followup` caps the prompt at 4000
-characters and `integrate` requires `expectedParentHead`
-(`packages/plus/src/teams/schema.ts:610`, `packages/plus/src/teams/schema.ts:627`).
+characters. `integrate`'s `expectedParentHead` and `checkpoint`'s
+`expectedHead` are optional and take a full or short commit or `HEAD`; given,
+a HEAD that moved refuses (`IntegrateInput`, `CheckpointInput`).
 `stop` bounds its optional `reason` to 1–300 characters
 (`packages/plus/src/teams/schema.ts`, `StopInput`).
 

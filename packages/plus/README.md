@@ -483,8 +483,10 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   so the first successful turn after the resume stays `idle` instead of
   stopping again.
 - `team_followup delivery:"now"` works with no tool call from the child.
-- `team_get_context` on a root run returns `brief: null` rather than failing
-  `E_NO_BRIEF`. The `conventions` field has been removed.
+- `team_get_context` on a root run has no `brief` and `briefPath: null`
+  rather than failing `E_NO_BRIEF`. A delegated run's Brief is its first
+  message, so `brief` (the rendered text) comes back only once a compaction
+  took that message out of the chat. The `conventions` field has been removed.
 - `team_followup` with the default `delivery:"queue"` against a working child
   is delivered when that child next goes idle, as a new attempt.
   `delivery:"now"` against a working child refuses with `E_BUSY` and
