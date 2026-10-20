@@ -421,13 +421,17 @@ export const Finding = Schema.Struct({
 })
 export type Finding = typeof Finding.Type
 
-export function validateSummary(summary: string): void {
+// An answer (a report, findings, a plan) is the deliverable itself, so its
+// summary may run longer than a commit's; its located items still belong in
+// findings, which the parent receives as well.
+export function validateSummary(summary: string, deliverable: Deliverable["kind"] | undefined): void {
   const lines = summary.split("\n").length
-  if (lines > 25) {
+  const max = deliverable === undefined || deliverable === "commit" ? 25 : 40
+  if (lines > max) {
     throw toolError(
       "E_SUMMARY",
-      `summary is ${lines} lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.`,
-      "a summary of ≤25 lines",
+      `summary is ${lines} lines (max ${max}). Detail goes to the report file automatically; keep the summary to what the parent must act on${max === 40 ? ", and put each located item in findings instead" : ""}.`,
+      `a summary of ≤${max} lines`,
     )
   }
 }
@@ -437,8 +441,8 @@ export const Report = Schema.Struct({
     description:
       "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
   }),
-  summary: Schema.String.check(Schema.isMaxLength(2500)).annotate({
-    description: "What your parent must act on, at most 25 lines; it receives it in full.",
+  summary: Schema.String.check(Schema.isMaxLength(5000)).annotate({
+    description: "What your parent must act on, at most 25 lines (40 for a report, findings or plan); it receives it in full.",
   }),
   concerns: field(
     Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))

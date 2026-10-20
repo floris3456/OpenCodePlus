@@ -1981,3 +1981,36 @@ test("delegate drops forbidden entries naming protected state and names an inval
     }
   })
 }, 30000)
+
+test("delegate names a missing briefFile, and refuses a review while a done child has not landed", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_review", children: ["w-abcdabcdabcdabcd"] })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const missing = rejected(await api.delegate(delegateInput({ requestID: "brief-missing", briefFile: "docs/plans/later.md" }), callerFor(parent)))
+      expect(missing.code).toBe("E_PATHS")
+      expect(missing.message).toContain("briefFile docs/plans/later.md does not exist or cannot be read: write it first")
+      // A done child whose commits are still in its own worktree.
+      const child = baseRun({ id: "w-abcdabcdabcdabcd", parent: parent.id, directory: repo.dir, state: "idle" })
+      await saveRun(root, child)
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done" })
+      const review = () =>
+        api.delegate(
+          delegateInput({ requestID: `review-${Math.random()}`, role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
+          callerFor(parent),
+        )
+      const unlanded = rejected(await review())
+      expect(unlanded.code).toBe("E_UNLANDED")
+      expect(unlanded.message).toContain("[w-abcdabcdabcdabcd] reported done but have not landed")
+      // Once it landed, the review is delegated.
+      await atomicJson(path.join(root, "runs", parent.id, "merge", "entry-1.json"), {
+        id: "entry-1", parentRun: parent.id, childRun: child.id, childBranch: "b", childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
+      })
+      expect(required(await review())).toMatchObject({ state: "starting" })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)

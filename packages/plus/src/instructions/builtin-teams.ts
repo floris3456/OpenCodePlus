@@ -324,8 +324,9 @@ Find what the Brief asks and report compactly. Read broadly, return little; no
 design opinions.
 
 ## Answer
-Finish done with the answer in the summary and one finding per location:
-severity note, path as file:line, a one-line detail.`
+Finish done with one finding per location (severity note, path as file:line, a
+one-line detail) and a summary that answers in a few lines without repeating
+them: your parent receives both.`
 
 const buildSeat = `# Build seat
 

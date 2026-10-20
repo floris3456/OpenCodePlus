@@ -149,7 +149,8 @@ describe("report", () => {
 })
 
 // Live Haiku runs refused whole briefs and reports over these limits (an
-// interface note of 200, a concern of 300, a 1500-character summary); each
+// interface note of 200, a concern of 300, a 1500-character summary, a
+// scout's 38-line answer); each
 // refusal re-sent the whole payload. They take what such runs wrote.
 test("brief and report text fields take the lengths live runs wrote", async () => {
   const { Schema } = await import("effect")
@@ -164,7 +165,7 @@ test("brief and report text fields take the lengths live runs wrote", async () =
     context: { interfaces: [{ path: "docs/reference/nbx-format.md", note: text(550) }], decisions: [text(900)] },
   }
   expect(() => Schema.decodeUnknownSync(Brief)(brief)).not.toThrow()
-  const report = { status: "done_with_concerns", summary: text(2400), concerns: [text(900)], deferred: [text(550)], needs: [{ kind: "info", detail: text(900) }] }
+  const report = { status: "done_with_concerns", summary: text(4900), concerns: [text(900)], deferred: [text(550)], needs: [{ kind: "info", detail: text(900) }] }
   expect(() => Schema.decodeUnknownSync(Report)(report)).not.toThrow()
-  expect(() => Schema.decodeUnknownSync(Report)({ ...report, summary: text(2600) })).toThrow()
+  expect(() => Schema.decodeUnknownSync(Report)({ ...report, summary: text(5100) })).toThrow()
 })

@@ -108,13 +108,19 @@ function caught(fn: () => unknown): Promise<unknown> {
 }
 
 test("validateSummary rejects summary with 26 lines with E_SUMMARY", async () => {
-  const thrown = await caught(() => validateSummary(lines(26)))
+  const thrown = await caught(() => validateSummary(lines(26), "commit"))
   expect(thrown).toMatchObject({
     code: "E_SUMMARY",
     message: "summary is 26 lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
     accepted: "a summary of ≤25 lines",
   })
-  expect(() => validateSummary(lines(25))).not.toThrow()
+  expect(() => validateSummary(lines(25), undefined)).not.toThrow()
+  // An answer is the deliverable itself: it may run longer, its locations in findings.
+  expect(() => validateSummary(lines(40), "report")).not.toThrow()
+  expect(await caught(() => validateSummary(lines(41), "findings"))).toMatchObject({
+    code: "E_SUMMARY",
+    message: "summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on, and put each located item in findings instead.",
+  })
 })
 
 test("teams/schema exports every tool input schema as the single source", () => {

@@ -71,11 +71,13 @@ import {
   toolError,
   validateSummary,
   type Check,
+  type Deliverable,
   type ResolvedBrief,
 } from "./schema.js"
 import { checksNote, readProjectChecks, resolveChecks } from "./project-checks.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { addAdhoc, claim } from "./tasks.js"
+import { queue } from "./merge.js"
 import { provision, slug, NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 
 export interface TeamApiError {
@@ -257,6 +259,18 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (invalid !== undefined) return fail("E_PATHS", `${PATHS_MESSAGE} Not one: "${invalid}".`, PATHS_ACCEPTED)
   const refused = briefRefusal(table, brief)
   if (refused !== undefined) return refused
+  // A reviewer sees what landed in your checkout, never a child's worktree: a
+  // review delegated while a done child is unlanded reviews the code without
+  // that child's change (s12-a: the reviewer found nothing to review).
+  if (brief.deliverable.kind === "findings") {
+    const unlanded = await unlandedDone(root, parent)
+    if (unlanded.length > 0)
+      return fail(
+        "E_UNLANDED",
+        `Your children [${unlanded.join(", ")}] reported done but have not landed, and a reviewer sees only what landed in your checkout. Land them with team_integrate first, then delegate the review.`,
+        { run: unlanded[0] },
+      )
+  }
 
   // The attached file is read before the brief limit: its content counts
   // toward the limit when it is pasted. A file over the member's
@@ -284,7 +298,10 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
         `briefFile must be inside your checkout (${callerReal}) or this run's directory (${runReal}); got ${realBrief}.`,
         [parent.directory, runDir],
       )
-    attached = { path: briefFile, content: await readFile(realBrief, "utf8") }
+    const content = await readFile(realBrief, "utf8").catch(() => undefined)
+    if (content === undefined)
+      return fail("E_PATHS", `briefFile ${briefFile} does not exist or cannot be read: write it first, or leave briefFile out.`, [parent.directory, runDir])
+    attached = { path: briefFile, content }
   }
   const attachmentLimit = bound(table, agent, "delegate", "limits.attachment")
   const attachmentPasted = attached === undefined || attachmentLimit === undefined || attached.content.length <= attachmentLimit
@@ -621,7 +638,8 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
 async function finishHandler(args: Report, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  validateSummary(args.summary)
+  const assignedBrief = await readJson<{ deliverable?: { kind?: Deliverable["kind"] } }>(path.join(root, "runs", caller.run.id, "brief.json"))
+  validateSummary(args.summary, assignedBrief?.deliverable?.kind)
   const stored = await loadRun(root, caller.run.id)
   if (stored === undefined) return fail("E_INTERNAL", `Unknown run "${caller.run.id}".`, caller.run.id)
   const last = stored.attempts[stored.attempts.length - 1]
@@ -685,7 +703,6 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
 
   const commits = await loadCommits(worktree, stored.base)
   if (done && allows(table, stored.role, "finish", "requirements.commit")) {
-    const assignedBrief = await readJson<{ deliverable?: { kind?: string } }>(path.join(root, "runs", stored.id, "brief.json"))
     if (assignedBrief?.deliverable?.kind === "commit" && commits.length === 0)
       return fail(
         "E_NO_COMMIT",
@@ -1209,6 +1226,16 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
     commits.push({ sha, subject: line.slice(sep + 1) })
   }
   return commits
+}
+
+// The caller's children whose last report is done (or done with concerns) and
+// whose commits have not landed: still open, not stopped, worktree present.
+async function unlandedDone(root: string, parent: RunRecord): Promise<string[]> {
+  const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => entry.childRun))
+  const children = await Promise.all(parent.children.filter((id) => !landed.has(id)).map((id) => loadRun(root, id)))
+  const open = children.filter((run): run is RunRecord => run !== undefined && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state))
+  const reports = await Promise.all(open.map(async (run) => ({ run, report: await latestReport(root, run.id) })))
+  return reports.filter((entry) => entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns").map((entry) => entry.run.id)
 }
 
 async function latestReport(root: string, runID: string): Promise<{ n: number; jsonPath: string; data: Record<string, unknown> } | undefined> {
