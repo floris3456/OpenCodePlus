@@ -184,7 +184,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     upstream: compactorRole, records: input.records, splits: input.splits ?? [], scopes: runtime.scopes,
     address: { level: runtime.level, agent: "compaction", item: "system:role", section: null },
   }).assembled
-  const fileRows = instructionFileItems(directory, instructions)
+  const fileRows = instructionFileItems(directory, input.ctx.location.project.directory, instructions)
   const teachingRows = teachingItems(teaching, instructions.length)
   const guidanceRows = guidanceItems(instructions.length + teachingRows.length)
   const userSystemRows = userSystemItems(instructions.length + teachingRows.length + guidanceRows.length)
@@ -966,11 +966,20 @@ async function readText(file: string): Promise<string | undefined> {
 }
 
 // Group "project" would offer `d`; instruction files are not deleted from
-// here (instruction.delete refuses), so every row is ambient inventory.
+// here (instruction.delete refuses), so every row is ambient inventory. The id
+// stays relative to the chat's folder (stored switches and edits name it); the
+// title says where the file is: its path in the project, else from home.
 function instructionFileItems(
   directory: string,
+  projectDirectory: string,
   files: readonly { path: string; text: string }[],
 ): Item[] {
+  const home = path.resolve(process.env.OPENCODE_TEST_HOME ?? os.homedir())
+  const titleOf = (file: string) => {
+    if (path.dirname(projectDirectory) !== projectDirectory && contains(projectDirectory, file)) return path.relative(projectDirectory, file)
+    if (contains(home, file)) return path.join("~", path.relative(home, file))
+    return file
+  }
   return files.map((file, index): Item => {
     const relative = path.relative(directory, file.path) || file.path
     const id = `system:${relative}`
@@ -978,7 +987,7 @@ function instructionFileItems(
       id,
       kind: "system",
       group: "none",
-      title: relative,
+      title: titleOf(file.path),
       text: file.text,
       enabled: upstreamEnabled(),
       fingerprint: fingerprint(file.text),

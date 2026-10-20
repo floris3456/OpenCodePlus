@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
+import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect, Exit } from "effect"
@@ -389,7 +390,7 @@ test("Tools heads every System list: it never moves, nothing moves above it, and
   expect(refusalFor(memo, tools)).toBe(`"Tools" cannot be deleted: OpenCode sends the definitions of the tools that are on; switch tools off in the Tools category`)
 })
 
-test("AGENTS.md files opens into every AGENTS.md file up from the directory, by relative path; each switches per agent and moves only with the part", async () => {
+test("AGENTS.md files opens into every AGENTS.md file up from the directory, by its path in the project or from home; each switches per agent and moves only with the part", async () => {
   const project = await tempRoot()
   const app = path.join(project, "app")
   const config = process.env.OPENCODE_CONFIG_DIR!
@@ -398,7 +399,14 @@ test("AGENTS.md files opens into every AGENTS.md file up from the directory, by 
   await Bun.write(path.join(config, "AGENTS.md"), "global guide\n")
   await Bun.write(path.join(project, "AGENTS.md"), "project guide\n")
   await Bun.write(path.join(app, "AGENTS.md"), "app guide\n")
-  const discovered = await discover({ ctx: fullContext({ directory: app, agents: [agentInfo("alpha", "upstream")] }), records: [], baseTemplates: [], activeBase: () => undefined })
+  // The chat is in app/ of a project whose root is project/; home is the fixture root.
+  const ctx = fullContext({ directory: app, agents: [agentInfo("alpha", "upstream")] })
+  const discovered = await discover({
+    ctx: { ...ctx, location: { ...ctx.location, project: { ...ctx.location.project, directory: AbsolutePath.make(project) } } },
+    records: [],
+    baseTemplates: [],
+    activeBase: () => undefined,
+  })
   const memo = { agents: discovered.agents, items: discovered.items, records: [], teams: [] }
   const nodes = expandedTree(memo)
   const list = systemList(nodes, "group:defaults:alpha:system")
@@ -407,7 +415,8 @@ test("AGENTS.md files opens into every AGENTS.md file up from the directory, by 
   const part = list.find((node) => node.label === "AGENTS.md files")!
   expect(part.expandable).toBe(true)
   const files = systemList(nodes, part.id)
-  expect(files.map((node) => node.label)).toEqual([path.relative(app, path.join(config, "AGENTS.md")), "AGENTS.md", path.join("..", "AGENTS.md")])
+  // The global file outside the project from home; the project's own by their path in it.
+  expect(files.map((node) => node.label)).toEqual([path.join("~", "config", "AGENTS.md"), path.join("app", "AGENTS.md"), "AGENTS.md"])
   expect(files.every((node) => node.actions?.toggle === true && node.actions?.edit === true && node.actions?.remove !== true)).toBe(true)
   const off = setEnabled(memo, files[2]!.id, false)
   if ("refusal" in off) throw new Error(off.refusal)
