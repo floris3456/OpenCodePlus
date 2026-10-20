@@ -46,6 +46,9 @@ async function runTask() {
   const dir = required("dir")
   const out = required("out")
   const prompt = await Bun.file(required("prompt-file")).text()
+  // --then-file: the user's next messages ("---" lines between them), each sent once the tree is
+  // quiet. Read before the chat starts, so a wrong path fails before any work does.
+  const followups = args["then-file"] === undefined ? [] : (await Bun.file(args["then-file"]).text()).split(/\n---\n/).map((text) => text.trim()).filter((text) => text.length > 0)
   await mkdir(out, { recursive: true })
   // A chat takes its agent's model only when the client sets it (the TUI does on agent choice).
   const [providerID, ...modelParts] = required("model").split("/")
@@ -59,8 +62,6 @@ async function runTask() {
   const started = Date.now()
   log(out, `session ${top} agent ${required("agent")} dir ${dir}`)
   await api("POST", `/api/session/${top}/prompt`, { text: prompt, delivery: "steer" })
-  // --then-file: the user's next messages ("---" lines between them), each sent once the tree is quiet.
-  const followups = args["then-file"] === undefined ? [] : (await Bun.file(args["then-file"]).text()).split(/\n---\n/).map((text) => text.trim()).filter((text) => text.length > 0)
   await watch(top, out, dir, started, followups)
 }
 
