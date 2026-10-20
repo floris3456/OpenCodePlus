@@ -393,7 +393,7 @@ Brief `scope.paths` max 40, `forbidden` max 20, `interfaces` max 20,
 (`packages/plus/src/teams/schema.ts:141`–`packages/plus/src/teams/schema.ts:156`).
 Checks are at most 12, with distinct ids and explicit `bun test FILE` or
 `bun run SCRIPT` argv (`packages/plus/src/teams/schema.ts:95`–
-`packages/plus/src/teams/schema.ts:113`). A report summary is at most 15 lines
+`packages/plus/src/teams/schema.ts:113`). A report summary is at most 25 lines
 (`packages/plus/src/teams/schema.ts:173`) and 2500 characters
 (`packages/plus/src/teams/schema.ts:186`); `needs`, `concerns`, `deferred` max
 10 and `findings` max 50 (`packages/plus/src/teams/schema.ts:187`–
@@ -424,7 +424,7 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_TRANSITION` | An illegal run/attempt transition | `packages/plus/src/teams/run.ts:210`, `packages/plus/src/teams/run.ts:342` |
 | `E_LOCKED` | State root locked by another writer | `packages/plus/src/teams/store.ts:114` |
 | `E_CHECKS` | Check validation (count, ids, argv form) | `packages/plus/src/teams/schema.ts:97` |
-| `E_SUMMARY` | Report summary over 15 lines | `packages/plus/src/teams/schema.ts:177` |
+| `E_SUMMARY` | Report summary over 25 lines | `packages/plus/src/teams/schema.ts:177` |
 | `E_BOUNDS` | In-flight bounds exceeded | `packages/plus/src/teams/api.ts:274` |
 | `E_PATHS` | Scope path outside the task worktree | `packages/plus/src/teams/api.ts:235`, `packages/plus/src/teams/api.ts:337` |
 | `E_REPO` | Unknown repo for delegate | `packages/plus/src/teams/api.ts:212` |

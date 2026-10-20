@@ -107,14 +107,14 @@ function caught(fn: () => unknown): Promise<unknown> {
   )
 }
 
-test("validateSummary rejects summary with 16 lines with E_SUMMARY", async () => {
-  const thrown = await caught(() => validateSummary(lines(16)))
+test("validateSummary rejects summary with 26 lines with E_SUMMARY", async () => {
+  const thrown = await caught(() => validateSummary(lines(26)))
   expect(thrown).toMatchObject({
     code: "E_SUMMARY",
-    message: "summary is 16 lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
-    accepted: "a summary of ≤15 lines",
+    message: "summary is 26 lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
+    accepted: "a summary of ≤25 lines",
   })
-  expect(() => validateSummary(lines(15))).not.toThrow()
+  expect(() => validateSummary(lines(25))).not.toThrow()
 })
 
 test("teams/schema exports every tool input schema as the single source", () => {
