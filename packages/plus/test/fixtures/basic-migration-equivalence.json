@@ -418,7 +418,7 @@
         },
         "perm:team_get_context:contents.siblings": {
           "state": "on",
-          "text": "Sibling runs of the same task"
+          "text": "Sibling runs (its parent's other open runs)"
         },
         "perm:team_get_context:accepts.scope-paths": {
           "state": "off",
@@ -1515,7 +1515,7 @@
         },
         "perm:team_get_context:contents.siblings": {
           "state": "on",
-          "text": "Sibling runs of the same task"
+          "text": "Sibling runs (its parent's other open runs)"
         },
         "perm:team_get_context:accepts.scope-paths": {
           "state": "off",

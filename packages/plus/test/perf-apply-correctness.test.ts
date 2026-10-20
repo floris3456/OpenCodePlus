@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import {
   resolve,
@@ -13,8 +15,10 @@ import {
 } from "../src/instructions/model.js"
 import { derive } from "../src/instructions/sections.js"
 
-const REAL_STORE_SOURCE =
-  "/home/bliss/OpenCodePlus/run/plus-dev/worktrees-plus-1.1.17-opencode/config/opencode/opencodeplus/instructions/records.jsonl"
+// A real store: the installed release's global instructions on this machine
+// (copied before it is read). It named a dev home's store that has since been
+// removed; a machine without a release store cannot run that test.
+const REAL_STORE_SOURCE = path.join(os.homedir(), ".config", "opencodeplus", "instructions", "records.jsonl")
 const TEMP_DIR =
   "/home/bliss/OpenCodePlus/run/plus/tmp/opencodeplus/p117-perf-apply/test-store"
 
@@ -164,7 +168,7 @@ describe("perf-apply resolution memo correctness", () => {
     }
   })
 
-  test("memoized vs unmemoized produces identical results for copy of real store", async () => {
+  test.skipIf(!existsSync(REAL_STORE_SOURCE))("memoized vs unmemoized produces identical results for copy of real store", async () => {
     await fs.mkdir(TEMP_DIR, { recursive: true })
     const tempStorePath = path.join(TEMP_DIR, "records.jsonl")
     await fs.copyFile(REAL_STORE_SOURCE, tempStorePath)
