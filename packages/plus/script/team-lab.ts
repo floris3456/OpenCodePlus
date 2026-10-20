@@ -228,7 +228,12 @@ function sessionMetrics(id: string, role: string, exported: { info: { agent?: st
     const context = tokens.input + tokens.cache.read + tokens.cache.write
     return { input: tokens.input, read: tokens.cache.read, write: tokens.cache.write, output: tokens.output + (tokens.reasoning ?? 0), context, model: `${step.model?.providerID}/${step.model?.id}` }
   })
-  const sum = (key: "input" | "read" | "write" | "output") => perStep.reduce((total, step) => total + step[key], 0)
+  // A compaction is a model request of its own: its tokens count, and so does a failed attempt.
+  const compactions = exported.messages.filter((message) => message.type === "compaction")
+  const compacted = compactions.map((message) => message.tokens ?? { input: 0, output: 0, cache: { read: 0, write: 0 } })
+  const sum = (key: "input" | "read" | "write" | "output") =>
+    perStep.reduce((total, step) => total + step[key], 0) +
+    compacted.reduce((total, tokens) => total + (key === "input" ? tokens.input : key === "output" ? tokens.output + (tokens.reasoning ?? 0) : tokens.cache[key]), 0)
   const later = perStep.slice(1)
   const laterContext = later.reduce((total, step) => total + step.context, 0)
   const first = steps[0]?.time?.created
@@ -239,6 +244,7 @@ function sessionMetrics(id: string, role: string, exported: { info: { agent?: st
     agent: exported.info.agent ?? null,
     models: [...new Set(perStep.map((step) => step.model))],
     steps: steps.length,
+    compactions: { done: compactions.filter((message) => message.status === "completed").length, failed: compactions.filter((message) => message.status === "failed").length },
     input: sum("input"),
     cacheRead: sum("read"),
     cacheWrite: sum("write"),
@@ -290,10 +296,10 @@ function markdown(summary: { top: string; wallMs: number | null; totals: ReturnT
     "",
     `wall ${summary.wallMs === null ? "-" : `${Math.round(summary.wallMs / 1000)} s`} · chats ${t.chats} · steps ${t.steps} · input ${k(t.input)} · cache read ${k(t.cacheRead)} · cache write ${k(t.cacheWrite)} · output ${k(t.output)} · cache hit ${pct(t.cacheHit)}`,
     "",
-    "| chat | agent | steps | ctx first | ctx max | hit (later) | cold later | input | read | write | out | s | tools (calls/errors) |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| chat | agent | steps | compactions | ctx first | ctx max | hit (later) | cold later | input | read | write | out | s | tools (calls/errors) |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...summary.sessions.map((session) =>
-      `| ${session.role} | ${session.agent} | ${session.steps} | ${k(session.contextFirst)} | ${k(session.contextMax)} | ${pct(session.cacheHitLater)} | ${session.coldLaterSteps} | ${k(session.input)} | ${k(session.cacheRead)} | ${k(session.cacheWrite)} | ${k(session.output)} | ${session.ms === null ? "-" : Math.round(session.ms / 1000)} | ${Object.entries(session.tools).map(([name, entry]) => `${name} ${entry.calls}${entry.errors > 0 ? `/${entry.errors}` : ""}`).join(", ")} |`,
+      `| ${session.role} | ${session.agent} | ${session.steps} | ${session.compactions.done}${session.compactions.failed > 0 ? ` (+${session.compactions.failed} failed)` : ""} | ${k(session.contextFirst)} | ${k(session.contextMax)} | ${pct(session.cacheHitLater)} | ${session.coldLaterSteps} | ${k(session.input)} | ${k(session.cacheRead)} | ${k(session.cacheWrite)} | ${k(session.output)} | ${session.ms === null ? "-" : Math.round(session.ms / 1000)} | ${Object.entries(session.tools).map(([name, entry]) => `${name} ${entry.calls}${entry.errors > 0 ? `/${entry.errors}` : ""}`).join(", ")} |`,
     ),
     "",
     "| run | role | state | attempts | reports |",
