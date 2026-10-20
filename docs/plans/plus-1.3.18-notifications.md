@@ -63,6 +63,13 @@ emitted only when `notify` or `sound` applies; `player` is true while a sound pl
   `attention.player` every 20 s, plays each event's sound for every chat of the server (built-in
   sounds are bundled; a file path is fetched once with `attention.sound`), reconnects on its own.
   `--desktop` also shows each `notify` event as an OS notification (notify-send / osascript).
+  Built (packages/cli/src/commands/handlers/notify.ts, services/notify-*.ts): the remote end is
+  read with `ssh <target> "sh -c '…cat ${XDG_CONFIG_HOME:-$HOME/.config}/opencodeplus/service.json'"`
+  (missing hostname/port: the service's own defaults); no BatchMode, so ssh may ask for a password
+  in notify's terminal; the tunnel is its own connection (`ControlPath=none`). Without a target it
+  only discovers the local service's registration and never starts one; `--standalone` is
+  refused (a private server has no chats). `--test [<event>]` asks once per run; `--once` exits
+  after it (1 if the sound failed). Sounds are dropped within 300 ms of the last one.
 - Alerts › Notification protocol (auto, OSC 99, OSC 777, OSC 9, off): sets
   `OPENTUI_NOTIFICATION_PROTOCOL` at TUI start, for terminals OpenTUI cannot detect over SSH
   (Windows Terminal).

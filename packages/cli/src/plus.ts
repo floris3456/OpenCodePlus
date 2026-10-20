@@ -3,9 +3,10 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { ensurePluginRuntime } from "@opencode/plugin/runtime"
 import { Effect } from "effect"
-import { Commands, InstructionsCommand } from "./commands/commands"
-import { instructionsHandler } from "./commands/handlers"
+import { Commands, InstructionsCommand, NotifyCommand } from "./commands/commands"
+import { instructionsHandler, notifyHandler } from "./commands/handlers"
 import { instructionsInvocation, runInstructionsCli } from "./commands/handlers/instructions"
+import { notifyInvocation, runNotifyCli } from "./commands/handlers/notify"
 import { Runtime } from "./framework/runtime"
 import { Observability } from "@opencode/util/observability"
 import { Updater } from "./services/updater"
@@ -84,13 +85,13 @@ export const handlers = {
   "search-mcp": () => import("./commands/handlers/search-mcp"),
 }
 
-export const plusHandlers = { ...handlers, instructions: instructionsHandler }
-// Plus-only `instructions` command: derived in plus.ts so the shared `Commands`
-// and the upstream index.ts handler map stay untouched (the command never runs
-// under plain opencode).
+export const plusHandlers = { ...handlers, instructions: instructionsHandler, notify: notifyHandler }
+// Plus-only `instructions` and `notify` commands: derived in plus.ts so the
+// shared `Commands` and the upstream index.ts handler map stay untouched (the
+// commands never run under plain opencode).
 export const plusCommands = {
   ...Commands,
-  commands: { ...Commands.commands, instructions: InstructionsCommand },
+  commands: { ...Commands.commands, instructions: InstructionsCommand, notify: NotifyCommand },
 }
 export const Handlers = Runtime.handlers(plusCommands, plusHandlers)
 
@@ -124,6 +125,11 @@ if (import.meta.main || typeof Bun === "undefined" || process.argv[1]?.includes(
     const invocation = instructionsInvocation(process.argv)
     if (invocation !== undefined) {
       yield* runInstructionsCli(invocation)
+      return
+    }
+    const notify = notifyInvocation(process.argv)
+    if (notify !== undefined) {
+      yield* runNotifyCli(notify)
       return
     }
     return yield* Runtime.run(plusCommands, Handlers, { version: OPENCODE_VERSION })

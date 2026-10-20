@@ -94,7 +94,9 @@ unset OPENCODE_CONFIG_PROJECT_DISABLE
 # directory detection (no caller directory is appended: it would land in the
 # op's positional id). The Plus entrypoint (`src/plus.ts`) is the one that
 # registers the command and dispatches the dynamic op flags before Effect CLI;
-# the upstream `src/index.ts` used for the TUI has neither.
+# the upstream `src/index.ts` used for the TUI has neither. `notify`
+# (`opencodeplus notify [<ssh-target>]`, the sound player) takes the same lane:
+# its ssh target is not a directory either.
 first_nonflag=""
 for arg in "$@"; do
   case "$arg" in
@@ -106,7 +108,7 @@ for arg in "$@"; do
   esac
 done
 
-if [ "$first_nonflag" = "instructions" ]; then
+if [ "$first_nonflag" = "instructions" ] || [ "$first_nonflag" = "notify" ]; then
   # This lane uses the Plus CLI product guard and storage identity. Keep the
   # default source TUI lane's existing identity untouched.
   export OPENCODE_PRODUCT=opencodeplus
