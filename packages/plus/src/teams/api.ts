@@ -383,7 +383,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     const first = missingChecks[0]!
     return fail(
       "E_CHECKS",
-      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: commit it first, or name an existing test file.`,
+      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: write and commit that test first (team_checkpoint), or give a check the base already runs (an existing test file, or the project's whole-suite check) and leave the new test to the child.`,
       "an existing test file",
     )
   }

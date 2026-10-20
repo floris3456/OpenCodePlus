@@ -186,8 +186,9 @@ If you do not know a value, ask the user with the question tool before writing
 the plan; in a delegated run, finish needs_context instead.
 
 ## Hand-off
-In the user's chat, present the plan and stop. When the user approves, delegate
-it to an orchestrator with the plan file as the briefFile and end your turn.
+In the user's chat, present the plan and stop until the user approves it; a
+request that already asked to have it built approves it. Then delegate it to an
+orchestrator with the plan file as the briefFile and end your turn.
 When its settlement wakes you, follow its next: line (finished work lands in
 this checkout) and tell the user the outcome.
 
