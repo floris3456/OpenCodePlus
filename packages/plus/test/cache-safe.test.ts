@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
+import { Location } from "@opencode/schema/location"
 import { Model } from "@opencode/schema/model"
+import { Project } from "@opencode/schema/project"
 import { Provider } from "@opencode/schema/provider"
+import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect } from "effect"
@@ -58,12 +61,20 @@ function makeItem(item: Partial<Item> & { id: string; kind: Item["kind"]; text: 
 
 type SessionRead = (sessionID: string) => Effect.Effect<{ readonly agent?: string }, unknown>
 
-function createHarness(read: SessionRead = () => Effect.die("unused session.get")) {
+function createHarness(read: SessionRead = () => Effect.die("unused session.get"), directory?: string) {
   const contextCallbacks: Array<(event: SessionHooks["context"]) => Effect.Effect<void>> = []
   const compactionCallbacks: Array<(event: SessionHooks["compaction"]) => Effect.Effect<void>> = []
   const synthetics: Array<{ sessionID: Session.ID; text: string; delivery?: string; resume?: boolean }> = []
 
   const ctx: Context = context({
+    ...(directory === undefined
+      ? {}
+      : {
+          location: new Location.Info({
+            directory: AbsolutePath.make(directory),
+            project: { id: Project.ID.global, directory: AbsolutePath.make(directory), canonical: AbsolutePath.make(directory) },
+          }),
+        }),
     session: {
       hook: (name, callback) =>
         Effect.sync(() => {
@@ -1197,4 +1208,126 @@ test("a stored pin from an earlier plan set is not restored, and pins idle past 
   await Effect.runPromise(sweepStoredPins(storage, Date.now()))
   expect([...entries.keys()].filter((key) => key.includes("ses_idle"))).toEqual([])
   expect([...entries.keys()].filter((key) => key.includes("ses_epoch")).length).toBeGreaterThan(0)
+})
+
+// A chat moved to another folder is served by that folder's Plus, which restores the chat's
+// pin. OpenCode keeps sending the instruction files the chat started with, so the pinned rows
+// must name those files, not the same relative names in the new folder: otherwise they match
+// nothing, are appended a second time, and the cache misses from the system prompt on (a move
+// back to worktrees/ wrote 383,747 tokens again).
+function folderRows(ids: readonly [string, string][], edited?: string): PublishPartsInput {
+  return {
+    applyInput: {
+      agents: [{ id: "alpha", level: "project" }],
+      items: [
+        makeItem({ id: "system:role", kind: "system", text: "You are helpful.", enabled: true, agents: ["alpha"] }),
+        ...ids.map(([id, text]) => makeItem({ id, kind: "system", text, enabled: true, agents: ["alpha"] })),
+      ],
+      // A Plus edit of the worktrees AGENTS.md, under this folder's id for it.
+      records: edited === undefined
+        ? []
+        : [{ type: "customization", level: "project", agent: "alpha", section: null, basedOn: fingerprint("Worktree names."), updated: "2026-10-20T00:00:00.000Z", item: edited, text: "Worktree names, as edited." }],
+      splits: [],
+      scopes: { global: new Set(), defaults: new Set() },
+    },
+  }
+}
+
+const featureIds: [string, string][] = [
+  ["system:AGENTS.md", "Product rules."],
+  ["system:../../AGENTS.md", "Worktree names."],
+  ["system:../../../AGENTS.md", "Workspace rules."],
+]
+
+// What OpenCode sends for the chat, before and after the move.
+function movedRequest() {
+  return sessionEvent("ses_moved", "alpha", {}, [
+    { type: "text", text: "You are helpful." },
+    { type: "text", text: "Worktree names.", metadata: { instruction: { path: "/workspace/worktrees/AGENTS.md" } } },
+    { type: "text", text: "Workspace rules.", metadata: { instruction: { path: "/workspace/AGENTS.md" } } },
+  ])
+}
+
+test("a chat moved to another folder keeps the system prompt it was sent", async () => {
+  const { storage } = memoryStorage()
+  const before = createHarness(undefined, "/workspace/worktrees")
+  const pins = { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }
+  await applyPublishParts(before.ctx, pins, folderRows([
+    ["system:AGENTS.md", "Worktree names."],
+    ["system:../AGENTS.md", "Workspace rules."],
+  ], "system:AGENTS.md"))
+  const first = movedRequest()
+  await Effect.runPromise(before.contextCallbacks.at(-1)!(first))
+  expect(first.system.map((part) => part.text)).toEqual(["You are helpful.", "Worktree names, as edited.", "Workspace rules."])
+
+  const after = createHarness(undefined, "/workspace/worktrees/feature/opencode")
+  await applyPublishParts(after.ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, folderRows(featureIds, "system:../../AGENTS.md"))
+  const moved = movedRequest()
+  await Effect.runPromise(after.contextCallbacks.at(-1)!(moved))
+
+  expect(moved.system, "the system prompt the chat was sent").toEqual(first.system)
+  expect(after.synthetics, "OpenCode announces its own files").toHaveLength(0)
+})
+
+// A pin stored before plans named files absolutely still holds relative ids; after a move they
+// name the new folder's files and match nothing. An unedited file is OpenCode's own part, so
+// Plus adds no copy of it.
+test("a pin stored with relative instruction ids adds no copy of a file after a move", async () => {
+  const { storage } = memoryStorage()
+  const stored = new SessionPinManager(storage)
+  const pin = stored.pinSession("ses_moved", { providerID: "anthropic", id: "claude-3-5-sonnet" }, createPlanSet({
+    roles: new Map(),
+    base: [],
+    native: [],
+    instructions: [
+      { agent: "alpha", path: "AGENTS.md", text: "Worktree names.", enabled: true, asSource: true },
+      { agent: "alpha", path: "../AGENTS.md", text: "Workspace rules.", enabled: true, asSource: true },
+    ],
+    scrubByAgent: new Map(),
+    needsNarrowing: false,
+    permissions: answering("plans"),
+    customByAgent: new Set(),
+  }))
+  pin.pinnedSystem0.set("alpha", "You are helpful.")
+  await Effect.runPromise(stored.save(pin, "alpha"))
+
+  const after = createHarness(undefined, "/workspace/worktrees/feature/opencode")
+  await applyPublishParts(after.ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, folderRows(featureIds))
+  const moved = movedRequest()
+  await Effect.runPromise(after.contextCallbacks.at(-1)!(moved))
+
+  expect(moved.system).toEqual(movedRequest().system)
+})
+
+// The same pin in the folder it was made in, after an upgrade: an edited file is not announced
+// as removed and added again because the current plans name it absolutely.
+test("a pin stored with relative instruction ids announces nothing when nothing changed", async () => {
+  const { storage } = memoryStorage()
+  const stored = new SessionPinManager(storage)
+  const pin = stored.pinSession("ses_moved", { providerID: "anthropic", id: "claude-3-5-sonnet" }, createPlanSet({
+    roles: new Map([["alpha", "You are helpful."]]),
+    base: [],
+    native: [],
+    instructions: [
+      { agent: "alpha", path: "AGENTS.md", text: "Worktree names, as edited.", enabled: true },
+      { agent: "alpha", path: "../AGENTS.md", text: "Workspace rules.", enabled: true, asSource: true },
+    ],
+    scrubByAgent: new Map(),
+    needsNarrowing: false,
+    permissions: answering("plans"),
+    customByAgent: new Set(),
+  }))
+  pin.pinnedSystem0.set("alpha", "You are helpful.")
+  await Effect.runPromise(stored.save(pin, "alpha"))
+
+  const again = createHarness(undefined, "/workspace/worktrees")
+  await applyPublishParts(again.ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, folderRows([
+    ["system:AGENTS.md", "Worktree names."],
+    ["system:../AGENTS.md", "Workspace rules."],
+  ], "system:AGENTS.md"))
+  const request = movedRequest()
+  await Effect.runPromise(again.contextCallbacks.at(-1)!(request))
+
+  expect(request.system.map((part) => part.text)).toEqual(["You are helpful.", "Worktree names, as edited.", "Workspace rules."])
+  expect(again.synthetics).toHaveLength(0)
 })

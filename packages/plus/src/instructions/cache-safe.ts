@@ -548,8 +548,9 @@ export function computeChangeNote(
   for (const [filePath, curPlan] of curByPath) {
     const pinPlan = pinByPath.get(filePath)
     // A file edited where Plus changes nothing reaches the chat as OpenCode's own instruction
-    // notice; a second note here would announce the same change twice.
-    if (pinPlan?.asSource === true && curPlan.asSource === true) continue
+    // notice; a second note here would announce the same change twice. So does a file of
+    // that kind that is new to the chat (one a folder move brought in).
+    if (curPlan.asSource === true && (pinPlan === undefined || pinPlan.asSource === true)) continue
     const label = instructionLabel(filePath)
     if (pinPlan === undefined || !pinPlan.enabled) {
       if (curPlan.enabled) {
@@ -580,6 +581,7 @@ export function computeChangeNote(
   }
 
   for (const [filePath, pinPlan] of pinByPath) {
+    if (pinPlan.asSource === true) continue
     if (pinPlan.enabled && !curByPath.has(filePath)) {
       items.push(`Instruction "${instructionLabel(filePath)}" is removed.`)
     }
@@ -630,6 +632,7 @@ export async function checkAndEmitChangeNote(
   sessionID: string,
 ): Promise<string | undefined> {
   adoptEmptyPinnedRole(pin, current, agent)
+  locatePinnedInstructions(pin, ctx.location.directory)
   const diff = computeChangeNote(pin, current, agent)
   if (diff === undefined) return undefined
   if (pin.lastNoteHash === diff.hash) return undefined
@@ -650,6 +653,18 @@ export async function checkAndEmitChangeNote(
     )
   }
   return diff.noteText
+}
+
+// A pin stored before plans named their files absolutely holds relative ids.
+// They are resolved against the folder serving the chat, as applying the pin
+// does, so the diff against the current plans does not announce each edited
+// file as removed and added again.
+function locatePinnedInstructions(pin: SessionPin, directory: string): void {
+  if (pin.planSet.instructions.every((plan) => path.isAbsolute(plan.path))) return
+  pin.planSet = {
+    ...pin.planSet,
+    instructions: pin.planSet.instructions.map((plan) => (path.isAbsolute(plan.path) ? plan : { ...plan, path: path.resolve(directory, plan.path) })),
+  }
 }
 
 // A role the pin never had (the agent had none at the first request) is taken

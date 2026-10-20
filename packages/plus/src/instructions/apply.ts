@@ -53,7 +53,7 @@ import {
   type EnforcementState,
   type PermissionTable,
 } from "./permission-enforce.js"
-import { guidanceItemId, guidancePath, isModelPromptFile, isUserSystemFile, teachingFilePath, teachingItemId, userSystemFile } from "./paths.js"
+import { guidanceItemId, guidancePath, isModelPromptFile, teachingFilePath, teachingItemId, userSystemFile } from "./paths.js"
 import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
@@ -325,8 +325,8 @@ export async function applyPublishParts(
     .map(nativePlan)
 
   const instructionCand = instructionCandidates(input.applyInput)
-  const instructions = instructionCand.filter((c) => !c.noop).map(instructionPlanOf)
-  const allInstructions = instructionCand.map(instructionPlanOf)
+  const instructions = instructionCand.filter((c) => !c.noop).map((c) => instructionPlanOf(c, ctx.location.directory))
+  const allInstructions = instructionCand.map((c) => instructionPlanOf(c, ctx.location.directory))
 
   // 1. roles
   const rolesFp = JSON.stringify(roles)
@@ -1433,18 +1433,21 @@ function instructionCandidates(input: ApplyInput): InstructionCandidate[] {
   })
 }
 
-function instructionPlans(input: ApplyInput, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
+function instructionPlans(input: ApplyInput, directory: string, options?: { readonly skipNoop?: boolean }): InstructionPlan[] {
   const candidates = instructionCandidates(input)
-  if (options?.skipNoop === true) return candidates.map(instructionPlanOf)
-  return candidates.filter((c) => !c.noop).map(instructionPlanOf)
+  if (options?.skipNoop === true) return candidates.map((c) => instructionPlanOf(c, directory))
+  return candidates.filter((c) => !c.noop).map((c) => instructionPlanOf(c, directory))
 }
 
 // Every path that installs instruction plans builds them here, so a model
-// prompt never loses the models it is for.
-function instructionPlanOf(c: InstructionCandidate): InstructionPlan {
+// prompt never loses the models it is for. A plan names its file by absolute
+// path, resolved against the folder whose discovery found it: a chat pinned
+// here and moved to another folder keeps naming the files OpenCode keeps
+// sending it, where the relative id would name another folder's files.
+function instructionPlanOf(c: InstructionCandidate, directory: string): InstructionPlan {
   return {
     agent: c.agent,
-    path: c.path,
+    path: resolveInstructionId(directory, c.path),
     text: c.text,
     enabled: c.enabled,
     ...(c.models === undefined ? {} : { models: c.models }),
@@ -1580,7 +1583,7 @@ export async function installSessionPlans(
       })))
     }
     const team = new Set(input.teamAgents ?? [])
-    const instructions = precomputed?.instructions ?? instructionPlans(input)
+    const instructions = precomputed?.instructions ?? instructionPlans(input, ctx.location.directory)
     const scrubByAgent = new Map(plans.scrubByAgent)
     const needsScrub = plans.scrubByAgent.some(([_, keywords]) => keywords.length > 0)
     const contextHook =
@@ -1619,7 +1622,7 @@ export async function installSessionPlans(
       const customByAgent = precomputed?.customByAgent ?? state?.currentPlanSet?.customByAgent ?? (await readCustomSystem(ctx, input.agents))
       const fallbackPlanSet = state?.currentPlanSet ?? (() => {
         const allRoles = roleUpdates(input, { skipNoop: true })
-        const allInstructions = instructionPlans(input, { skipNoop: true })
+        const allInstructions = instructionPlans(input, ctx.location.directory, { skipNoop: true })
         const allCandidates = toolCandidates(input, { skipNoop: true })
         const allNative: ToolPlan[] = allCandidates
           .filter((candidate) => candidate.item.codemode !== true && candidate.item.execute !== true)
@@ -2026,11 +2029,11 @@ function requestTarget(classifier: RequestClassifier, ref: { providerID: unknown
   return { providerID, id, ...(found === undefined ? {} : { name: found.name }) }
 }
 
+// A plan built here already names its file absolutely (instructionPlanOf), as
+// do the seeded and user System files; a relative id comes from a pin stored
+// before plans did, and resolves against the chat's folder as it did then.
 function resolveInstructionId(directory: string, id: string): string {
-  if (id === teachingFilePath() || id === guidancePath() || isUserSystemFile(id) || isModelPromptFile(id)) return id
-  const relative = id.replace(/^\/+/, "")
-  if (relative === "") return directory
-  return path.resolve(directory, relative)
+  return path.isAbsolute(id) ? id : path.resolve(directory, id)
 }
 
 // Direct system-array form for unit callers that already hold the real event
@@ -2052,6 +2055,9 @@ function applyInstructionsToSystem(
       if (current.text !== plan.text) system[index] = { ...current, text: plan.text }
       continue
     }
+    // A file Plus changes nothing in is OpenCode's own part: where OpenCode
+    // does not send it, Plus does not add it either.
+    if (plan.asSource === true) continue
     const part = { type: "text" as const, text: plan.text, metadata: { instruction: { path: plan.path } } }
     if (plan.models === undefined) {
       system.push(part)
