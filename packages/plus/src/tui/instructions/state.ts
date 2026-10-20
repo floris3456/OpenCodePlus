@@ -168,6 +168,7 @@ export function toRpcRecords(
         ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
         ...(record.warming === undefined ? {} : { warming: record.warming }),
         ...(record.interval === undefined ? {} : { interval: record.interval }),
+        ...(record.waiting === undefined ? {} : { waiting: record.waiting }),
         ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
         ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
         ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
@@ -1222,7 +1223,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   }
 
   async function resetNode(node: TreeNode, approved = false): Promise<boolean> {
-    if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
+    if (isModelDefaultRowId(node.id)) return editModelSettings(node, { warming: null, interval: null, waiting: null, prompt: null, effort: null })
     const setting = node.address === undefined ? undefined : parseModelSettingItemId(node.address.item)
     if (setting !== undefined) {
       // The cold-cache group's reset drops this level's switch and list.
@@ -1399,6 +1400,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     fields: {
       warming?: string | null
       interval?: string | null
+      waiting?: string | null
       prompt?: string | null
       effort?: string | null
       compactWarm?: string | null
@@ -1503,7 +1505,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         setStatus(`Delete of "${node.label}" cancelled`)
         return false
       }
-      return editModelSettings(node, { warming: null, interval: null, prompt: null, effort: null })
+      return editModelSettings(node, { warming: null, interval: null, waiting: null, prompt: null, effort: null })
     }
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = removeModelRow(memoInput(), node.id, treeMemo())
@@ -2013,6 +2015,7 @@ function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord 
   const set = [
     ...(record.warming === undefined ? [] : [`warming ${record.warming}`]),
     ...(record.interval === undefined ? [] : [`every ${record.interval}`]),
+    ...(record.waiting === undefined ? [] : [`waiting ${record.waiting}`]),
     ...(record.prompt === undefined ? [] : ["a prompt"]),
     ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
   ]

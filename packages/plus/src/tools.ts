@@ -146,7 +146,7 @@ const SetDescription =
   "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
   "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
-  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
+  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h) and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
   "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
 
 const EditDescription =
@@ -293,6 +293,7 @@ const SetInput = Schema.Struct({
   preset: Schema.optionalKey(Schema.NullOr(PresetInput)),
   warming: Schema.optionalKey(Schema.String),
   interval: Schema.optionalKey(Schema.String),
+  waiting: Schema.optionalKey(Schema.String),
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
   compactWarm: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -1448,6 +1449,7 @@ function setModel(
     resolve?: "keep" | "take" | "edit" | "merge"
     warming?: string
     interval?: string
+    waiting?: string
     prompt?: string
     effort?: string
     compactWarm?: string | null
@@ -1468,7 +1470,7 @@ function setModel(
     const label = node?.label ?? id
     if (input.active === false) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deactivated with active:false; remove the candidate to mask it` }))
     if ((input.active !== undefined || input.state !== undefined) &&
-      (input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.prompt !== undefined))
+      (input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.waiting !== undefined || input.prompt !== undefined))
       return yield* Effect.fail(new Tool.Error({ message: `"${label}": set candidate or warming separately from activation or state` }))
     const compaction = compactionFieldsOf(input)
     if ("error" in compaction) return yield* Effect.fail(new Tool.Error({ message: compaction.error }))
@@ -1480,8 +1482,8 @@ function setModel(
       const target = input.text === undefined ? modelTargetOfAddress(node) : parseModelText(input.text)
       if (target === undefined || node?.address === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `"${label}" takes provider/model or provider/model#variant` }))
-      const edit = input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.prompt !== undefined
-        ? editModelRow(memo, id, { ...target, ...(input.warming === undefined ? {} : { warming: input.warming }), ...(input.interval === undefined ? {} : { interval: input.interval }), ...(input.prompt === undefined ? {} : { prompt: input.prompt }) })
+      const edit = input.text !== undefined || input.warming !== undefined || input.interval !== undefined || input.waiting !== undefined || input.prompt !== undefined
+        ? editModelRow(memo, id, { ...target, ...(input.warming === undefined ? {} : { warming: input.warming }), ...(input.interval === undefined ? {} : { interval: input.interval }), ...(input.waiting === undefined ? {} : { waiting: input.waiting }), ...(input.prompt === undefined ? {} : { prompt: input.prompt }) })
         : undefined
       if (edit !== undefined && "refusal" in edit) return yield* Effect.fail(new Tool.Error({ message: edit.refusal }))
       const models = setModelCompaction(edit?.models ?? modelsOfMemo(memo), node.address, target, compaction.fields, new Date().toISOString())
@@ -1489,7 +1491,7 @@ function setModel(
       return { output: { id, ...applied } }
     }
     // Cache warming for this agent on this model at this level; "" inherits.
-    if (input.warming !== undefined && input.text === undefined && input.interval === undefined && input.prompt === undefined) {
+    if (input.warming !== undefined && input.text === undefined && input.interval === undefined && input.waiting === undefined && input.prompt === undefined) {
       const warming = input.warming
       const op = setModelWarmingRow(memo, id, warming)
       if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
@@ -1499,7 +1501,7 @@ function setModel(
     // A model row's text replaces the candidate (and may set warming in the
     // same save), the tool-side equivalent of the TUI's enter edit dialog.
     // Interval, prompt or warming alone keep the row's candidate.
-    if (input.text !== undefined || input.interval !== undefined || input.prompt !== undefined || input.warming !== undefined) {
+    if (input.text !== undefined || input.interval !== undefined || input.waiting !== undefined || input.prompt !== undefined || input.warming !== undefined) {
       const parsed = input.text === undefined ? modelTargetOfAddress(node) : parseModelText(input.text)
       if (parsed === undefined)
         return yield* Effect.fail(
@@ -1514,6 +1516,7 @@ function setModel(
         ...parsed,
         ...(input.warming === undefined ? {} : { warming: input.warming }),
         ...(input.interval === undefined ? {} : { interval: input.interval }),
+        ...(input.waiting === undefined ? {} : { waiting: input.waiting }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
       }
       const op = editModelRow(memo, id, fields, undefined, (owner) => protectedForActor(snapshot, owner))
@@ -1548,7 +1551,7 @@ function setModel(
 // One field row under an agent/member/preset model row edits that field alone
 // at the row's level, mirroring a Defaults › Models field row. Model replaces
 // the candidate (keeping the variant unless the text names one); Effort
-// replaces the variant; Warming / Ping every / Keep-alive prompt set or clear
+// replaces the variant; Warming / Ping every / Warm while waiting / Keep-alive prompt set or clear
 // that field on the candidate's local record. The field row's parent model row
 // is the edit target, so an inherited row plants a local record like the TUI.
 function setModelField(
@@ -1604,6 +1607,7 @@ function setModelDefaults(
     state?: "on" | "off"
     warming?: string
     interval?: string
+    waiting?: string
     prompt?: string
     effort?: string
     compactWarm?: string | null
@@ -1625,7 +1629,7 @@ function setModelDefaults(
   },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes warming, interval, prompt or effort, not text` }))
+    if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes warming, interval, waiting, prompt or effort, not text` }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" cannot be pinned` }))
     if (input.active !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row` }))
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no review to resolve` }))
@@ -1633,6 +1637,7 @@ function setModelDefaults(
     if (
       input.warming === undefined &&
       input.interval === undefined &&
+      input.waiting === undefined &&
       input.prompt === undefined &&
       input.effort === undefined &&
       input.compactWarm === undefined &&
@@ -1648,7 +1653,7 @@ function setModelDefaults(
       input.compactionOutput === undefined &&
       input.state === undefined
     )
-      return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, prompt or effort to set` }))
+      return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" needs warming, interval, waiting, prompt or effort to set` }))
     const key = defaultsKeyOf(node)
     if (key === undefined) return yield* Effect.fail(unknownError(node.id))
     const compaction = compactionFieldsOf(input)
@@ -1659,6 +1664,7 @@ function setModelDefaults(
         ...(input.state === undefined ? {} : { warming: input.state }),
         ...(input.warming === undefined ? {} : { warming: input.warming }),
         ...(input.interval === undefined ? {} : { interval: input.interval }),
+        ...(input.waiting === undefined ? {} : { waiting: input.waiting }),
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
         ...compaction.fields,
@@ -1711,6 +1717,7 @@ function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord 
   const set = [
     ...(record.warming === undefined ? [] : [`warming ${record.warming}`]),
     ...(record.interval === undefined ? [] : [`every ${record.interval}`]),
+    ...(record.waiting === undefined ? [] : [`waiting ${record.waiting}`]),
     ...(record.prompt === undefined ? [] : ["a prompt"]),
     ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
     ...MODEL_COMPACTION_FIELDS.flatMap((field) => {
@@ -2056,6 +2063,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           summary: modelDefaultValue(resolved),
           warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
           interval: { value: resolved.interval.value, from: resolved.interval.from },
+          waiting: { value: resolved.waiting.value, from: resolved.waiting.from },
           prompt: { value: resolved.prompt.value, from: resolved.prompt.from },
           ...(resolved.effort === undefined ? {} : { effort: { value: resolved.effort.value, from: resolved.effort.from } }),
           ...(record === undefined ? {} : { record }),

@@ -1424,7 +1424,7 @@ test("a model row opens into Model, Effort, Warming, Compaction and Images group
   const warming = "group:project:alpha:modelgroup:acme/nova:warming"
   expect(nodes.find((node) => node.id === warming)?.badges.value).toBe("off")
   expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
-    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Cold-cache models",
+    "Warming", "Ping every", "Warm while waiting", "Keep-alive prompt", "Compact before cold", "Cold-cache models",
   ])
   const cold = "group:project:alpha:modelgroup:acme/nova:cold"
   expect(nodes.find((node) => node.id === cold)?.badges.value).toBe("a/one → b/two")
@@ -1465,7 +1465,7 @@ test("a Defaults › Models row has the same groups minus Model", () => {
   ])
   const warming = "group:defaults:/models:modeldefault:acme/nova:warming"
   expect(childrenOf(nodes, warming).map((node) => node.label)).toEqual([
-    "Warming", "Ping every", "Keep-alive prompt", "Compact before cold", "Cold-cache models",
+    "Warming", "Ping every", "Warm while waiting", "Keep-alive prompt", "Compact before cold", "Cold-cache models",
   ])
   const compaction = "group:defaults:/models:modeldefault:acme/nova:compaction"
   expect(childrenOf(nodes, compaction).map((node) => node.label)).toEqual(["Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions"])

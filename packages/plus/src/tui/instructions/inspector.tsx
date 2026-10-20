@@ -5,7 +5,7 @@ import { reviewLabel } from "../../instructions/from-label.js"
 import { controlKind, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { IMAGE_FIELD_NOTES, IMAGE_FIELDS } from "../../image-settings.js"
 import { fromWords, modelSettingEffective, MODEL_FIELD_LABELS, MODEL_SETTING_LABELS, MODEL_SETTINGS_FIELDS, MODELS_GROUP_ID, parseModelFieldItemId, parseModelSettingItemId, type ModelSettingsField } from "../../instructions/model-settings.js"
-import { formatDuration } from "../../instructions/model.js"
+import { formatDuration, formatWaiting } from "../../instructions/model.js"
 import { contextOfSnapshot, modelDefaultsViewOf, rowlinkOf } from "../../instructions/snapshot.js"
 import { rowlinkView } from "../../instructions/rowlinks.js"
 import { toolsItemId } from "../../instructions/system-order.js"
@@ -112,6 +112,7 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
       defaults.on.value ? "value" : undefined,
     ] as Fact)
     facts.push(["ping every", `${formatDuration(defaults.interval.value)} · ${fromWords(defaults.interval.from)}`])
+    facts.push(["while waiting", `${formatWaiting(defaults.waiting.value)} · ${fromWords(defaults.waiting.from)}`])
     facts.push(["keep-alive", `${defaults.prompt.value} · ${fromWords(defaults.prompt.from)}`])
     if (defaults.effort !== undefined) facts.push(["effort", `${defaults.effort.value} · ${fromWords(defaults.effort.from)}`])
     facts.push(["applies to", defaults.key.providerID === undefined ? "every model" : `${defaults.key.providerID}/${defaults.key.modelID}, unless an agent's own model row sets a field`])
@@ -182,6 +183,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     ])
     if (node.badges.interval !== undefined)
       facts.push(["ping every", `${node.badges.interval} · set at ${displayLevel(node.badges.intervalFrom ?? "project")}`])
+    if (node.badges.waiting !== undefined)
+      facts.push(["while waiting", `${node.badges.waiting} · set at ${displayLevel(node.badges.waitingFrom ?? "project")}`])
     if (node.badges.prompt !== undefined)
       facts.push(["keep-alive", `${node.badges.prompt} · set at ${displayLevel(node.badges.promptFrom ?? "project")}`])
   }
@@ -268,8 +271,10 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
   else rows.push("Below this row: opencode.json and the built-in defaults.")
   if (setting === undefined) rows.push("→ opens its fields; each edits on its own.")
   else rows.push("Enter edits; empty inherits. r resets this field.")
-  if (setting?.field === "warming" || setting?.field === "interval")
+  if (setting?.field === "warming" || setting?.field === "interval" || setting?.field === "waiting")
     rows.push("A warming time rounds up to whole pings: 30m with a 4m ping warms 32m.")
+  if (setting?.field === "waiting")
+    rows.push("While a chat waits on its own work it stays warm at least this long, when warming is on for it; off keeps its warming time. Built-in: 2h.")
   return rows
 }
 

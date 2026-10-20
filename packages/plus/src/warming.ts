@@ -82,6 +82,8 @@ export interface WarmingDecision {
   readonly source: WarmingSource
   /** The level whose row decided, when a Plus row did: an agent row's level, or "defaults". */
   readonly level?: Level
+  /** Warm while waiting in milliseconds (0 off), with settings: the chat's window while it waits on its own work. */
+  readonly waiting?: number
 }
 
 /**
@@ -112,6 +114,7 @@ export function decideWarming(input: {
     return {
       settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
       source: "chat",
+      waiting: effective.waiting.value,
     }
   const source: WarmingSource = level === undefined ? "config" : "model"
   if (!effective.on.value) return { settings: undefined, source, ...(level === undefined ? {} : { level }) }
@@ -119,6 +122,7 @@ export function decideWarming(input: {
     settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
     source,
     ...(level === undefined ? {} : { level }),
+    waiting: effective.waiting.value,
   }
 }
 
@@ -178,6 +182,8 @@ interface Tracked {
   readonly level?: Level
   /** The settings the chat's rows decided, before a waiting chat's longer window. */
   readonly configured?: SessionWarmingSettings
+  /** Warm while waiting as the chat's rows decided it (0 off), for settle(), which runs without rows. */
+  readonly waiting?: number
 }
 
 export interface CompactionRecord {
@@ -248,14 +254,10 @@ export function warmingChatsPath(): string {
 // Per-chat switches outlive restarts; the newest 500 are kept.
 const MAX_CHATS = 500
 
-/**
- * How long after its last request a chat stays warm while it waits on its own
- * work: a command or other tool call still running, or a subagent or team
- * worker it started. Such a chat is likely to come back, and until about here
- * the keep-alive pings cost less than rewriting the whole cache once (a write
- * costs ~1.25x the prompt, a ping reads it at ~0.1x, one ping per ~4 min).
- */
-export const WAITING_WARMING_MS = 75 * 60_000
+// While a chat waits on its own work (a command or other tool call still
+// running, or a subagent or team worker it started) its window is at least its
+// Warm while waiting time (model rows; built-in 2h, WAITING_DEFAULT_MS): such a
+// chat is likely to come back.
 
 // Parent links (and each chat's configured duration) kept for the waiting check; the newest win.
 const MAX_PARENTS = 2_000
@@ -503,7 +505,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       const decision = compacted
         ? { ...decided, settings: undefined }
         : waits && decided.settings !== undefined
-          ? { ...decided, settings: { ...decided.settings, duration: Math.max(decided.settings.duration, WAITING_WARMING_MS) } }
+          ? { ...decided, settings: { ...decided.settings, duration: Math.max(decided.settings.duration, decided.waiting ?? 0) } }
           : decided
       event.settings = decision.settings
       const before = tracked.get(event.sessionID)
@@ -527,7 +529,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         ...(window === undefined ? {} : { window }),
         source: decision.source,
         ...(decision.source === "model" && decision.level !== undefined ? { level: decision.level } : {}),
-        ...(compacted || decided.settings === undefined ? {} : { configured: decided.settings }),
+        ...(compacted || decided.settings === undefined ? {} : { configured: decided.settings, waiting: decided.waiting ?? 0 }),
       }
       tracked.set(event.sessionID, next)
       if (compact !== undefined) compactors.set(event.sessionID, compact)
@@ -601,6 +603,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         const window = entry?.window
         if (window === undefined || entry?.configured === undefined) continue
         const configured = entry.configured.duration
+        const waitingWindow = Math.max(configured, entry.waiting ?? 0)
         // Core applies the same window at its next keep-alive, which always
         // comes before either window ends. The chat whose turn ended restarts a
         // window that still runs, as core does: the full duration follows the
@@ -610,9 +613,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
             ? {
                 ...window,
                 since: at,
-                expires:
-                  at +
-                  ((await waitingAfterTurn(chat, sessionID)) ? Math.max(configured, WAITING_WARMING_MS) : configured),
+                expires: at + ((await waitingAfterTurn(chat, sessionID)) ? waitingWindow : configured),
               }
             : window.since + configured === window.expires || (await waitingAfterTurn(chat, sessionID))
               ? window
