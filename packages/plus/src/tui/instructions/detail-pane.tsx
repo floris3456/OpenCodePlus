@@ -1,5 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { controlItemFor, isControl } from "../../instructions/agent-controls.js"
+import { BUILT_IN_SOUNDS, isAttentionRow, type AttentionRow } from "../../attention-settings.js"
 import { fromLabel } from "../../instructions/from-label.js"
 import { applies, catalogueForAddress, matchesName, modelCandidates, modelRuntimeScope, parseModelItemId, parsePermItemId, resolve, resolveActiveModel, resolveSplit, sameModelCandidate } from "../../instructions/model.js"
 import type { Address, AgentSource, CustomizationRecord, From, Item, ModelRecord, Resolved, RuleRecord, SplitRecord } from "../../instructions/model.js"
@@ -284,6 +285,7 @@ export function controlDetail(node: TreeNode, snapshot: Snapshot, memo?: Memo): 
     : item === "setting:mode" ? "Enter cycles Primary → Subagent → All."
     : item === "setting:steps" ? "Positive whole-number step limit; empty means unlimited. Reset follows the value above."
     : item === "setting:color" ? "Agent display color (#RRGGBB); empty clears the color. Reset follows the value above."
+    : isAttentionRow(item) ? attentionHelp(item)
     : item === "compaction:strategy" ? "Enter cycles Auto → Local → Remote. Remote requires provider support."
     : item === "compaction:model" ? "Local model (provider/model#variant); empty inherits, otherwise the chat's own model."
     : item === "compaction:instructions" ? "Local compaction instructions; empty saves an empty prompt. Reset follows inherited instructions, including the global compaction agent."
@@ -293,6 +295,12 @@ export function controlDetail(node: TreeNode, snapshot: Snapshot, memo?: Memo): 
     help,
     ...(node.badges.disabled === undefined ? [] : [node.badges.disabled]),
   ]
+}
+
+function attentionHelp(item: AttentionRow): string {
+  if (item.endsWith(".notify")) return "Enter cycles On → Off: a desktop notification for this event. Empty follows Settings › Notifications; r returns to it."
+  if (item.endsWith(".depth")) return "Enter cycles 1 → 9: how many levels of subagents and team members below a chat raise this event. Empty follows Settings › Notifications."
+  return `The sound: off, a built-in sound (${BUILT_IN_SOUNDS[0]} … ${BUILT_IN_SOUNDS.at(-1)}; alert-, bip-bop-, nope-, staplebops- and yup- with numbers) or an absolute path to a sound file on the server. Settings › Notifications plays each one. Empty follows Settings.`
 }
 
 export function displayLevel(level: Resolved["source"] | Address["level"]): string {

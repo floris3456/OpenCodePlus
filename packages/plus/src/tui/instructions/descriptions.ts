@@ -168,7 +168,9 @@ function ownerCategoryDetail(part: OwnerGroup): string | undefined {
   if (part.tail.length > 0) return undefined
   const subject = subjectOf(part)
   if (part.category === "settings")
-    return `${capitalize(subject)}'s settings: Enabled, Mode, Description, Hidden, Color and Steps. Space toggles Enabled; enter edits a value.`
+    return `${capitalize(subject)}'s settings: Enabled, Mode, Description, Hidden, Color, Steps and Notifications. Space toggles Enabled; enter edits a value.`
+  if (part.category === "notifications")
+    return `Notifications and sounds for ${subject}'s chats: each event's desktop notification and sound, and how many levels of subagents and team members raise "done". Empty rows follow Settings › Notifications; enter changes a row, r returns it to Settings.`
   if (part.category === "models")
     return `Models ${subject} may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.`
   if (part.category === "compaction")

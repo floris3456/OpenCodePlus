@@ -6,6 +6,7 @@ import { buildMemo, expandedTree, type TreeNode } from "../src/instructions/tree
 import { controlDetail, provenanceLine, resolvedText, sectionRows } from "../src/tui/instructions/detail-pane.js"
 import { isExpandableRow } from "../src/tui/instructions/tree-pane.js"
 import { controlItems, controlRecord, controlSnapshot } from "./agent-controls-fixture.js"
+import { isAttentionRow } from "../src/attention-settings.js"
 import { createSnapshot } from "./tui.js"
 
 function row(nodes: readonly TreeNode[], id: string): TreeNode {
@@ -31,8 +32,17 @@ test("all agent, member, preset and Defaults owners expose discovered Settings w
   ]) {
     expect(row(nodes, `group:${owner}:settings`).label).toBe("Settings")
     expect(nodes.some((node) => node.id === `group:${owner}:compaction`)).toBe(false)
+    // An owner's notification rows sit in Settings › Notifications; Defaults has none (the
+    // global values are Settings › Notifications in /settings).
+    const shared = owner === "defaults:" || owner === "defaults:/teams"
+    expect(nodes.some((node) => node.id === `group:${owner}:notifications`)).toBe(!shared)
     for (const item of controlItems().filter((item) => item.kind === "setting")) {
+      if (shared && isAttentionRow(item.id)) {
+        expect(nodes.some((node) => node.id === `item:${owner}:${item.id}`)).toBe(false)
+        continue
+      }
       const control = row(nodes, `item:${owner}:${item.id}`)
+      if (isAttentionRow(item.id)) expect(control.badges.value).toBe("As in Settings")
       expect(control.label).toBe(item.title[0].toUpperCase() + item.title.slice(1))
       expect(control.address?.item).toBe(item.id)
       // B7: the description takes sections, so it may be expandable; every

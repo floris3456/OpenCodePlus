@@ -1,6 +1,7 @@
 import { builtinBaseIds } from "../agents/base.js"
 import { ownRule, ruleItem } from "./rules.js"
 import { booleanControl, controlIds, controlItemFor, controlItems, isControl } from "./agent-controls.js"
+import { attentionRowChoices, isAttentionRow } from "../attention-settings.js"
 import { mentions, met, requirementOf } from "./requires.js"
 import { guidanceItemId } from "./paths.js"
 import {
@@ -2024,6 +2025,7 @@ export function controlKind(item: string | undefined): "toggle" | "cycle" | "tex
 
 export function controlChoices(item: string | undefined): readonly string[] | undefined {
   if (item?.startsWith("toolmode:")) return toolModes
+  if (item !== undefined && isAttentionRow(item)) return attentionRowChoices(item)
   if (item === "setting:mode") return ["primary", "subagent", "all"]
   if (item === "compaction:strategy") return ["auto", "local", "remote"]
   return undefined
@@ -2041,6 +2043,7 @@ function itemsForControls(memo: Memo): readonly Item[] {
 
 export function controlValue(item: string, text: string, enabled: boolean): string {
   if (item.startsWith("toolmode:") && text === "codemode") return "Code Mode"
+  if (isAttentionRow(item) && text.length === 0) return "As in Settings"
   if (controlKind(item) === "toggle") return enabled ? "On" : "Off"
   if (controlChoices(item) !== undefined) return text.length === 0 ? "Inherited" : text[0].toUpperCase() + text.slice(1)
   if (text.length > 0) return text.replace(/\s+/g, " ").slice(0, 80)
@@ -2067,13 +2070,32 @@ function lazyControls(
     label: kind === "setting" ? "Settings" : "Compaction",
     depth,
     actions: noActions(),
-    children: () => [...new Set(items.filter((item) => item.kind === kind && isControl(item.id)).map((item) => item.id))]
-      .flatMap((item) => {
-        const upstream = controlItemFor(items, addressOf(level, owner, item, null, teamRef, catalogue))
-        return upstream === undefined ? [] : [upstream]
-      })
-      .sort(byOrderTitle)
-      .map((item) => lazyControl(memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath)),
+    children: () => {
+      const rows = [...new Set(items.filter((item) => item.kind === kind && isControl(item.id)).map((item) => item.id))]
+        .flatMap((item) => {
+          const upstream = controlItemFor(items, addressOf(level, owner, item, null, teamRef, catalogue))
+          return upstream === undefined ? [] : [upstream]
+        })
+        .sort(byOrderTitle)
+      const attention = rows.filter((item) => isAttentionRow(item.id))
+      return [
+        ...rows.filter((item) => !isAttentionRow(item.id)).map((item) => lazyControl(memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath)),
+        // An agent's own notification rows; the global ones are Settings › Notifications, so
+        // Defaults has none.
+        ...(owner === null || attention.length === 0
+          ? []
+          : [
+              branch(memo, {
+                kind: "group",
+                id: `group:${level}:${ownerPath ?? ownerSegment(owner, catalogue)}:notifications`,
+                label: "Notifications",
+                depth: depth + 1,
+                actions: noActions(),
+                children: () => attention.map((item) => lazyControl(memo, level, owner, item, depth + 2, teamRef, catalogue, ownerPath)),
+              }),
+            ]),
+      ]
+    },
   })
 }
 
