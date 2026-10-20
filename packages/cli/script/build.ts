@@ -68,6 +68,8 @@ export interface BuildOptions {
   target?: string | null
   skipInstall?: boolean
   skipWebUi?: boolean
+  /** Embed the web UI archive an earlier build in this checkout wrote instead of building it again. */
+  reuseWebUi?: boolean
   define?: Record<string, string>
   /** The OpenCode release a derived build's source contains; its user agent reports it. */
   upstream?: string
@@ -152,6 +154,7 @@ export async function build(options: BuildOptions = {}) {
     process.argv.find((arg) => arg.startsWith("--target="))?.slice("--target=".length)
   const skipInstall = options.skipInstall ?? process.argv.includes("--skip-install")
   const skipWebUi = options.skipWebUi ?? process.argv.includes("--skip-web-ui")
+  const reuseWebUi = options.reuseWebUi ?? process.argv.includes("--reuse-web-ui")
   const solidPlugin = createSolidTransformPlugin()
   const highlights = Script.preview ? undefined : embed(process.env.OPENCODE_RELEASE_NOTES)
 
@@ -170,7 +173,11 @@ export async function build(options: BuildOptions = {}) {
   if (!skipInstall)
     await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]} @opencode-ai/pty@${pkg.dependencies["@opencode-ai/pty"]}`
   const appArchive = path.join(dir, ".cache", "bun-app-archive.bin")
-  await Bun.write(appArchive, await buildAppArchive(config.channel, { skipBuild: skipWebUi }))
+  // Building and compressing the web UI is most of a build's time. Several targets built one after
+  // another from one checkout take the archive the first of them wrote.
+  if (reuseWebUi && !(await Bun.file(appArchive).exists()))
+    throw new Error(`--reuse-web-ui: ${appArchive} does not exist; build one target without it first`)
+  if (!reuseWebUi) await Bun.write(appArchive, await buildAppArchive(config.channel, { skipBuild: skipWebUi }))
   const appAssetsPlugin: BunPlugin = {
     name: "opencode-app-assets",
     setup(build) {
