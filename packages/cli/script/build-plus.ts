@@ -16,6 +16,7 @@ export interface PlusBuildOptions {
   baseline?: boolean
   skipInstall?: boolean
   skipWebUi?: boolean
+  reuseWebUi?: boolean
   define?: Record<string, string>
 }
 
@@ -94,6 +95,7 @@ export async function buildPlus(options: PlusBuildOptions = {}) {
     target: requested ? `${BINARY}-${platformTarget(requested)}` : undefined,
     skipInstall: options.skipInstall,
     skipWebUi: options.skipWebUi,
+    reuseWebUi: options.reuseWebUi,
     define: options.define,
   })
 }
