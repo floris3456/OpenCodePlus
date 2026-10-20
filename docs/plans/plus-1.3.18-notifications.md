@@ -37,9 +37,12 @@ Per event: `notify` (desktop notification) and `sound` (`off`, a built-in sound 
 `bip-bop-01`, or an absolute file path on the server); `child` also `depth` (1–9).
 
 - Global: Plus settings (`PlusSettings.attention`), /settings › Notifications.
-- Per agent: Instructions › agent › Settings rows `setting:attention.<event>.notify` (state),
-  `setting:attention.<event>.sound` (text) and `setting:attention.child.depth` (text), inheriting
-  down the agent's chain and then the global value. `done`, `reply`, `question`, `error` and
+- Per agent: Instructions › agent › Settings › Notifications, text rows
+  `setting:attention.<event>.notify` (on/off, cycled), `setting:attention.<event>.sound` and
+  `setting:attention.child.depth` (1–9, cycled); empty ("As in Settings") is the upstream value, so
+  a row inherits down the agent's chain and then the global value. Defaults has none (the global
+  values are /settings). They change no agent field: Plus resolves them at each publish
+  (`attentionRowsOf`). `done`, `reply`, `question`, `error` and
   `cacheMiss` use the agent of the chat they happen in; `child` uses the chat's (root) agent.
 - Defaults: `done` notify + `bip-bop-01`, `question` notify + `bip-bop-03`, `error` notify +
   `nope-03`; `reply`, `child` (depth 1) and `cacheMiss` off. The TUI's Alerts switches
@@ -50,14 +53,19 @@ Per event: `notify` (desktop notification) and `sound` (`off`, a built-in sound 
 The server decides each occurrence and emits Plus RPC event `attention`:
 
 ```ts
-{ id, kind, sessionID, rootID, depth, agent?, title, message, notify, sound?, player, at }
+{ id, kind, sessionID, rootID, depth, agent?, title, message, notify, sound?, player, test?, at }
 ```
 
 emitted only when `notify` or `sound` applies; `player` is true while a sound player is connected.
 
-- TUI: a desktop notification for `notify` events of the chat it has open (its root), when the
-  terminal window is unfocused and Alerts › Notifications is on; the sound when Alerts › Sounds is
-  on and `player` is false. It replaces the built-in notifications for sessions with Plus.
+- TUI: a desktop notification for `notify` events of the chats it has open (the current chat, its
+  tabs and the chats above them), when the terminal window is unfocused and Alerts › Notifications
+  is on; the sound when Alerts › Sounds is on and `player` is false. A test event is shown only by
+  the TUI that asked for it. The built-in notifications stay quiet while the server has Plus.
+- A chat's first turn ends before it has a title: the event's title is then its folder's name. A
+  chat on the default agent names none: it resolves as Plus does for models (the first agent).
+- A refused setting or sound file is a typed RPC error with its reason (`settings.invalid`,
+  `sound.invalid`).
 - `opencodeplus notify [<ssh-target>]`: the sound player on your PC. Connects to the service
   (through `ssh -L`, reading the remote endpoint and password over SSH, never stored), calls
   `attention.player` every 20 s, plays each event's sound for every chat of the server (built-in
@@ -70,7 +78,7 @@ emitted only when `notify` or `sound` applies; `player` is true while a sound pl
   only discovers the local service's registration and never starts one; `--standalone` is
   refused (a private server has no chats). `--test [<event>]` asks once per run; `--once` exits
   after it (1 if the sound failed). Sounds are dropped within 300 ms of the last one.
-- Alerts › Notification protocol (auto, OSC 99, OSC 777, OSC 9, off): sets
+- Alerts › Notification protocol (auto, OSC 99, OSC 777, OSC 9): sets
   `OPENTUI_NOTIFICATION_PROTOCOL` at TUI start, for terminals OpenTUI cannot detect over SSH
   (Windows Terminal).
 
