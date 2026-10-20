@@ -2007,6 +2007,22 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
       const unlanded = rejected(await review())
       expect(unlanded.code).toBe("E_UNLANDED")
       expect(unlanded.message).toContain("[w-abcdabcdabcdabcd] reported done but have not landed")
+      expect(unlanded.message).toContain("review one before it lands with base: its commit")
+      // s12-c: a review started from the child's commit sees it before it lands.
+      await git(repo.dir, ["checkout", "-q", "-b", "child-work"])
+      await fs.writeFile(path.join(repo.dir, "change.txt"), "x\n")
+      await git(repo.dir, ["add", "change.txt"])
+      await git(repo.dir, ["commit", "-q", "-m", "feat: change"])
+      const childHead = await git(repo.dir, ["rev-parse", "HEAD"])
+      await git(repo.dir, ["checkout", "-q", "-"])
+      await saveRun(root, { ...child, head: childHead })
+      const early = required(
+        await api.delegate(
+          delegateInput({ requestID: "review-early", role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [], base: childHead }),
+          callerFor(parent),
+        ),
+      ) as { base: string }
+      expect(early.base).toBe(childHead)
       // Once it landed, the review is delegated.
       await atomicJson(path.join(root, "runs", parent.id, "merge", "entry-1.json"), {
         id: "entry-1", parentRun: parent.id, childRun: child.id, childBranch: "b", childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",

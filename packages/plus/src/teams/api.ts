@@ -269,16 +269,19 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (invalid !== undefined) return fail("E_PATHS", `${PATHS_MESSAGE} Not one: "${invalid}".`, PATHS_ACCEPTED)
   const refused = briefRefusal(table, brief)
   if (refused !== undefined) return refused
-  // A reviewer sees what landed in your checkout, never a child's worktree: a
-  // review delegated while a done child is unlanded reviews the code without
-  // that child's change (s12-a: the reviewer found nothing to review).
+  // A reviewer sees the commit its worktree starts from, by default your
+  // HEAD: a review delegated while a done child is unlanded reviews the code
+  // without that child's change (s12-a: the reviewer found nothing to
+  // review). A base that holds a child's commits reviews it before it lands
+  // (s12-c: the user asked for review before landing).
   if (brief.deliverable.kind === "findings") {
     const unlanded = await unlandedDone(root, parent)
-    if (unlanded.length > 0)
+    const held = await Promise.all(unlanded.map(async (run) => (await gitRaw(repo.root, [...NO_REPOSITORY_PROGRAMS, "merge-base", "--is-ancestor", run.head, baseSha])).code === 0))
+    if (unlanded.length > 0 && !held.includes(true))
       return fail(
         "E_UNLANDED",
-        `Your children [${unlanded.join(", ")}] reported done but have not landed, and a reviewer sees only what landed in your checkout. Land them with team_integrate first, then delegate the review.`,
-        { run: unlanded[0] },
+        `Your children [${unlanded.map((run) => run.id).join(", ")}] reported done but have not landed, and a reviewer sees only the commit it starts from (your HEAD). Land them with team_integrate first, or review one before it lands with base: its commit (${unlanded.map((run) => `${run.id}: ${run.head.slice(0, 12)}`).join(", ")}).`,
+        { run: unlanded[0]!.id, base: unlanded[0]!.head },
       )
   }
 
@@ -676,7 +679,7 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
         `Your children [${working.join(", ")}] are still working, so you are waiting, not done. End your turn without team_finish: each settlement wakes you with its report and a next: line. team_stop a child you no longer need.`,
         "end your turn",
       )
-    const unlanded = await unlandedDone(root, stored)
+    const unlanded = (await unlandedDone(root, stored)).map((run) => run.id)
     if (unlanded.length > 0)
       return fail(
         "E_UNLANDED",
@@ -1264,14 +1267,14 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
 // The caller's children whose last report is done (or done with concerns)
 // with commits that have not landed: still open, not stopped, worktree
 // present. A reviewer's or scout's findings carry no commits and never land.
-async function unlandedDone(root: string, parent: RunRecord): Promise<string[]> {
+async function unlandedDone(root: string, parent: RunRecord): Promise<RunRecord[]> {
   const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => entry.childRun))
   const children = await Promise.all(parent.children.filter((id) => !landed.has(id)).map((id) => loadRun(root, id)))
   const open = children.filter((run): run is RunRecord => run !== undefined && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state))
   const reports = await Promise.all(open.map(async (run) => ({ run, report: await latestReport(root, run.id) })))
   return reports
     .filter((entry) => (entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns") && Array.isArray(entry.report.data.commits) && entry.report.data.commits.length > 0)
-    .map((entry) => entry.run.id)
+    .map((entry) => entry.run)
 }
 
 async function latestReport(root: string, runID: string): Promise<{ n: number; jsonPath: string; data: Record<string, unknown> } | undefined> {

@@ -257,7 +257,8 @@ child is cold.
 
 ## Review and finish
 A review you start (Agent Routing says when) gets the range landed so far and
-your check results from Plus. Fix its findings through workers. When every
+your check results from Plus; to review a child's work before it lands, give
+the review base: the child's head commit. Fix its findings through workers. When every
 child is landed, their deferred lists are swept and every review you started
 has settled, report with team_finish (in the user's chat, tell the user
 instead).
