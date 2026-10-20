@@ -11,7 +11,7 @@ export type Reach = "descendants" | "others"
 //
 // Every team tool is direct (`codemode: false`). The read tools (status,
 // get_context, diff, list, check) were Code Mode ones; models called them by
-// their direct names anyway (3 of 20 calls in a live run failed so), and a
+// their direct names anyway (3 of 20 such calls in five live runs failed so), and a
 // member has at most a dozen, so the catalog saved nothing worth that. A level
 // can still move one into Code Mode with its Exposure row.
 export const teamTools = [
