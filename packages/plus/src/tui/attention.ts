@@ -9,6 +9,10 @@ import { Definition, type Plus } from "../rpc.js"
 // edits the global settings.
 
 const SETTINGS_MS = 30_000
+// The open chats are compared this often and reported when they change, and at least every
+// REPORT_MS: the server forgets a TUI's report after 45 s.
+const CHECK_MS = 2_000
+const REPORT_MS = 20_000
 // A chat's ancestry stops here, so a parent loop cannot hang the check.
 const MAX_DEPTH = 16
 const FILE_CHOICE = "\u0000file"
@@ -33,6 +37,20 @@ export function createAttention(context: Plugin.Context) {
       }),
     )
   }
+  // Only chats open in some TUI notify, here and on a sound player (attention.open).
+  const report = { id: crypto.randomUUID(), last: "", at: 0 }
+  const reportOpen = (force = false) => {
+    const chats = [...openChats()].toSorted()
+    const key = chats.join(" ")
+    if (!force && key === report.last && Date.now() - report.at < REPORT_MS) return
+    report.last = key
+    report.at = Date.now()
+    void plus["attention.open"]({ id: report.id, sessionIDs: chats }).catch(() => {
+      report.at = 0
+    })
+  }
+  reportOpen(true)
+  const reporter = setInterval(() => reportOpen(), CHECK_MS)
   const show = (attention: Plus.Attention, when: "blurred" | "always") =>
     context.attention.notify({
       title: attention.title,
@@ -162,6 +180,9 @@ export function createAttention(context: Plugin.Context) {
   return {
     dispose() {
       clearInterval(timer)
+      clearInterval(reporter)
+      // Closed: its chats stop notifying now instead of in 45 s.
+      void plus["attention.open"]({ id: report.id, sessionIDs: [] }).catch(() => {})
       disposeEvents()
       disposeSettings.forEach((dispose) => dispose())
     },

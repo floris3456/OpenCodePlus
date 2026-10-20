@@ -459,15 +459,15 @@ $ opencode service --help
 
 ## notify
 
-OpenCodePlus only. Plays the notification sounds of every chat of a service on your own machine.
-Run it in a terminal of its own and leave it running.
+OpenCodePlus only. Plays the notification sounds of a service on your own machine: those of the
+chats open in its TUIs. Run it in a terminal of its own and leave it running.
 
 ```bash
 $ opencodeplus notify
 ```
 
-Listen to a service on a machine you work on over SSH. notify reads the service's address and
-password there over `ssh`, connects through an SSH tunnel, and never stores the password.
+Listen to a service on a machine you work on over SSH. notify runs OpenCodePlus there over `ssh`,
+which passes the service's events back; the service's password stays on that machine.
 
 ```bash
 $ opencodeplus notify me@devbox
@@ -511,8 +511,9 @@ $ opencodeplus notify me@devbox --verbose
   own after a dropped connection or a service restart.
 - It uses your normal SSH setup: keys, agent and `~/.ssh/config`. If `ssh` asks for a password, it
   asks in notify's terminal, also when notify reconnects later. A key in an agent avoids that.
-- On the remote machine it reads `~/.config/opencodeplus/service.json`, or the same file under
-  `$XDG_CONFIG_HOME`.
+- The other machine needs OpenCodePlus 1.3.18 or later. notify finds it on the `PATH`, in
+  `~/.opencodeplus/bin` (where the installer puts it) or in `~/bin`, and runs it as
+  `opencodeplus notify --relay`.
 - `--server <url>` connects to that server instead, with the password from `OPENCODE_PASSWORD`.
 - Ctrl+C stops it and its SSH tunnel.
 

@@ -9,6 +9,7 @@ import { Product } from "@opencode/util/product"
 import { Effect, FileSystem, Redacted } from "effect"
 import { ATTENTION_KINDS } from "../../../../plus/src/attention-settings.js"
 import type { Plus } from "../../../../plus/src/rpc.js"
+import type { RelayLine } from "../../services/notify-connection"
 import { Env } from "../../env"
 import { Runtime } from "../../framework/runtime"
 import { ServiceConfig } from "../../services/service-config"
@@ -22,6 +23,8 @@ export interface NotifyOptions {
   readonly test?: Plus.AttentionKind
   readonly once: boolean
   readonly verbose: boolean
+  /** The other end of `notify <ssh-target>`, started there over ssh: events go to stdout as lines. */
+  readonly relay: boolean
 }
 
 export type NotifyInvocation =
@@ -35,13 +38,13 @@ export function notifyUsage(binary: string) {
   return [
     `Usage: ${binary} notify [<ssh-target>] [options]`,
     "",
-    "Plays the notification sounds of every chat of one OpenCodePlus service on this",
-    "machine. Leave it running in a terminal of its own.",
+    "Plays the notification sounds of one OpenCodePlus service on this machine: those",
+    "of the chats open in its TUIs. Leave it running in a terminal of its own.",
     "",
     "  <ssh-target>      the machine the service runs on, as ssh takes it (user@host,",
-    "                    or a Host from ~/.ssh/config). notify reads the service's",
-    "                    address and password there over ssh and connects through an",
-    "                    ssh tunnel. Without it: the service on this machine.",
+    "                    or a Host from ~/.ssh/config). notify runs OpenCodePlus there",
+    "                    over ssh, which passes the service's events back; its password",
+    "                    stays there. Without it: the service on this machine.",
     "",
     "Options:",
     "  --server <url>    connect to this server instead (password: OPENCODE_PASSWORD)",
@@ -56,7 +59,8 @@ export function notifyUsage(binary: string) {
     "",
     "notify never starts a service. When none runs it says so and keeps retrying;",
     "it reconnects on its own. If ssh asks for a password, it asks here, also when",
-    "notify reconnects later. Ctrl+C stops it.",
+    "notify reconnects later. Ctrl+C stops it. The other machine needs OpenCodePlus",
+    "1.3.18 or later; notify runs it there as `notify --relay`.",
     "",
   ].join(EOL)
 }
@@ -79,6 +83,7 @@ export function parseNotifyArgs(args: readonly string[]): NotifyInvocation {
     desktop: false,
     once: false,
     verbose: false,
+    relay: false,
     help: false,
     error: undefined as string | undefined,
   }
@@ -110,6 +115,10 @@ export function parseNotifyArgs(args: readonly string[]): NotifyInvocation {
     }
     if (arg === "--verbose") {
       found.verbose = true
+      continue
+    }
+    if (arg === "--relay") {
+      found.relay = true
       continue
     }
     // Global flags Effect CLI would otherwise take; plus.ts has already applied --print-logs.
@@ -158,9 +167,12 @@ function validated(found: {
   readonly desktop: boolean
   readonly once: boolean
   readonly verbose: boolean
+  readonly relay: boolean
 }): NotifyInvocation {
   if (found.positionals.length > 1) return usageError(`Give one ssh target, not ${found.positionals.length}.`)
   const target = found.positionals[0]
+  if (found.relay && (target !== undefined || found.server !== undefined))
+    return usageError("--relay listens to this machine's service; it takes no ssh target or --server.")
   if (target !== undefined && found.server !== undefined) return usageError("Give an ssh target or --server, not both.")
   const volume = found.volume === undefined ? DEFAULT_VOLUME : Number(found.volume)
   if (!Number.isFinite(volume) || volume < 0 || volume > 1)
@@ -178,6 +190,7 @@ function validated(found: {
       ...(found.test === undefined ? {} : { test: found.test }),
       once: found.once,
       verbose: found.verbose,
+      relay: found.relay,
     },
   }
 }
@@ -201,14 +214,37 @@ export const runNotifyCli = Effect.fn("cli.notify")(function* (invocation: Notif
     return
   }
   const options = invocation.options
-  const { localSource, runNotify, serverSource, sshSource } = yield* Effect.promise(
+  const { localSource, relayPlayer, relaySource, runNotify, serverSource, RELAY_VERSION } = yield* Effect.promise(
     () => import("../../services/notify-connection"),
   )
+  const run = Effect.runPromiseWith(yield* Effect.context<FileSystem.FileSystem | Global.Service>())
+  if (options.relay) {
+    const write = (line: RelayLine) => process.stdout.write(`${JSON.stringify(line)}\n`)
+    write({ type: "hello", version: RELAY_VERSION })
+    // The other machine went away: ssh closed this end's stdin.
+    const gone = new AbortController()
+    void Bun.stdin.stream().pipeTo(new WritableStream()).finally(() => gone.abort())
+    process.exitCode = yield* Effect.promise((signal) =>
+      runNotify(
+        {
+          source: localSource(() => run(discoverLocal)),
+          player: relayPlayer(write),
+          playerID: crypto.randomUUID(),
+          ...(options.test === undefined ? {} : { test: options.test }),
+          once: false,
+          relay: { connected: (label, version) => write({ type: "connected", label, version }) },
+          log: (text) => write({ type: "status", text }),
+          debug: options.verbose ? (text) => write({ type: "debug", text }) : () => {},
+        },
+        AbortSignal.any([signal, gone.signal]),
+      ),
+    )
+    return
+  }
   const { createPlayer, desktopNotifier, openTuiSpeaker } = yield* Effect.promise(
     () => import("../../services/notify-player"),
   )
   const { builtInSoundPaths } = yield* Effect.promise(() => import("@opencode/tui/attention-sounds"))
-  const run = Effect.runPromiseWith(yield* Effect.context<FileSystem.FileSystem | Global.Service>())
   const password = yield* Env.password
   const log = (line: string) => process.stdout.write(`${new Date().toTimeString().slice(0, 8)} ${line}${EOL}`)
   const debug = options.verbose ? log : () => {}
@@ -224,7 +260,7 @@ export const runNotifyCli = Effect.fn("cli.notify")(function* (invocation: Notif
   })
   const source =
     options.target !== undefined
-      ? sshSource(options.target, debug)
+      ? relaySource(options.target, { verbose: options.verbose })
       : options.server !== undefined
         ? serverSource(options.server, password === undefined ? undefined : Redacted.value(password))
         : localSource(() => run(discoverLocal))

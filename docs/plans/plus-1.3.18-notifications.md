@@ -66,18 +66,22 @@ emitted only when `notify` or `sound` applies; `player` is true while a sound pl
   chat on the default agent names none: it resolves as Plus does for models (the first agent).
 - A refused setting or sound file is a typed RPC error with its reason (`settings.invalid`,
   `sound.invalid`).
-- `opencodeplus notify [<ssh-target>]`: the sound player on your PC. Connects to the service
-  (through `ssh -L`, reading the remote endpoint and password over SSH, never stored), calls
-  `attention.player` every 20 s, plays each event's sound for every chat of the server (built-in
-  sounds are bundled; a file path is fetched once with `attention.sound`), reconnects on its own.
-  `--desktop` also shows each `notify` event as an OS notification (notify-send / osascript).
-  Built (packages/cli/src/commands/handlers/notify.ts, services/notify-*.ts): the remote end is
-  read with `ssh <target> "sh -c '…cat ${XDG_CONFIG_HOME:-$HOME/.config}/opencodeplus/service.json'"`
-  (missing hostname/port: the service's own defaults); no BatchMode, so ssh may ask for a password
-  in notify's terminal; the tunnel is its own connection (`ControlPath=none`). Without a target it
-  only discovers the local service's registration and never starts one; `--standalone` is
-  refused (a private server has no chats). `--test [<event>]` asks once per run; `--once` exits
-  after it (1 if the sound failed). Sounds are dropped within 300 ms of the last one.
+- Only chats open in a TUI notify (owner, 2026-10-21): each TUI reports its open chats (the chat
+  on screen, its tabs and the chats above them) with `attention.open` when they change and every
+  20 s, counted for 45 s, none once it closes. An occurrence is raised only when its chat or a
+  chat above it is reported, so a subagent or team member notifies only under an open chat, and
+  the sound player follows the same rule.
+- `opencodeplus notify [<ssh-target>]`: the sound player on your PC. Without a target it uses the
+  service on that machine (never started by it); with one it runs
+  `ssh -T <target> sh -c '…'`, which finds OpenCodePlus there (PATH, ~/.opencodeplus/bin, ~/bin)
+  and runs `opencodeplus notify --relay`. The relay connects to its own service, heartbeats as
+  the player, and writes JSON lines (hello, connected, status, debug, attention with a sound file
+  the first time it names one); it ends when ssh closes its stdin. No port is forwarded and the
+  password stays on that machine. A launcher into a container works when it passes `notify`
+  through without a terminal (the workspace's docker/opencodeplus does). `--test [<event>]` is
+  asked once per run; `--once` exits after it (1 if the sound failed); sounds are dropped within
+  300 ms of the last one; `--desktop` also shows OS notifications (notify-send / osascript);
+  `--standalone` is refused (a private server has no chats).
 - Alerts › Notification protocol (auto, OSC 99, OSC 777, OSC 9): sets
   `OPENTUI_NOTIFICATION_PROTOCOL` at TUI start, for terminals OpenTUI cannot detect over SSH
   (Windows Terminal).

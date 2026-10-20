@@ -68,6 +68,7 @@ test("every method and event is declared", () => {
     "settings.get",
     "settings.set",
     "attention.player",
+    "attention.open",
     "attention.sound",
     "attention.test",
     "modelSettings.set",

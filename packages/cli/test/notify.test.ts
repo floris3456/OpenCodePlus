@@ -1,13 +1,22 @@
 import { describe, expect, test } from "bun:test"
 import type { Plus } from "../../plus/src/rpc.js"
 import { DEFAULT_VOLUME, notifyInvocation, notifyUsage, parseNotifyArgs } from "../src/commands/handlers/notify"
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import {
   nextReconnect,
-  parseRemoteService,
   RECONNECT_MAX_MS,
-  sshReadCommand,
-  sshTunnelCommand,
+  RELAY_NOT_FOUND,
+  RELAY_VERSION,
+  relayCommand,
+  relayEnded,
+  relayPlayer,
+  remoteCommand,
+  runNotify,
   STABLE_MS,
+  type RelayLine,
+  type Source,
 } from "../src/services/notify-connection"
 import { createPlayer, createSoundGate, desktopCommand, SOUND_GAP_MS, type Speaker } from "../src/services/notify-player"
 
@@ -15,14 +24,14 @@ describe("notify arguments", () => {
   test("defaults: this machine's service, volume 0.5, nothing else", () => {
     expect(parseNotifyArgs([])).toEqual({
       kind: "run",
-      options: { volume: DEFAULT_VOLUME, desktop: false, once: false, verbose: false },
+      options: { volume: DEFAULT_VOLUME, desktop: false, once: false, verbose: false, relay: false },
     })
   })
 
   test("an ssh target and every option", () => {
     expect(parseNotifyArgs(["me@box", "--volume", "0.2", "--desktop", "--test", "error", "--once", "--verbose"])).toEqual({
       kind: "run",
-      options: { target: "me@box", volume: 0.2, desktop: true, test: "error", once: true, verbose: true },
+      options: { target: "me@box", volume: 0.2, desktop: true, test: "error", once: true, verbose: true, relay: false },
     })
   })
 
@@ -67,6 +76,14 @@ describe("notify arguments", () => {
     expect(refused(["--once"])).toContain("--once goes with --test")
     expect(refused(["--standalone"])).toContain("--standalone")
     expect(refused(["-x"])).toContain("Unknown option -x")
+    expect(refused(["--relay", "box"])).toContain("--relay listens to this machine's service")
+  })
+
+  test("--relay: the other end of notify <ssh-target>, with the test it is asked for", () => {
+    expect(parseNotifyArgs(["--relay", "--test", "question", "--verbose"])).toEqual({
+      kind: "run",
+      options: expect.objectContaining({ relay: true, test: "question", verbose: true }),
+    })
   })
 
   test("after -- a word is the target even when it looks like an option", () => {
@@ -90,80 +107,159 @@ describe("notify arguments", () => {
   })
 })
 
-describe("notify remote service.json", () => {
-  const answer = (json: string, extra: { readonly code?: number; readonly stderr?: string; readonly before?: string } = {}) => ({
-    stdout: `${extra.before ?? ""}opencodeplus-service-json\n${json}`,
-    stderr: extra.stderr ?? "",
-    code: extra.code ?? 0,
+describe("notify relay over ssh", () => {
+  const attention = (overrides: Partial<Plus.Attention> = {}): Plus.Attention => ({
+    id: "e1",
+    kind: "done",
+    sessionID: "ses_1",
+    rootID: "ses_1",
+    depth: 0,
+    title: "Fix the login",
+    message: "Done",
+    notify: true,
+    sound: "bip-bop-01",
+    player: true,
+    at: 0,
+    ...overrides,
   })
 
-  test("address and password, skipping whatever a shell startup file printed first", () => {
-    expect(
-      parseRemoteService("box", answer('{ "hostname": "127.0.0.1", "port": 40375, "password": "secret" }', { before: "Welcome!\n" })),
-    ).toEqual({ host: "127.0.0.1", port: 40375, password: "secret" })
+  test("ssh runs OpenCodePlus there, found on PATH, where its installer puts it, or in ~/bin", () => {
+    const command = relayCommand("me@box", ["--test", "done"])
+    expect(command.slice(0, -2)).toEqual([
+      "ssh", "-T", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "--",
+    ])
+    expect(command.at(-2)).toBe("me@box")
+    expect(command.at(-1)).toBe(
+      `sh -c 'for c in opencodeplus "$HOME/.opencodeplus/bin/opencodeplus" "$HOME/bin/opencodeplus"; do if command -v "$c" >/dev/null 2>&1; then exec "$c" notify --relay --test done; fi; done; echo "${RELAY_NOT_FOUND}" >&2; exit 127'`,
+    )
+    expect(command.join(" ")).not.toContain("BatchMode")
+    expect(command.join(" ")).not.toContain("-L")
   })
 
-  test("missing fields fall back to what the service itself defaults to", () => {
-    expect(parseRemoteService("box", answer("{}"))).toEqual({ host: "127.0.0.1", port: 0xc0de })
+  test("the remote command finds OpenCodePlus in ~/bin when PATH has none, and says so when there is none", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "notify-relay-"))
+    const env = { HOME: home, PATH: "/usr/bin:/bin" }
+    const run = (script: string) => Bun.spawnSync(["sh", "-c", script.slice("sh -c '".length, -1)], { env })
+    const missing = run(remoteCommand([]))
+    expect(missing.exitCode).toBe(127)
+    expect(relayEnded("box", missing.exitCode, missing.stderr.toString().trim())).toBe(
+      "OpenCodePlus is not installed on box (looked on PATH, in ~/.opencodeplus/bin and in ~/bin)",
+    )
+    await mkdir(path.join(home, "bin"))
+    await Bun.write(path.join(home, "bin/opencodeplus"), '#!/bin/sh\necho "ran: $*"\n')
+    await chmod(path.join(home, "bin/opencodeplus"), 0o755)
+    expect(run(remoteCommand(["--verbose"])).stdout.toString()).toBe("ran: notify --relay --verbose\n")
+    await rm(home, { recursive: true, force: true })
   })
 
-  test("a service on every address is reached through loopback; other hosts are kept", () => {
-    expect(parseRemoteService("box", answer('{ "hostname": "0.0.0.0", "port": 1 }'))).toEqual({ host: "127.0.0.1", port: 1 })
-    expect(parseRemoteService("box", answer('{ "hostname": "::", "port": 1 }'))).toEqual({ host: "127.0.0.1", port: 1 })
-    expect(parseRemoteService("box", answer('{ "hostname": "::1", "port": 1 }'))).toEqual({ host: "::1", port: 1 })
-    expect(parseRemoteService("box", answer('{ "hostname": "10.0.0.5", "port": 1 }'))).toEqual({ host: "10.0.0.5", port: 1 })
-  })
-
-  test("failures say what went wrong and never echo the file", () => {
-    const error = (read: { stdout: string; stderr: string; code: number }) => {
-      const parsed = parseRemoteService("box", read)
-      return "error" in parsed ? parsed.error : "parsed"
-    }
-    expect(error({ stdout: "", stderr: "ssh: connect to host box port 22: Connection refused\n", code: 255 })).toBe(
+  test("why the relay ended: ssh's own failure, or the relay's", () => {
+    expect(relayEnded("box", 255, "ssh: connect to host box port 22: Connection refused")).toBe(
       "ssh box failed: ssh: connect to host box port 22: Connection refused",
     )
-    expect(error({ stdout: "", stderr: "", code: 255 })).toBe("ssh box failed (exit 255)")
-    expect(error(answer("", { code: 1, stderr: "cat: /home/me/.config/opencodeplus/service.json: No such file or directory" }))).toContain(
-      "box has no OpenCodePlus service config",
-    )
-    expect(error(answer('{ "password": "secret", '))).toBe(
-      "the service config on box (~/.config/opencodeplus/service.json) is not valid",
-    )
-    expect(error(answer('{ "port": 70000, "password": "secret" }'))).toContain("is not valid")
-    expect(error(answer('{ "disabled": true }'))).toContain("the service on box is turned off")
-  })
-})
-
-describe("notify ssh commands", () => {
-  test("the read runs sh on the remote side and keeps the target from being taken as an option", () => {
-    const command = sshReadCommand("me@box")
-    expect(command.slice(0, -2)).toEqual(["ssh", "-T", "-o", "ConnectTimeout=20", "--"])
-    expect(command.at(-2)).toBe("me@box")
-    expect(command.at(-1)).toBe(`sh -c 'echo opencodeplus-service-json; cat "\${XDG_CONFIG_HOME:-$HOME/.config}/opencodeplus/service.json"'`)
-    expect(command.join(" ")).not.toContain("BatchMode")
+    expect(relayEnded("box", 1, "")).toBe("the notify relay on box ended (exit 1)")
   })
 
-  test("the tunnel forwards a loopback port, dies with its connection, and carries no password", () => {
-    expect(sshTunnelCommand("box", 51234, "127.0.0.1", 40375)).toEqual([
-      "ssh",
-      "-N",
-      "-T",
-      "-o",
-      "ExitOnForwardFailure=yes",
-      "-o",
-      "ServerAliveInterval=15",
-      "-o",
-      "ServerAliveCountMax=3",
-      "-o",
-      "ConnectTimeout=20",
-      "-o",
-      "ControlPath=none",
-      "-L",
-      "127.0.0.1:51234:127.0.0.1:40375",
-      "--",
-      "box",
+  test("the relay passes events on and sends a sound file once, with the first event that names it", async () => {
+    const lines: RelayLine[] = []
+    const fetched: string[] = []
+    const relay = relayPlayer((line) => lines.push(line))
+    const fetch = async (sound: string) => {
+      fetched.push(sound)
+      if (sound.includes("missing")) throw new Error("No sound file at /missing.wav on the server")
+      return new Uint8Array([7, 8])
+    }
+    await relay.handle(attention(), fetch)
+    await relay.handle(attention({ sound: "/s/ding.wav" }), fetch)
+    await relay.handle(attention({ sound: "/s/ding.wav" }), fetch)
+    await relay.handle(attention({ sound: "/missing.wav" }), fetch)
+    expect(fetched).toEqual(["/s/ding.wav", "/missing.wav"])
+    expect(lines.map((line) => (line.type === "attention" ? (line.sound ?? null) : line.type))).toEqual([
+      null,
+      { data: Buffer.from([7, 8]).toString("base64") },
+      null,
+      { error: "No sound file at /missing.wav on the server" },
     ])
-    expect(sshTunnelCommand("box", 1, "::1", 2)).toContain("127.0.0.1:1:[::1]:2")
+  })
+
+  test("this machine plays what the relay passes on, with the sound file it sent, and the test arrives", async () => {
+    const played: Array<{ attention: Plus.Attention; sound: Uint8Array | undefined }> = []
+    const log: string[] = []
+    const asked: Array<string | undefined> = []
+    const out = [
+      "Last login: yesterday",
+      JSON.stringify({ type: "hello", version: RELAY_VERSION }),
+      JSON.stringify({ type: "status", text: "Connecting to this machine's service..." }),
+      JSON.stringify({ type: "connected", label: "this machine's service (http://127.0.0.1:40375)", version: "2.0.32-plus-1.3.18" }),
+      JSON.stringify({ type: "attention", attention: attention({ sound: "/s/ding.wav", test: true }), sound: { data: Buffer.from([5]).toString("base64") } }),
+    ]
+    const stop = new AbortController()
+    const source: Source = {
+      label: "box",
+      open: async (_signal, test) => {
+        asked.push(test)
+        return {
+          kind: "relay",
+          label: "box",
+          lines: (async function* () {
+            yield* out
+            await new Promise(() => {})
+          })(),
+          ended: new Promise(() => {}),
+          close: () => {},
+        }
+      },
+    }
+    const code = await runNotify(
+      {
+        source,
+        player: {
+          handle: async (event, fetch) => {
+            played.push({ attention: event, sound: event.sound === undefined ? undefined : await fetch(event.sound) })
+            // The test arrived: stop like Ctrl+C (--once would wait 2.5 s for the sound to end).
+            queueMicrotask(() => stop.abort())
+            return { sound: "played", desktop: "off" }
+          },
+        },
+        playerID: "p",
+        test: "done",
+        once: false,
+        log: (line) => log.push(line),
+        debug: () => {},
+      },
+      stop.signal,
+    )
+    expect(code).toBe(0)
+    expect(asked).toEqual(["done"])
+    expect(played.map((entry) => [entry.attention.sound, [...(entry.sound ?? [])]])).toEqual([["/s/ding.wav", [5]]])
+    expect(log).toContain("box: Connecting to this machine's service...")
+    expect(log.find((line) => line.startsWith("Connected to box"))).toContain("OpenCodePlus 2.0.32-plus-1.3.18")
+    expect(log.find((line) => line.startsWith("Test event arrived"))).toContain("played /s/ding.wav")
+  })
+
+  test("a relay that never says hello names the likely cause", async () => {
+    const log: string[] = []
+    const code = await runNotify(
+      {
+        source: {
+          label: "old",
+          open: async () => ({
+            kind: "relay",
+            label: "old",
+            lines: (async function* () {})(),
+            ended: Promise.resolve("the notify relay on old ended (exit 1: Unknown option --relay)"),
+            close: () => {},
+          }),
+        },
+        player: { handle: async () => ({ sound: "none", desktop: "off" }) },
+        playerID: "p",
+        once: true,
+        log: (line) => log.push(line),
+        debug: () => {},
+      },
+      new AbortController().signal,
+    )
+    expect(code).toBe(1)
+    expect(log.at(-1)).toContain("may be older than 1.3.18")
   })
 })
 

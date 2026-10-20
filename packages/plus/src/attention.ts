@@ -28,6 +28,10 @@ export interface AttentionStore {
   setParent(sessionID: string, parent: string | null): void
   /** True the first time a cache notice is seen; notices from before this process are never new. */
   newNotice(requestID: string, at: number): boolean
+  /** A TUI's report of the chats it has open; returns how many TUIs report now. */
+  opened(id: string, sessionIDs: readonly string[]): number
+  /** Whether any of these chats is open in a TUI. */
+  isOpen(sessionIDs: readonly string[]): boolean
 }
 
 export function createAttentionStore(options: { readonly now?: () => number } = {}): AttentionStore {
@@ -38,6 +42,7 @@ export function createAttentionStore(options: { readonly now?: () => number } = 
   const shells = new Map<string, string>()
   const parents = new Map<string, string | null>()
   const notices = new Set<string>()
+  const tuis = new Map<string, { readonly at: number; readonly chats: ReadonlySet<string> }>()
   const bounded = <T>(set: Set<T> | Map<T, unknown>, max: number) => {
     for (const key of [...set.keys()].slice(0, Math.max(0, set.size - max))) set.delete(key)
   }
@@ -45,6 +50,11 @@ export function createAttentionStore(options: { readonly now?: () => number } = 
     const at = now()
     for (const [id, seen] of players) if (at - seen >= PLAYER_TTL_MS) players.delete(id)
     return players.size
+  }
+  const reporting = () => {
+    const at = now()
+    for (const [id, report] of tuis) if (at - report.at >= PLAYER_TTL_MS) tuis.delete(id)
+    return [...tuis.values()]
   }
   return {
     claim(eventID) {
@@ -73,6 +83,12 @@ export function createAttentionStore(options: { readonly now?: () => number } = 
       parents.set(sessionID, parent)
       bounded(parents, MAX_PARENTS)
     },
+    opened(id, sessionIDs) {
+      tuis.delete(id)
+      if (sessionIDs.length > 0) tuis.set(id, { at: now(), chats: new Set(sessionIDs) })
+      return reporting().length
+    },
+    isOpen: (sessionIDs) => reporting().some((report) => sessionIDs.some((id) => report.chats.has(id))),
     newNotice(requestID, at) {
       if (notices.has(requestID)) return false
       notices.add(requestID)

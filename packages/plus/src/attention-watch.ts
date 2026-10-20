@@ -73,6 +73,8 @@ export function createAttentionWatcher(deps: AttentionDeps) {
     readonly agent?: string
   }) => {
     const chain = await chainOf(input.sessionID)
+    // Only the chats open in a TUI notify; a subagent or team member counts through the chat above it.
+    if (!store.isOpen(chain)) return
     const rootID = chain[chain.length - 1]
     const depth = chain.length - 1
     const [chat, root] = await Promise.all([

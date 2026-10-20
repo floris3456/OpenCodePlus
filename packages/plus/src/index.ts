@@ -3966,6 +3966,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         )
       }),
     "attention.player": (input) => Effect.sync(() => ({ players: attentionStore.player(input.id) })),
+    "attention.open": (input) => Effect.sync(() => ({ tuis: attentionStore.opened(input.id, input.sessionIDs) })),
     "attention.sound": (input, context) =>
       Effect.gen(function* () {
         const sound = yield* Effect.promise(() => readAttentionSound(input.sound))

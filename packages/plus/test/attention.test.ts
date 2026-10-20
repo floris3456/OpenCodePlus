@@ -114,9 +114,12 @@ function watcher(options: {
   readonly settings?: Record<string, AttentionSettings>
   readonly running?: ReadonlySet<string>
   readonly notices?: readonly Plus.MonitorNotice[]
+  /** The chats a TUI has open; default: every top-level chat. */
+  readonly open?: readonly string[]
 }) {
   const emitted: Plus.Attention[] = []
   const store = createAttentionStore({ now: () => 0 })
+  store.opened("tui", options.open ?? Object.keys(options.chats).filter((id) => options.chats[id]?.parent === undefined))
   const waiters: (() => void)[] = []
   const watch = createAttentionWatcher({
     store,
@@ -222,4 +225,40 @@ test("a new cache notice after a step raises cacheMiss with the agent's settings
     ["notice:req_1", "cacheMiss", false, "alert-03", "cache miss, 12k tokens not reused (the system prompt changed)"],
   ])
   lab.watch.dispose()
+})
+
+test("only chats open in a TUI notify; a subagent counts through the chat above it", async () => {
+  const lab = watcher({
+    chats: {
+      ses_open: { agent: "build" },
+      ses_closed: { agent: "build" },
+      ses_sub: { agent: "explore", parent: "ses_open" },
+      ses_closed_sub: { agent: "explore", parent: "ses_closed" },
+    },
+    settings: { build: settings({ child: { ...on("yup-01"), depth: 1 } }) },
+    open: ["ses_open"],
+  })
+  await lab.watch.handle(lab.event("e1", "session.execution.succeeded", { sessionID: "ses_closed" }))
+  await lab.watch.handle(lab.event("e2", "session.execution.succeeded", { sessionID: "ses_closed_sub" }))
+  await lab.watch.handle(lab.event("e3", "form.created", { form: { sessionID: "ses_closed", title: "Which?" } }))
+  await lab.watch.handle(lab.event("e4", "session.execution.succeeded", { sessionID: "ses_sub" }))
+  await lab.watch.handle(lab.event("e5", "session.execution.succeeded", { sessionID: "ses_open" }))
+  expect(lab.emitted.map((attention) => [attention.id, attention.kind])).toEqual([
+    ["e4", "child"],
+    ["e5", "done"],
+  ])
+  // A TUI that closes reports no chats: nothing is open any more.
+  lab.store.opened("tui", [])
+  await lab.watch.handle(lab.event("e6", "session.execution.succeeded", { sessionID: "ses_open" }))
+  expect(lab.emitted).toHaveLength(2)
+})
+
+test("a TUI's report of open chats lasts 45 s", () => {
+  const clock = { now: 0 }
+  const store = createAttentionStore({ now: () => clock.now })
+  expect(store.opened("a", ["ses_1"])).toBe(1)
+  expect(store.opened("b", ["ses_2"])).toBe(2)
+  expect(store.isOpen(["ses_9", "ses_1"])).toBe(true)
+  clock.now += PLAYER_TTL_MS
+  expect(store.isOpen(["ses_1"])).toBe(false)
 })

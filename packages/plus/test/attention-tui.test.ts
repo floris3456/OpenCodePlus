@@ -10,6 +10,7 @@ type Setting = Parameters<Plugin.Context["ui"]["settings"]["register"]>[0]
 function lab(options: { readonly route?: unknown; readonly tabs?: readonly string[]; readonly selects?: unknown[]; readonly prompts?: string[] } = {}) {
   const shown: AttentionNotifyOptions[] = []
   const writes: Plus.PlusSettingsInput[] = []
+  const reports: Plus.AttentionOpenInput[] = []
   const toasts: string[] = []
   const settings: Setting[] = []
   const handlers: ((event: { data: Plus.Attention }) => void)[] = []
@@ -22,6 +23,10 @@ function lab(options: { readonly route?: unknown; readonly tabs?: readonly strin
         "settings.set": async (input: Plus.PlusSettingsInput) => {
           writes.push(input)
           return server
+        },
+        "attention.open": async (input: Plus.AttentionOpenInput) => {
+          reports.push(input)
+          return { tuis: 1 }
         },
         "attention.test": async (input: Plus.AttentionTestInput) => attention({ kind: input.kind, test: true, notify: true, sound: "yup-02" }),
         events: {
@@ -58,7 +63,7 @@ function lab(options: { readonly route?: unknown; readonly tabs?: readonly strin
     },
   } as unknown as Plugin.Context
   const created = createAttention(context)
-  return { created, shown, writes, toasts, settings, emit: (data: Plus.Attention) => handlers.forEach((handler) => handler({ data })) }
+  return { created, shown, writes, reports, toasts, settings, emit: (data: Plus.Attention) => handlers.forEach((handler) => handler({ data })) }
 }
 
 function attention(fields: Partial<Plus.Attention>): Plus.Attention {
@@ -119,4 +124,11 @@ test("Settings › Notifications edits the global settings: switches, sounds, a 
   await run("plus.attention.test")
   expect(tui.shown.at(-1)).toEqual({ title: "Fix the parser", message: "Done", notification: { when: "always" }, sound: { file: "yup-02", when: "always" } })
   tui.created.dispose()
+})
+
+test("the TUI reports the chats it has open, and none once it closes", () => {
+  const tui = lab({ tabs: ["ses_other"] })
+  tui.created.dispose()
+  expect(tui.reports.map((report) => report.sessionIDs)).toEqual([["ses_chat", "ses_other", "ses_sub"], []])
+  expect(new Set(tui.reports.map((report) => report.id)).size).toBe(1)
 })

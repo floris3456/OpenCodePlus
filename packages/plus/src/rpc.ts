@@ -1340,7 +1340,7 @@ export const AttentionSettingsInput = Schema.Struct({
 }).annotate({ identifier: "Plus.AttentionSettingsInput" })
 
 // One occurrence, emitted to every client of the server only when its notification or sound is
-// on. `rootID` is the chat it belongs to, `depth` how far below it (0: the chat itself).
+// on and its chat (or the chat above it) is open in a TUI (`attention.open`). `rootID` is the chat it belongs to, `depth` how far below it (0: the chat itself).
 // `player` is true while a sound player (`opencodeplus notify`) is connected: TUIs then leave the
 // sound to it.
 export interface Attention extends Schema.Schema.Type<typeof Attention> {}
@@ -1366,6 +1366,14 @@ export interface AttentionPlayerInput extends Schema.Schema.Type<typeof Attentio
 export const AttentionPlayerInput = Schema.Struct({ id: Schema.String }).annotate({ identifier: "Plus.AttentionPlayerInput" })
 export interface AttentionPlayers extends Schema.Schema.Type<typeof AttentionPlayers> {}
 export const AttentionPlayers = Schema.Struct({ players: Schema.Number }).annotate({ identifier: "Plus.AttentionPlayers" })
+/** The chats a TUI has open; it counts for 45 s after each report. Only their events notify. */
+export interface AttentionOpenInput extends Schema.Schema.Type<typeof AttentionOpenInput> {}
+export const AttentionOpenInput = Schema.Struct({
+  id: Schema.String,
+  sessionIDs: Schema.Array(Schema.String),
+}).annotate({ identifier: "Plus.AttentionOpenInput" })
+export interface AttentionOpen extends Schema.Schema.Type<typeof AttentionOpen> {}
+export const AttentionOpen = Schema.Struct({ tuis: Schema.Number }).annotate({ identifier: "Plus.AttentionOpen" })
 /** A sound file named by path in the settings, read on the server for a player elsewhere. */
 export interface AttentionSoundInput extends Schema.Schema.Type<typeof AttentionSoundInput> {}
 export const AttentionSoundInput = Schema.Struct({ sound: Schema.String }).annotate({ identifier: "Plus.AttentionSoundInput" })
@@ -2610,6 +2618,8 @@ const PortableAttentionSoundInput = Schema.toStandardSchemaV1(AttentionSoundInpu
 const PortableAttentionSoundData = Schema.toStandardSchemaV1(AttentionSoundData)
 const PortableAttentionTestInput = Schema.toStandardSchemaV1(AttentionTestInput)
 const PortableSettingsInvalid = Schema.toStandardSchemaV1(SettingsInvalid)
+const PortableAttentionOpenInput = Schema.toStandardSchemaV1(AttentionOpenInput)
+const PortableAttentionOpen = Schema.toStandardSchemaV1(AttentionOpen)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(
@@ -3088,6 +3098,11 @@ export const Definition = Rpc.define({
     "attention.player": {
       input: PortableAttentionPlayerInput,
       output: PortableAttentionPlayers,
+      errors: {},
+    },
+    "attention.open": {
+      input: PortableAttentionOpenInput,
+      output: PortableAttentionOpen,
       errors: {},
     },
     "attention.sound": {
