@@ -563,28 +563,29 @@ it.effect("a decision strategy overrides the agent's, locally and remotely", () 
       status: "completed",
     })
 
-    // A portable decision that keeps the agent's remote strategy is refused as before.
-    const remote = yield* insertSession(Session.ID.make("ses_quota_strategy_remote"))
-    yield* hooks.register("session", "compaction.decide", (event) =>
-      Effect.sync(() => {
-        event.compact = true
-        event.portable = true
-        event.strategy = "remote"
-      }),
-    )
-    requests = []
-    const refused = yield* compaction.compact({
-      reason: "auto",
-      context: { ...loaded(remote, messages), model: native, agent },
-    })
-    expect(refused).toEqual({
-      status: "failed",
-      error: {
-        type: "compaction.unavailable",
-        message: "Credential handoff requires a local portable summary; this agent requires remote compaction",
-      },
-    })
-    expect(requests).toEqual([])
+    // A portable decision under a remote strategy writes a local summary: with the model it names, and with
+    // the chat's own model when it names none, since this route has no readable native checkpoint.
+    for (const named of [true, false]) {
+      const remote = yield* insertSession(Session.ID.make(`ses_quota_strategy_remote_${named}`))
+      yield* hooks.register("session", "compaction.decide", (event) =>
+        Effect.sync(() => {
+          event.compact = true
+          event.portable = true
+          event.strategy = "remote"
+          if (named) event.compactionModel = cheap.ref
+          else delete event.compactionModel
+        }),
+      )
+      requests = []
+      expect(
+        (yield* compaction.compact({ reason: "auto", context: { ...loaded(remote, messages), model: native, agent } }))
+          .status,
+      ).toBe("completed")
+      expect(requests.map((request) => String(request.model.id))).toEqual([named ? "cheap-summary" : "summary-model"])
+      const [checkpoint] = yield* store.context(remote.id)
+      expect(checkpoint).toMatchObject({ type: "compaction", status: "completed", summary: "## Objective\n- manual summary" })
+      expect(checkpoint).not.toHaveProperty("providerContext", expect.anything())
+    }
   }),
 )
 

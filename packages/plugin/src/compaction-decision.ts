@@ -34,12 +34,14 @@ export interface SessionCompactionDecision {
    * or `error`: stop the step with an error until the chat is compacted.
    */
   images?: "compact" | "leave-out" | "error"
-  /** Require a local text checkpoint without account-bound provider state. */
-  portable?: boolean
   /**
-   * Override the agent's compaction strategy for this compaction. A portable decision with `remote`,
-   * from either this field or the agent, is refused.
+   * Require a text checkpoint without account-bound provider state. The models this decision names
+   * (`compactionModel`, fallbacks) write it as a local summary. When it names none, `auto` and `remote`
+   * keep only the readable summary of a native checkpoint (Anthropic); a route whose native window is
+   * opaque writes a local summary instead.
    */
+  portable?: boolean
+  /** Override the agent's compaction strategy for this compaction. */
   strategy?: "auto" | "local" | "remote"
   /** Read-only attribution hints for monitoring; these never select or request compaction. */
   explanation?: {
@@ -58,7 +60,8 @@ export interface SessionCompactionDecision {
   system?: string
   /**
    * Write the local summary with this model instead of the agent's compaction model. The session keeps
-   * its own model. Remote (provider-native) compaction ignores it.
+   * its own model. Remote (provider-native) compaction ignores it, except that a portable summary is then
+   * written by it.
    */
   compactionModel?: Model.Ref
   /**

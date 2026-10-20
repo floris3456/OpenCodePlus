@@ -99,6 +99,8 @@ const setup = Effect.fnUntraced(function* (options: {
   noCompaction?: boolean
   anthropic?: "direct" | "compatible"
   onDemand?: boolean
+  /** The Models API answers like CLIProxyAPI's catalogue: the model, but no capabilities. */
+  relayCatalogue?: boolean
   quota?: boolean
   iterationUsage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 } = {}) {
@@ -135,7 +137,12 @@ const setup = Effect.fnUntraced(function* (options: {
         hostname: "127.0.0.1",
         port: 0,
         async fetch(request) {
-          if (options.anthropic && request.method === "GET") return Response.json({ capabilities: { compaction: { supported: options.onDemand !== false } } })
+          if (options.anthropic && request.method === "GET")
+            return Response.json(
+              options.relayCatalogue
+                ? { id: "claude-opus-4-6", type: "model", display_name: "Claude Opus 4.6", max_input_tokens: 200_000, max_tokens: 32_000 }
+                : { capabilities: { compaction: { supported: options.onDemand !== false } } },
+            )
           if (options.quota && request.method === "GET")
             return Response.json({
               protocol: 1,
@@ -754,6 +761,116 @@ for (const anthropic of ["direct", "compatible"] as const) {
       expect(yield* fixture.compact).toMatchObject({ status: "completed" })
       expect(fixture.bodies).toHaveLength(1)
       expect((yield* fixture.load).messages.at(-1)).toMatchObject({ status: "completed", summary: "Native summary" })
+    }),
+  )
+}
+
+for (const strategy of ["auto", "remote"] as const) {
+  it.live(`Anthropic through a relay whose Models API states no capability: ${strategy} compacts natively`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ anthropic: "compatible", relayCatalogue: true, config: { strategy } })
+      yield* fixture.prompt("Conversation to compact")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      expect(fixture.bodies).toHaveLength(1)
+      expect(fixture.bodies[0]).toMatchObject({ compaction: { type: "summarize" } })
+      expect(fixture.observations[0]?.compaction).toMatchObject({
+        selectedStrategy: "native",
+        selectionReason: strategy === "auto" ? "auto-native" : "explicit-remote",
+      })
+      expect((yield* fixture.load).messages.at(-1)).toMatchObject({
+        status: "completed",
+        summary: "Native summary",
+        providerContext: expect.anything(),
+      })
+    }),
+  )
+
+  it.live(`a portable ${strategy} compaction that names no model keeps only Anthropic's readable summary`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ anthropic: "direct", config: { strategy } })
+      yield* fixture.prompt("Earlier conversation")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      yield* fixture.prompt("Newer conversation")
+      yield* fixture.hooks.register("session", "compaction.decide", (event) =>
+        Effect.sync(() => {
+          event.compact = true
+          event.portable = true
+        }),
+      )
+      expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({
+        status: "completed",
+      })
+      expect(fixture.bodies).toHaveLength(2)
+      expect(fixture.bodies[1]).toMatchObject({ compaction: { type: "summarize" } })
+      // The previous checkpoint reaches the provider as its readable summary, not as the signed block.
+      const sent = JSON.stringify(fixture.bodies[1])
+      expect(sent).not.toContain("fixture-signature")
+      expect(sent).toContain("Native summary")
+      expect(sent).toContain("Newer conversation")
+      expect(fixture.observations.at(-1)?.compaction).toMatchObject({
+        selectedStrategy: "native",
+        selectionReason: strategy === "auto" ? "auto-native" : "explicit-remote",
+      })
+      const [checkpoint] = (yield* fixture.load).messages
+      expect(checkpoint).toMatchObject({
+        type: "compaction",
+        status: "completed",
+        summary: "Native summary",
+        recent: expect.stringContaining("Newer conversation"),
+      })
+      expect(checkpoint).not.toHaveProperty("providerContext", expect.anything())
+      expect(checkpoint).not.toHaveProperty("providerState", expect.anything())
+    }),
+  )
+}
+
+for (const portable of [true, false]) {
+  it.live(`a ${portable ? "portable" : "local"} summary by another model keeps the previous remote checkpoint in front`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({ anthropic: "direct", config: { strategy: "remote" } })
+      const endpoint = fixture.model.model.route.endpoint.baseURL
+      if (typeof endpoint !== "string") return yield* Effect.die("Missing fixture endpoint")
+      const named = SessionRunnerModel.resolved(
+        AnthropicCompatible.configure({ baseURL: endpoint, provider: "relay" }).model("claude-haiku-4-5"),
+        { capabilities: { tools: true, input: ["text"], output: ["text"] }, cost: [], limit: { context: 200_000, output: 32_000 } },
+      )
+      fixture.available.set(`${named.ref.providerID}/${named.ref.id}`, named)
+      yield* fixture.prompt("Earlier conversation")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      yield* fixture.prompt("Newer conversation")
+      yield* fixture.hooks.register("session", "compaction.decide", (event) =>
+        Effect.sync(() => {
+          event.compact = true
+          event.compactionModel = named.ref
+          if (portable) event.portable = true
+          else event.strategy = "local"
+        }),
+      )
+      expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({
+        status: "completed",
+      })
+      expect(fixture.bodies).toHaveLength(2)
+      expect(fixture.bodies[1]).toMatchObject({ model: "claude-haiku-4-5" })
+      expect(fixture.bodies[1]).not.toHaveProperty("compaction")
+      // The named model gets the conversation after the checkpoint and the tail it kept, never its window.
+      const sent = JSON.stringify(fixture.bodies[1])
+      expect(sent).not.toContain("fixture-signature")
+      expect(sent).not.toContain("Native summary")
+      expect(sent).toContain("Earlier conversation")
+      expect(sent).toContain("Newer conversation")
+      const [checkpoint] = (yield* fixture.load).messages
+      expect(checkpoint).toMatchObject({
+        type: "compaction",
+        status: "completed",
+        summary: "Native summary\n\n## Objective\n- Local summary",
+        model: named.ref,
+      })
+      expect(checkpoint).not.toHaveProperty("providerContext", expect.anything())
+      expect(fixture.observations.at(-1)?.compaction).toMatchObject({
+        selectedStrategy: "text-summary",
+        selectionReason: portable ? "portable-required" : "explicit-local",
+        modelSource: "decision-hook",
+      })
     }),
   )
 }
