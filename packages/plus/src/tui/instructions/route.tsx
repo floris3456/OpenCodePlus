@@ -1032,7 +1032,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   // ---- actions (unchanged semantics from the tree screen) ----
 
   // Selection follows the picker: disabled, hidden, subagent-only and
-  // maintenance agents stay editable but cannot become the current agent.
+  // Special agents stay editable but cannot become the current agent.
   function selectableAgent(node: TreeNode | undefined): string | undefined {
     const id = selectableAgentId(node)
     if (id === undefined) return undefined

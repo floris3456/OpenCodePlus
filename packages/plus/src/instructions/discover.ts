@@ -19,7 +19,6 @@ import {
   isCodeModeToolEntry,
   modelItemId,
   permItemId,
-  resolve,
   resolveActiveModel,
   runtimeScope,
   type AgentSource,
@@ -176,14 +175,6 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const baseRows = baseItems(input.baseTemplates)
   const skillRows = skillItems(skills, directory, baselines)
   const roleRows = roleItems(agents, baselines, bodies)
-  const compactor = withBase.find((source) => source.id === "compaction")
-  const compactorRole = roleRows.find((item) => item.agents?.includes("compaction"))
-  const controlScopes = chainContext({ agents: withBase, items: roleRows, ...input.presetState, teams: input.teams ?? [] })
-  const runtime = runtimeScope({ id: "compaction", level: compactor?.scope ?? "defaults" }, controlScopes)
-  const inheritedInstructions = compactorRole === undefined ? "" : resolve({
-    upstream: compactorRole, records: input.records, splits: input.splits ?? [], scopes: runtime.scopes,
-    address: { level: runtime.level, agent: "compaction", item: "system:role", section: null },
-  }).assembled
   const fileRows = instructionFileItems(directory, input.ctx.location.project.directory, instructions)
   const teachingRows = teachingItems(teaching, instructions.length)
   const guidanceRows = guidanceItems(instructions.length + teachingRows.length)
@@ -218,8 +209,8 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     ...mcp.items,
     ...modelRows,
     ...parameterApprovals(permRows, paramRows),
-    ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent, inheritedInstructions)),
-    ...controlItems(undefined, {}, inheritedInstructions),
+    ...(input.agentUpstream ?? agents).flatMap((agent) => controlItems(agent.id, agent)),
+    ...controlItems(),
   ]
   return {
     items,
@@ -501,16 +492,15 @@ function shadowedSources(
 }
 
 // Agents core registers without backing files: core/src/plugin/agent.ts
-// (build, general, explore, compaction, title, summary) and
-// core/src/plugin/plan.ts (plan). A file with the same id shadows the
+// (build, general, explore, title) and core/src/plugin/plan.ts (plan). A file with the same id shadows the
 // builtin in core's id-keyed registry, so the defaults identity needs its
 // own entry here. Keep in sync with core.
-const builtinAgentIds = ["build", "general", "explore", "compaction", "title", "summary", "plan"]
+const builtinAgentIds = ["build", "general", "explore", "title", "plan"]
 
 // Server-side origin classification: file-backed agents are always user;
-// unbacked built-ins split into OpenCode and its Special maintenance agents.
+// unbacked built-ins split into OpenCode and its Special title agent.
 // Hidden is a visibility setting, not an origin; everything else is user.
-const specialAgentIds = ["title", "summary", "compaction"]
+const specialAgentIds = ["title"]
 const nativeAgentIds = ["build", "plan", "general", "explore"]
 
 function originForId(id: string): AgentSource["origin"] {

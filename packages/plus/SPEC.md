@@ -998,9 +998,11 @@ and the tools, so shipped content never crosses the wire: every side builds
 the same catalogue from the snapshot's `items` and preset records.
 
 - **OpenCode agent presets** (`nativePresetIds`: build, plan, general, explore,
-  title, summary, compaction). `shipped(ref, item, null, upstream)` answers
+  title). `shipped(ref, item, null, upstream)` answers
   every item with the resolving item's upstream `{ text, state, pin? }` and
-  `system:role` with the OpenCode agent's own role item text.
+  `system:role` with the OpenCode agent's own role item text. The title preset
+  answers its tool, skill, rule and system rows other than `system:role` off
+  (`unusedByTitle`): a title request sends only the role and the conversation.
 - **Plus agent presets** ship empty: the Plus agent group exists but lists
   nothing. The six former Plus agent presets are the Basic team's member
   presets now.
@@ -1398,7 +1400,7 @@ message?, updated }`). `AgentEntry` carries `origin?` (`"native" | "special" | "
 variant? }`), `ancestor?` (`boolean`, true when backed by an ancestor directory
 agent file), and `fileBacked`. `ModelAddInput` and `ModelRemoveInput` carry optional `team?: { level, team }`.
 Every team row expands to its member rows followed by a `Special` row (`team:<level>:<team>:special`),
-which expands to `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`),
+which expands to `title` (`team:<level>:<team>:special:<id>`),
 each carrying the five groups (`group:<level>:<team>/:special:<id>:<group>`). Their overrides carry `team: { level, team }`
 and apply only while the team is enabled. While it is the enabled winner, every Special agent the host runs is published
 with that team (`computeSpecialOverrides` in `index.ts`), so apply resolves its tools, permissions, skills and model through

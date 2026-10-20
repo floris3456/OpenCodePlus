@@ -295,7 +295,7 @@ export interface PresetCatalog {
     preset: PresetRef,
     item: string,
     section: string | null,
-    upstream?: Pick<Item, "text" | "enabled" | "pinned">,
+    upstream?: Pick<Item, "text" | "enabled" | "pinned" | "kind">,
     agent?: string | null,
     linked?: (agent: string) => readonly PresetRef[],
   ) => ShippedValue | undefined
@@ -1925,7 +1925,17 @@ export function linkedPresets(address: Address, scopes: Scopes): PresetRef[] {
 // it at Defaults for every agent only), so it keeps its upstream state.
 function fallbackOf(input: ChainInput): { enabled: boolean; from: From } {
   const kind = fallbackKind(input)
-  return { enabled: kind === "off" ? false : input.upstream.enabled, from: { kind } }
+  return { enabled: kind === "off" || unusedByTitle(input.address.agent, input.upstream) ? false : input.upstream.enabled, from: { kind } }
+}
+
+/**
+ * A title request sends the title agent's Role/persona and the conversation, nothing else (core
+ * session/title.ts): no tools (so no parameters or rules), no skills and no other system rows. OpenCode
+ * ships those rows off for it.
+ */
+export function unusedByTitle(agent: string | null, item: Pick<Item, "id" | "kind">): boolean {
+  if (agent !== "title" || item.id === "system:role") return false
+  return item.kind === "tool" || item.kind === "skill" || item.kind === "system" || item.kind === "perm"
 }
 
 function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {

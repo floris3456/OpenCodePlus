@@ -68,9 +68,8 @@ export function resetAgentRowsCache(): void {
   agentRowsCache.clear()
 }
 
-// The table resolves lazily and remembers per agent: most agents (title,
-// summary, compaction) never call a tool, so a publish pays only for the
-// agents that do.
+// The table resolves lazily and remembers per agent: some agents (title)
+// never call a tool, so a publish pays only for the agents that do.
 export function permissionTable(input: {
   readonly items: readonly Item[]
   readonly item?: (item: Item, agent: string) => Item | undefined

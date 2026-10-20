@@ -472,6 +472,38 @@ test("fallback: a user agent is off, a native agent and an owned item read upstr
   expect(disabled.enabled).toBe(false)
 })
 
+// A title request sends the title agent's role and the conversation only (core session/title.ts).
+test("fallback: the title agent has only its role on; its settings keep upstream", () => {
+  const ctx = context()
+  const at = (upstream: Item) =>
+    resolve({ upstream, records: [], splits: [], scopes: ctx, address: address({ agent: "title", item: upstream.id }) })
+  const off = [
+    item(),
+    item({ id: "skill:review", kind: "skill" }),
+    item({ id: "system:opencodeplus", kind: "system" }),
+    item({ id: "perm:shell:git-push", kind: "perm" }),
+  ]
+  for (const row of off) {
+    expect(at(row).enabled).toBe(false)
+    expect(at(row).from).toEqual({ kind: "native" })
+  }
+  const role = item({ id: "system:role", kind: "system", text: "You are a title generator.", agents: ["title"] })
+  expect(at(role).enabled).toBe(true)
+  expect(at(item({ id: "setting:hidden", kind: "setting", text: "" })).enabled).toBe(true)
+  expect(at(item({ id: "param:bash:command", kind: "param" })).enabled).toBe(true)
+  // Turning a row on for it is still an ordinary edit.
+  const on = resolve({
+    upstream: item(),
+    records: [record({ level: "project", agent: "title" }, { state: "on" })],
+    splits: [],
+    scopes: ctx,
+    address: address({ agent: "title" }),
+  })
+  expect(on.enabled).toBe(true)
+  // Another OpenCode agent keeps the upstream state.
+  expect(resolve({ upstream: item(), records: [], splits: [], scopes: ctx, address: address({ agent: "build" }) }).enabled).toBe(true)
+})
+
 test("fallback: only the state goes off; a limit row keeps its upstream text", () => {
   const limit = item({ id: "perm:team_delegate:limits.paths", kind: "perm", text: "5", permKind: "limit" })
   const resolved = resolve({
@@ -506,14 +538,22 @@ test("fallback: Defaults for every agent and entries are off; a team's Special a
   })
   expect(pattern.enabled).toBe(false)
   const special = resolve({
+    upstream: item({ id: "setting:mode", kind: "setting", text: "primary" }),
+    records: [],
+    splits: [],
+    scopes: ctx,
+    address: address({ agent: "title", item: "setting:mode", team: { level: "project", team: "crew" } }),
+  })
+  expect(special.enabled).toBe(true)
+  expect(special.from).toEqual({ kind: "upstream" })
+  const specialTool = resolve({
     upstream: item(),
     records: [],
     splits: [],
     scopes: ctx,
     address: address({ agent: "title", team: { level: "project", team: "crew" } }),
   })
-  expect(special.enabled).toBe(true)
-  expect(special.from).toEqual({ kind: "native" })
+  expect(specialTool.from).toEqual({ kind: "native" })
   const nativePreset = resolve({
     upstream: item(),
     records: [],

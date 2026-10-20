@@ -33,7 +33,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true })
 })
 
-async function fixture(initial = [agentInfo("build"), agentInfo("compaction", "Global compaction instructions")]) {
+async function fixture(initial = [agentInfo("build")]) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agent-controls-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
@@ -158,15 +158,13 @@ test("a sectioned description reaches the agent apply installs", async () => {
   expect(excluded).not.toContain("Edited details.")
 })
 
-test("compaction inherits active model and global instructions, retains local overrides while remote, and resets", async () => {
+test("compaction inherits the active model and no instructions, retains local overrides while remote, and resets", async () => {
   const f = await fixture()
   const initial = await f.snapshot()
   expect(initial.items.find((item) => item.id === "compaction:model" && item.agents?.includes("build"))?.text).toBe("")
-  expect(initial.items.find((item) => item.id === "compaction:instructions" && item.agents?.includes("build"))?.text).toBe("Global compaction instructions")
+  expect(initial.items.find((item) => item.id === "compaction:instructions" && item.agents?.includes("build"))?.text).toBe("")
   expect(f.agents.state.has("build")).toBe(true)
   expect(f.agents.state.get("build")?.compaction).toBeUndefined()
-  await f.edit(saveText(memoInputOf(initial), "item:global:compaction:system:role", "Customized global compaction"))
-  expect((await f.snapshot()).items.find((item) => item.id === "compaction:instructions" && item.agents?.includes("build"))?.text).toBe("Customized global compaction")
   for (const [item, text] of [["model", "test/summarizer#fast"], ["instructions", "Keep unresolved tasks"], ["strategy", "remote"]])
     await f.edit(saveText(memoInputOf(await f.snapshot()), `item:project:build:compaction:${item}`, text))
   const current = () => f.agents.state.get("build")?.compaction

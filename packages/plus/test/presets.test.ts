@@ -141,6 +141,17 @@ test("a Native preset ships its native agent's upstream values and prompt", () =
   )
 })
 
+test("the OpenCode title preset ships its role on and its tool, skill, system and rule rows off", () => {
+  const catalog = presetCatalog({ items: [...inventory, roleOf("title", "You are a title generator.")] })
+  const title: PresetRef = { kind: "agent", id: "title" }
+  expect(catalog.shipped(title, "tool:bash", null, inventory[0])).toEqual({ text: "tool:bash text", state: "off" })
+  expect(catalog.shipped(title, "tool:coder", null, inventory[2])).toEqual({ text: "tool:coder text", state: "off", pin: true })
+  expect(catalog.shipped(title, "skill:notes", null, inventory[3])?.state).toBe("off")
+  const rule = item({ id: "perm:shell:git-push", kind: "perm" })
+  expect(catalog.shipped(title, rule.id, null, rule)?.state).toBe("off")
+  expect(catalog.shipped(title, "system:role", null, roleOf("alpha", ""))).toEqual({ text: "You are a title generator.", state: "on" })
+})
+
 test("a Basic member preset's role text is its sectioned body, and it ships every item's value", () => {
   const catalog = presetCatalog({ items: inventory })
   const basic = plusTeamPresets.find((team) => team.id === "basic")
@@ -520,7 +531,7 @@ test("the Basic member presets answer Delegate to rows from the teammate's link,
   expect(named).toEqual([])
   const catalog = presetCatalog({ items: [] })
   const orchestrator = { kind: "member", team: "basic", id: "orchestrator" } as const
-  const row = { text: "x", enabled: false }
+  const row = { text: "x", enabled: false, kind: "perm" } as const
   const linkedTo = (id: string) => () => [{ kind: "member", team: "basic", id } as const]
   // Opened by the teammate's member preset, whatever the teammate is called.
   expect(catalog.shipped(orchestrator, "perm:team_delegate:to.Flash-Implementer", null, row, "Orchestrator", linkedTo("implementer"))?.state).toBe("on")

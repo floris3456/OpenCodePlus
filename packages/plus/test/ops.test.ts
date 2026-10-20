@@ -1435,7 +1435,8 @@ test("toggle, reset, and model activation under a team special write records car
   expect(custom).toBeDefined()
   expect(custom?.level).toBe("project")
   expect(custom?.team).toEqual({ level: "project", team: "crew" })
-  expect(custom?.state).toBe("off")
+  // The title agent's tools start off (a title request sends none), so the toggle turns it on.
+  expect(custom?.state).toBe("on")
 
   // 2. Reset
   const resetResult = reset({ ...input, records: toggleResult.records }, toolRowId)

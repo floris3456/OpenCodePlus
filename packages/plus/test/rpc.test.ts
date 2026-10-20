@@ -956,9 +956,7 @@ test("snapshot reports built-in agents with defaults scope once without project 
     agentInfo("plan", "plan agent"),
     agentInfo("general", "general agent"),
     agentInfo("explore", "explore agent"),
-    agentInfo("compaction", "compaction agent"),
     agentInfo("title", "title agent"),
-    agentInfo("summary", "summary agent"),
   ]
   const handlers = createHandlers(fullContext({ directory: project, agents: builtinInfos }), createState())
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -975,13 +973,9 @@ test("snapshot reports built-in agents with defaults scope once without project 
       { id, scope: "defaults", origin: "native", base: "general", fileBacked: false },
     ])
   }
-  const specialIds = ["compaction", "title", "summary"]
-  for (const id of specialIds) {
-    const entries = snapshot.agents.filter((agent) => agent.id === id)
-    expect(entries).toEqual([
-      { id, scope: "defaults", origin: "special", base: "general", fileBacked: false },
-    ])
-  }
+  expect(snapshot.agents.filter((agent) => agent.id === "title")).toEqual([
+    { id: "title", scope: "defaults", origin: "special", base: "general", fileBacked: false },
+  ])
 })
 
 test("agent create/rename/delete work at both scopes and create accepts a preset", async () => {

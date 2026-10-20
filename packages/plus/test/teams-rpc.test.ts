@@ -1403,14 +1403,14 @@ test("enable team with special override reaches host agent.system and agent.mode
 })
 
 // A Special agent under an enabled team resolves with the team's chain even
-// when that team sets no active model for it: its tool row turned off under
-// Teams → crew → Special → summary is what apply enforces.
-test("a Special agent's tool row turned off under the enabled team is enforced without a team-scoped model", async () => {
+// when that team sets no active model for it: its tool row turned on under
+// Teams → crew → Special → title (off as OpenCode ships it) is what apply installs.
+test("a Special agent's tool row turned on under the enabled team is applied without a team-scoped model", async () => {
   const { project } = await tempRoot()
-  const summary = { ...agentInfo("summary", "upstream summary text"), origin: "special" as const }
+  const title = { ...agentInfo("title", "upstream title text"), origin: "special" as const }
   const ctx = fullContext({
     directory: project,
-    agents: [summary, ...["general", "explore"].map((id) => ({ ...agentInfo(id, `${id} prompt`), hidden: true }))],
+    agents: [title, ...["general", "explore"].map((id) => ({ ...agentInfo(id, `${id} prompt`), hidden: true }))],
     tools: [{ id: "shell", description: "Execute shell commands.", options: { codemode: false } }],
     hooks: { current: 0 },
   })
@@ -1419,15 +1419,16 @@ test("a Special agent's tool row turned off under the enabled team is enforced w
   await Effect.runPromise(handlers["team.create"]({ level: "project", team: "crew" }, throwingContext({})))
   await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
   const before = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(state.installedTools).toContainEqual(expect.objectContaining({ agent: "title", tool: "shell", enabled: false }))
   const records: Plus.SnapshotRecord[] = [
     {
       type: "customization",
       level: "project",
-      agent: "summary",
+      agent: "title",
       item: "tool:shell",
       section: null,
       team: { level: "project", team: "crew" },
-      state: "off",
+      state: "on",
       basedOn: "fp",
       updated: UPDATED,
     },
@@ -1451,9 +1452,9 @@ test("a Special agent's tool row turned off under the enabled team is enforced w
     ),
   )
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  const shown = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:project:crew/:special:summary:tool:shell")
-  expect(shown?.badges.state).toBe("off")
-  expect(state.installedTools).toContainEqual(expect.objectContaining({ agent: "summary", tool: "shell", enabled: false }))
+  const shown = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:project:crew/:special:title:tool:shell")
+  expect(shown?.badges.state).toBe("on")
+  expect(state.installedTools).not.toContainEqual(expect.objectContaining({ agent: "title", tool: "shell", enabled: false }))
   for (const id of ["general", "explore"]) {
     expect(snapshot.agents.find((agent) => agent.id === id)?.origin).toBe("native")
     const nodes = expandedTree(memoInputOf(snapshot))

@@ -12,6 +12,7 @@
 import { controlKind, findLazy, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { rowTeamOf, wholeOf } from "../../instructions/resolve-memo.js"
 import { isColdDefaultItemId, isColdModelItemId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID } from "../../instructions/model-settings.js"
+import { unusedByTitle } from "../../instructions/model.js"
 
 export const LEVELS = [
   { id: "project", label: "Project", root: "root:project" },
@@ -418,6 +419,8 @@ export function toolCountOf(memo: Memo, ownerKey: string, codemode: (item: strin
   const group = owner?.children().find((child) => child.kind === "group" && child.id.endsWith(":tools"))
   if (group === undefined) return undefined
   const rows = toolRows(group)
+  // A title request sends no tools: the title agent has no count to show or warn about.
+  if (rows.some((row) => unusedByTitle(row.address.agent, { id: row.item, kind: "tool" }))) return undefined
   const on = rows.filter((row) => row.on)
   return { on: on.length, codemode: on.filter((row) => {
     if (row.pinned) return false

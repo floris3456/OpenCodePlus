@@ -37,7 +37,7 @@ export function controlItemFor(items: readonly Item[], address: Pick<Address, "a
     ?? rows.find((item) => item.agents === undefined)
 }
 
-export function controlItems(agent?: string, fields: AgentControls = {}, inheritedInstructions = ""): Item[] {
+export function controlItems(agent?: string, fields: AgentControls = {}): Item[] {
   const model = fields.compaction?.model
   const texts: Record<ControlId, string> = {
     "setting:enabled": "",
@@ -48,7 +48,7 @@ export function controlItems(agent?: string, fields: AgentControls = {}, inherit
     "setting:steps": fields.steps === undefined ? "" : String(fields.steps),
     "compaction:strategy": fields.compaction?.strategy ?? "auto",
     "compaction:model": model === undefined ? "" : `${model.providerID}/${model.id}${model.variant === undefined ? "" : `#${model.variant}`}`,
-    "compaction:instructions": fields.compaction?.system ?? inheritedInstructions,
+    "compaction:instructions": fields.compaction?.system ?? "",
   }
   return controlIds.map((id, order) => ({
     id,
@@ -86,6 +86,6 @@ export function controlRecordError(record: Pick<CustomizationRecord, "item" | "s
   if (record.item === "setting:steps" && text !== "" && (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text)))) return "Steps must be a positive integer or empty (unlimited)"
   if (record.item === "setting:color" && text !== "" && !/^#[0-9a-fA-F]{6}$/.test(text)) return "Color must be a six-digit #RRGGBB value or empty"
   if (record.item === "compaction:strategy" && !["auto", "local", "remote"].includes(text)) return "Compaction strategy must be auto, local, or remote"
-  if (record.item === "compaction:model" && text !== "" && !/^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/.test(text)) return "Compaction model must be provider/model with an optional #variant, or empty (inherit the maintenance compaction model, otherwise the active session model)"
+  if (record.item === "compaction:model" && text !== "" && !/^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/.test(text)) return "Compaction model must be provider/model with an optional #variant, or empty (inherit, otherwise the chat's own model)"
   return undefined
 }

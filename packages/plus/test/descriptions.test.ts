@@ -22,7 +22,7 @@ function item(id: string, overrides: Partial<Item> = {}): Item {
 
 const agents: AgentSource[] = [
   { id: "build", scope: "defaults", origin: "native" },
-  { id: "compaction", scope: "defaults", origin: "special" },
+  { id: "title", scope: "defaults", origin: "special" },
   { id: "alice", scope: "project", origin: "user" },
   { id: "mate", scope: "project", origin: "user" },
   { id: "shipped", scope: "project", origin: "plus" },
@@ -139,7 +139,7 @@ test("origin subgroups describe each population at every level and in Presets", 
     }
   }
   expect(detail("group:project:agents:native:special")).toBe(
-    "OpenCode's maintenance agents: compaction, title and summary. They run internal work, not your chats.",
+    "OpenCode's title agent: it names your chats from its Role/persona and the conversation, with no tools, skills or other system rows. Pick its model here.",
   )
   expect(detail("group:global:agents:plus")).toBe(
     "Agents produced by OpenCodePlus teams, including the shipped teams' members. A linked preset decides how a member behaves.",
@@ -170,11 +170,11 @@ test("every shared Defaults inventory category describes both catalogues", () =>
   expect(detail("group:defaults:/teams:settings")).toContain("team member")
 })
 
-test("owner categories name the agent, member, preset or maintenance agent they belong to", () => {
+test("owner categories name the agent, member, preset or title agent they belong to", () => {
   for (const category of ["settings", "models", "tools", "base", "system"] as const) {
     expect(detail(`group:project:alice:${category}`)).toBeDefined()
     expect(detail(`group:project:crew/:mate:${category}`)).toBeDefined()
-    expect(detail(`group:project:crew/:special:compaction:${category}`)).toBeDefined()
+    expect(detail(`group:project:crew/:special:title:${category}`)).toBeDefined()
     expect(detail(`group:preset:basic/:implementer:${category}`)).toBeDefined()
   }
   expect(detail("group:project:alice:settings")).toBe(
@@ -183,8 +183,8 @@ test("owner categories name the agent, member, preset or maintenance agent they 
   expect(detail("group:project:crew/:mate:tools")).toBe(
     "Tools this team member may call, grouped by origin; each row expands to its Description and Permissions.",
   )
-  expect(detail("group:project:crew/:special:compaction:models")).toBe(
-    "Models this maintenance agent may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.",
+  expect(detail("group:project:crew/:special:title:models")).toBe(
+    "Models this title agent may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.",
   )
   expect(detail("group:preset:basic/:implementer:settings")).toBe(
     "This member preset's settings: Enabled, Mode, Description, Hidden, Color and Steps. Space toggles Enabled; enter edits a value.",
@@ -202,7 +202,7 @@ test("tool subgroups describe origins, MCP servers, Code Mode and Other permissi
     "Code Mode tools, called inside `execute`. OpenCode and OpenCodePlus group them by tool namespace; an MCP server lists its own directly.",
   )
   expect(detail("group:project:alice:tools:native:codemode:fs")).toBe("Code Mode tools of the fs namespace, called inside `execute`.")
-  expect(detail("group:project:crew/:special:compaction:tools:native")).toBe("Tools that ship with OpenCode.")
+  expect(detail("group:project:crew/:special:title:tools:native")).toBe("Tools that ship with OpenCode.")
   expect(detail("group:project:crew/:mate:tools:policy")).toBe(
     "This member's own role rows whose tool is not in the inventory above; they still apply to it when it runs.",
   )
@@ -231,7 +231,7 @@ test("a tool's Description group, a team's Special group and permission categori
     "The tool's text — everything the model reads about it — grouped by its sections. A section can be excluded, edited or split.",
   )
   expect(detail("team:project:crew:special")).toBe(
-    "The team's maintenance agents: compaction, title and summary, each with its own team-scoped rows.",
+    "The team's title agent, with its own team-scoped rows.",
   )
   // The permission summaries are the pre-existing ones, unchanged.
   expect(detail("group:project:alice:tool:shell:permissions")).toBe(

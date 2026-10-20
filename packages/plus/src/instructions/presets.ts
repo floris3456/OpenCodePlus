@@ -12,6 +12,7 @@ import {
   presetKey,
   scopedTo,
   scopesOf,
+  unusedByTitle,
   type AgentSource,
   type ChainContext,
   type EntryRecord,
@@ -29,7 +30,7 @@ import {
 import type { RowlinkRecord } from "./rowlinks.js"
 
 /** One Native agent preset per native opencode agent (§3.4). */
-export const nativePresetIds = ["build", "plan", "general", "explore", "title", "summary", "compaction"] as const
+export const nativePresetIds = ["build", "plan", "general", "explore", "title"] as const
 
 /** The one shipped team preset and the members it carries. */
 export const basicTeamId = "basic"
@@ -492,8 +493,10 @@ export function presetCatalog(input: { readonly items: readonly Item[]; readonly
       if (ref.kind === "member") return memberShipped(ref.team, ref.id, item, upstream, agent, linked)
       if (isControl(item) && (nativePresetIds as readonly string[]).includes(ref.id))
         return valueOf(input.items.find((entry) => entry.id === item && entry.agents?.includes(ref.id)))
-      if ((nativePresetIds as readonly string[]).includes(ref.id))
+      if ((nativePresetIds as readonly string[]).includes(ref.id)) {
+        if (upstream !== undefined && unusedByTitle(ref.id, { id: item, kind: upstream.kind })) return { ...valueOf(upstream), state: "off" }
         return valueOf(item === "system:role" ? roles.get(ref.id) : upstream)
+      }
       return undefined
     },
     model: () => undefined,
@@ -663,7 +666,7 @@ export function withOwnerRoles(items: readonly Item[], state: PresetState): Item
     ...(state.entries ?? []).map((entry) => entry.name),
   ]
   const controls = [...new Set(owners)].flatMap((owner) =>
-    controlItems(owner, {}, items.find((item) => item.id === "compaction:instructions" && item.agents === undefined)?.text)
+    controlItems(owner)
       .filter((row) => !items.some((item) => item.id === row.id && item.agents?.includes(owner) && item.controlTeam === undefined)),
   )
   return [...items, ...ownerRoleItems(items, owners), ...controls]

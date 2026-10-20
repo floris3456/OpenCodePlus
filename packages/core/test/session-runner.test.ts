@@ -2649,14 +2649,10 @@ describe("SessionRunnerLLM", () => {
     })
 
     scenario(
-      `per-agent local model and instructions win over maintenance defaults during ${reason} compaction`,
+      `per-agent local model and instructions are used during ${reason} compaction`,
       function* (s) {
         const agents = yield* Agent.Service
         yield* agents.transform((editor) => {
-          editor.update(Agent.ID.make("compaction"), (agent) => {
-            agent.model = Model.Ref.parse("fake/maintenance")
-            agent.system = "Maintenance instructions"
-          })
           editor.update(Agent.defaultID, (agent) => {
             agent.system = "Primary instructions"
             agent.compaction = {
@@ -2724,7 +2720,7 @@ describe("SessionRunnerLLM", () => {
     })
   }
 
-  scenario("inherits maintenance compaction model and system when local fields are omitted", function* (s) {
+  scenario("an agent named compaction gives compaction no model or instructions", function* (s) {
     const agents = yield* Agent.Service
     yield* agents.transform((editor) =>
       editor.update(Agent.ID.make("compaction"), (agent) => {
@@ -2737,8 +2733,9 @@ describe("SessionRunnerLLM", () => {
     yield* s.llm.push(TestLLM.text("## Objective\n- Fallback summary", "fallback-summary"))
     yield* s.session.compact({ sessionID })
     yield* s.resume
-    expect(s.requests[1].model).toBe(replacementModel)
-    expect(s.requests[1].system[0].text).toBe("Maintenance compaction instructions")
+    expect(s.requests[1].model).toBe(model)
+    expect(s.requests[1].system).toEqual(s.requests[0].system)
+    expect(userTexts(s.requests[1]).at(-1)).toBe(SessionCompaction.buildPrompt(false))
   })
 
   scenario("explicit remote strategy refuses local overflow recovery", function* (s) {

@@ -41,11 +41,11 @@ Instructions.
 | Local | Summarizes locally, using the selected compaction model and instructions. |
 | Remote | Requests the active model's provider compaction operation. |
 
-Without an explicit model override, local compaction inherits an explicitly
-configured maintenance compaction-agent model, otherwise the session's current
-active model. It does not pin the model that happened to be active when the
-setting was saved. Per-agent instructions override maintenance compaction-agent
-instructions; the structured summary format remains enforced.
+Without an explicit model override, local compaction inherits the model
+settings' compaction model, otherwise the session's current active model. It
+does not pin the model that happened to be active when the setting was saved.
+Per-agent instructions lead the summary prompt; the structured summary format
+remains enforced.
 
 Compaction models use `provider/model#variant` syntax (the variant is optional).
 An empty model clears the per-agent choice. Empty instructions are an explicit

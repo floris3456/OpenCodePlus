@@ -67,9 +67,9 @@ function presetCatalogueDetail(catalogue: Catalogue): string {
 
 function originDetail(level: Level, origin: string): string {
   if (origin === "native")
-    return "OpenCode's own agents (build, plan, general, explore), projected under every level so their rows can be edited there. They cannot be deleted; the maintenance agents sit in the nested Special group."
+    return "OpenCode's own agents (build, plan, general, explore), projected under every level so their rows can be edited there. They cannot be deleted; the title agent sits in the nested Special group."
   if (origin === "native:special")
-    return "OpenCode's maintenance agents: compaction, title and summary. They run internal work, not your chats."
+    return "OpenCode's title agent: it names your chats from its Role/persona and the conversation, with no tools, skills or other system rows. Pick its model here."
   if (origin === "plus") return "Agents produced by OpenCodePlus teams, including the shipped teams' members. A linked preset decides how a member behaves."
   if (level === "defaults")
     return "Agents you created, plus the Defaults entries — name patterns such as `*orchestrator*` — that set rows for every agent they match."
@@ -116,7 +116,7 @@ const TOOL_DESCRIPTION =
   "The tool's text — everything the model reads about it — grouped by its sections. A section can be excluded, edited or split."
 
 const TEAM_SPECIAL =
-  "The team's maintenance agents: compaction, title and summary, each with its own team-scoped rows."
+  "The team's title agent, with its own team-scoped rows."
 
 // group:<level>:<ownerPath>:<category>[:<tail>]. The owner is an agent id, a
 // `<team>/:<member>` (or `<team>/:special:<id>`) path, or the shared `/teams`
@@ -159,7 +159,7 @@ function splitShared(rest: string): { category: string; tail: readonly string[] 
 }
 
 function subjectOf(part: OwnerGroup): string {
-  if (part.owner.includes("/:special:")) return part.level === "preset" ? "this maintenance preset" : "this maintenance agent"
+  if (part.owner.includes("/:special:")) return part.level === "preset" ? "this title preset" : "this title agent"
   if (part.owner.includes("/:")) return part.level === "preset" ? "this member preset" : "this team member"
   return part.level === "preset" ? "this preset" : "this agent"
 }

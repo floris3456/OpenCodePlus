@@ -655,8 +655,8 @@ export function setModelCompaction(
 /**
  * Compaction settings Plus reads but does not own per model, in their stored
  * text form: an agent's agent-wide `compaction:*` rows (the old Compaction
- * tab), the shared Defaults rows for every agent, or what opencode.json and
- * the compaction maintenance agent configure. A model of "" inherits.
+ * tab), the shared Defaults rows for every agent, or what opencode.json
+ * configures. A model of "" inherits.
  */
 export interface CompactionDefaults {
   readonly strategy?: string
@@ -676,9 +676,9 @@ export interface EffectiveCompaction {
   /** The cold-cache models in try order; only armed while the global cold-chat switch is on. */
   readonly coldModels: CompactionEffective<readonly string[]>
   readonly strategy: CompactionEffective<CompactionStrategy>
-  /** Undefined when no layer names one: the maintenance compaction model, else the chat's own model. */
+  /** Undefined when no layer names one: the chat's own model. */
   readonly model: CompactionEffective<string | undefined>
-  /** Undefined when no layer sets them: the maintenance compaction agent's prompt. */
+  /** Undefined when no layer sets them: no compaction prompt besides the summary template. */
   readonly instructions: CompactionEffective<string | undefined>
 }
 
@@ -686,7 +686,7 @@ export interface EffectiveCompaction {
 export function compactionFromWords(from: CompactionFrom): string {
   if (from === "agent") return "this agent's Compaction rows (agent-wide)"
   if (from === "agents") return "Defaults › Compaction (every agent)"
-  if (from === "config") return "opencode.json or the compaction agent"
+  if (from === "config") return "opencode.json"
   return fromWords(from)
 }
 
@@ -699,8 +699,8 @@ export function compactionFromWords(from: CompactionFrom): string {
  *
  *   strategy, model, instructions: the agent's model row > the agent's
  *   agent-wide rows > Defaults › Models › this model > Every model > the
- *   shared Defaults rows for every agent > opencode.json or the maintenance
- *   agent > built-in (auto, none, none)
+ *   shared Defaults rows for every agent > opencode.json > built-in (auto,
+ *   none, none)
  *
  * A stored value that no longer parses sets nothing, so the level below decides.
  */

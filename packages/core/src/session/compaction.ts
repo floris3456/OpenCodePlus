@@ -219,7 +219,6 @@ export const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const db = (yield* Database.Service).db
     const requests = yield* SessionModelRequest.Service
-    const agents = yield* Agent.Service
     const modelCatalog = yield* Model.Service
     const config = yield* Effect.serviceOption(Config.Service)
     const models = yield* SessionRunnerModel.Service
@@ -426,16 +425,15 @@ export const layer = Layer.effect(
         if (trigger.reason !== "manual") yield* publish(trigger, failure)
       }
 
-      // A local summary resolves the compaction agent's overrides first, and the checkpoint belongs to the
+      // A local summary resolves the chat agent's compaction overrides first, and the checkpoint belongs to the
       // context those overrides produce — its model and instructions, not the trigger's.
-      const fallbackAgent = yield* agents.get(Agent.ID.make("compaction"))
       const local = (chosen: Agent.Compaction["model"]) =>
-        localize(trigger, chosen, fallbackAgent, decision.system).pipe(
+        localize(trigger, chosen, decision.system).pipe(
           // A model that cannot resolve records the ref it requested as the one that tried.
           Effect.catch((cause) =>
             Effect.fail<Failure>({
               error: toSessionError(cause),
-              model: chosen ?? context.agent.info.compaction?.model ?? fallbackAgent?.model,
+              model: chosen ?? context.agent.info.compaction?.model,
             }),
           ),
           Effect.flatMap(({ owner: resolved, instruction }) =>
@@ -478,8 +476,7 @@ export const layer = Layer.effect(
                   selectionReason: fallbackReason,
                   modelSource:
                     chosen ? chosen === decision.compactionModel ? "decision-hook" : "fallback-list"
-                      : context.agent.info.compaction?.model ? "agent-config"
-                      : fallbackAgent?.model ? "compaction-agent" : "active-model",
+                      : context.agent.info.compaction?.model ? "agent-config" : "active-model",
                 }),
               )
               return { owner, result: earlier ? { ...summary, text: `${earlier}\n\n${summary.text}` } : summary }
@@ -616,10 +613,10 @@ export const layer = Layer.effect(
     })
 
     /**
-     * The local summary path resolves the compaction agent's model and system overrides. The maintenance
-     * `compaction` agent supplies defaults the active agent may partially override. A model or system chosen
-     * by the compaction decision outranks both. A provider checkpoint hides the durable transcript it
-     * replaced, so local summaries always read it back from history.
+     * The local summary path resolves the chat agent's compaction model and system overrides, else the chat's
+     * own model and no compaction system. A model or system chosen by the compaction decision outranks both.
+     * A provider checkpoint hides the durable transcript it replaced, so local summaries always read it back
+     * from history.
      *
      * A summary written by the chat's own model keeps the chat agent's system prompt so the request shares the
      * chat's cached prefix; the compaction system text then moves into the final user message (see `summarize`).
@@ -628,18 +625,17 @@ export const layer = Layer.effect(
     const localize = Effect.fn("SessionCompaction.localize")(function* (
       trigger: Trigger,
       chosen: Agent.Compaction["model"],
-      fallback: Agent.Info | undefined,
       system: string | undefined,
     ) {
       const context = trigger.context
       const config = context.agent.info.compaction
-      const ref = chosen ?? config?.model ?? fallback?.model
+      const ref = chosen ?? config?.model
       const model = ref
         ? yield* models.resolve({ ...context.session, model: ref }, modelCatalog.available)
         : context.model
       const messages = context.messages
       // The decision may replace the agent's compaction system text for this compaction.
-      const compactionSystem = system ?? config?.system ?? fallback?.system
+      const compactionSystem = system ?? config?.system
       const sameModel =
         model.ref.providerID === context.model.ref.providerID &&
         model.ref.id === context.model.ref.id &&
@@ -1206,7 +1202,6 @@ export const node = makeLocationNode({
     Bus.node,
     Database.node,
     llmClient,
-    Agent.node,
     Model.node,
     SessionRequestPrepare.node,
     SessionRunnerModel.node,

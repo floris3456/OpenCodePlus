@@ -1361,11 +1361,11 @@ test("a native agent's base follows the active model its Project or Global row s
   }
 })
 
-test("only maintenance built-ins are Special; hidden and file-backed agents keep their origins", async () => {
+test("only the title built-in is Special; hidden and file-backed agents keep their origins", async () => {
   const directory = await tempDir("plus-discover-")
   const global = await tempDir("plus-discover-global-")
   process.env.OPENCODE_CONFIG_DIR = global
-  const ids = ["build", "plan", "explore", "title", "summary", "compaction", "general", "custom"]
+  const ids = ["build", "plan", "explore", "title", "general", "custom"]
   const hostAgents = ids.map((id) => ({ ...agent(id, `${id} prompt`), hidden: true }))
   const discovered = await discover({
     ctx: fullContext({ directory, agents: hostAgents }),
@@ -1377,9 +1377,7 @@ test("only maintenance built-ins are Special; hidden and file-backed agents keep
   for (const id of ["build", "plan", "general", "explore"]) {
     expect(byId.get(id)).toMatchObject({ scope: "defaults", origin: "native" })
   }
-  for (const id of ["title", "summary", "compaction"]) {
-    expect(byId.get(id)).toMatchObject({ scope: "defaults", origin: "special" })
-  }
+  expect(byId.get("title")).toMatchObject({ scope: "defaults", origin: "special" })
   expect(byId.get("custom")).toMatchObject({ scope: "defaults", origin: "user" })
   // A file-backed built-in id is user-owned, not native/special.
   await fs.mkdir(path.join(directory, ".opencode", "agent"), { recursive: true })

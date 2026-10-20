@@ -36,9 +36,9 @@ Absent always means `agents`, so every row id and record written before the spli
 
 Each scope's `Agents` group has origin subgroups (`OpenCode`, `Plus`, `User`, with `Special` nested under `OpenCode`: `group:<level>:agents:native`, `group:<level>:agents:native:special`, `group:<level>:agents:plus`, `group:<level>:agents:user`, all always emitted even when empty). Agent rows keep `agent:<level>:<id>`; `add: "agent"` sits on the `Agents` group and the `User` subgroup.
 
-The `Teams` group (`[a: add team]`) holds team rows (`team:<level>:<team>`) and member rows (`team:<level>:<team>:<member>`). Each member expands to Models, Tools, Skills, System and Settings (tabs 1–5) with working toggle/edit/reset, whether or not the team is enabled or the host registered the agent. A team's `Special` group (`team:<level>:<team>:special`) contains only the maintenance agents `compaction`, `title`, and `summary` (`team:<level>:<team>:special:<id>`). Their groups persist overrides carrying `team: { level, team }`. Group ids carry the team prefix (`group:<level>:<team>/:<member>:<group>`, or `group:<level>:<team>/:special:<id>:<group>`) so they never collide with stand-alone agent groups.
+The `Teams` group (`[a: add team]`) holds team rows (`team:<level>:<team>`) and member rows (`team:<level>:<team>:<member>`). Each member expands to Models, Tools, Skills, System and Settings (tabs 1–5) with working toggle/edit/reset, whether or not the team is enabled or the host registered the agent. A team's `Special` group (`team:<level>:<team>:special`) contains only the title agent `title` (`team:<level>:<team>:special:<id>`). Their groups persist overrides carrying `team: { level, team }`. Group ids carry the team prefix (`group:<level>:<team>/:<member>:<group>`, or `group:<level>:<team>/:special:<id>:<group>`) so they never collide with stand-alone agent groups.
 
-Origin is computed server-side (`special` for `title|summary|compaction`, `native` for `build|plan|general|explore`, else `user`; file-backed is always `user`, team output upgrades to `plus`) and crosses the RPC boundary on `AgentEntry.origin`. Ancestor-backed project agents are discovered through core's upward `.opencode` walk and carry `AgentEntry.ancestor: true` to suppress deletion (`actions.remove === false`, because deletion is confined to the local project). Built-in OpenCode and Special agents project under every root with row id `agent:<level>:<id>` and are not removable.
+Origin is computed server-side (`special` for `title`, `native` for `build|plan|general|explore`, else `user`; file-backed is always `user`, team output upgrades to `plus`) and crosses the RPC boundary on `AgentEntry.origin`. Ancestor-backed project agents are discovered through core's upward `.opencode` walk and carry `AgentEntry.ancestor: true` to suppress deletion (`actions.remove === false`, because deletion is confined to the local project). Built-in OpenCode and Special agents project under every root with row id `agent:<level>:<id>` and are not removable.
 
 Team and member rows carry `add: "agent"`. On-disk members (project/global, or a Defaults overlay file) are removable through `team.removeAgent`; shipped Defaults members are not. Team creation asks for a name, then a team preset or an empty team. Project/Global uses the selected scope; Defaults prompts for scope.
 
@@ -87,7 +87,7 @@ for inheritance, reset behavior, and Instructions Tool examples.
 - Compaction supports **Auto**, **Local**, and **Remote**, with per-agent model
   and instruction overrides. Remote grays and locks the local fields without
   discarding their values. Unsupported provider compaction fails explicitly.
-- Local compaction inherits a configured maintenance compaction model, otherwise
+- Local compaction inherits the model settings' compaction model, otherwise
   the current session model. Project, Global, Defaults, and Presets use the same
   scope chain as the rest of Instructions.
 

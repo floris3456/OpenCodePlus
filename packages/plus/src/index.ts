@@ -5398,7 +5398,7 @@ async function discoverAll(
       ...upstream,
       ...fields,
       steps: (fields?.steps ?? upstream?.steps) as Agent.Info["steps"],
-    }, discovered.items.find((item) => item.id === "compaction:instructions" && item.agents === undefined)?.text)
+    })
       .map((item) => ({ ...item, controlTeam: { level: team.level, team: team.team } }))
   })))).flat()
   return {
@@ -5710,7 +5710,7 @@ function winningEnabledTeams(
   return winners
 }
 
-const specialAgentIds = ["compaction", "title", "summary"] as const
+const specialAgentIds = ["title"] as const
 
 function computeSpecialOverrides(
   winningEnabled: readonly { level: TeamLevel; team: string }[],
