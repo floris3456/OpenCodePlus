@@ -20,14 +20,14 @@
  *   --build-only  build every target and keep all their archives in <prefix>/local/<version>;
  *                 install and switch nothing (the next local release takes the same version)
  *
- * One fixed-path build (fixed-path-build.ts, as the public release builds) makes this machine's
- * target first and then the others from the same checkout; each of those takes seconds, as they
- * reuse the first one's packages and web UI. This machine's build is installed and the switch
- * starts as soon as it is out, while the others build. Their archives stay in
- * <prefix>/local/<version>/ with the release.json and install.sh that cover them, and the script
- * ends by printing how to install one on another machine. A build for another machine that fails
- * never holds up or undoes this machine's install and switch: it is reported, the build's output
- * stays in build.log there, and the exit status is 1.
+ * One fixed-path build (fixed-path-build.ts, which the public release's Linux builds run; its macOS
+ * builds run the same build-plus.ts) makes this machine's target first and then the others from the
+ * same checkout; each of those takes seconds, as they reuse the first one's packages and web UI.
+ * This machine's build is installed and the switch starts as soon as it is out, while the others
+ * build. Their archives stay in <prefix>/local/<version>/ with the release.json and install.sh that
+ * cover them, and the script ends by printing how to install one on another machine. A build for
+ * another machine that fails never holds up or undoes this machine's install and switch: it is
+ * reported, the build's output stays in build.log there, and the exit status is 1.
  *
  * The switch is the new release's own `opencodeplus upgrade`: it waits until no chat runs, stops
  * the service, copies the database, moves the pointer, starts the new release, checks it, and
@@ -140,7 +140,7 @@ async function main() {
   if (missing.length === 0 && status === 0) await rm(log)
   if (missing.length > 0 || status !== 0)
     console.error(
-      `local release: ${missing.length > 0 ? `the builds for ${missing.join(", ")} failed` : `the build ended with exit ${status}`}; its output is in ${log}`,
+      `local release: ${missing.length > 0 ? `no build for ${missing.join(", ")}` : `the build ended with exit ${status}`}; the build's output is in ${log}`,
     )
   console.log(`Done in ${Math.round((Date.now() - started) / 1000)} s.`)
   process.exit(switched !== 0 ? switched : missing.length > 0 || status !== 0 ? 1 : 0)
