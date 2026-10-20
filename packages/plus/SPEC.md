@@ -2041,6 +2041,8 @@ Error codes carrying `accepted` today:
 - `E_NO_COMMIT_REPO`: `team_delegate` bootstrap in a repository with no commit
   refuses with a classified message telling the caller to make a first commit;
   no run is created
+- `E_WAITING`: `"end your turn"` when `team_finish` reports done while a child of the run can still settle (each settlement wakes the run)
+- `E_UNLANDED`: `{"run":"<child>"}` when `team_finish` reports done, or a findings review is delegated, while a child's done report lists commits that have not landed
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
 - `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`),
   session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`),

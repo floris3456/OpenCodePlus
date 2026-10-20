@@ -1998,7 +1998,7 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
       // A done child whose commits are still in its own worktree.
       const child = baseRun({ id: "w-abcdabcdabcdabcd", parent: parent.id, directory: repo.dir, state: "idle" })
       await saveRun(root, child)
-      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done" })
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] })
       const review = () =>
         api.delegate(
           delegateInput({ requestID: `review-${Math.random()}`, role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
@@ -2065,6 +2065,49 @@ test("a member that writes plan files only gets docs/plans and docs/handoffs in 
       expect((await delegate("plans-2", "orchestrator", ["docs/*"])).scope).toEqual(["src/*"])
       // An implementer may change every file: its scope stays what was given.
       expect((await delegate("plans-3", "implementer", [])).scope).toEqual(["src/*"])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// s13-b: an orchestrator reported done right after delegating its first task.
+// Done waits for every child to settle and for done commits to land; a
+// reviewer's findings carry no commits and hold nothing up.
+test("finish done is refused while a child works or a done child's commits have not landed", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = { ...(await finishChild(root, repo, PASSING_TEST)), children: ["w-cccccccccccccccc"] }
+      await saveRun(root, parent)
+      const now = new Date().toISOString()
+      const child = baseRun({
+        id: "w-cccccccccccccccc",
+        parent: parent.id,
+        directory: repo.dir,
+        state: "working",
+        sessionID: "ses_grandchild",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      })
+      await saveRun(root, child)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const finish = () => api.finish(finishInput({ status: "done", summary: "All tasks landed." }), callerFor(parent))
+
+      const waiting = rejected(await finish())
+      expect(waiting.code).toBe("E_WAITING")
+      expect(waiting.message).toContain("[w-cccccccccccccccc] are still working")
+
+      // Settled done with a commit that has not landed.
+      await saveRun(root, { ...child, state: "idle", attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate" }] })
+      const report = { run: child.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] }
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), report)
+      const unlanded = rejected(await finish())
+      expect(unlanded.code).toBe("E_UNLANDED")
+      expect(unlanded.message).toContain("[w-cccccccccccccccc] reported done but have not landed")
+
+      // Findings without commits never land and do not hold the parent.
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { ...report, commits: [] })
+      expect(required(await finish())).toMatchObject({ status: "done" })
     } finally {
       await removeRepo(repo.dir)
     }

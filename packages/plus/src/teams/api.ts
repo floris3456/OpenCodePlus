@@ -664,6 +664,27 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   if (isAttemptTerminal(last.state))
     return fail("E_ATTEMPT_ENDED", `Attempt ${n} ended ${last.state} without a report. Continue the Session to open a new attempt.`, "continue the Session")
 
+  // Done is the parent's final word on this run: never while children still
+  // work or their done commits are not in this run's HEAD (s13-b: an
+  // orchestrator reported done right after delegating its first task).
+  const done = args.status === "done" || args.status === "done_with_concerns"
+  if (done) {
+    const working = await openChildren(root, stored.id)
+    if (working.length > 0)
+      return fail(
+        "E_WAITING",
+        `Your children [${working.join(", ")}] are still working, so you are waiting, not done. End your turn without team_finish: each settlement wakes you with its report and a next: line. team_stop a child you no longer need.`,
+        "end your turn",
+      )
+    const unlanded = await unlandedDone(root, stored)
+    if (unlanded.length > 0)
+      return fail(
+        "E_UNLANDED",
+        `Your children [${unlanded.join(", ")}] reported done but have not landed. Land them with team_integrate, or team_stop the ones you reject, then finish.`,
+        { run: unlanded[0] },
+      )
+  }
+
   const worktree = stored.directory
   const assigned = await readChecks(root, stored.id)
   const head = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
@@ -676,7 +697,6 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   const missing = await stale(root, assigned, stored.id, head)
   for (const checkDef of missing) await execute(root, { runID: stored.id, check: checkDef, worktree })
 
-  const done = args.status === "done" || args.status === "done_with_concerns"
   if (done && allows(table, stored.role, "finish", "requirements.checks")) {
     const receipts = await receiptsAt(root, stored.id, head)
     const byId = new Map(receipts.map((receipt) => [receipt.id, receipt] as const))
@@ -1241,14 +1261,17 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
   return commits
 }
 
-// The caller's children whose last report is done (or done with concerns) and
-// whose commits have not landed: still open, not stopped, worktree present.
+// The caller's children whose last report is done (or done with concerns)
+// with commits that have not landed: still open, not stopped, worktree
+// present. A reviewer's or scout's findings carry no commits and never land.
 async function unlandedDone(root: string, parent: RunRecord): Promise<string[]> {
   const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => entry.childRun))
   const children = await Promise.all(parent.children.filter((id) => !landed.has(id)).map((id) => loadRun(root, id)))
   const open = children.filter((run): run is RunRecord => run !== undefined && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state))
   const reports = await Promise.all(open.map(async (run) => ({ run, report: await latestReport(root, run.id) })))
-  return reports.filter((entry) => entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns").map((entry) => entry.run.id)
+  return reports
+    .filter((entry) => (entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns") && Array.isArray(entry.report.data.commits) && entry.report.data.commits.length > 0)
+    .map((entry) => entry.run.id)
 }
 
 async function latestReport(root: string, runID: string): Promise<{ n: number; jsonPath: string; data: Record<string, unknown> } | undefined> {
