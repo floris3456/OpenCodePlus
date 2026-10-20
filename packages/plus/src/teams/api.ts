@@ -364,8 +364,13 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // `bun test FILE` a brief names is resolved against the child's base commit.
   // A file the base does not hold refuses the delegation, so a run is never
   // created for a check that cannot pass. The parent commits the file first or
-  // names one that already exists.
-  const missingChecks = await missingCheckFiles(repo.root, baseSha, checks)
+  // names one that already exists. A member that writes the tests judging its
+  // work (its Requirements for a commit leave check files open; a Basic
+  // orchestrator) may be given one it is to write, inside its scope.paths.
+  const writesItsTests = !allows(table, brief.role, "checkpoint", "requirements.check-files")
+  const missingChecks = (await missingCheckFiles(repo.root, baseSha, checks)).filter(
+    (missing) => !(writesItsTests && scopeRefusal({ paths: [...paths], forbidden: [...forbidden] }, missing.file) === undefined),
+  )
   if (missingChecks.length > 0) {
     const first = missingChecks[0]!
     return fail(

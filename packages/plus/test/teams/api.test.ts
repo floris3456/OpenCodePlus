@@ -2014,3 +2014,28 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
     }
   })
 }, 30000)
+
+test("a member that writes its own tests may be given a check on a test file it is to write, inside its scope", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "planner", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_test_author" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const brief = (requestID: string, paths: string[]) =>
+        delegateInput({
+          requestID,
+          role: "orchestrator",
+          reason: "owned multi-step work",
+          scope: { paths },
+          checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/new.test.ts"] }],
+        })
+      // An orchestrator writes the tests that judge its work: the file is in its scope.
+      expect(required(await api.delegate(brief("author-1", ["packages/plus/src/*", "packages/plus/test/new.test.ts"]), callerFor(parent)))).toMatchObject({ state: "starting" })
+      // Outside its scope it could not write it: refused as before.
+      expect(rejected(await api.delegate(brief("author-2", ["packages/plus/src/*"]), callerFor(parent))).code).toBe("E_CHECKS")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
