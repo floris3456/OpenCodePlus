@@ -282,11 +282,9 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       )
   }
 
-  // The attached file is read before the brief limit: its content counts
-  // toward the limit when it is pasted. A file over the member's
-  // "Attached brief file" limit (limits.attachment, default 8,000 chars) is
-  // not pasted: the Brief names its path and the child reads only what it
-  // needs.
+  // A file up to the member's "Attached brief file" limit (limits.attachment,
+  // default 8,000 chars) is pasted into the Brief; a larger one is named by
+  // path and the child reads only what it needs.
   let attached: { path: string; content: string } | undefined
   const briefFile = brief.briefFile
   if (briefFile !== undefined) {
@@ -314,7 +312,6 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     attached = { path: briefFile, content }
   }
   const attachmentLimit = bound(table, agent, "delegate", "limits.attachment")
-  const attachmentPasted = attached === undefined || attachmentLimit === undefined || attached.content.length <= attachmentLimit
 
   const childID = newRunID("w")
   let taskID = brief.task
@@ -358,10 +355,11 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const ifaceChars = brief.context.interfaces.reduce((n, item) => n + item.path.length + (item.symbol?.length ?? 0) + item.note.length, 0)
   const decisionChars = brief.context.decisions.reduce((n, decision) => n + decision.length, 0)
-  // An attachment counts toward the brief limit only while it is pasted; a
-  // larger one travels as a path, so its size never inflates the Brief.
-  const attachmentChars = attached !== undefined && attachmentPasted ? attached.content.length : 0
-  const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars + attachmentChars
+  // The brief limit counts the text the caller wrote; an attached file has
+  // its own limit. Counting a pasted file too refused a 4,473-char plan with
+  // 1,682 chars of Brief (s5-d), and any file of 6,000-8,000 chars whatever
+  // the Brief, which no shortening could fix.
+  const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars
   const briefLimit = bound(table, agent, "delegate", "limits.brief")
   if (briefLimit !== undefined && briefChars > briefLimit)
     return fail(

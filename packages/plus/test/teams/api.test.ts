@@ -743,16 +743,15 @@ test("delegate rejects E_REQUEST_ID when the id is reused with new arguments", a
 
 // ── Item 1: Briefs stay short and correct ────────────────────────────────
 
-// The attachment limit counts toward the brief limit; a file over the
-// attachment limit is named by path only, so it cannot inflate the Brief.
-test("a small attachment is pasted and counts toward the brief limit; an over-limit one is named by path only", async () => {
+// The brief limit counts the text the caller wrote; an attached file has its
+// own limit, which decides whether it is pasted or named by path.
+test("an attachment up to its limit is pasted without counting toward the brief limit; a larger one is named by path", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
       await fs.mkdir(path.join(repo.dir, "notes"), { recursive: true })
-      // 7,500 chars of attachment plus the objective and prompt stay under the
-      // 6,000-char brief limit only if the attachment is NOT counted; the
-      // member's attachment limit (8,000) pastes it, so the brief limit refuses.
+      // s5-d: a 7,500-char plan is under the 8,000-char attachment limit but
+      // over the 6,000-char brief limit; it is pasted whole and admitted.
       await fs.writeFile(path.join(repo.dir, "notes", "small.md"), "s".repeat(7_500))
       const parent = baseRun({
         id: "main-0123456789abcdef",
@@ -764,8 +763,14 @@ test("a small attachment is pasted and counts toward the brief limit; an over-li
       })
       await saveRun(root, parent)
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
-      const tooLong = rejected(
+      const pasted = required(
         await api.delegate(delegateInput({ requestID: "attach-small-1", briefFile: "notes/small.md" }), callerFor(parent)),
+      ) as { briefPath: string }
+      expect(await fs.readFile(pasted.briefPath, "utf8")).toContain("s".repeat(7_500))
+
+      // The caller's own text is what the brief limit refuses.
+      const tooLong = rejected(
+        await api.delegate(delegateInput({ requestID: "attach-small-2", briefFile: "notes/small.md", prompt: "p".repeat(4_000), context: { decisions: ["d".repeat(900), "e".repeat(900), "f".repeat(900)] } }), callerFor(parent)),
       )
       expect(tooLong.code).toBe("E_TOO_LONG")
       // The refusal says to shorten the Brief, never to move text into a file.
@@ -773,8 +778,7 @@ test("a small attachment is pasted and counts toward the brief limit; an over-li
       expect(tooLong.message).not.toContain("briefFile")
       expect(tooLong.accepted).toBe("a shorter brief")
 
-      // A file over the attachment limit is named by path only and does not
-      // count toward the brief limit.
+      // A file over the attachment limit is named by path only.
       await fs.writeFile(path.join(repo.dir, "notes", "big.md"), "b".repeat(9_000))
       const value = required(
         await api.delegate(delegateInput({ requestID: "attach-big-1", briefFile: "notes/big.md" }), callerFor(parent)),
@@ -789,9 +793,8 @@ test("a small attachment is pasted and counts toward the brief limit; an over-li
   })
 }, 30000)
 
-// The attachment limit is a member row: raising it pastes a larger file, and
-// the pasted content then counts toward the brief limit.
-test("the Attached brief file row raises the paste limit, and a pasted attachment counts", async () => {
+// The attachment limit is a member row: it sets the largest file pasted.
+test("the Attached brief file row sets the paste limit", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -809,7 +812,7 @@ test("the Attached brief file row raises the paste limit, and a pasted attachmen
       const member = shippedMembers().find((entry) => entry.id === "orchestrator")
       if (member === undefined) throw new Error("missing orchestrator member")
       // Lower the row to 1,000: the 2,000-char file is now over it, so it is
-      // named by path and passes the brief limit.
+      // named by path.
       const table = presetTable({
         records: [change(member, "perm:team_delegate:limits.attachment", { state: "on", text: "1000" })],
       })

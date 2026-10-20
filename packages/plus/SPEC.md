@@ -2036,7 +2036,8 @@ Error codes carrying `accepted` today:
 - `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
 - `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
 - `E_TOO_LONG`: brief length guidance telling the caller to shorten the Brief
-  (`"a shorter brief"`); a pasted attachment counts toward the limit
+  (`"a shorter brief"`); the limit counts the caller's own text (objective, prompt,
+  interfaces, decisions), not an attached file, which its own limit pastes or names by path
 - `E_NO_COMMIT_REPO`: `team_delegate` bootstrap in a repository with no commit
   refuses with a classified message telling the caller to make a first commit;
   no run is created
