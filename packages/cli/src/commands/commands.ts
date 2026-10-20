@@ -606,3 +606,16 @@ export const InstructionsCommand = Spec.make("instructions", {
     textFile: Flag.String("text-file").pipe(Flag.withDescription("Fill text from a file"), Flag.optional),
   },
 })
+
+// `opencodeplus notify [<ssh-target>] [options]` (Plus product only): the sound player on your own
+// machine. Like InstructionsCommand it is added in plus.ts and dispatched there before Effect CLI:
+// notify parses its own options (`--test [<event>]` takes an optional value) and prints its own help.
+export const NotifyCommand = Spec.make("notify", {
+  description: "Play the notification sounds of a service here, also of one over SSH (OpenCodePlus only)",
+  params: {
+    args: Argument.String("args").pipe(
+      Argument.withDescription("[<ssh-target>] and options; see notify --help"),
+      Argument.variadic({ min: 0 }),
+    ),
+  },
+})

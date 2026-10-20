@@ -198,9 +198,13 @@ describe("plus build configuration", () => {
     expect(() => Runtime.handlers(Commands, plusHandlers)).not.toThrow()
   })
 
-  test("plus.ts derives a commands spec with the Plus-only instructions command", () => {
+  test("plus.ts derives a commands spec with the Plus-only instructions and notify commands", () => {
     expect("instructions" in plusCommands.commands).toBe(true)
     expect(typeof plusHandlers.instructions).toBe("function")
+    expect("notify" in plusCommands.commands).toBe(true)
+    expect(typeof plusHandlers.notify).toBe("function")
+    expect("notify" in Commands.commands).toBe(false)
+    expect("notify" in upstreamHandlers).toBe(false)
     expect(findMissingHandlers(plusCommands, plusHandlers)).toEqual([])
     expect(() => Runtime.handlers(plusCommands, plusHandlers)).not.toThrow()
   })

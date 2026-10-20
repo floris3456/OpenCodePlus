@@ -1,7 +1,8 @@
-// Wiring point for the `instructions` command handler (Plus product only).
+// Wiring point for the Plus-only `instructions` and `notify` command handlers.
 //
 // `packages/cli/src/plus.ts` derives `plusCommands` from the shared `Commands`
-// and adds `InstructionsCommand` together with `instructions: instructionsHandler`.
+// and adds `InstructionsCommand` and `NotifyCommand` together with their handlers.
 // The shared `Commands` and the upstream handler map in `packages/cli/src/index.ts`
-// stay without it, so the command only runs under OpenCodePlus.
+// stay without them, so the commands only run under OpenCodePlus.
 export const instructionsHandler = () => import("./instructions")
+export const notifyHandler = () => import("./notify")

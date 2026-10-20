@@ -457,6 +457,65 @@ View all subcommands and flags.
 $ opencode service --help
 ```
 
+## notify
+
+OpenCodePlus only. Plays the notification sounds of every chat of a service on your own machine.
+Run it in a terminal of its own and leave it running.
+
+```bash
+$ opencodeplus notify
+```
+
+Listen to a service on a machine you work on over SSH. notify reads the service's address and
+password there over `ssh`, connects through an SSH tunnel, and never stores the password.
+
+```bash
+$ opencodeplus notify me@devbox
+```
+
+Play a test sound once connected. Add `--once` to exit after it; the exit code is 1 if it did not
+play.
+
+```bash
+$ opencodeplus notify me@devbox --test --once
+```
+
+Test another event: `done`, `reply`, `child`, `question`, `error` or `cacheMiss`.
+
+```bash
+$ opencodeplus notify me@devbox --test question
+```
+
+Set the volume from `0` to `1` (default `0.5`).
+
+```bash
+$ opencodeplus notify me@devbox --volume 0.3
+```
+
+Also show each notification on this desktop, with `notify-send` on Linux or `osascript` on macOS.
+The terminal already shows them, so this is off by default.
+
+```bash
+$ opencodeplus notify me@devbox --desktop
+```
+
+Print every event and what was done with it.
+
+```bash
+$ opencodeplus notify me@devbox --verbose
+```
+
+- While notify runs, that service's TUIs leave the sounds to it, so each sound plays once, on your
+  machine.
+- notify never starts a service. When none runs, it says so and keeps trying. It reconnects on its
+  own after a dropped connection or a service restart.
+- It uses your normal SSH setup: keys, agent and `~/.ssh/config`. If `ssh` asks for a password, it
+  asks in notify's terminal, also when notify reconnects later. A key in an agent avoids that.
+- On the remote machine it reads `~/.config/opencodeplus/service.json`, or the same file under
+  `$XDG_CONFIG_HOME`.
+- `--server <url>` connects to that server instead, with the password from `OPENCODE_PASSWORD`.
+- Ctrl+C stops it and its SSH tunnel.
+
 ## reload
 
 Reloads configuration without restarting the server. Running sessions continue with fresh services at the next step boundary.
