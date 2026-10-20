@@ -394,7 +394,7 @@ Brief `scope.paths` max 40, `forbidden` max 20, `interfaces` max 20,
 Checks are at most 12, with distinct ids and explicit `bun test FILE` or
 `bun run SCRIPT` argv (`packages/plus/src/teams/schema.ts:95`–
 `packages/plus/src/teams/schema.ts:113`). A report summary is at most 15 lines
-(`packages/plus/src/teams/schema.ts:173`) and 1500 characters
+(`packages/plus/src/teams/schema.ts:173`) and 2500 characters
 (`packages/plus/src/teams/schema.ts:186`); `needs`, `concerns`, `deferred` max
 10 and `findings` max 50 (`packages/plus/src/teams/schema.ts:187`–
 `packages/plus/src/teams/schema.ts:196`). `followup` caps the prompt at 4000

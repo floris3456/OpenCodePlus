@@ -304,7 +304,7 @@ export type Deliverable = typeof Deliverable.Type
 export const Interface = Schema.Struct({
   path: Schema.String,
   symbol: Schema.optional(Schema.String),
-  note: Schema.String.check(Schema.isMaxLength(200)).annotate({ description: "Why the child must read it." }),
+  note: Schema.String.check(Schema.isMaxLength(600)).annotate({ description: "Why the child must read it." }),
 })
 export type Interface = typeof Interface.Type
 
@@ -416,11 +416,11 @@ export const Report = Schema.Struct({
     description:
       "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
   }),
-  summary: Schema.String.check(Schema.isMaxLength(1500)).annotate({
+  summary: Schema.String.check(Schema.isMaxLength(2500)).annotate({
     description: "What your parent must act on, at most 15 lines; it receives it in full.",
   }),
   concerns: field(
-    Schema.Array(Schema.String.check(Schema.isMaxLength(300)))
+    Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
       .check(Schema.isMaxLength(10))
       .annotate({ description: "Doubts about correctness, and bugs you fixed inside your scope." }),
     () => [],
@@ -431,7 +431,7 @@ export const Report = Schema.Struct({
     () => [],
   ),
   deferred: field(
-    Schema.Array(Schema.String.check(Schema.isMaxLength(200)))
+    Schema.Array(Schema.String.check(Schema.isMaxLength(600)))
       .check(Schema.isMaxLength(10))
       .annotate({ description: "In-scope items you deliberately left undone, each with its reason." }),
     () => [],
