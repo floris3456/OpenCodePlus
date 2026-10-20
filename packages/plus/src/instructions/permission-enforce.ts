@@ -197,6 +197,8 @@ export interface Call {
   readonly teamMembers: ReadonlySet<string>
   /** The members the agent may delegate to: a closed "Files it may change" refusal names them for the other files. */
   readonly delegates?: readonly string[]
+  /** Why the agent may not change this file with edit (editRefusal): what an rm it runs may remove. */
+  readonly editRefusal?: (file: string) => string | undefined
   readonly exists?: (file: string) => boolean
   /** A browser tab's current page, as the browser tools last reported it. */
   readonly tabUrl?: (tabID: string) => string | undefined
@@ -352,6 +354,26 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
     if (row !== undefined) return messageOf(row, `${row.item.title} is not allowed here`)
     return undefined
   }
+  // Removing files: while other files are off, every rm the command runs names
+  // only plain paths of files edit may change, so what it removes is checkable.
+  if (call.tool === "shell" && category === "removals") {
+    const row = group.find((entry) => entry.item.ruleId === "removals.others")
+    if (row === undefined || row.on) return undefined
+    const refuse = (detail: string) => `${messageOf(row, "rm removes only files you may change here")}: ${detail}`
+    const workdir = stringsAt(call.input, "workdir")[0]
+    const base = workdir === undefined ? call.directory : path.resolve(call.directory, expandHome(workdir))
+    const removed = rmTargets(stringsAt(call.input, "command")[0] ?? "")
+    if (removed.moved && removed.targets.length > 0) return refuse("an rm after cd removes paths from another folder; run rm without cd (workdir sets the folder)")
+    for (const target of removed.targets) {
+      // Expansions, globs and climbing paths could reach any file: only plain paths are checked.
+      if (/[{}$`*?[\]~]/.test(target) || target.split("/").includes("..")) return refuse(`"${target}" is not a plain path`)
+      const relative = path.relative(call.directory, path.resolve(base, target))
+      if (isOutside(relative, call.directory)) return refuse(`"${target}" is outside this checkout`)
+      const refusal = call.editRefusal === undefined ? "this file may not be changed here" : call.editRefusal(relative)
+      if (refusal !== undefined) return refuse(`"${target}": ${refusal.replace(/^Permission denied: /, "")}`)
+    }
+    return undefined
+  }
   if (call.tool === "subagent" && category === "team-members") {
     const agent = stringsAt(call.input, "agent")[0]
     const row = group[0]
@@ -429,6 +451,36 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
     return undefined
   }
   return "none"
+}
+
+/**
+ * The paths every rm in a shell command removes: each command of a list,
+ * pipeline or substitution whose program is rm (also /bin/rm, \rm, after
+ * VAR=value words), its arguments that are not options or redirections.
+ * `moved` says a cd or pushd comes first, so relative paths name another folder.
+ */
+export function rmTargets(command: string): { readonly targets: string[]; readonly moved: boolean } {
+  const commands = command.split(/&&|\|\||\$\(|[;&|\n()`]/).map(shellWords)
+  const programAt = (words: readonly string[]) => words.findIndex((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word))
+  const program = (words: readonly string[]) => words[programAt(words)]?.replace(/^\\/, "")
+  const lastRm = commands.findLastIndex((words) => path.basename(program(words) ?? "") === "rm")
+  const moved = commands.slice(0, Math.max(0, lastRm)).some((words) => program(words) === "cd" || program(words) === "pushd")
+  const targets = commands.flatMap((words) => {
+    if (path.basename(program(words) ?? "") !== "rm") return []
+    // Redirections and the file a bare operator writes to are not removed.
+    const args = words.slice(programAt(words) + 1).filter((word, index, all) => {
+      if (/^\d*[<>]/.test(word) || /^&>/.test(word)) return false
+      return !(index > 0 && /^(\d*[<>]{1,2}|&>)$/.test(all[index - 1]!))
+    })
+    const end = args.indexOf("--")
+    return [...(end < 0 ? args : args.slice(0, end)).filter((word) => !word.startsWith("-")), ...(end < 0 ? [] : args.slice(end + 1))]
+  })
+  return { targets, moved }
+}
+
+// Words of one simple command, with quotes removed (no expansion).
+function shellWords(text: string): string[] {
+  return [...text.matchAll(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/g)].map((match) => match[0].replace(/'([^']*)'|"([^"]*)"/g, "$1$2"))
 }
 
 // Whether an instructions row id addresses the agent's own rows: its owner
@@ -1070,6 +1122,7 @@ export async function installEnforcement(
           directory,
           teamMembers: table.teamMembers,
           ...(["edit", "write", "patch"].includes(governing.tool) ? { delegates: delegatesOf(table, agent) } : {}),
+          ...(governing.tool === "shell" ? { editRefusal: (file: string) => editRefusal(table, agent, directory, file) } : {}),
           exists,
           agent,
           tabUrl: (tab) => state.tabs.get(tab),

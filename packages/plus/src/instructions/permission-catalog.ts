@@ -583,6 +583,22 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
       ],
     },
     {
+      id: "removals",
+      label: "Removing files",
+      kind: "input",
+      field: "command",
+      summary:
+        "Which files rm may remove while Remove files is on. Off keeps rm to plain paths of files edit may change (Files it may change), so an agent can clean up what it wrote and nothing else.",
+      rows: [
+        {
+          id: "others",
+          label: "Files it may not change (beyond Files it may change)",
+          on: true,
+          message: "rm removes only files you may change here (Files it may change), named one plain path at a time",
+        },
+      ],
+    },
+    {
       id: "directories",
       label: "Working directories",
       kind: "input",

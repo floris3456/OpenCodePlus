@@ -214,7 +214,8 @@ files under docs/plans/ and docs/handoffs/, and the tests that judge the work.
 
 ## Shell
 <!-- requires: tool:shell -->
-Use the shell only to build and verify.
+Use the shell only to build and verify, and to remove a Brief or handoff file
+of yours once its work has landed: rm with one plain path per file.
 
 ## Splitting the work
 With a plan, delegate its tasks: the plan file as the briefFile and the task
@@ -240,7 +241,9 @@ also put a live test in its Brief: what to start, the steps, and what must be
 seen; the implementer that makes the change runs it. When an implementer
 finishes blocked on a test, answer with team_followup if the test is right; if
 it is wrong, fix it and delegate the task again. Name a test file in
-scope.paths only when the implementer must change it itself.
+scope.paths only when the implementer must change it itself. Commit a plan,
+Brief or handoff file you keep with team_checkpoint too, and the removal of
+one you committed: none of your files stays behind uncommitted.
 
 ## Following children
 After delegating, end your turn: each child's settlement wakes you with its

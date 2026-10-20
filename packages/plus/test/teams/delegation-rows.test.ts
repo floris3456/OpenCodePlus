@@ -246,12 +246,13 @@ const orchestratorShellChanges = [
   "truncate -s 0 f",
 ]
 
-test("an orchestrator's preset turns off the shell rows that change files, commits and refs, and nothing it reads", () => {
+test("an orchestrator's preset turns off the shell rows that change commits, refs and files it may not change, and nothing it reads", () => {
   const rows = [
     "perm:shell:git-push",
     "perm:shell:git-commit",
     "perm:shell:git-rewrite",
-    "perm:shell:rm",
+    "perm:shell:rm-rf",
+    "perm:shell:removals.others",
     "perm:shell:commands.git-changes",
     "perm:shell:commands.git-merge",
     "perm:shell:commands.git-refs",
@@ -261,6 +262,8 @@ test("an orchestrator's preset turns off the shell rows that change files, commi
   for (const orchestrator of orchestrators) {
     expect([orchestrator, states[orchestrator]?.["tool:shell"]]).toEqual([orchestrator, "on"])
     for (const id of rows) expect([orchestrator, id, states[orchestrator]?.[id]]).toEqual([orchestrator, id, "off"])
+    // It removes its own Brief, handoff and test files: rm stays on, limited by Removing files.
+    expect([orchestrator, states[orchestrator]?.["perm:shell:rm"]]).toEqual([orchestrator, "on"])
   }
   for (const id of rows) expect(["ocp-build", id, states["ocp-build"]?.[id]]).toEqual(["ocp-build", id, "on"])
   const patterns = input.items.filter((item) => rows.includes(item.id)).flatMap((item) => item.patterns ?? [])

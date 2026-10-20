@@ -434,7 +434,7 @@ test("categoryLabel reads the catalog, then the host tool, then the fixed labels
 
 test("categoryOrder puts team rows first, then the legacy category, the catalog, rules and suggestions", () => {
   const head = ["to", "runs", "access", "role"]
-  expect(categoryOrder("shell")).toEqual([...head, "commands", "directories", "parameters", "environment", "limits", "approval", "rules", "suggested"])
+  expect(categoryOrder("shell")).toEqual([...head, "commands", "removals", "directories", "parameters", "environment", "limits", "approval", "rules", "suggested"])
   expect(categoryOrder("grep")).toEqual([...head, "patterns", "files", "include", "roots", "limits", "approval", "rules", "suggested"])
   expect(categoryOrder("read")).toEqual([...head, "files", "where", "content", "limits", "approval", "rules", "suggested"])
   expect(categoryOrder("team_status")).toEqual([...head, "approval", "rules", "suggested"])

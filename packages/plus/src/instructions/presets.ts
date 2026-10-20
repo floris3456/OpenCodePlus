@@ -172,13 +172,16 @@ const inside: PresetOverrides = rows(off, [
 
 // An orchestrator's checkout is where team_integrate lands its children's
 // commits (a root orchestrator's is the user's), where a stray `git stash` or
-// `git clean` destroys work: it changes no files, commits or refs from the
-// shell. Implementers change files and team_integrate lands their commits.
+// `git clean` destroys work: it changes no commits or refs from the shell, and
+// its rm removes only files it may change (its Brief, handoff and test files),
+// never recursively. Implementers change files and team_integrate lands their
+// commits.
 const orchestratorShell: PresetOverrides = rows(off, [
   "perm:shell:git-push",
   "perm:shell:git-commit",
   "perm:shell:git-rewrite",
-  "perm:shell:rm",
+  "perm:shell:rm-rf",
+  "perm:shell:removals.others",
   "perm:shell:commands.git-changes",
   "perm:shell:commands.git-merge",
   "perm:shell:commands.git-refs",
@@ -297,7 +300,8 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...tavily,
     // It changes no source files (implementers do, team_integrate lands them);
     // it writes Brief and handoff files (the plan rows) and the tests that
-    // judge its implementers, and commits only those, delegated or not.
+    // judge its implementers, commits only those, delegated or not, and
+    // removes only those.
     ...rows(off, ["tool:question", "tool:subagent", "perm:edit:allowed.*"]),
     ...reach(["status"]),
     ...rows(on, [

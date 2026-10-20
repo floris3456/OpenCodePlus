@@ -13,7 +13,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { teamsDataDir } from "../../src/instructions/paths.js"
-import { editRefusal, type PermissionTable } from "../../src/instructions/permission-enforce.js"
+import { decide, editRefusal, type PermissionTable } from "../../src/instructions/permission-enforce.js"
 import { createTeamApi, type TeamApiResult, type TeamCaller } from "../../src/teams/api.js"
 import { checkFiles, missingCheckFiles } from "../../src/teams/check-files.js"
 import { git } from "../../src/teams/git.js"
@@ -216,4 +216,43 @@ test("a Basic orchestrator edits tests and plan files only; a Basic implementer 
   expect(editRefusal(table, orchestrator.id, dir, "docs/plans/x.md")).toBeUndefined()
   expect(editRefusal(table, orchestrator.id, dir, "packages/plus/src/value.ts")).toContain("not one you may change")
   expect(editRefusal(table, implementer.id, dir, "packages/plus/src/value.ts")).toBeUndefined()
+})
+
+test("a Basic orchestrator removes only its own files with rm, one plain path each, never recursively; others keep rm as it was", () => {
+  const orchestrator = linked("orchestrator", "orchestrator")
+  const table = presetTable({ members: [orchestrator, seat] })
+  const dir = "/work/repo"
+  const rm = (agent: string, command: string, workdir?: string) =>
+    decide(table.toolRows(agent, "shell"), {
+      tool: "shell",
+      input: { command, ...(workdir === undefined ? {} : { workdir }) },
+      sessionID: "",
+      agent,
+      directory: dir,
+      teamMembers: table.teamMembers,
+      editRefusal: (file) => editRefusal(table, agent, dir, file),
+    }).refuse
+  // Its Brief, handoff, plan and test files, alone or in a list, quiet or not.
+  expect(rm(orchestrator.id, "rm docs/handoffs/t1.md docs/plans/plan.md")).toBeUndefined()
+  expect(rm(orchestrator.id, "rm -f docs/handoffs/t1.md && git status")).toBeUndefined()
+  expect(rm(orchestrator.id, "rm -- test/old.test.ts > /dev/null 2>&1")).toBeUndefined()
+  expect(rm(orchestrator.id, "rm handoffs/t1.md", "docs")).toBeUndefined()
+  // Anything else, wherever the rm sits in the command.
+  expect(rm(orchestrator.id, "rm src/cli.ts")).toContain("rm removes only files you may change here")
+  expect(rm(orchestrator.id, "rm docs/handoffs/t1.md src/cli.ts")).toContain('"src/cli.ts"')
+  expect(rm(orchestrator.id, "echo ok; rm src/cli.ts")).toContain('"src/cli.ts"')
+  expect(rm(orchestrator.id, "echo $(rm src/cli.ts)")).toContain('"src/cli.ts"')
+  expect(rm(orchestrator.id, "/bin/rm src/cli.ts")).toContain('"src/cli.ts"')
+  expect(rm(orchestrator.id, "rm /etc/hosts")).toContain("outside this checkout")
+  // What a check cannot read: globs, expansions, climbing paths, a cd first.
+  expect(rm(orchestrator.id, "rm docs/handoffs/*")).toContain("not a plain path")
+  expect(rm(orchestrator.id, "rm docs/plans/../../src/cli.ts")).toContain("not a plain path")
+  expect(rm(orchestrator.id, "rm docs/plans/{a.md,../../src/cli.ts}")).toContain("not a plain path")
+  expect(rm(orchestrator.id, "rm $HOME/x")).toContain("not a plain path")
+  expect(rm(orchestrator.id, "cd src && rm cli.ts")).toContain("after cd")
+  // Remove files is on for it, recursive force removal off (core refuses rm -rf).
+  const shellRule = (agent: string, id: string) => table.ruleRows(agent, "shell").find((row) => row.item.ruleId === id)?.on
+  expect([shellRule(orchestrator.id, "rm"), shellRule(orchestrator.id, "rm-rf")]).toEqual([true, false])
+  // The build seat's rm is not limited to its editable files (the row ships off).
+  expect(rm(seat.id, "rm src/cli.ts")).toBeUndefined()
 })
