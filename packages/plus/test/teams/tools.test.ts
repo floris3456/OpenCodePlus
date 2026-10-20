@@ -800,7 +800,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         `E_CHECKS: Check id "Bad_ID!" must be short kebab-case (a-z, 0-9, -).\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}`,
       )
 
-      // 4. E_SUMMARY: Summary with 16 lines in finish
+      // 4. E_SUMMARY: Summary with 26 lines in finish
       const implRun = {
         ...makeRun("w-impl000000000001", "implementer", "ses_impl_summary"),
         directory: repoDir,
@@ -814,12 +814,12 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         need(tools, "team_finish"),
         {
           status: "done",
-          summary: Array.from({ length: 16 }, (_, i) => `line ${i + 1}`).join("\n"),
+          summary: Array.from({ length: 26 }, (_, i) => `line ${i + 1}`).join("\n"),
         },
         implCtx,
       )
       expect(summaryMsg).toBe(
-        `E_SUMMARY: summary is 16 lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤15 lines"`,
+        `E_SUMMARY: summary is 26 lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤25 lines"`,
       )
 
     } finally {
@@ -1889,6 +1889,25 @@ test("C2 — null inside a default-wrapped array element decodes as omission (br
       context: { interfaces: [{ path: "note.md", note: "test", symbol: null }] },
     }),
   ).toEqual(omitted)
+})
+
+test("C2b — an object or array sent as JSON text decodes as that value; a text field keeps its text", async () => {
+  const schema = registeredSchema(await registeredTools(), "team_delegate")
+  const context = { interfaces: [{ path: "src/csv.ts", note: "the parser with the bug" }], decisions: ["keep parseCsv's signature"] }
+  const checks = [{ id: "test" }]
+  const brief = {
+    requestID: "T1-a",
+    role: "implementer",
+    objective: "{not json} Make the agent filter apply in the list tool output.",
+    deliverable: { kind: "commit" },
+    scope: { paths: ["packages/plus/src/x.ts"] },
+    prompt: '["a note", "not a list"]',
+  }
+  const asValues = Schema.decodeUnknownSync(schema)({ ...brief, context, checks })
+  expect(Schema.decodeUnknownSync(schema)({ ...brief, context: JSON.stringify(context), checks: JSON.stringify(checks) })).toEqual(asValues)
+  expect(asValues).toMatchObject({ objective: brief.objective, prompt: brief.prompt })
+  // Text that is not JSON still fails as before.
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, context: "{interfaces: []" })).toThrow()
 })
 
 test("C3 — null inside an optional struct field decodes as omission (followup budget.turns)", async () => {

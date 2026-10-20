@@ -1,16 +1,20 @@
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 /**
  * Removes explicit null for optional fields in an input, at every depth:
  * struct fields, array elements, and fields behind optional/default wrappers
  * all follow the same rule. Required fields keep their null so decoding still
- * fails with a schema error.
+ * fails with a schema error. An object or array a model sent as JSON text
+ * (a live run sent a Brief's whole `context` so) is read as that value.
  */
 export function stripNullForOptional(schema: Schema.Constraint, input: unknown): unknown {
   return stripNulls(input, schema)
 }
 
-function stripNulls(input: unknown, schema: Schema.Constraint): unknown {
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
+function stripNulls(given: unknown, schema: Schema.Constraint): unknown {
+  const input = typeof given === "string" && expectsContainer(schema, given) ? Option.getOrElse(decodeJson(given), () => given) : given
   if (input === null || typeof input !== "object") return input
   if (Array.isArray(input)) {
     return input.map((item, index) => {
@@ -31,6 +35,23 @@ function stripNulls(input: unknown, schema: Schema.Constraint): unknown {
     out[key] = stripNulls(value, field)
   }
   return out
+}
+
+// Text that reads as an object where the schema has a struct, or as an array
+// where it has an array. A field that takes plain text too keeps it as text.
+function expectsContainer(schema: Schema.Constraint, text: string): boolean {
+  const trimmed = text.trimStart()
+  if (acceptsString(schema)) return false
+  if (trimmed.startsWith("{")) return structOf(schema) !== undefined
+  if (trimmed.startsWith("[")) return elementAt(schema, 0) !== undefined
+  return false
+}
+
+function acceptsString(schema: Schema.Constraint): boolean {
+  if (isUnionSchema(schema)) return schema.members.some(acceptsString)
+  if (isComposedSchema(schema)) return acceptsString(schema.from)
+  if (isOptionalSchema(schema)) return acceptsString(schema.schema)
+  return schema.ast._tag === "String" || schema.ast._tag === "Literal"
 }
 
 // A field takes null as absent when undefined already decodes there. That is
@@ -295,7 +316,7 @@ export const Deliverable = Schema.Struct({
     description:
       "commit: committed changes you land with team_integrate. report: an answer. plan: a committed plan file. findings: a review.",
   }),
-  format: Schema.optional(Schema.String.check(Schema.isMaxLength(200))).annotate({
+  format: Schema.optional(Schema.String.check(Schema.isMaxLength(600))).annotate({
     description: "Shape of the result, e.g. \"file:line list\".",
   }),
 })
@@ -402,11 +423,11 @@ export type Finding = typeof Finding.Type
 
 export function validateSummary(summary: string): void {
   const lines = summary.split("\n").length
-  if (lines > 15) {
+  if (lines > 25) {
     throw toolError(
       "E_SUMMARY",
-      `summary is ${lines} lines (max 15). Detail goes to the report file automatically; keep the summary to what the parent must act on.`,
-      "a summary of ≤15 lines",
+      `summary is ${lines} lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.`,
+      "a summary of ≤25 lines",
     )
   }
 }
@@ -417,7 +438,7 @@ export const Report = Schema.Struct({
       "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
   }),
   summary: Schema.String.check(Schema.isMaxLength(2500)).annotate({
-    description: "What your parent must act on, at most 15 lines; it receives it in full.",
+    description: "What your parent must act on, at most 25 lines; it receives it in full.",
   }),
   concerns: field(
     Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
