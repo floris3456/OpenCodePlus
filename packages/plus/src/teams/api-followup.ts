@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readdir } from "node:fs/promises"
+import { readdir, realpath } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
@@ -32,6 +32,8 @@ import {
 import { FollowupInput, toolError } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
+import { git, gitRaw, parsePorcelain } from "./git.js"
+import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
@@ -122,7 +124,7 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   await requireWorktree(child)
   if (child.parent !== null && (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.state === "landed"))
     return fail("E_ALREADY_LANDED", `Run ${child.id} is already landed; delegate fresh from current parent.`, "delegate fresh from current parent")
-  if (args.prompt === undefined && args.budget === undefined)
+  if (args.prompt === undefined && args.budget === undefined && args.rebase !== true)
     return fail("E_NO_CONTENT", "team_followup requires prompt, budget, or both.", "prompt or budget")
   if (args.budget !== undefined) {
     if (args.reason === undefined || args.reason.trim().length === 0)
@@ -162,7 +164,11 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
       return fail("E_BOUNDS", "No capacity to resume this child; end your turn and retry after an active run settles.", "retry after a run settles")
   }
 
-  if (args.prompt === undefined) {
+  const rebased = args.rebase === true ? await rebaseChild(root, parent, child) : undefined
+  if (rebased !== undefined && !rebased.ok) return rebased.result
+  const prompt = rebased === undefined ? args.prompt : [rebased.note, args.prompt].filter((part) => part !== undefined).join("\n\n")
+
+  if (prompt === undefined) {
     const updated = applyBudget(child, args.budget, args.reason, parent.id)
     await saveRun(root, updated)
     const lastAttempt = updated.attempts.at(-1)?.n ?? 0
@@ -172,8 +178,62 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   }
 
   const delivery = args.delivery ?? "queue"
-  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget, args.reason)
-  return followupQueue(ctx, root, requestPath, signature, parent, child.id, args.prompt, args.budget, args.reason)
+  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason)
+  return followupQueue(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason)
+}
+
+// Moves a child's commits onto its parent's HEAD in the child's own worktree,
+// so a correction builds on work that landed since it started (a worker has
+// no git of its own). Its base moves with them: diffs and finish count only
+// its own commits. A conflict moves nothing.
+async function rebaseChild(
+  root: string,
+  parent: RunRecord,
+  child: RunRecord,
+): Promise<{ readonly ok: true; readonly note: string } | { readonly ok: false; readonly result: TeamApiResult }> {
+  if (child.state === "working" || child.state === "starting")
+    return { ok: false, result: fail("E_BUSY", `Run ${child.id} is ${child.state}; rebase it once it settles (its settlement wakes you).`, { rebase: true }) }
+  const head = await git(parent.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  const dirty = parsePorcelain(await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "--untracked-files=no"]))
+  if (dirty.length > 0)
+    return {
+      ok: false,
+      result: fail("E_DIRTY", `Run ${child.id} has uncommitted changes in [${dirty.join(", ")}]: only a clean worktree is rebased. Ask it to team_checkpoint first.`, dirty),
+    }
+  const key = await realpath(child.directory).catch(() => child.directory)
+  return lock(root, "wt", key, () =>
+    lock(root, "repo", child.repoKey, async () => {
+      const moved = await gitRaw(child.directory, [
+        ...NO_REPOSITORY_PROGRAMS,
+        "-c",
+        `user.name=team/${child.role}`,
+        "-c",
+        `user.email=${child.id}@team.local`,
+        "rebase",
+        head,
+      ])
+      if (moved.code !== 0) {
+        const conflicts = (await gitRaw(child.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--diff-filter=U"])).out
+          .split("\n")
+          .filter((file) => file !== "")
+        await gitRaw(child.directory, [...NO_REPOSITORY_PROGRAMS, "rebase", "--abort"])
+        return {
+          ok: false as const,
+          result: fail(
+            "E_CONFLICT",
+            `Run ${child.id}'s commits conflict with your HEAD in [${conflicts.join(", ")}]; nothing moved. Delegate a fresh implementer on your HEAD with this child's team_diff as a briefFile, then team_stop this child.`,
+            conflicts,
+          ),
+        }
+      }
+      const tip = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+      await updateRun(root, child.id, (record) => ({ ...record, base: head, head: tip }))
+      return {
+        ok: true as const,
+        note: `Plus moved your commits onto ${head.slice(0, 12)}, your parent's current HEAD (your branch is now at ${tip.slice(0, 12)}). Run your checks there before you finish.`,
+      }
+    }),
+  )
 }
 
 type FollowupBudgetInput = { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined } | undefined

@@ -4,7 +4,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -16,6 +16,7 @@ import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { FollowupInput } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { git } from "../../src/teams/git.js"
 import { consumeColdCompaction } from "../../src/teams/cold-compaction.js"
 import { warmingStore } from "../../src/warming.js"
 
@@ -742,3 +743,99 @@ test("now whose prompt rejects restores the run and allows a same-requestID retr
     expect(moved?.attempts[moved.attempts.length - 1]?.n).toBe(2)
   })
 })
+
+// A parent checkout with a child worktree that committed one file, after
+// which the parent's HEAD moved on (a sibling landed). `shared` is a file
+// both may change, for the conflict case.
+async function rebaseFixture(childChange: Record<string, string>, parentChange: Record<string, string>) {
+  const scratch = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-followup-rebase-"))
+  const main = path.join(scratch, "main")
+  const worktree = path.join(scratch, "child")
+  await fs.mkdir(main)
+  await git(main, ["init", "-q", "-b", "main"])
+  await git(main, ["config", "user.name", "team-test"])
+  await git(main, ["config", "user.email", "team-test@local"])
+  await fs.writeFile(path.join(main, "shared.ts"), "export const shared = 1\n")
+  await git(main, ["add", "shared.ts"])
+  await git(main, ["commit", "-q", "-m", "feat: initial"])
+  const base = await git(main, ["rev-parse", "HEAD"])
+  await git(main, ["worktree", "add", "-q", "-b", "team/child", worktree, base])
+  const commit = async (dir: string, files: Record<string, string>, message: string) => {
+    for (const [file, text] of Object.entries(files)) await fs.writeFile(path.join(dir, file), text)
+    await git(dir, ["add", ...Object.keys(files)])
+    await git(dir, ["commit", "-q", "-m", message])
+    return git(dir, ["rev-parse", "HEAD"])
+  }
+  const childHead = await commit(worktree, childChange, "feat: child work")
+  const parentHead = await commit(main, parentChange, "feat: sibling landed")
+  return { scratch, main, worktree, base, childHead, parentHead }
+}
+
+async function rebaseRuns(root: string, repo: Awaited<ReturnType<typeof rebaseFixture>>, overrides?: Partial<RunRecord>) {
+  const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", {
+    directory: repo.worktree,
+    branch: "team/child",
+    base: repo.base,
+    head: repo.childHead,
+    ...overrides,
+  })
+  await saveRun(root, { ...parent, directory: repo.main, head: repo.parentHead })
+  await saveRun(root, child)
+  await writeBrief(root, child)
+  return { parent: { ...parent, directory: repo.main, head: repo.parentHead }, child }
+}
+
+test("followup with rebase moves an idle child's commits onto its parent's HEAD and tells it so", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await rebaseFixture({ "child.ts": "export const child = 1\n" }, { "sibling.ts": "export const sibling = 1\n" })
+    try {
+      const { parent, child } = await rebaseRuns(root, repo)
+      const session = recordSession()
+      const api = createTeamApi(context({ session: session.domain }), teamState())
+      expect(required(await api.followup(followupInput({ rebase: true, prompt: "The export you needed has landed." }), callerFor(parent)))).toMatchObject({
+        state: "admitted",
+      })
+      const tip = await git(repo.worktree, ["rev-parse", "HEAD"])
+      // The child's own commit, now on top of the parent's HEAD.
+      expect(await git(repo.worktree, ["rev-parse", "HEAD^"])).toBe(repo.parentHead)
+      expect(await git(repo.worktree, ["log", "-1", "--format=%s"])).toBe("feat: child work")
+      expect(await fs.readFile(path.join(repo.worktree, "sibling.ts"), "utf8")).toBe("export const sibling = 1\n")
+      // Its base moves with it, so its diff and finish count only its own commit.
+      expect(await loadRun(root, child.id)).toMatchObject({ base: repo.parentHead, head: tip })
+      const text = String(session.prompted.at(-1)?.text)
+      expect(text).toContain(`Plus moved your commits onto ${repo.parentHead.slice(0, 12)}`)
+      expect(text).toContain("The export you needed has landed.")
+      // A rebase alone is enough content: it says what happened.
+      expect(Schema.decodeUnknownSync(FollowupInput)({ run: child.id, requestID: "r", rebase: true })).toMatchObject({ rebase: true })
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("followup with rebase refuses a conflict, a dirty worktree and a working child, and moves nothing", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await rebaseFixture({ "shared.ts": "export const shared = 2\n" }, { "shared.ts": "export const shared = 3\n" })
+    try {
+      const { parent, child } = await rebaseRuns(root, repo)
+      const session = recordSession()
+      const api = createTeamApi(context({ session: session.domain }), teamState())
+      const conflict = rejected(await api.followup(followupInput({ requestID: "r-conflict", rebase: true }), callerFor(parent)))
+      expect(conflict.code).toBe("E_CONFLICT")
+      expect(conflict.message).toContain("conflict with your HEAD in [shared.ts]; nothing moved")
+      expect(await git(repo.worktree, ["rev-parse", "HEAD"])).toBe(repo.childHead)
+      expect(await git(repo.worktree, ["status", "--porcelain"])).toBe("")
+      expect(await loadRun(root, child.id)).toMatchObject({ base: repo.base, head: repo.childHead })
+      await fs.writeFile(path.join(repo.worktree, "shared.ts"), "export const shared = 4\n")
+      const dirty = rejected(await api.followup(followupInput({ requestID: "r-dirty", rebase: true }), callerFor(parent)))
+      expect(dirty.code).toBe("E_DIRTY")
+      expect(dirty.message).toContain("[shared.ts]")
+      await git(repo.worktree, ["checkout", "--", "shared.ts"])
+      await saveRun(root, { ...child, state: "working" })
+      expect(rejected(await api.followup(followupInput({ requestID: "r-busy", rebase: true }), callerFor(parent))).code).toBe("E_BUSY")
+      expect(session.prompted).toEqual([])
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)

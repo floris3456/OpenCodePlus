@@ -491,6 +491,11 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   is delivered when that child next goes idle, as a new attempt.
   `delivery:"now"` against a working child refuses with `E_BUSY` and
   `accepted: {"delivery":"queue"}`.
+- `team_followup` with `rebase: true` first moves a child's commits onto the
+  caller's HEAD in the child's own worktree (a worker has no git), so it can
+  build on work that landed since it started; its `base` moves with them. A
+  working child (`E_BUSY`), uncommitted changes (`E_DIRTY`) or a conflict
+  (`E_CONFLICT`, naming the files) refuse and move nothing.
 - A settled child puts one `child.settled` item in its parent's inbox: the
   run, the attempt and the status, then the whole report (summary, commits,
   checks, uncommitted files, needs, concerns, deferred, findings) and one
@@ -512,7 +517,10 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
 - `team_integrate` that does not land returns the real state: `conflict`
   (with `conflictFiles`) or `red` (with `redChecks`), the `reworkTask` id a
   fresh child's Brief claims in `task`, and a `next` line; `paused` when the
-  queue waits for a clean parent.
+  queue waits for a clean parent. A red landing's `next` offers a
+  `rebase: true` followup to the same child first; when the red checks fail at
+  the caller's own HEAD too (`redAtParent`), it says the child may not be the
+  cause and to set integration checks that pass there.
 - `team_get_context` reports the worktree's live `head`, the value
   `checkpoint` and `integrate` compare against.
 - A `finish` finding's severity is `error`, `warning` or `note` (a located

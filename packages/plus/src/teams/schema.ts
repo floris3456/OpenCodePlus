@@ -837,6 +837,10 @@ export const FollowupInput = Schema.Struct({
   ).annotate({
     description: "Model to compact with when resuming a cold stopped child.",
   }),
+  rebase: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "First move the child's commits onto your current HEAD, e.g. once work it needs has landed. The child must not be working and its worktree must be clean; a conflict refuses and names the files.",
+  }),
 })
 export type FollowupInput = typeof FollowupInput.Type
 

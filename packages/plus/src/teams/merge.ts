@@ -21,6 +21,8 @@ export interface MergeEntry {
   state: MergeState
   conflictFiles?: string[]
   redChecks?: string[]
+  /** Every red check fails at the parent's HEAD too, without the child: maybe not the child's doing. */
+  redAtParent?: boolean
   landedHead?: string
   reworkTask?: string
   at: string
@@ -305,8 +307,14 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           }
         }
         if (redIds.length > 0) {
+          // Whether they fail at the parent's HEAD as well, without the child
+          // (say the tests of tasks not landed yet): then the caller learns
+          // that redoing this child may fix nothing.
+          yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "checkout", "--quiet", "--detach", "--force", rebaseBase]))
+          const passedAtParent: boolean[] = []
+          for (const c of redChecks) passedAtParent.push((yield* io(() => execute(root, { runID: entry.parentRun, check: c, worktree: tempDir }))).passed)
           const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, [], redChecks))
-          cur = redEntry(cur, redIds, reworkId)
+          cur = { ...redEntry(cur, redIds, reworkId), ...(passedAtParent.every((passed) => !passed) ? { redAtParent: true } : {}) }
           yield* io(() => saveEntry(root, cur))
           return cur
         }

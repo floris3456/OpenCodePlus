@@ -163,18 +163,25 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
 // to find the id elsewhere.
 function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
   const task = entry.reworkTask
-  const why =
+  const red = (entry.redChecks ?? []).join(", ")
+  const fresh = `a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then team_stop this child`
+  const next =
     entry.state === "conflict"
-      ? `the child's commits conflict with your HEAD in [${(entry.conflictFiles ?? []).join(", ")}]`
-      : `your integration checks [${(entry.redChecks ?? []).join(", ")}] fail on the rebased commits`
+      ? `Not landed: the child's commits conflict with your HEAD in [${(entry.conflictFiles ?? []).join(", ")}]. Delegate ${fresh}.`
+      : `Not landed: your integration checks [${red}] fail on the child's commits rebased onto your HEAD${
+          entry.redAtParent === true
+            ? ", and at your own HEAD too, without this child. If they fail there the same way (tests of work not landed yet), the child is not the cause: set integration checks that pass at your HEAD with team_set_checks and integrate it again. Otherwise send"
+            : ". Send"
+        } the child a team_followup with rebase: true and what fails (it keeps its context), or delegate ${fresh}.`
   return {
     entry: entry.id,
     state: entry.state,
     head: null,
     ...(entry.conflictFiles === undefined ? {} : { conflictFiles: entry.conflictFiles }),
     ...(entry.redChecks === undefined ? {} : { redChecks: entry.redChecks }),
+    ...(entry.redAtParent === true ? { redAtParent: true } : {}),
     ...(task === undefined ? {} : { reworkTask: task }),
-    next: `Not landed: ${why}. Delegate a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then team_stop this child.`,
+    next,
     cleanup,
   }
 }

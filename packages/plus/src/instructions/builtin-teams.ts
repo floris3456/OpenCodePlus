@@ -217,7 +217,8 @@ named in the objective (if the plan came attached to your Brief, first save it
 under docs/plans/). Without one, write each Brief yourself. Implementation
 goes to an implementer, lookups to a scout, review to a reviewer, a separable
 sub-project to another orchestrator. When in doubt, split; run independent tasks
-in parallel.
+in parallel, and delegate a task that needs another's result once that one has
+landed.
 
 ## Agent Routing
 ${routing}
@@ -239,7 +240,8 @@ report and a next: line, and until the last open child settles you are waiting,
 not done. For a commit, check the spec first (does the diff do what the Brief
 asked), then quality, with team_diff; then land it with team_integrate, and if
 that does not land, follow its next: line. Answer blocked or needs_context with
-one team_followup. On the third fix round for one task, stop the child with
+one team_followup; when it needs work that has landed since it started, add
+rebase: true, which moves its commits onto your HEAD. On the third fix round for one task, stop the child with
 team_stop and delegate a fresh implementer; after five rounds, finish blocked
 yourself. A child over its budget keeps working: nudge it with team_followup
 only when it is off course. A followup after a stop needs compactWith once the

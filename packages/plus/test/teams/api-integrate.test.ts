@@ -1132,3 +1132,78 @@ test("integrating a child that conflicts returns conflict, its files, the rework
     }
   })
 }, 30000)
+
+// A red landing says what to do with the same child: a followup that moves
+// its commits onto the parent's HEAD keeps its context, where a fresh
+// implementer starts over. When the checks fail at the parent's HEAD as well,
+// it says so: the child may not be the cause.
+test("a red landing points at a rebase followup, and says when the checks fail at the parent's HEAD too", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const passing = 'import { test, expect } from "bun:test"\ntest("gate", () => { expect(1).toBe(1) })\n'
+      const failing = 'import { test, expect } from "bun:test"\ntest("gate", () => { expect(1).toBe(2) })\n'
+      await fs.writeFile(path.join(repo.dir, "gate.test.ts"), passing)
+      await git(repo.dir, ["add", "gate.test.ts"])
+      await git(repo.dir, ["commit", "-m", "test: add gate"])
+      const green = await git(repo.dir, ["rev-parse", "HEAD"])
+      const now = new Date().toISOString()
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: green,
+        head: green,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_parent_red_next",
+        children: ["w-6666666666666666", "w-7777777777777777"],
+      })
+      const childOf = (id: string, work: { dir: string; branch: string; head: string }) =>
+        baseRun({
+          id,
+          role: "implementer",
+          directory: work.dir,
+          branch: work.branch,
+          base: green,
+          head: work.head,
+          state: "idle",
+          attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+          parent: parent.id,
+          sessionID: `ses_${id}`,
+          task: id === "w-6666666666666666" ? "T1" : "T2",
+        })
+      await create(root, "p-6666666666666666", [
+        { id: "T1", title: "Task T1", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["gate.test.ts"], checks: [] },
+        { id: "T2", title: "Task T2", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["other.ts"], checks: [] },
+      ])
+      await saveRun(root, parent)
+      await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [{ id: "gate", argv: ["bun", "test", "gate.test.ts"] }])
+      // The child breaks the gate that passes at the parent's HEAD.
+      const breaking = childOf("w-6666666666666666", await makeChild(repo.scratch, repo.dir, "breaks", green, { "gate.test.ts": failing }, "feat: break gate"))
+      await saveRun(root, breaking)
+      await writeReport(root, breaking.id, 1, "done")
+      const own = required(await integrateHandler(ctxFor(), { run: breaking.id }, callerFor(parent), shippedTable())) as { state: string; next: string; redAtParent?: boolean }
+      expect(own.state).toBe("red")
+      expect(own.redAtParent).toBeUndefined()
+      expect(own.next).toContain("Send the child a team_followup with rebase: true and what fails")
+      // The parent's HEAD breaks the gate itself; the child changes something else.
+      await fs.writeFile(path.join(repo.dir, "gate.test.ts"), failing)
+      await git(repo.dir, ["commit", "-am", "test: gate for work not landed yet"])
+      const red = await git(repo.dir, ["rev-parse", "HEAD"])
+      const other = childOf("w-7777777777777777", await makeChild(repo.scratch, repo.dir, "other", red, { "other.ts": "export const other = 1\n" }, "feat: other"))
+      await saveRun(root, { ...other, base: red })
+      await writeReport(root, other.id, 1, "done")
+      const theirs = required(await integrateHandler(ctxFor(), { run: other.id }, callerFor(parent), shippedTable())) as { state: string; next: string; redAtParent?: boolean }
+      expect(theirs.state).toBe("red")
+      expect(theirs.redAtParent).toBe(true)
+      expect(theirs.next).toContain("and at your own HEAD too, without this child")
+      expect(theirs.next).toContain("team_set_checks")
+      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(red)
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 60000)
