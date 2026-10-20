@@ -2129,3 +2129,29 @@ test("finish done is refused while a child works or a done child's commits have 
     }
   })
 }, 30000)
+
+// s12-d: a fix built on the first implementer's commit landed both; the first
+// implementer's commits are in the parent's HEAD and hold nothing up.
+test("finish done passes when a done child's commits came in with another landing", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = { ...(await finishChild(root, repo, PASSING_TEST)), children: ["w-dddddddddddddddd"] }
+      await saveRun(root, parent)
+      const now = new Date().toISOString()
+      await saveRun(root, baseRun({
+        id: "w-dddddddddddddddd",
+        parent: parent.id,
+        directory: repo.dir,
+        head: repo.head,
+        sessionID: "ses_carried",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate" }],
+      }))
+      await atomicJson(path.join(root, "runs", "w-dddddddddddddddd", "report-1.json"), { run: "w-dddddddddddddddd", attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] })
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      expect(required(await api.finish(finishInput({ status: "done", summary: "All tasks landed." }), callerFor(parent)))).toMatchObject({ status: "done" })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)

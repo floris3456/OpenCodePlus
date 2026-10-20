@@ -275,7 +275,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // review). A base that holds a child's commits reviews it before it lands
   // (s12-c: the user asked for review before landing).
   if (brief.deliverable.kind === "findings") {
-    const unlanded = await unlandedDone(root, parent)
+    const unlanded = await unlandedDone(root, parent, repo.root, defaultHead)
     const held = await Promise.all(unlanded.map(async (run) => (await gitRaw(repo.root, [...NO_REPOSITORY_PROGRAMS, "merge-base", "--is-ancestor", run.head, baseSha])).code === 0))
     if (unlanded.length > 0 && !held.includes(true))
       return fail(
@@ -679,7 +679,13 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
         `Your children [${working.join(", ")}] are still working, so you are waiting, not done. End your turn without team_finish: each settlement wakes you with its report and a next: line. team_stop a child you no longer need.`,
         "end your turn",
       )
-    const unlanded = (await unlandedDone(root, stored)).map((run) => run.id)
+  }
+
+  const worktree = stored.directory
+  const assigned = await readChecks(root, stored.id)
+  const head = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  if (done) {
+    const unlanded = (await unlandedDone(root, stored, worktree, head)).map((run) => run.id)
     if (unlanded.length > 0)
       return fail(
         "E_UNLANDED",
@@ -687,10 +693,6 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
         { run: unlanded[0] },
       )
   }
-
-  const worktree = stored.directory
-  const assigned = await readChecks(root, stored.id)
-  const head = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   const tree = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"])
   const porcelain = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
@@ -1265,16 +1267,20 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
 }
 
 // The caller's children whose last report is done (or done with concerns)
-// with commits that have not landed: still open, not stopped, worktree
-// present. A reviewer's or scout's findings carry no commits and never land.
-async function unlandedDone(root: string, parent: RunRecord): Promise<RunRecord[]> {
+// with commits `head` does not hold: still open, not stopped, worktree
+// present. A reviewer's or scout's findings carry no commits and never land;
+// a child whose commits came in with another's landing is in (s12-d: a fix
+// built on the first implementer's commit landed both).
+async function unlandedDone(root: string, parent: RunRecord, directory: string, head: string): Promise<RunRecord[]> {
   const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => entry.childRun))
   const children = await Promise.all(parent.children.filter((id) => !landed.has(id)).map((id) => loadRun(root, id)))
   const open = children.filter((run): run is RunRecord => run !== undefined && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state))
   const reports = await Promise.all(open.map(async (run) => ({ run, report: await latestReport(root, run.id) })))
-  return reports
+  const done = reports
     .filter((entry) => (entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns") && Array.isArray(entry.report.data.commits) && entry.report.data.commits.length > 0)
     .map((entry) => entry.run)
+  const held = await Promise.all(done.map(async (run) => (await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "merge-base", "--is-ancestor", run.head, head])).code === 0))
+  return done.filter((_, index) => !held[index])
 }
 
 async function latestReport(root: string, runID: string): Promise<{ n: number; jsonPath: string; data: Record<string, unknown> } | undefined> {
