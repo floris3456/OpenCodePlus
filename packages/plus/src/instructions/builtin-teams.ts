@@ -106,12 +106,16 @@ const delegating = `# Delegating
 ## Briefs
 A delegated member knows only its Brief: put the outcome, the files to touch
 and the decisions you made in it, and pass long context as a briefFile. Never
-paste history into a Brief or followup.
+paste history into a Brief or followup. Read only what you need to write the
+Brief: a long file the member must study goes in context.interfaces, and it
+reads it itself.
 
 ## Integration checks
 <!-- requires: tool:team_set_checks -->
 Before your first landing, record the integration checks with team_set_checks:
-the plan's or the project's focused checks, keeping any your Brief assigned.`
+the plan's or the project's focused checks, keeping any your Brief assigned.
+They must pass at your HEAD: leave out tests you committed for work that has
+not landed yet, and add them once it has.`
 
 // A section that depends on one tool says so on its first line
 // (`<!-- requires: tool:… -->`, requires.ts): turning that tool off for a member
