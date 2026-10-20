@@ -3,6 +3,7 @@ import { readdir, realpath } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
+import { AbsolutePath } from "@opencode/schema/schema"
 import { Effect } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { put, take } from "./inbox.js"
@@ -33,7 +34,7 @@ import { FollowupInput, toolError } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
-import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
+import { NO_REPOSITORY_PROGRAMS, provision, slug } from "./worktree.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
@@ -121,11 +122,23 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
       `${child.role} ${corrections?.item.message ?? "takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report"} (Briefs it accepts → Corrections by followup).`,
       "delegate a fresh run",
     )
-  await requireWorktree(child)
-  if (child.parent !== null && (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.state === "landed"))
-    return fail("E_ALREADY_LANDED", `Run ${child.id} is already landed; delegate fresh from current parent.`, "delegate fresh from current parent")
+  // Landed is per worktree generation: a child reopened after its landing
+  // works on a new branch, which can land again.
+  const landed =
+    child.parent !== null &&
+    (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.childBranch === child.branch && entry.state === "landed")
   if (args.prompt === undefined && args.budget === undefined && args.rebase !== true)
     return fail("E_NO_CONTENT", "team_followup requires prompt, budget, or both.", "prompt or budget")
+  // A landed child whose worktree was removed is reopened below, once nothing
+  // refuses; a budget alone does not need its worktree.
+  const reopen = landed && child.worktree === "removed"
+  if (!reopen) await requireWorktree(child)
+  if (landed && !reopen)
+    return fail(
+      "E_ALREADY_LANDED",
+      `Run ${child.id} is landed but its worktree is still there; call team_integrate on it again to clean it up, then follow up.`,
+      "team_integrate it again",
+    )
   if (args.budget !== undefined) {
     if (args.reason === undefined || args.reason.trim().length === 0)
       return fail("E_BUDGET_REASON", "A budget change requires a reason (1–300 characters).", "provide a reason")
@@ -164,9 +177,12 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
       return fail("E_BOUNDS", "No capacity to resume this child; end your turn and retry after an active run settles.", "retry after a run settles")
   }
 
-  const rebased = args.rebase === true ? await rebaseChild(root, parent, child) : undefined
+  // A reopened child already starts at its parent's HEAD, so it needs no rebase.
+  const reopened = reopen && (args.prompt !== undefined || args.rebase === true) ? await reopenChild(ctx, root, parent, child) : undefined
+  const rebased = reopened === undefined && args.rebase === true ? await rebaseChild(root, parent, child) : undefined
   if (rebased !== undefined && !rebased.ok) return rebased.result
-  const prompt = rebased === undefined ? args.prompt : [rebased.note, args.prompt].filter((part) => part !== undefined).join("\n\n")
+  const note = reopened ?? rebased?.note
+  const prompt = note === undefined ? args.prompt : [note, args.prompt].filter((part) => part !== undefined).join("\n\n")
 
   if (prompt === undefined) {
     const updated = applyBudget(child, args.budget, args.reason, parent.id)
@@ -234,6 +250,54 @@ async function rebaseChild(
       }
     }),
   )
+}
+
+// Gives a landed child whose worktree was removed a new one at the HEAD it
+// landed on, which holds its landed commits and everything landed since, so a
+// followup keeps its context instead of a fresh run reading it all again. The
+// worktree and the record that claims it are written in one repository-lock
+// hold (`provision`), so the orphan sweep never sees one without the other.
+// The chat moves there before it is prompted; core commits the move at once
+// because the old folder is gone, and the chat keeps its pinned system prompt.
+async function reopenChild(ctx: Context, root: string, caller: RunRecord, child: RunRecord): Promise<string> {
+  const parent = child.parent === caller.id ? caller : await loadRun(root, child.parent ?? "")
+  if (parent === undefined) throw toolError("E_INTERNAL", `Run ${child.id}'s parent ${child.parent} has no record.`)
+  if (child.sessionID === null) throw toolError("E_INTERNAL", `Run ${child.id} has no session to move.`, child.id)
+  const head = await git(parent.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  // The delegated name plus the generation: a landed branch is kept, and a
+  // reopen in the same minute as the branch it follows would reuse its name.
+  const generation = child.history.filter((entry) => "trigger" in entry && entry.trigger === "reopened").length + 2
+  const name = /^team\/[^/]+\/(.+?)(?:-r\d+)?-\d{8}-\d{4}$/.exec(child.branch)?.[1] ?? slug(child.task ?? child.id, child.id)
+  const provisioned = await provision(
+    root,
+    {
+      repoRoot: parent.directory,
+      repoKey: child.repoKey,
+      role: child.role,
+      name: `${name}-r${generation}`,
+      base: head,
+      workspaceRoot: root,
+    },
+    (created) =>
+      updateRun(root, child.id, (record) => ({
+        ...record,
+        directory: created.dir,
+        branch: created.branch,
+        base: head,
+        head: created.head,
+        worktree: "present",
+        history: [...record.history, { at: new Date().toISOString(), from: record.state, to: record.state, trigger: "reopened" }],
+      })),
+  )
+  await Effect.runPromise(
+    ctx.session.move({
+      sessionID: Session.ID.make(child.sessionID),
+      directory: AbsolutePath.make(provisioned.created.dir),
+      ...(ctx.location.workspaceID === undefined ? {} : { workspaceID: ctx.location.workspaceID }),
+      delivery: "steer",
+    }),
+  )
+  return `Plus made you a new worktree at ${provisioned.created.dir}, on your parent's current HEAD ${head.slice(0, 12)}: it holds your landed commits and the work landed since. Work and commit there.`
 }
 
 type FollowupBudgetInput = { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined } | undefined

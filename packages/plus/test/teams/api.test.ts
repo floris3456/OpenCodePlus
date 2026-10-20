@@ -2023,10 +2023,15 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
         ),
       ) as { base: string }
       expect(early.base).toBe(childHead)
+      // A landing of an earlier worktree of the child (before a followup reopened it) is not this one's.
+      const landing = (id: string, childBranch: string) =>
+        atomicJson(path.join(root, "runs", parent.id, "merge", `${id}.json`), {
+          id, parentRun: parent.id, childRun: child.id, childBranch, childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
+        })
+      await landing("entry-0", "team/implementer/earlier-20261019-1200")
+      expect(rejected(await review()).code).toBe("E_UNLANDED")
       // Once it landed, the review is delegated.
-      await atomicJson(path.join(root, "runs", parent.id, "merge", "entry-1.json"), {
-        id: "entry-1", parentRun: parent.id, childRun: child.id, childBranch: "b", childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
-      })
+      await landing("entry-1", child.branch)
       expect(required(await review())).toMatchObject({ state: "starting" })
     } finally {
       await removeRepo(repo.dir)

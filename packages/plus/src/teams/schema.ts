@@ -836,7 +836,7 @@ export function parseDuration(raw: string): number {
 // Tool input schemas. Every tool has exactly one
 // input schema, exported from here and shared between registration and handlers.
 export const FollowupInput = Schema.Struct({
-  run: RunID.annotate({ description: "Your child's run id." }),
+  run: RunID.annotate({ description: "Your child's run id, also of a child whose work has landed." }),
   requestID: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)).annotate({
     description: "Your id for this followup; repeat it only to retry the identical call.",
   }),

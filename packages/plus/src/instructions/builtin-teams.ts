@@ -249,7 +249,9 @@ not done. For a commit, check the spec first (does the diff do what the Brief
 asked), then quality, with team_diff; then land it with team_integrate, and if
 that does not land, follow its next: line. Answer blocked or needs_context with
 one team_followup; when it needs work that has landed since it started, add
-rebase: true, which moves its commits onto your HEAD. On the third fix round for one task, stop the child with
+rebase: true, which moves its commits onto your HEAD. More work for a child
+whose work has landed goes to it with team_followup too: Plus gives it a new
+worktree at your HEAD, and it keeps its context. On the third fix round for one task, stop the child with
 team_stop and delegate a fresh implementer; after five rounds, finish blocked
 yourself. A child over its budget keeps working: nudge it with team_followup
 only when it is off course. A followup after a stop needs compactWith once the
