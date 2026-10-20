@@ -272,6 +272,34 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("gives the top-level warming to each provider that sets none, as its own", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            warming: { interval: "3 minutes" },
+            providers: {
+              custom: { package: "@opencode/ai/providers/openai/responses", models: { chat: {} } },
+              own: {
+                package: "@opencode/ai/providers/openai/responses",
+                settings: { warming: false },
+                models: { chat: {} },
+              },
+            },
+          }),
+        }),
+      ])
+      const custom = Provider.ID.make("custom")
+      // In its encoded (JSON) form: the same three minutes.
+      expect((yield* providers.get(custom))?.settings?.warming).toEqual({ interval: "180000 millis" })
+      expect(required(yield* models.get(custom, Model.ID.make("chat"))).settings?.warming).toEqual({ interval: "180000 millis" })
+      expect((yield* providers.get(Provider.ID.make("own")))?.settings?.warming).toBe(false)
+    }),
+  )
+
   it.effect("carries provider and model warming through JSON settings overlays", () =>
     Effect.gen(function* () {
       const providers = yield* Provider.Service

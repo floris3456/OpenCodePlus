@@ -1,6 +1,6 @@
 export * as ConfigWarming from "./warming.js"
 
-import { Scoped, Warming } from "@opencode/schema/config/warming"
+import { builtIn, Scoped, Warming } from "@opencode/schema/config/warming"
 import { Duration, Option, Schema } from "effect"
 
 const defaults = {
@@ -24,25 +24,40 @@ const decodeScoped = Schema.decodeUnknownOption(Warming)
 // boundary turns every level into the same decoded value.
 const scoped = (value: ScopedValue | undefined): Value | undefined => Option.getOrUndefined(decodeScoped(value))
 
-/**
- * Applies one level's value over the value inherited from the level above.
- * `false` disables the scope, `true` enables it with defaults, and an object
- * enables it and merges only its provided fields over the inherited settings
- * (or over defaults when the inherited level is disabled). Absent values inherit.
- */
-function apply(inherited: Resolved | undefined, value: Value | undefined): Resolved | undefined {
-  if (value === undefined) return inherited
-  if (value === true) return { ...defaults }
-  if (value === false) return undefined
-  return { ...(inherited ?? defaults), ...value }
+/** The model's built-in warming (schema `builtIn`) as settings; undefined where it has none. */
+function builtInFor(id: string | undefined): Resolved | undefined {
+  const own = id === undefined ? undefined : builtIn(id)
+  return own && { ...defaults, interval: Duration.millis(own.interval), duration: Duration.millis(own.duration) }
 }
 
-/** Resolves global, provider, and model warming for one provider/model selection. */
+/**
+ * Applies one level's value over the value inherited from the level above.
+ * `false` disables the scope, `true` enables it with the model's defaults, and an object
+ * enables it and merges only its provided fields over the inherited settings
+ * (or over the model's defaults when the inherited level is disabled). Absent values inherit.
+ */
+function apply(inherited: Resolved | undefined, value: Value | undefined, base: Resolved): Resolved | undefined {
+  if (value === undefined) return inherited
+  if (value === true) return { ...base }
+  if (value === false) return undefined
+  return { ...(inherited ?? base), ...value }
+}
+
+/**
+ * Resolves global, provider, and model warming for one provider/model selection. With none of them
+ * set, the model's built-in warming applies (on for Claude and GPT-5.6+, off otherwise).
+ */
 export function resolve(input: {
   readonly global: Value | undefined
   readonly provider: ScopedValue | undefined
   readonly model: ScopedValue | undefined
+  /** The model's id, for its built-in warming and defaults. */
+  readonly id?: string
 }): Resolved | undefined {
-  const provider = apply(apply(undefined, input.global), scoped(input.provider))
-  return apply(provider, scoped(input.model))
+  const own = builtInFor(input.id)
+  const providerValue = scoped(input.provider)
+  const modelValue = scoped(input.model)
+  if (input.global === undefined && providerValue === undefined && modelValue === undefined) return own
+  const base = own ?? defaults
+  return apply(apply(apply(undefined, input.global, base), providerValue, base), modelValue, base)
 }

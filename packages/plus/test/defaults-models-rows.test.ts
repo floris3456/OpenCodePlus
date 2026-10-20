@@ -58,9 +58,10 @@ test("building the Defaults › Models rows twice on one memo computes each row'
 
 test("a store write that changes one model's settings shows on that row in the next memo only", () => {
   const before = buildTreeMemo(inputWith([]))
-  const after = buildTreeMemo(inputWith([record({ providerID: "anthropic", modelID: "claude", warming: "on", interval: "4m" })]))
-  expect(warmingSummaryOf(before, "anthropic/claude")).toBe("off")
-  expect(warmingSummaryOf(after, "anthropic/claude")).toContain("every 4m")
+  const after = buildTreeMemo(inputWith([record({ providerID: "anthropic", modelID: "claude", warming: "off" })]))
+  // Claude warms built in: every 4m for 30m (32m in whole intervals).
+  expect(warmingSummaryOf(before, "anthropic/claude")).toBe("32m · every 4m")
+  expect(warmingSummaryOf(after, "anthropic/claude")).toBe("off")
   expect(warmingSummaryOf(after, "deepseek/v4-flash")).toBe("off")
 })
 

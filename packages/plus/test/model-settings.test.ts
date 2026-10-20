@@ -509,7 +509,8 @@ test("Defaults › Models rows render Every model first with per-model rows and 
   expect(rows[0]?.badges.value).toBe("warm 30m · every 5m")
   // Claude keeps its own config duration while inheriting the rest.
   expect(rows[1]?.badges.value).toBe("warm 30m · every 5m · every model · opencode.json")
-  expect(rows[2]?.badges.value).toBe("warm 30m · every 5m · every model")
+  // GPT-6 takes Every model's switch and interval over its own built-in 1h30m.
+  expect(rows[2]?.badges.value).toBe("warm 1h30m · every 5m · every model")
   // The row itself opens into its fields; the fields edit.
   expect(rows[0]?.actions).toMatchObject({ toggle: false, edit: false, reset: true, remove: true })
   // A model with no Plus row and no config shows the built-in values.
@@ -799,7 +800,8 @@ test("an agent's model row opens into field rows and one field edits and resets 
   // The row is inherited (the agent's upstream model), so Model and Warming
   // name where they came from; none of the fields is local yet.
   expect(fields[0]?.badges.value).toBe("anthropic/claude · upstream")
-  expect(fields[2]?.badges.value).toBe("off · built-in")
+  // Claude warms built in: 30m every 4m, 32m in whole intervals.
+  expect(fields[2]?.badges.value).toBe("32m · built-in")
   expect(fields.filter((row) => row.address?.item !== "modelfield:compactWarm:anthropic/claude").every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
   const target = { providerID: "anthropic", modelID: "claude" }
   const fieldRow = (field: Parameters<typeof modelFieldItemId>[1]) => `item:project:build:${modelFieldItemId(target, field)}`
@@ -942,7 +944,7 @@ test("every model field edits and resets individually and resets preserve unrela
   expect(byLabel.get("Warming")?.actions?.reset).toBe(false)
   expect(byLabel.get("Ping every")?.actions?.reset).toBe(false)
   expect(byLabel.get("Keep-alive prompt")?.actions?.reset).toBe(false)
-  expect(byLabel.get("Warming")?.badges.value).toBe("off · built-in")
+  expect(byLabel.get("Warming")?.badges.value).toBe("32m · built-in")
   // A repeated Model FIELD reset is a no-op and must refuse with no write:
   // only the model ROW's r clears activation, never a FIELD reset. The local
   // bare candidate stays (its Model field already matches the original).

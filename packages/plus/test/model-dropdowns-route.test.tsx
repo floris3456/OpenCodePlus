@@ -153,8 +153,9 @@ test("Defaults › Compaction › Model picks a catalogue model", async () => {
 
 for (const [providerID, modelID, options] of [
   ["acme", "nova", ["Inherit (now 4m · built-in)", "1m", "2m", "3m", "4m", "4m30s", "Custom…"]],
-  // Provider/model names alone do not establish a cache lifetime.
-  ["openai", "gpt-6", ["Inherit (now 4m · built-in)", "1m", "2m", "3m", "4m", "4m30s", "Custom…"]],
+  // The built-in warming knows Claude's 5-minute and GPT-6's 30-minute cache.
+  ["anthropic", "claude", ["Inherit (now 4m · built-in)", "1m", "2m", "3m", "4m", "4m30s", "Custom…"]],
+  ["openai", "gpt-6", ["Inherit (now 25m · built-in)", "5m", "10m", "15m", "20m", "25m", "Custom…"]],
 ] as const) {
   test(`agent ${providerID}/${modelID} Ping every opens its lifetime's dropdown and writes the pick on the row`, async () => {
     const row = `item:project:build:model:${providerID}/${modelID}`

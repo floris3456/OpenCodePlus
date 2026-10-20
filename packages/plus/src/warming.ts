@@ -5,9 +5,10 @@ import path from "node:path"
 import { Product } from "@opencode/util/product"
 import { type Level, type ResolvedModelFields } from "./instructions/model.js"
 import {
+  builtInWarming,
   effectiveWarming,
-  BUILT_IN_BASE,
   BUILT_IN_WARMING,
+  type ModelSettingsKey,
   type ModelSettingsRecord,
   type SettingFrom,
   type WarmingBase,
@@ -96,10 +97,14 @@ export function decideWarming(input: {
   readonly configured: SessionWarmingSettings | undefined
   readonly rows: WarmingRows
   readonly chat: ChatSwitch | undefined
+  /** The chat's model: a row or the chat switch that turns warming on takes its own times. */
+  readonly model?: ModelSettingsKey
 }): WarmingDecision {
+  // Without a proposal warming stays off unless a row or the chat turns it on: core's built-in
+  // warming arrives as its proposal, so a hook that vetoed it keeps it vetoed.
   const on = input.configured !== undefined || input.chat === "on"
   const base: WarmingBase =
-    input.configured === undefined ? { ...BUILT_IN_BASE, on } : { on: true, ...input.configured, from: "config" }
+    input.configured === undefined ? { ...builtInWarming(input.model), on } : { on: true, ...input.configured, from: "config" }
   const effective = effectiveWarming({
     ...(input.rows.row === undefined ? {} : { row: input.rows.row }),
     ...(input.rows.model === undefined ? {} : { model: input.rows.model }),
@@ -495,7 +500,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         proposesConfigured || event.settings === undefined || own === undefined
           ? event.settings
           : { ...event.settings, duration: own }
-      const decided = decideWarming({ configured, rows, chat })
+      const model = { providerID: event.model.providerID, modelID: event.model.id }
+      const decided = decideWarming({ configured, rows, chat, model })
       // A real request starts while its chat runs: the events' busy set answers.
       // Before a keep-alive, or when a window resumes, the host is asked what runs now.
       const waits =
@@ -541,7 +547,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       } else {
         coldAt.set(
           event.sessionID,
-          window?.expires ?? (activity ? event.now + coldInterval(decided, rows, configured) : event.now),
+          window?.expires ?? (activity ? event.now + coldInterval(decided, rows, configured, model) : event.now),
         )
         if (await effectiveCompact(event.sessionID)) schedule(event.sessionID, event.now)
         else unschedule(event.sessionID)
@@ -676,13 +682,14 @@ function coldInterval(
   decided: WarmingDecision,
   rows: WarmingRows,
   configured: SessionWarmingSettings | undefined,
+  model: ModelSettingsKey,
 ): number {
   if (decided.settings !== undefined) return decided.settings.interval
   return effectiveWarming({
     ...(rows.row === undefined ? {} : { row: rows.row }),
     ...(rows.model === undefined ? {} : { model: rows.model }),
     ...(rows.every === undefined ? {} : { every: rows.every }),
-    ...(configured === undefined ? {} : { base: { on: true, ...configured, from: "config" } }),
+    base: configured === undefined ? builtInWarming(model) : { on: true, ...configured, from: "config" },
   }).interval.value
 }
 

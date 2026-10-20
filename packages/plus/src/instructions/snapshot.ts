@@ -285,6 +285,7 @@ export function modelDefaultsViewOf(
       ? undefined
       : (snapshot.hostModels ?? []).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)
   const view = modelDefaultView({
+    key,
     ...(own === undefined ? {} : { record: own }),
     ...(every === undefined ? {} : { every }),
     ...(host?.warming === undefined ? {} : { host: host.warming }),

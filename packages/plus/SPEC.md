@@ -1325,8 +1325,8 @@ Events: `instructions.changed`, `teams.changed`, `warming.changed` (`{ sessionID
 
 Core keeps a chat's provider prompt cache warm with keep-alive requests after
 its latest real request (core `warming` configuration, default interval 4
-minutes, total time 30 minutes; built-in warming is off until a row or the
-configuration turns it on). Plus decides it per chat through core's session
+minutes, total time 30 minutes; with no warming configured core proposes its
+built-in: on for Claude and GPT-5.6+, off otherwise). Plus decides it per chat through core's session
 `warming` hook, which runs when a real request starts the window (`activity`)
 and before each keep-alive request (`warm`). Each field — the warming time
 that also decides on/off, the ping interval and the keep-alive prompt —
@@ -1341,10 +1341,16 @@ resolves down the layers, most specific first:
    configured duration;
 3. Defaults › Models › `<that model>`, then Defaults › Models › Every model
    (`ModelSettingsRecord.warming`, `interval`, `prompt`);
-4. else the host configuration core proposed (provider and model
-   `opencode.json` settings, then its top-level `warming`), unchanged;
+4. else what core proposed, unchanged: the host configuration (provider and
+   model `opencode.json` settings, then its top-level `warming`), or with none
+   of them core's built-in warming (schema `ConfigWarming.builtIn`): on for a
+   model whose id names Claude (a 5-minute cache: every 4 minutes for 30
+   minutes) or GPT-5.6 and later (a 30-minute cache: every 25 minutes for
+   1h30m, 1h40m in whole intervals). A hook before Plus (the CPA quota
+   handoff) can veto that proposal as any other;
 5. else the built-in defaults (`WARMING_DEFAULTS`: 4 minutes, 30 minutes,
-   the fixed keep-alive text) and the built-in `on: false`.
+   the fixed keep-alive text) and the built-in `on: false`. Defaults › Models
+   shows the model's built-in warming of step 4 here (`builtInWarming`).
 
 A total time on any row also applies when the chat switch is `on`.
 Changes reach a running window before its next keep-alive request; a window

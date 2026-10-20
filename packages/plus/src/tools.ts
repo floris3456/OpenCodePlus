@@ -2041,6 +2041,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           ? undefined
           : hostModelOf(memo.hostModels ?? [], { providerID: key.providerID, modelID: key.modelID })
       const resolved = modelDefaultView({
+        key,
         ...(record === undefined ? {} : { record }),
         ...(everySettings(memo.modelSettings ?? []) === undefined ? {} : { every: everySettings(memo.modelSettings ?? []) }),
         ...(host?.warming === undefined ? {} : { host: host.warming }),

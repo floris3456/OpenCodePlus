@@ -28,7 +28,7 @@ import {
   watchHostEvents,
   type PlusState,
 } from "../src/index.js"
-import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
+import { modelDefaultView, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { createWarmingStore, decideWarming, WARMING_DEFAULTS, warmingStore, type ChatCompactionDefaults, type WarmingRows } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
 import { Effect, Stream } from "effect"
@@ -123,6 +123,39 @@ test("the per-chat switch beats the model rows, which beat the host configuratio
     waiting: WAITING_DEFAULT_MS,
   })
   expect(decideWarming({ configured: undefined, rows: { row: twoHours }, chat: "on" }).settings?.duration).toBe(120 * MINUTE)
+})
+
+test("without a proposal a row or the chat switch turns warming on with the model's own times; nothing else does", () => {
+  const gpt = { providerID: "cliproxyapi", modelID: "gpt-6-astra" }
+  const claude = { providerID: "cliproxyapi", modelID: "claude-opus-5-5" }
+  const on = { row: { warming: { value: "on", level: "project" as const } } }
+  // Core proposed nothing (warming off in opencode.json, or a hook vetoed its built-in): it stays off.
+  expect(decideWarming({ configured: undefined, rows: {}, chat: undefined, model: claude }).settings).toBeUndefined()
+  expect(decideWarming({ configured: undefined, rows: on, chat: undefined, model: gpt }).settings).toEqual({
+    prompt: WARMING_DEFAULTS.prompt,
+    interval: 25 * MINUTE,
+    duration: 100 * MINUTE,
+  })
+  expect(decideWarming({ configured: undefined, rows: {}, chat: "on", model: claude }).settings?.interval).toBe(4 * MINUTE)
+})
+
+// Core proposes the built-in warming (schema ConfigWarming.builtIn); Defaults › Models shows the same.
+test("Defaults › Models shows Claude and GPT-5.6+ warming built in; other models and Every model are off", () => {
+  const view = (modelID: string) => modelDefaultView({ key: { providerID: "cliproxyapi", modelID } })
+  const claude = view("claude-opus-5-5")
+  expect([claude.on, claude.duration, claude.interval]).toEqual([
+    { value: true, from: "built-in" },
+    { value: 32 * MINUTE, from: "built-in" },
+    { value: 4 * MINUTE, from: "built-in" },
+  ])
+  // 1h30m every 25m warms 1h40m, a whole number of intervals.
+  expect([view("gpt-6-astra").duration.value, view("gpt-6-astra").interval.value]).toEqual([100 * MINUTE, 25 * MINUTE])
+  expect(view("gpt-5.3-codex-spark").on).toEqual({ value: false, from: "built-in" })
+  expect(view("gemini-3.8-flash-high").on.value).toBe(false)
+  expect(modelDefaultView({}).on).toEqual({ value: false, from: "built-in" })
+  // opencode.json still decides over it, and `true` there takes the model's own times.
+  expect(modelDefaultView({ key: { providerID: "cliproxyapi", modelID: "claude-opus-5-5" }, host: { on: false } }).on.value).toBe(false)
+  expect(modelDefaultView({ key: { providerID: "cliproxyapi", modelID: "gpt-6-astra" }, host: { on: true } }).interval.value).toBe(25 * MINUTE)
 })
 
 test("the interval and the keep-alive prompt resolve per field, row over Defaults over the host", () => {

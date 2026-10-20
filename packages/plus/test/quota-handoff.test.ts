@@ -191,7 +191,8 @@ test("quota then Plus warming preserves 90m/25m as a 100m window despite an old-
       await f.trigger("warming", blocked)
       expect(blocked.settings).toBeUndefined()
       await store.decide(blocked, {}, compact)
-      expect(await store.status(sessionID)).toMatchObject({ active: false, compactAt: clock.now + 4 * MINUTE })
+      // Warming off: the cache goes cold one keep-alive interval later, GPT-6's own 25 minutes (a 30-minute cache).
+      expect(await store.status(sessionID)).toMatchObject({ active: false, compactAt: clock.now + 25 * MINUTE })
     })
   }))))
 

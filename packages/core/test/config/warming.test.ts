@@ -46,11 +46,12 @@ describe("config warming", () => {
   })
 })
 
-const resolved = (input: { global?: unknown; provider?: unknown; model?: unknown }) => {
+const resolved = (input: { global?: unknown; provider?: unknown; model?: unknown; id?: string }) => {
   const settings = ConfigWarming.resolve({
     global: input.global === undefined ? undefined : decodeGlobalWarming(input.global),
     provider: input.provider === undefined ? undefined : decodeScopedWarming(input.provider),
     model: input.model === undefined ? undefined : decodeScopedWarming(input.model),
+    ...(input.id === undefined ? {} : { id: input.id }),
   })
   if (!settings) return
   return {
@@ -67,6 +68,22 @@ const defaults = {
 }
 
 describe("warming resolution", () => {
+  test("warms Claude and GPT-5.6+ when nothing configures warming", () => {
+    const gpt = { ...defaults, interval: Duration.toMillis(Duration.minutes(25)), duration: Duration.toMillis(Duration.minutes(90)) }
+    expect(resolved({ id: "claude-opus-5-5" })).toEqual(defaults)
+    expect(resolved({ id: "anthropic/claude-haiku-5-5" })).toEqual(defaults)
+    expect(resolved({ id: "gpt-6-astra" })).toEqual(gpt)
+    expect(resolved({ id: "gpt-5.6-luna" })).toEqual(gpt)
+    for (const id of ["gpt-5.3-codex-spark", "gpt-oss-120b", "gemini-3.8-flash-high", "deepseek-v4.1-flash"])
+      expect(resolved({ id })).toBeUndefined()
+    // Any configuration decides instead; `true` and objects start from the model's own defaults.
+    expect(resolved({ id: "claude-opus-5-5", model: false })).toBeUndefined()
+    expect(resolved({ id: "claude-opus-5-5", global: false })).toBeUndefined()
+    expect(resolved({ id: "gpt-6-astra", model: true })).toEqual(gpt)
+    expect(resolved({ id: "gpt-6-astra", provider: { prompt: "ping" } })).toEqual({ ...gpt, prompt: "ping" })
+    expect(resolved({ id: "deepseek-v4.1-flash", global: true })).toEqual(defaults)
+  })
+
   test("resolves global-only settings unchanged", () => {
     expect(resolved({})).toBeUndefined()
     expect(resolved({ global: false })).toBeUndefined()

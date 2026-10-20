@@ -3,13 +3,17 @@ export * as ConfigProviderPlugin from "./provider.js"
 import { define } from "@opencode/plugin/effect/plugin"
 import { Document, type Entry } from "@opencode/schema/config"
 import { ConfigProvider } from "@opencode/schema/config/provider"
+import { ConfigWarming } from "@opencode/schema/config/warming"
 import { Money } from "@opencode/schema/money"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { Config } from "../../config.js"
 import { Model } from "../../model.js"
 import { Provider } from "../../provider.js"
 import { Variant } from "../../variant.js"
 import { ConfigEntryObserver } from "./entry-observer.js"
+
+// Provider settings travel as JSON, so warming durations go back to their string form.
+const encodeWarming = Schema.encodeSync(ConfigWarming.Warming)
 
 export const Plugin = define({
   id: "opencode.config.provider",
@@ -103,6 +107,17 @@ export const Plugin = define({
           })
         }
       }
+      // The top-level `warming` becomes the own warming of each provider that sets none. That resolves
+      // the same (config/warming.ts), and the catalog then carries what core proposes for every model,
+      // which clients cannot read from the config documents themselves.
+      const warming = Config.latest(loaded.entries, "warming")
+      if (warming !== undefined)
+        for (const record of providers.list()) {
+          if (record.provider.settings?.warming !== undefined) continue
+          providers.update(record.provider.id, (provider) => {
+            provider.settings = Provider.mergeOverlay(provider.settings, { warming: encodeWarming(warming) })
+          })
+        }
       sources.defaultModel = Config.latest(loaded.entries, "model")
       sources.models = next
     })

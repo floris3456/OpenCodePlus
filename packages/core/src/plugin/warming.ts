@@ -70,6 +70,7 @@ export const Plugin = define({
         global: Config.latest(yield* config.entries(), "warming"),
         provider: provider?.settings?.warming,
         model: catalog?.settings?.warming,
+        id: model.id,
       })
       if (!settings) return
       return {

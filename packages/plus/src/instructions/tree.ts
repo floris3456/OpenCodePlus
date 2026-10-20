@@ -961,7 +961,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
   const address: Address = { level: "defaults", agent: null, item, section: null }
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
   const view = (): ModelDefaultView =>
-    cachedModelView(memo, item, () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
+    cachedModelView(memo, item, () => modelDefaultViewOf(key, record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   // The row opens (→) into one row per field; each field edits on its own.
   return {
     id: modelDefaultRowId(key),
@@ -1044,7 +1044,7 @@ function defaultsCompaction(ctx: BuildContext, key: ModelSettingsKey, record: Mo
 
 function defaultsWarmingSummary(ctx: BuildContext, memo: Memo, key: ModelSettingsKey, record: ModelSettingsRecord | undefined): string {
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
-  const view = cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
+  const view = cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(key, record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   return view.on.value ? `${formatDuration(view.duration.value)} · every ${formatDuration(view.interval.value)}` : "off"
 }
 
@@ -1061,7 +1061,7 @@ function lazyModelDefaultField(
 ): Lazy {
   const host = key.providerID === undefined || key.modelID === undefined ? undefined : hostModelOf(ctx.hostModels, { providerID: key.providerID, modelID: key.modelID })
   const view = (): ModelDefaultView =>
-    cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
+    cachedModelView(memo, modelDefaultItemId(key), () => modelDefaultViewOf(key, record, everySettings(ctx.modelSettings), host?.warming, host?.variants))
   const own = record?.[field] !== undefined
   const switchField = isDefaultSwitchField(field)
   const value = (): string => {
@@ -1148,12 +1148,14 @@ function lazyDefaultColdGroup(
 }
 
 function modelDefaultViewOf(
+  key: ModelSettingsKey,
   record: ModelSettingsRecord | undefined,
   every: ModelSettingsRecord | undefined,
   host: HostWarming | undefined,
   variants: readonly string[] | undefined,
 ): ModelDefaultView {
   return modelDefaultView({
+    key,
     ...(record === undefined ? {} : { record }),
     ...(every === undefined ? {} : { every }),
     ...(host === undefined ? {} : { host }),
@@ -2708,7 +2710,7 @@ function warmingGroupSummary(
   const fields = resolveModelFields({ models: ctx.models, scopes: ctx.scopes, ...rowScope }, target)
   const host = hostModelOf(ctx.hostModels, { providerID: candidate.providerID, modelID: candidate.modelID })
   const modelSetting = settingsFor(ctx.modelSettings, target)
-  const view = modelDefaultViewOf(modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+  const view = modelDefaultViewOf(target, modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
   const warming = fields.warming ?? (view.on.value ? { value: formatDuration(view.duration.value), level: view.duration.from as Level } : { value: "off", level: view.on.from as Level })
   const interval = fields.interval ?? { value: formatDuration(view.interval.value), level: view.interval.from as Level }
   return warming.value === "off" ? "off" : `${warming.value} · every ${interval.value}`
@@ -2761,7 +2763,7 @@ function lazyModelField(
   const info = (): ModelFieldInfo => {
     const host = hostModelOf(ctx.hostModels, { providerID: candidate.providerID, modelID: candidate.modelID })
     const modelSetting = settingsFor(ctx.modelSettings, { providerID: candidate.providerID, modelID: candidate.modelID })
-    const view = modelDefaultViewOf(modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
+    const view = modelDefaultViewOf(target, modelSetting, everySettings(ctx.modelSettings), host?.warming, host?.variants)
     const fields = resolveModelFields({ models: ctx.models, scopes: ctx.scopes, ...rowScope }, target)
     const local = ctx.models.find(
       (record) => record.removed !== true && scopedTo(record, rowScope) && sameModelCandidate(record, target),

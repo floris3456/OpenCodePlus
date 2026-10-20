@@ -3,10 +3,18 @@ title: "Warming"
 ---
 
 Session warming sends periodic model requests to preserve provider-side prompt
-caches or other short-lived state while you pause between prompts. It is
-disabled by default.
+caches or other short-lived state while you pause between prompts. When no
+configuration mentions warming, it is on for the models whose cache lifetime is
+known and off for the rest:
 
-Enable warming in any [OpenCode configuration file](/config):
+| Model id contains | Cache lifetime | Warming |
+| --- | --- | --- |
+| `claude` | 5 minutes | every 4 minutes for 30 minutes |
+| `gpt-5.6` or later (`gpt-6`, …) | 30 minutes | every 25 minutes for 90 minutes |
+
+Any `warming` setting, global or scoped, replaces this default. Turn warming
+off with `"warming": false`, or enable it for every model in any
+[OpenCode configuration file](/config):
 
 ```jsonc title="opencode.jsonc"
 {
@@ -17,7 +25,8 @@ Enable warming in any [OpenCode configuration file](/config):
 
 With this configuration, OpenCode warms a recently active session after four
 minutes without a model request. It continues every four minutes until 30
-minutes have passed since the latest non-warming request.
+minutes have passed since the latest non-warming request. GPT-5.6 and later
+models use their own defaults instead: every 25 minutes for 90 minutes.
 
 ## Options
 
@@ -38,8 +47,8 @@ window:
 | Field | Default | Purpose |
 | --- | --- | --- |
 | `prompt` | Keep-alive instruction | Appended as a transient user message for each warming request. The default asks the model to do no work, use no tools, and reply with `OK`. |
-| `interval` | `"4 minutes"` | Idle time before the next warming request. |
-| `duration` | `"30 minutes"` | Warming window measured from the latest non-warming model request. |
+| `interval` | `"4 minutes"` (`"25 minutes"` for GPT-5.6 and later) | Idle time before the next warming request. |
+| `duration` | `"30 minutes"` (`"90 minutes"` for GPT-5.6 and later) | Warming window measured from the latest non-warming model request. |
 
 Omitted object fields keep their defaults. For example, this changes only the
 interval:
@@ -77,7 +86,7 @@ With this configuration, Anthropic sessions warm every five minutes, but
 setting:
 
 - `false` disables warming for that scope.
-- `true` enables it with the defaults, discarding inherited custom fields.
+- `true` enables it with the model's defaults, discarding inherited custom fields.
 - An object enables it and merges only its fields over the enabled level above. When the level above is disabled, it merges over the defaults.
 
 Because of the last rule, a provider or model object re-enables warming even

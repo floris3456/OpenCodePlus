@@ -86,7 +86,7 @@ export interface HostModel {
   readonly warming?: HostWarming
 }
 
-/** Core's defaults (core/src/config/warming.ts); off unless something turns warming on. */
+/** Core's defaults (core/src/config/warming.ts); off unless something turns warming on. Per model: builtInWarming. */
 export const BUILT_IN_WARMING = {
   on: false,
   prompt: "This is a keep-alive request. Do not perform any work or use tools. Reply with exactly: OK",
@@ -135,6 +135,17 @@ export interface WarmingBase {
 }
 
 export const BUILT_IN_BASE: WarmingBase = { ...BUILT_IN_WARMING, from: "built-in" }
+
+/**
+ * The warming a model gets when no row and no opencode.json sets it, as core proposes it
+ * (schema ConfigWarming.builtIn): on for Claude, every 4 minutes for 30 minutes, and GPT-5.6 and
+ * later, every 25 minutes for 1h30m (1h40m in whole intervals). Every other model, and Every
+ * model, is off.
+ */
+export function builtInWarming(key?: ModelSettingsKey): WarmingBase {
+  const own = key?.modelID === undefined ? undefined : ConfigWarming.builtIn(key.modelID)
+  return own === undefined ? BUILT_IN_BASE : { ...BUILT_IN_BASE, on: true, interval: own.interval, duration: own.duration }
+}
 
 interface Layer {
   readonly from: SettingFrom
@@ -362,6 +373,7 @@ export function roundedWarmingFor(
     model: record,
     ...(every === undefined ? {} : { every }),
     ...(host === undefined ? {} : { host }),
+    base: builtInWarming(key),
   }).interval.value
   const rounded = roundWarming(duration, interval)
   return rounded === duration ? undefined : formatDuration(rounded)
@@ -809,12 +821,14 @@ export interface ModelDefaultView {
 
 /** What one Defaults › Models row resolves to now, field by field, with each field's source. */
 export function modelDefaultView(input: {
+  /** The row's model, for its built-in warming; absent for Every model. */
+  readonly key?: ModelSettingsKey
   readonly record?: ModelSettingsRecord
   readonly every?: ModelSettingsRecord
   readonly host?: HostWarming
   readonly variants?: readonly string[]
 }): ModelDefaultView {
-  const effective = effectiveWarming({ model: input.record, host: input.host, every: input.every })
+  const effective = effectiveWarming({ model: input.record, host: input.host, every: input.every, base: builtInWarming(input.key) })
   const effort = defaultEffort({ model: input.record, every: input.every, variants: input.variants })
   return {
     on: effective.on,
@@ -1203,10 +1217,14 @@ export function coldCompactSummary(models: readonly string[]): string {
   return models.join(" → ")
 }
 
-/** The cache lifetime the monitor assumes for a model row's provider and model; undefined for Every model or when unknown. */
+/**
+ * The cache lifetime a model row's Ping every choices fit under: what the monitor assumes, else the
+ * lifetime its built-in warming is timed for (Claude 5m, GPT-5.6+ 30m); undefined for Every model
+ * or when unknown.
+ */
 export function cacheLifetimeOf(key: ModelSettingsKey): number | undefined {
   if (key.providerID === undefined || key.modelID === undefined) return undefined
-  return cacheLifetime({ provider: key.providerID, model: key.modelID })
+  return cacheLifetime({ provider: key.providerID, model: key.modelID }) ?? ConfigWarming.builtIn(key.modelID)?.lifetime
 }
 
 /** Ping every's dropdown values: the times below the cache lifetime. An unknown lifetime gets the 5m list. */
