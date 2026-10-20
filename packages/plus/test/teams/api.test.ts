@@ -2039,3 +2039,31 @@ test("a member that writes its own tests may be given a check on a test file it 
     }
   })
 }, 30000)
+
+test("a member that writes plan files only gets docs/plans and docs/handoffs in its scope unless forbidden", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "build-seat", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_plan_scope" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const delegate = async (requestID: string, role: string, forbidden: string[]) => {
+        const value = required(
+          await api.delegate(
+            delegateInput({ requestID, role, reason: "owned multi-step work", scope: { paths: ["src/*"], forbidden } }),
+            callerFor(parent),
+          ),
+        ) as { run: string }
+        const stored = await Bun.file(path.join(root, "runs", value.run, "brief.json")).json()
+        return { scope: stored.scope.paths, run: (await loadRun(root, value.run))?.paths }
+      }
+      // s5-d: an orchestrator scoped to source paths writes its handoff files.
+      expect(await delegate("plans-1", "orchestrator", [])).toEqual({ scope: ["src/*", "docs/plans/*", "docs/handoffs/*"], run: ["src/*"] })
+      expect((await delegate("plans-2", "orchestrator", ["docs/*"])).scope).toEqual(["src/*"])
+      // An implementer may change every file: its scope stays what was given.
+      expect((await delegate("plans-3", "implementer", [])).scope).toEqual(["src/*"])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)

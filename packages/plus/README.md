@@ -376,8 +376,11 @@ Every agent also has `team_delegate` bounds that ship on — 4 children working
 at once, depth 3, briefs of up to 6000 characters, 12 live team runs; in a
 delegated run, which nobody watches, questions and approvals are refused
 rather than left waiting. Each delegated Session's edits and checkpoints are
-limited to its saved brief's `scope.paths`; `scope.forbidden` wins. Same-role
-runs do not share scope. These boundaries only narrow existing permissions,
+limited to its saved brief's `scope.paths`; `scope.forbidden` wins. A member
+that may change plan files but no other files (a planner, an orchestrator)
+also gets `docs/plans/*` and `docs/handoffs/*` in its saved scope unless the
+brief forbids them, so it can write the Briefs and handoffs its role asks for.
+Same-role runs do not share scope. These boundaries only narrow existing permissions,
 never override denial or approval, and protect Git, paused-tool and Plus state.
 The listable `perm:edit:run:<runID>` row describes the individual boundary;
 editing that display row does not widen the admitted brief.

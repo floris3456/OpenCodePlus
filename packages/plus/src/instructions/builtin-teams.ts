@@ -232,8 +232,9 @@ ${routing}
 <!-- requires: tool:team_checkpoint -->
 Before you delegate a task, write the tests that prove it, or pick existing
 ones, commit them with team_checkpoint and give them as the task's checks: its
-own test files, not the whole suite while another task's tests still fail. When
-the change has behaviour no check shows (a terminal UI, a live server flow),
+own test files, not the whole suite while another task's tests still fail. Data
+a test reads goes in the test itself or under test/; a sample file elsewhere is
+the implementer's to write, named in its Brief. When the change has behaviour no check shows (a terminal UI, a live server flow),
 also put a live test in its Brief: what to start, the steps, and what must be
 seen; the implementer that makes the change runs it. When an implementer
 finishes blocked on a test, answer with team_followup if the test is right; if

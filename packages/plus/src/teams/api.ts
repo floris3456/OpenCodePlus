@@ -32,7 +32,7 @@ import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
 import { wildcardMatch } from "../instructions/permission-catalog.js"
-import type { PermissionTable } from "../instructions/permission-enforce.js"
+import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
 import { render } from "./report.js"
@@ -120,6 +120,7 @@ const policy = Schema.decodeUnknownSync(Policy)({})
 const PATHS_MESSAGE =
   "scope.paths must be files or dir/* inside the repository, never version-control state."
 const PATHS_ACCEPTED = ["src/*", "test/*"]
+const PLAN_PATHS = ["docs/plans/*", "docs/handoffs/*"]
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
 const COMMIT_MESSAGE_RE = /^(feat|fix|docs|chore|refactor|test)(\([^)]+\))?: /
 
@@ -252,7 +253,16 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // Forbidding protected state forbids what no run may change anyway (s3-c:
   // ".opencodeplus/*" refused two whole briefs), so it is dropped, not refused.
   const forbidden = brief.scope.forbidden.filter((entry) => !namesProtectedState(entry))
-  const resolved: ResolvedBrief = { ...brief, scope: { ...brief.scope, forbidden }, checks }
+  // A member that may change plan files but no other (planner, orchestrator)
+  // writes its plan, Brief and handoff files there whatever source paths the
+  // delegator scoped (s5-a, s5-d: an orchestrator scoped to src/ and test/ was
+  // refused its handoff file). Its stored scope takes those folders unless
+  // the delegator forbade them; run and task records keep the delegator's paths.
+  const writesPlans = rowState(table, brief.role, "edit", "allowed.plans")?.on === true && rowState(table, brief.role, "edit", "allowed.*")?.on === false
+  const planPaths = writesPlans
+    ? PLAN_PATHS.filter((entry) => !brief.scope.paths.includes(entry) && scopeRefusal({ paths: [entry], forbidden }, `${entry.slice(0, -2)}/x`) === undefined)
+    : []
+  const resolved: ResolvedBrief = { ...brief, scope: { paths: [...brief.scope.paths, ...planPaths], forbidden }, checks }
 
   const paths = brief.scope.paths
   const invalid = [...paths, ...forbidden].find((candidate) => !isScopePath(candidate))
