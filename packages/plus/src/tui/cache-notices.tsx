@@ -295,19 +295,17 @@ function NoticeStack(props: {
                 <text fg={theme().text.muted} flexShrink={0} marginLeft={1} wrapMode="none">
                   {age(notice.at)}
                 </text>
-                {/* Padded so the click target is three cells wide, not one. */}
+                {/* Spaces around it make the click target three cells wide, not one. */}
                 <text
                   fg={theme().text.action.secondary.base}
                   flexShrink={0}
-                  paddingLeft={1}
-                  paddingRight={1}
                   wrapMode="none"
                   onMouseUp={(event) => {
                     event.stopPropagation()
                     props.onDismiss(notice)
                   }}
                 >
-                  ×
+                  {" × "}
                 </text>
               </box>
               <text fg={theme().text.base} wrapMode="none">

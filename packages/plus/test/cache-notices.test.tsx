@@ -111,8 +111,9 @@ test("every session's notices stack in the corner; opening one shows it in the m
     expect(frame.indexOf("scene authoring kit")).toBeLessThan(frame.indexOf("scene visuals"))
 
     const lines = frame.split("\n")
-    expect(lines.find((line) => line.includes("Cache miss"))).toContain("×")
-    expect(lines.find((line) => line.includes("Partial cache reuse"))).toContain("×")
+    // The age, then the close button with a space on either side of it.
+    expect(lines.find((line) => line.includes("Cache miss"))).toMatch(/ago × /)
+    expect(lines.find((line) => line.includes("Partial cache reuse"))).toMatch(/ago × /)
     const row = lines.findIndex((line) => line.includes("scene visuals"))
     await fixture.mockMouse.click(lines[row]!.indexOf("scene visuals"), row)
     await sleep(50)
@@ -134,7 +135,8 @@ test("× dismisses a notice in every TUI without opening the monitor; the body o
     const frame = await fixture.waitForFrame((text) => text.includes("scene visuals"))
     const lines = frame.split("\n")
     const row = lines.findIndex((line) => line.includes("Partial cache reuse"))
-    await fixture.mockMouse.click(lines[row]!.indexOf("×"), row)
+    // The space beside the × is part of the button.
+    await fixture.mockMouse.click(lines[row]!.indexOf("×") + 1, row)
     await sleep(50)
     expect(opened).toEqual([])
     expect(dismissed).toEqual(["older"])
