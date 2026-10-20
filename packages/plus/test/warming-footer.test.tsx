@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { CONFIRM_MS, confirmText, createWarming, warmingLabel } from "../src/tui/warming.js"
+import { CONFIRM_MS, confirmText, createWarming, holdsSend, warmingLabel } from "../src/tui/warming.js"
 import { createTestTheme, renderPlusFixture } from "./tui.js"
 
 const MINUTE = 60_000
@@ -357,8 +357,17 @@ test("warming switched off mid-window counts down to the keep-alive where the ca
   // Compact before cold off: the same moment, while warming stays off.
   const cooling = { ...off, compact: false, coldAt: now + 2 * MINUTE + 30_000 }
   expect(warmingLabel(cooling, now)).toEqual({ text: "cache warming off · warm 2:30 left", tone: "muted" })
-  expect(warmingLabel(cooling, cooling.coldAt)).toEqual({ text: "cache warming off", tone: "muted" })
-  expect(warmingLabel(cooling, cooling.coldAt + MINUTE)).toEqual({ text: "cache warming off", tone: "muted" })
+  // Then it says the cache is cold, without holding a send: warming is off for it.
+  expect(warmingLabel(cooling, cooling.coldAt)).toEqual({ text: "cache cold · warming off", tone: "warning", holds: false })
+  expect(warmingLabel(cooling, cooling.coldAt + MINUTE)).toEqual({ text: "cache cold · warming off", tone: "warning", holds: false })
+  expect(warmingLabel({ ...cooling, coldModels: ["proxy/cheap"] }, cooling.coldAt)).toEqual({
+    text: "cache cold · compacts with proxy/cheap first",
+    tone: "warning",
+    holds: false,
+  })
+  expect(holdsSend(warmingLabel(cooling, cooling.coldAt))).toBe(false)
+  // A window that ran out does hold the send, as before.
+  expect(holdsSend(warmingLabel({ ...off, chat: "default", compact: false, coldAt: undefined }, off.expires + 1))).toBe(true)
   // Control: a chat with warming off and no window to count shows the plain label.
   expect(warmingLabel({ sessionID: "s", chat: "off", compact: false, active: false, now }, now)).toEqual({
     text: "cache warming off",
@@ -366,7 +375,7 @@ test("warming switched off mid-window counts down to the keep-alive where the ca
   })
 })
 
-test("the real footer counts a switched-off chat down to its cold moment and never holds its send", async () => {
+test("the real footer counts a switched-off chat down to its cold moment, then says it is cold, and never holds its send", async () => {
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
   const opened = Date.now()
   await using fixture = await renderPlusFixture({
@@ -403,14 +412,14 @@ test("the real footer counts a switched-off chat down to its cold moment and nev
   try {
     expect(await until((frame) => frame.includes("cache warming off · warm"))).toMatch(/cache warming off · warm 0:0[12] left/)
     expect(fixture.send({ sessionID: "ses_off", mode: "normal", delivery: "steer" })).toBe(true)
-    const cold = await until((frame) => frame.includes("cache warming off") && !frame.includes("· warm"))
-    expect(cold).toContain("cache warming off")
-    expect(cold).not.toContain("· warm")
+    const cold = await until((frame) => frame.includes("cache cold · warming off"))
+    expect(cold).toContain("cache cold · warming off")
+    expect(cold).not.toContain("left")
     const span = fixture
       .captureSpans()
       .lines.flatMap((line) => line.spans)
-      .find((item) => item.text.startsWith("cache warming off"))
-    expect(span?.fg.equals(createTestTheme().text.muted)).toBe(true)
+      .find((item) => item.text.startsWith("cache cold"))
+    expect(span?.fg.equals(createTestTheme().text.feedback.warning.base)).toBe(true)
     expect(fixture.send({ sessionID: "ses_off", mode: "normal", delivery: "steer" })).toBe(true)
   } finally {
     warming.current?.dispose()

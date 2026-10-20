@@ -24,15 +24,17 @@ export function formatRemaining(ms: number): string {
 /**
  * The footer for a status at local time `now` (already corrected for server
  * clock skew); undefined shows nothing. Once a window has run out the footer
- * stays and warns that the cache is cold, until the next reply opens a new one.
- * Warming switched off mid-window counts down to the keep-alive where it stops;
- * a chat that never warmed counts down to one keep-alive interval after its last
- * request, then shows nothing again.
+ * stays and warns that the cache is cold, until the next reply opens a new one;
+ * a send then waits for a second submit. Warming switched off
+ * mid-window counts down to the keep-alive where it stops; a chat that never
+ * warmed counts down to when its cache goes cold. Either way the footer then
+ * says the cache is cold, without holding a send (`holds: false`): warming
+ * is off for it.
  */
 export function warmingLabel(
   status: Plus.WarmingStatus | undefined,
   now: number,
-): { text: string; tone: "muted" | "warning" } | undefined {
+): { text: string; tone: "muted" | "warning"; holds?: false } | undefined {
   if (status === undefined) return undefined
   if (status.compacted) return { text: "compacted", tone: "muted" }
 
@@ -46,14 +48,18 @@ export function warmingLabel(
       return { text: coldArms("compact cache cold"), tone: "warning" }
     }
     if (status.expires !== undefined) return { text: coldArms("compact cache cold"), tone: "warning" }
+    if (status.coldAt !== undefined && status.coldAt <= now) return { text: coldArms("compact cache cold"), tone: "warning", holds: false }
     if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
     if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
     return { text: "compact before cold on · starts after the next reply", tone: "muted" }
   }
 
-  if (status.chat === "off" && status.coldAt !== undefined && status.coldAt > now)
-    return { text: `cache warming off · warm ${formatRemaining(status.coldAt - now)} left`, tone: "muted" }
-  if (status.chat === "off") return { text: "cache warming off", tone: "muted" }
+  // A chat warming does not keep warm, by the moment its cache goes cold.
+  const unwarmed = (coldAt: number) =>
+    coldAt > now
+      ? ({ text: `cache warming off · warm ${formatRemaining(coldAt - now)} left`, tone: "muted" } as const)
+      : ({ text: coldArms("cache cold · warming off"), tone: "warning", holds: false } as const)
+  if (status.chat === "off") return status.coldAt === undefined ? { text: "cache warming off", tone: "muted" } : unwarmed(status.coldAt)
   if (status.active && status.expires !== undefined && status.expires > now)
     return { text: `cache warm · ${formatRemaining(status.expires - now)} left`, tone: "muted" }
   if (status.expires !== undefined)
@@ -62,9 +68,13 @@ export function warmingLabel(
       tone: "warning",
     }
   if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
-  if (status.coldAt !== undefined && status.coldAt > now)
-    return { text: `cache warming off · warm ${formatRemaining(status.coldAt - now)} left`, tone: "muted" }
+  if (status.coldAt !== undefined) return unwarmed(status.coldAt)
   return undefined
+}
+
+/** Whether the footer holds a send for a second submit: a cold cache warming did not keep. */
+export function holdsSend(label: ReturnType<typeof warmingLabel>): boolean {
+  return label?.tone === "warning" && label.holds !== false
 }
 
 /** The footer while a send into a cold cache waits for its confirming submit. */
@@ -111,18 +121,19 @@ export function createWarming(context: Plugin.Context) {
 
   const label = () => warmingLabel(status(), now() + tracked.skew)
 
-  // A message into a cold cache pays for the whole prompt again. The first
-  // submit holds it and the footer asks for a second, like interrupting a
-  // running chat; a second submit within CONFIRM_MS sends. A running chat is
-  // using its cache, and a chat that never warmed shows nothing to confirm.
-  // When the cold-cache models will summarize the chat first, it sends at once.
+  // A message into a cold cache pays for the whole prompt again. When warming
+  // ran out for the chat, the first submit holds it and the footer asks for a
+  // second, like interrupting a running chat; a second submit within
+  // CONFIRM_MS sends. A running chat is using its cache, and a chat warming is
+  // off for says it is cold but holds nothing. When the cold-cache models will
+  // summarize the chat first, it sends at once.
   const [armed, setArmed] = createSignal<string | undefined>()
   const [flash, setFlash] = createSignal(false)
   const timers = { disarm: undefined as ReturnType<typeof setTimeout> | undefined, flash: undefined as ReturnType<typeof setTimeout> | undefined }
   function guard(input: PromptSendInput): boolean {
     const sessionID = input.sessionID
     if (sessionID === undefined || input.mode !== "normal" || sessionID !== tracked.sessionID) return true
-    if (label()?.tone !== "warning" || context.data.session.status(sessionID) === "running") return true
+    if (!holdsSend(label()) || context.data.session.status(sessionID) === "running") return true
     if ((status()?.coldModels?.length ?? 0) > 0) return true
     clearTimeout(timers.disarm)
     clearTimeout(timers.flash)
@@ -195,7 +206,7 @@ export function createWarming(context: Plugin.Context) {
   function Footer(props: { readonly sessionID?: string }) {
     createEffect(() => track(props.sessionID))
     const warning = () => context.theme.text.feedback.warning.base
-    const confirming = () => props.sessionID !== undefined && armed() === props.sessionID && label()?.tone === "warning"
+    const confirming = () => props.sessionID !== undefined && armed() === props.sessionID && holdsSend(label())
     const key = () => context.keymap.shortcuts("prompt.submit")[0] ?? "enter"
     return (
       <Show when={props.sessionID !== undefined ? label() : undefined}>

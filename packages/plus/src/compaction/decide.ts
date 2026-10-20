@@ -65,9 +65,9 @@ export function consumePromptAdmitted(sessionID: string): boolean {
 export interface ColdCompactionState {
   /** The chat is mid-turn: a running chat is never cold. Always false at a fresh prompt. */
   readonly running: boolean
-  /** A Plus warming window was recorded for this chat. */
+  /** Plus knows when this chat's cache goes cold: its warming window, or its cold moment. */
   readonly ready: boolean
-  /** That window has not ended (the chat is being kept warm). */
+  /** That moment has not come (the chat is warm). */
   readonly active: boolean
   /** A compaction completed since the chat's last real request: skip. */
   readonly compacted: boolean
@@ -161,26 +161,29 @@ export function isCold(cold: ColdCompactionState): boolean {
 
 /** What cold arming reads: the chat's window, its last request and that request's fingerprint. */
 export interface ColdInputs {
-  readonly status: Pick<WarmingStatus, "active" | "compacted" | "source" | "expires">
+  readonly status: Pick<WarmingStatus, "active" | "compacted" | "expires" | "coldAt">
   readonly last?: RequestRow
   readonly fingerprint?: RequestFingerprintData
   readonly now: number
 }
 
 /**
- * The cold-cache state at the first step of a new prompt. The last request
- * row's own fingerprint carries its cache TTL, so a 1h cache is not mistaken
- * for the 5-minute default; a missing row or fingerprint means unknown, and an
- * unknown lifetime is never cold.
+ * The cold-cache state at the first step of a new prompt, from the status the
+ * footer shows: a chat warming keeps warm is cold once its window ended, one it
+ * does not once its cold moment passed. Without either (no request since Plus
+ * started), the last request row's own fingerprint carries its cache TTL, so a
+ * 1h cache is not mistaken for the 5-minute default; a missing row or
+ * fingerprint means unknown, and an unknown lifetime is never cold.
  */
 export function coldStateOf(input: ColdInputs): ColdCompactionState {
   const lifetime = input.last === undefined ? undefined : cacheLifetime(input.last, input.fingerprint)
+  const coldAt = input.status.coldAt
   return {
     // This step's own execution is what runs the decision, so a fresh prompt
     // is not "running" here; the prompt mark keeps later steps out.
     running: false,
-    ready: input.status.source !== undefined || input.status.expires !== undefined,
-    active: input.status.active,
+    ready: input.status.expires !== undefined || coldAt !== undefined,
+    active: input.status.active || (coldAt !== undefined && input.now < coldAt),
     compacted: input.status.compacted === true,
     ...(input.last === undefined ? {} : { idleMs: input.now - input.last.started }),
     ...(lifetime === undefined ? {} : { lifetime }),

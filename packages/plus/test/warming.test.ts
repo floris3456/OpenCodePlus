@@ -689,11 +689,11 @@ test("the footer counts down to the end of the window, then shows the cache cold
     text: "cache cold · warming starts after the next reply",
     tone: "warning",
   })
-  // A chat that never had a window shows nothing, or counts down to its cold moment until it passes.
+  // A chat that never had a window shows nothing, or counts down to its cold moment, then says it is cold.
   expect(warmingLabel({ ...base, active: false }, 0)).toBeUndefined()
   const never = { ...base, active: false, coldAt: 3 * MINUTE + 30_000 }
   expect(warmingLabel(never, MINUTE)).toEqual({ text: "cache warming off · warm 2:30 left", tone: "muted" })
-  expect(warmingLabel(never, never.coldAt)).toBeUndefined()
+  expect(warmingLabel(never, never.coldAt)).toEqual({ text: "cache cold · warming off", tone: "warning", holds: false })
   expect(warmingLabel({ ...never, compact: true, compactAt: never.coldAt }, MINUTE)).toEqual({
     text: "compact cache warm · 2:30 left",
     tone: "muted",
@@ -904,10 +904,12 @@ test("with compact before cold off, a chat switched off mid-window reports when 
   // Compact before cold switched on later compacts at that same moment.
   expect(await store.setCompact("ses_warm", "on")).toMatchObject({ compactAt: 1_000_000 + 4 * MINUTE })
   await store.setCompact("ses_warm", "off")
-  // Core's keep-alive sees the switch and drops the window: nothing left to count.
+  // Core's keep-alive sees the switch and drops the window: the cache went cold there, and stays so.
   clock.now = 1_000_000 + 4 * MINUTE
   await store.decide(event({ phase: "warm", now: clock.now }), {}, async () => {})
-  expect((await store.status("ses_warm")).coldAt).toBeUndefined()
+  expect((await store.status("ses_warm")).coldAt).toBe(1_000_000 + 4 * MINUTE)
+  clock.now = 1_000_000 + 10 * MINUTE
+  expect((await store.status("ses_warm")).coldAt).toBe(1_000_000 + 4 * MINUTE)
 
   // A compacted chat reports none.
   await store.decide(event({ sessionID: Session.ID.make("ses_compacted"), since: clock.now, now: clock.now }), {}, async () => {})

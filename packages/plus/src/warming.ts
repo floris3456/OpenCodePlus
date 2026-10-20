@@ -151,7 +151,11 @@ export interface WarmingStatus {
   readonly coldModels?: readonly string[]
   /** When it compacts this chat, while a compaction is scheduled. */
   readonly compactAt?: number
-  /** When the cache goes cold, while warming is switched off for a window not yet compacted. */
+  /**
+   * When the cache goes (or went) cold for a chat warming does not keep warm:
+   * warming off for it, or switched off mid-window. Kept once it has passed, so
+   * the chat reads as cold; absent once it is compacted.
+   */
   readonly coldAt?: number
   /** Latest compaction completed after the last real request; absent otherwise. */
   readonly compacted?: boolean
@@ -439,11 +443,10 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     const compactAt = compact && !compacted ? scheduled.get(sessionID)?.at : undefined
     // A chat without a window (warming never on, or switched off before its reply)
     // goes cold one keep-alive interval after its last request, as decide() recorded.
-    const stored = coldAt.get(sessionID)
     const cold = compacted
       ? undefined
       : window === undefined
-        ? stored !== undefined && stored > now ? stored : undefined
+        ? coldAt.get(sessionID)
         : chat === "off"
           ? coldMoment(chat, window, lastReal.get(sessionID))
           : undefined

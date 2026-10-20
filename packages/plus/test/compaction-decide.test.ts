@@ -20,7 +20,8 @@ import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
-import { createState, decideCompactionFor, type PlusState } from "../src/index.js"
+import { createState, decideCompactionFor, warmingStatusFor, type PlusState } from "../src/index.js"
+import { warmingStore } from "../src/warming.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { effectiveCompaction, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { canonicalJson, sha256 } from "../src/monitor/fingerprint.js"
@@ -466,6 +467,54 @@ test("cold arming fires for a chat with earlier output once a prompt was admitte
   expect(coldEvent.compactionFallbacks).toEqual([Model.Ref.parse("proxy/two")])
   expect(coldEvent.optional).toBe(true)
 }))
+
+// Anthropic's default cache: a 5-minute ephemeral marker.
+const fiveMinuteFingerprint = (): RequestFingerprintData =>
+  ({
+    ...oneHourFingerprint(),
+    protocol: "anthropic-messages",
+    optionsKeys: {},
+    cacheControl: [{ target: "system", type: "ephemeral" }],
+  }) satisfies RequestFingerprintData
+
+test("a chat warming does not keep warm is cold once its cache lifetime passed, not right after its reply, as its footer says", () =>
+  withColdSwitch(async () => {
+    // Its last request with warming off: no window, only a cold moment.
+    const replied = async (sessionID: string, at: number) =>
+      warmingStore.decide(
+        {
+          sessionID: Session.ID.make(sessionID),
+          agent: Agent.ID.make("build"),
+          model: Model.Ref.parse("proxy/chat-model"),
+          phase: "activity",
+          kind: "primary",
+          since: at,
+          now: at,
+          settings: undefined,
+        },
+        {},
+      )
+    const prompt = async (sessionID: string, at: number, fingerprint: RequestFingerprintData) => {
+      const ledger = fakeLedger(requestRow(at, { sessionID }), fingerprint)
+      markPromptAdmitted(sessionID)
+      const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
+      await Effect.runPromise(decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, ledger))
+      return { compact: event.compact, coldAt: (await warmingStatusFor(sessionID, Date.now(), ledger)).coldAt }
+    }
+    const now = Date.now()
+
+    // Thirty seconds after its reply the cache is warm: no compaction, and the footer counts on.
+    await replied("ses_unwarmed_warm", now - 30_000)
+    expect(await prompt("ses_unwarmed_warm", now - 30_000, fiveMinuteFingerprint())).toEqual({ compact: undefined, coldAt: now - 30_000 + 5 * 60_000 })
+
+    // Six minutes after, past the 5-minute cache: it compacts with the cold-cache model first.
+    await replied("ses_unwarmed_cold", now - 6 * 60_000)
+    expect(await prompt("ses_unwarmed_cold", now - 6 * 60_000, fiveMinuteFingerprint())).toEqual({ compact: true, coldAt: now - 60_000 })
+
+    // A 1-hour cache ten minutes on is still warm, though one keep-alive interval passed.
+    await replied("ses_unwarmed_hour", now - 10 * 60_000)
+    expect(await prompt("ses_unwarmed_hour", now - 10 * 60_000, oneHourFingerprint())).toEqual({ compact: undefined, coldAt: now + 50 * 60_000 })
+  }))
 
 test("the second auto decision without a new prompt does not consult cold and does not arm", () => withColdSwitch(async () => {
   const sessionID = "ses_wire2"

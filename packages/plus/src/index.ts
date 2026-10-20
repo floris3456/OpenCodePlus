@@ -88,7 +88,8 @@ import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
 import { consumeColdCompaction } from "./teams/cold-compaction.js"
-import { warmingStore, type ChatCompactionDefaults, type WarmingRows } from "./warming.js"
+import { warmingStore, type ChatCompactionDefaults, type WarmingRows, type WarmingStatus } from "./warming.js"
+import { cacheLifetime } from "./monitor/cache.js"
 import { monitorCache, monitorDismiss, monitorFact, monitorMark, monitorNotices, monitorPrompt, monitorQuery, monitorSessions, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
@@ -3925,7 +3926,7 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!written.ok) return yield* Effect.fail(context.error("checks.invalid", written.reason, { reason: written.reason }))
         return { path: written.path, checks: input.checks.map((check) => check.id) }
       }),
-    "warming.status": (input) => Effect.promise(() => warmingStore.status(input.sessionID)),
+    "warming.status": (input) => Effect.promise(() => warmingStatusFor(input.sessionID, Date.now())),
     "warming.set": (input) =>
       Effect.gen(function* () {
         const status = yield* Effect.promise(() => warmingStore.setChat(input.sessionID, input.chat))
@@ -4136,23 +4137,48 @@ async function compactionDefaultsOf(ctx: Context, agentID: Agent.ID): Promise<Co
 }
 
 // The chat's window and its last request with that request's fingerprint; the
-// decision module owns the cold test itself.
+// decision module owns the cold test itself. The status is the one the footer
+// shows, so a chat compacts first exactly when the footer says it is cold.
 async function coldFor(
   ctx: Context,
   event: SessionCompactionDecision,
   ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
 ): Promise<ColdCompactionState> {
   const now = Date.now()
-  const status = await warmingStore.status(event.sessionID, now)
-  const rows = ledger.getRequests(event.sessionID)
-  const last = rows.filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
+  const last = lastRealRequest(ledger, event.sessionID)
   const fingerprint = last === undefined ? undefined : ledger.getFingerprint(last.id)
   return coldStateOf({
-    status,
+    status: await warmingStatusFor(event.sessionID, now, ledger),
     now,
     ...(last === undefined ? {} : { last }),
     ...(fingerprint === undefined ? {} : { fingerprint }),
   })
+}
+
+/**
+ * A chat's warming status as the footer and cold compaction read it. A chat
+ * that warming does not keep warm goes cold one cache lifetime after its last
+ * request, when the monitor knows that request's lifetime (5 minutes, or the 1
+ * hour it asked for); the store's own moment, one keep-alive interval after the
+ * request, stands in otherwise, and is the floor: until a new request reaches
+ * the monitor, its last row is the one before.
+ */
+export async function warmingStatusFor(
+  sessionID: string,
+  now: number,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+): Promise<WarmingStatus> {
+  const status = await warmingStore.status(sessionID, now)
+  if (status.compacted === true || status.expires !== undefined || status.coldAt === undefined) return status
+  const last = lastRealRequest(ledger, sessionID)
+  const lifetime = last === undefined ? undefined : cacheLifetime(last, ledger.getFingerprint(last.id))
+  if (last === undefined || lifetime === undefined) return status
+  return { ...status, coldAt: Math.max(status.coldAt, last.started + lifetime) }
+}
+
+// The chat's last request that read or wrote its own prompt cache.
+function lastRealRequest(ledger: Pick<Ledger, "getRequests">, sessionID: string) {
+  return ledger.getRequests(sessionID).filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
 }
 
 interface LoadedStores {
