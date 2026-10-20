@@ -907,17 +907,19 @@ test("a followup to a landed child reopens it at its parent's HEAD, and it can l
       expect(reopened.history.filter((entry) => "trigger" in entry && entry.trigger === "reopened")).toMatchObject([{ from: "idle", to: "idle" }])
       expect(await git(reopened.directory, ["rev-parse", "HEAD"])).toBe(landedHead)
       expect(await fs.readFile(path.join(reopened.directory, "child.ts"), "utf8")).toBe("export const child = 1\n")
-      // The chat moves to the new worktree before it is prompted there.
-      expect(session.calls.map((entry) => entry.call)).toEqual(["move", "prompt"])
-      expect(session.calls[0]?.input).toEqual({ sessionID: repo.child.sessionID, directory: reopened.directory, delivery: "steer" })
-      const text = String(session.calls[1]?.input.text)
+      // The prompt is admitted without a wake, then the chat moves: the move's
+      // own wake runs it in the new worktree, as one run with one outcome.
+      expect(session.calls.map((entry) => entry.call)).toEqual(["prompt", "move"])
+      expect(session.calls[0]?.input).toMatchObject({ sessionID: repo.child.sessionID, resume: false })
+      expect(session.calls[1]?.input).toEqual({ sessionID: repo.child.sessionID, directory: reopened.directory, delivery: "steer" })
+      const text = String(session.calls[0]?.input.text)
       expect(text).toContain(`Plus made you a new worktree at ${reopened.directory}, on your parent's current HEAD ${landedHead.slice(0, 12)}`)
       expect(text).toContain("Also export a second constant.")
       // Its earlier landing does not make the reopened generation landed.
       expect(
         required(await api.followup(followupInput({ run: repo.child.id, requestID: "more-2", prompt: "Name it second." }), callerFor(repo.parent))),
       ).toMatchObject({ state: "queued" })
-      expect(session.calls.map((entry) => entry.call)).toEqual(["move", "prompt", "prompt"])
+      expect(session.calls.map((entry) => entry.call)).toEqual(["prompt", "move", "prompt"])
 
       // The reopened child commits, settles done, and lands and is cleaned up again.
       await fs.writeFile(path.join(reopened.directory, "second.ts"), "export const second = 2\n")

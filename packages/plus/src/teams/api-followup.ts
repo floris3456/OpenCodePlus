@@ -178,10 +178,10 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   }
 
   // A reopened child already starts at its parent's HEAD, so it needs no rebase.
-  const reopened = reopen && (args.prompt !== undefined || args.rebase === true) ? await reopenChild(ctx, root, parent, child) : undefined
+  const reopened = reopen && (args.prompt !== undefined || args.rebase === true) ? await reopenChild(root, parent, child) : undefined
   const rebased = reopened === undefined && args.rebase === true ? await rebaseChild(root, parent, child) : undefined
   if (rebased !== undefined && !rebased.ok) return rebased.result
-  const note = reopened ?? rebased?.note
+  const note = reopened?.note ?? rebased?.note
   const prompt = note === undefined ? args.prompt : [note, args.prompt].filter((part) => part !== undefined).join("\n\n")
 
   if (prompt === undefined) {
@@ -194,8 +194,9 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   }
 
   const delivery = args.delivery ?? "queue"
-  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason)
-  return followupQueue(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason)
+  const moveTo = reopened?.directory
+  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason, moveTo)
+  return followupQueue(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason, moveTo)
 }
 
 // Moves a child's commits onto its parent's HEAD in the child's own worktree,
@@ -257,9 +258,9 @@ async function rebaseChild(
 // followup keeps its context instead of a fresh run reading it all again. The
 // worktree and the record that claims it are written in one repository-lock
 // hold (`provision`), so the orphan sweep never sees one without the other.
-// The chat moves there before it is prompted; core commits the move at once
-// because the old folder is gone, and the chat keeps its pinned system prompt.
-async function reopenChild(ctx: Context, root: string, caller: RunRecord, child: RunRecord): Promise<string> {
+// The chat moves there with its prompt (admitIdleChild) and keeps its pinned
+// system prompt.
+async function reopenChild(root: string, caller: RunRecord, child: RunRecord): Promise<{ readonly note: string; readonly directory: string }> {
   const parent = child.parent === caller.id ? caller : await loadRun(root, child.parent ?? "")
   if (parent === undefined) throw toolError("E_INTERNAL", `Run ${child.id}'s parent ${child.parent} has no record.`)
   if (child.sessionID === null) throw toolError("E_INTERNAL", `Run ${child.id} has no session to move.`, child.id)
@@ -289,15 +290,10 @@ async function reopenChild(ctx: Context, root: string, caller: RunRecord, child:
         history: [...record.history, { at: new Date().toISOString(), from: record.state, to: record.state, trigger: "reopened" }],
       })),
   )
-  await Effect.runPromise(
-    ctx.session.move({
-      sessionID: Session.ID.make(child.sessionID),
-      directory: AbsolutePath.make(provisioned.created.dir),
-      ...(ctx.location.workspaceID === undefined ? {} : { workspaceID: ctx.location.workspaceID }),
-      delivery: "steer",
-    }),
-  )
-  return `Plus made you a new worktree at ${provisioned.created.dir}, on your parent's current HEAD ${head.slice(0, 12)}: it holds your landed commits and the work landed since. Work and commit there.`
+  return {
+    directory: provisioned.created.dir,
+    note: `Plus made you a new worktree at ${provisioned.created.dir}, on your parent's current HEAD ${head.slice(0, 12)}: it holds your landed commits and the work landed since. Work and commit there.`,
+  }
 }
 
 type FollowupBudgetInput = { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined } | undefined
@@ -342,6 +338,7 @@ async function followupQueue(
   text: string,
   budget: FollowupBudgetInput,
   reason?: string,
+  moveTo?: string,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
   if (current === undefined)
@@ -358,6 +355,7 @@ async function followupQueue(
     )
   await requireWorktree(current)
   if (current.state !== "idle" && current.state !== "stopped") {
+    if (moveTo !== undefined && current.sessionID !== null) await Effect.runPromise(moveChat(ctx, current.sessionID, moveTo))
     const budgeted = applyBudget(current, budget, reason, parent.id)
     await saveRun(root, budgeted)
     if (budgeted.sessionID === null)
@@ -376,7 +374,7 @@ async function followupQueue(
   // An idle child is prompted now, so the item it was prompted with is
   // recorded as delivered and the idle drain will not repeat it.
   const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
-  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id)
+  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id, moveTo)
   const done = admitted.attempts[admitted.attempts.length - 1]
   const output = { attempt: done?.n ?? 1, state: "admitted" }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -393,6 +391,7 @@ async function followupNow(
   text: string,
   budget: FollowupBudgetInput,
   reason?: string,
+  moveTo?: string,
 ): Promise<TeamApiResult> {
   const current = await loadRun(root, childID)
   if (current === undefined)
@@ -415,7 +414,7 @@ async function followupNow(
       `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`,
       { delivery: "queue" },
     )
-  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id)
+  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, undefined, moveTo)
   const done = admitted.attempts[admitted.attempts.length - 1]
   const output = { attempt: done?.n ?? 1, state: "admitted" }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -431,6 +430,7 @@ async function admitIdleChild(
   reason: string | undefined,
   parentId: string,
   itemID?: string,
+  moveTo?: string,
 ): Promise<RunRecord> {
   const resumed = withoutHold(current.state === "stopped" ? transition(consumeStopIntent(current), "starting", "followup") : current)
   const open = resumed.attempts.at(-1)
@@ -443,10 +443,27 @@ async function admitIdleChild(
   if (working.sessionID === null) throw toolError("E_INTERNAL", `Run ${working.id} has no session to prompt.`, working.id)
   const previous = current
   await saveRun(root, working)
+  const sessionID = Session.ID.make(working.sessionID)
+  // A chat moving to a reopened worktree takes its prompt with it: admitted
+  // without a wake, it runs at the move's own wake in the new folder. Moved
+  // first, the empty run that wake starts would end before the prompt and
+  // settle this attempt as ended without a report.
   await Effect.runPromise(
-    ctx.session.prompt({ sessionID: Session.ID.make(working.sessionID), text }).pipe(
-      Effect.onError(() => Effect.ignore(io(() => saveRun(root, previous)))),
-    ),
+    (moveTo === undefined
+      ? ctx.session.prompt({ sessionID, text })
+      : ctx.session.prompt({ sessionID, text, resume: false }).pipe(Effect.andThen(moveChat(ctx, working.sessionID, moveTo)))
+    ).pipe(Effect.onError(() => Effect.ignore(io(() => saveRun(root, previous))))),
   )
   return working
+}
+
+// The old folder of a reopened child is gone, so core commits the move at
+// once instead of at the chat's next safe boundary.
+function moveChat(ctx: Context, sessionID: string, directory: string) {
+  return ctx.session.move({
+    sessionID: Session.ID.make(sessionID),
+    directory: AbsolutePath.make(directory),
+    ...(ctx.location.workspaceID === undefined ? {} : { workspaceID: ctx.location.workspaceID }),
+    delivery: "steer",
+  })
 }
