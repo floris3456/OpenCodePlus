@@ -874,12 +874,12 @@ async function writeDone(root: string, runID: string, n: number) {
 }
 
 function recordMovingSession() {
-  const calls: Array<{ call: "move" | "prompt"; input: Record<string, unknown> }> = []
+  const calls: Array<{ call: "move" | "prompt" | "wait"; input: Record<string, unknown> }> = []
   const domain = {
     get: () => Effect.succeed({ id: Session.ID.make("ses_child_001") }),
     move: (input: Record<string, unknown>) => Effect.sync(() => void calls.push({ call: "move", input })),
     prompt: (input: Record<string, unknown>) => Effect.sync(() => void calls.push({ call: "prompt", input })) as never,
-    wait: () => Effect.succeed(undefined),
+    wait: (input: Record<string, unknown>) => Effect.sync(() => void calls.push({ call: "wait", input })),
   } as unknown as SessionDomain
   return { calls, domain }
 }
@@ -893,6 +893,8 @@ test("a followup to a landed child reopens it at its parent's HEAD, and it can l
       expect(required(await api.integrate({ run: repo.child.id }, callerFor(repo.parent)))).toMatchObject({ state: "landed", worktree: "removed" })
       const landedHead = await git(repo.main, ["rev-parse", "HEAD"])
       expect(await loadRun(root, repo.child.id)).toMatchObject({ worktree: "removed", directory: repo.worktree })
+      // Only what the followup does counts below (integrate waits for the child too).
+      session.calls.length = 0
 
       expect(
         required(await api.followup(followupInput({ run: repo.child.id, requestID: "more-1", prompt: "Also export a second constant." }), callerFor(repo.parent))),
@@ -907,19 +909,18 @@ test("a followup to a landed child reopens it at its parent's HEAD, and it can l
       expect(reopened.history.filter((entry) => "trigger" in entry && entry.trigger === "reopened")).toMatchObject([{ from: "idle", to: "idle" }])
       expect(await git(reopened.directory, ["rev-parse", "HEAD"])).toBe(landedHead)
       expect(await fs.readFile(path.join(reopened.directory, "child.ts"), "utf8")).toBe("export const child = 1\n")
-      // The prompt is admitted without a wake, then the chat moves: the move's
-      // own wake runs it in the new worktree, as one run with one outcome.
-      expect(session.calls.map((entry) => entry.call)).toEqual(["prompt", "move"])
-      expect(session.calls[0]?.input).toMatchObject({ sessionID: repo.child.sessionID, resume: false })
-      expect(session.calls[1]?.input).toEqual({ sessionID: repo.child.sessionID, directory: reopened.directory, delivery: "steer" })
-      const text = String(session.calls[0]?.input.text)
+      // The chat moves to the new worktree, the empty run the move wakes is
+      // waited out, and only then is it prompted there.
+      expect(session.calls.map((entry) => entry.call)).toEqual(["move", "wait", "prompt"])
+      expect(session.calls[0]?.input).toEqual({ sessionID: repo.child.sessionID, directory: reopened.directory, delivery: "steer" })
+      const text = String(session.calls[2]?.input.text)
       expect(text).toContain(`Plus made you a new worktree at ${reopened.directory}, on your parent's current HEAD ${landedHead.slice(0, 12)}`)
       expect(text).toContain("Also export a second constant.")
       // Its earlier landing does not make the reopened generation landed.
       expect(
         required(await api.followup(followupInput({ run: repo.child.id, requestID: "more-2", prompt: "Name it second." }), callerFor(repo.parent))),
       ).toMatchObject({ state: "queued" })
-      expect(session.calls.map((entry) => entry.call)).toEqual(["prompt", "move", "prompt"])
+      expect(session.calls.map((entry) => entry.call)).toEqual(["move", "wait", "prompt", "prompt"])
 
       // The reopened child commits, settles done, and lands and is cleaned up again.
       await fs.writeFile(path.join(reopened.directory, "second.ts"), "export const second = 2\n")

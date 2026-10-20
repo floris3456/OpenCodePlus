@@ -1078,6 +1078,30 @@ test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as 
   expect(unstored.system.map((part) => part.text)).toContain("Guide v2.")
 })
 
+test("a team member's chat moved to a new folder gets no note that its role is removed, while that folder's first publish has not seen it", async () => {
+  const { storage } = memoryStorage()
+  const role = "# Team member\n\n## Runs\nAct on each Brief."
+  const plan = (items: readonly Item[], teamRoleOverrides?: ReadonlyMap<string, string>) => ({
+    applyInput: { agents: [{ id: "alpha", level: "project" as const }], items, records: [], splits: [], scopes: { global: new Set<string>(), defaults: new Set<string>() } },
+    ...(teamRoleOverrides === undefined ? {} : { teamRoleOverrides }),
+  })
+  const request = () => sessionEvent("ses_moved", "alpha", {}, [{ type: "text", text: role }])
+  // The old folder, once discovery has seen the installed member: its role is in the plan.
+  const old = createHarness()
+  await applyPublishParts(old.ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, plan([makeItem({ id: "system:role", kind: "system", text: role, enabled: true, agents: ["alpha"] })]))
+  await Effect.runPromise(old.contextCallbacks.at(-1)!(request()))
+  // The new folder's first publish: no role item yet, the team installs it.
+  const moved = createHarness()
+  await applyPublishParts(moved.ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, plan([], new Map([["alpha", role]])))
+  await Effect.runPromise(moved.contextCallbacks.at(-1)!(request()))
+  expect(moved.synthetics).toHaveLength(0)
+  // Control: a role that is really gone (no team installs one) is announced.
+  const gone = createHarness()
+  await applyPublishParts(gone.ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, plan([]))
+  await Effect.runPromise(gone.contextCallbacks.at(-1)!(request()))
+  expect(gone.synthetics.map((note) => JSON.stringify(note))).toEqual([expect.stringContaining("Role text is removed.")])
+})
+
 function guidePlans(text: string, asSource: boolean): PlanSet {
   return createPlanSet({
     roles: new Map(),

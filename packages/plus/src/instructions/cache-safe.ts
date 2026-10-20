@@ -25,6 +25,12 @@ export interface PlanSet {
   readonly customByAgent: ReadonlySet<string>
   /** Per agent with a stored System order: the slot order its system parts are sent in (system-order.ts). */
   readonly orders: ReadonlyMap<string, readonly string[]>
+  /**
+   * Team members whose role the team installs (in the agent's own body) but
+   * this plan set has none for: a folder's first publish runs before its
+   * discovery sees the installed members. Their role is not gone.
+   */
+  readonly unseenRoles: ReadonlySet<string>
   readonly version: number
 }
 
@@ -40,6 +46,7 @@ export function createPlanSet(options: {
   readonly permissions: PermissionTable
   readonly customByAgent: ReadonlySet<string>
   readonly orders?: ReadonlyMap<string, readonly string[]>
+  readonly unseenRoles?: ReadonlySet<string>
 }): PlanSet {
   planSetSeq += 1
   return {
@@ -52,6 +59,7 @@ export function createPlanSet(options: {
     permissions: options.permissions,
     customByAgent: options.customByAgent,
     orders: options.orders ?? new Map(),
+    unseenRoles: options.unseenRoles ?? new Set(),
     version: planSetSeq,
   }
 }
@@ -504,11 +512,13 @@ export function computeChangeNote(
   const items: string[] = []
 
   // 1. Role text / sections. An empty pinned role is never a change here:
-  // checkAndEmitChangeNote adopts a role the pin lacked before diffing.
+  // checkAndEmitChangeNote adopts a role the pin lacked before diffing. A
+  // team member's role this plan set has not seen yet is not removed either:
+  // a chat moved to a new folder meets its first publish.
   const pinnedRole = pin.planSet.roles.get(agent) ?? ""
   const currentRole = current.roles.get(agent) ?? ""
   if (pinnedRole.length > 0 && currentRole.length === 0) {
-    items.push("Role text is removed.")
+    if (!current.unseenRoles.has(agent)) items.push("Role text is removed.")
   } else if (pinnedRole.length > 0 && currentRole !== pinnedRole) {
     const pinSplit = derive(pinnedRole, "Role")
     const curSplit = derive(currentRole, "Role")

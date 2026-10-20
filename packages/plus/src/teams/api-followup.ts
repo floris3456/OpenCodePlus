@@ -432,6 +432,7 @@ async function admitIdleChild(
   itemID?: string,
   moveTo?: string,
 ): Promise<RunRecord> {
+  if (moveTo !== undefined && current.sessionID !== null) await Effect.runPromise(moveChat(ctx, current.sessionID, moveTo))
   const resumed = withoutHold(current.state === "stopped" ? transition(consumeStopIntent(current), "starting", "followup") : current)
   const open = resumed.attempts.at(-1)
   const started = open === undefined || isAttemptTerminal(open.state) ? startAttempt(resumed, { trigger: "followup", prompt: text }) : resumed
@@ -443,27 +444,25 @@ async function admitIdleChild(
   if (working.sessionID === null) throw toolError("E_INTERNAL", `Run ${working.id} has no session to prompt.`, working.id)
   const previous = current
   await saveRun(root, working)
-  const sessionID = Session.ID.make(working.sessionID)
-  // A chat moving to a reopened worktree takes its prompt with it: admitted
-  // without a wake, it runs at the move's own wake in the new folder. Moved
-  // first, the empty run that wake starts would end before the prompt and
-  // settle this attempt as ended without a report.
   await Effect.runPromise(
-    (moveTo === undefined
-      ? ctx.session.prompt({ sessionID, text })
-      : ctx.session.prompt({ sessionID, text, resume: false }).pipe(Effect.andThen(moveChat(ctx, working.sessionID, moveTo)))
-    ).pipe(Effect.onError(() => Effect.ignore(io(() => saveRun(root, previous))))),
+    ctx.session.prompt({ sessionID: Session.ID.make(working.sessionID), text }).pipe(
+      Effect.onError(() => Effect.ignore(io(() => saveRun(root, previous)))),
+    ),
   )
   return working
 }
 
 // The old folder of a reopened child is gone, so core commits the move at
-// once instead of at the chat's next safe boundary.
+// once, and a prompt can reach the chat only in its new folder. The move wakes
+// the chat into an empty run; this waits it out, so the follow-up's attempt
+// starts after it, and the lifecycle leaves that run alone (movedRun).
 function moveChat(ctx: Context, sessionID: string, directory: string) {
-  return ctx.session.move({
-    sessionID: Session.ID.make(sessionID),
-    directory: AbsolutePath.make(directory),
-    ...(ctx.location.workspaceID === undefined ? {} : { workspaceID: ctx.location.workspaceID }),
-    delivery: "steer",
-  })
+  return ctx.session
+    .move({
+      sessionID: Session.ID.make(sessionID),
+      directory: AbsolutePath.make(directory),
+      ...(ctx.location.workspaceID === undefined ? {} : { workspaceID: ctx.location.workspaceID }),
+      delivery: "steer",
+    })
+    .pipe(Effect.andThen(ctx.session.wait({ sessionID: Session.ID.make(sessionID) })))
 }

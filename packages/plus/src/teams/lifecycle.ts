@@ -192,7 +192,7 @@ export function consumeStopIntent(run: RunRecord): RunRecord {
 export async function onSessionEvent(
   ctx: Context,
   root: string,
-  event: { type: string; properties?: Record<string, unknown>; data?: unknown },
+  event: { type: string; properties?: Record<string, unknown>; data?: unknown; created?: number },
 ): Promise<RunRecord | undefined> {
   const payload = (event.properties ?? event.data ?? {}) as Record<string, unknown>
   const sessionID = payload.sessionID
@@ -202,6 +202,7 @@ export async function onSessionEvent(
     await onSubagentEvent(ctx, sessionID, event.type, payload)
     return undefined
   }
+  if ((event.type === "session.execution.started" || SessionOutcomes[event.type] !== undefined) && movedRun(run, event.created)) return undefined
 
   if (event.type === "session.execution.started") {
     const applied = { changed: false }
@@ -293,6 +294,19 @@ export async function onSessionEvent(
     Option.getOrUndefined(Schema.decodeUnknownOption(FailedError)(payload.error)),
     outcome === "interrupted" && payload.reason === "inactivity",
   )
+}
+
+// A reopened child's chat moves to its new worktree before its follow-up
+// (api-followup reopenChild), and the move wakes it into an empty run. That
+// run's events come after the reopen and before the follow-up's attempt
+// starts, which waits it out: they are no turn of the run, and settling one
+// would end the follow-up as a turn without a report.
+function movedRun(run: RunRecord, created: number | undefined): boolean {
+  if (created === undefined) return false
+  const reopened = run.history.findLast((entry) => "trigger" in entry && entry.trigger === "reopened")
+  if (reopened === undefined || created < Date.parse(reopened.at)) return false
+  const next = run.attempts.find((attempt) => Date.parse(attempt.startedAt) >= Date.parse(reopened.at))
+  return next === undefined || created < Date.parse(next.startedAt)
 }
 
 // A chat may move between checkouts. A root run with no open children follows

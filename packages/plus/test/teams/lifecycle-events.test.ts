@@ -168,6 +168,43 @@ test("a turn that ends without finish leaves the run idle and the attempt no_rep
   })
 })
 
+test("the empty run a reopened child's move wakes is no turn: it opens and ends no attempt, and the follow-up's own run settles", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const reopenedAt = Date.parse("2026-10-20T16:25:51.000Z")
+    const at = (ms: number) => new Date(reopenedAt + ms).toISOString()
+    const child = baseRun({
+      id: "w-cccccccccccccccc",
+      parent: "main-cccccccccccccccc",
+      sessionID: "ses_child_reopen",
+      attempts: [{ n: 1, state: "succeeded", startedAt: at(-60_000), endedAt: at(-30_000), trigger: "delegate", notified: true }],
+      history: [{ at: at(0), from: "idle", to: "idle", trigger: "reopened" }],
+    })
+    await saveRun(root, child)
+    const saved = await loadRun(root, child.id)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const timed = (event: { type: string; data: { sessionID: string } }, ms: number) => ({ ...event, created: reopenedAt + ms })
+    // The move's empty run, before the follow-up starts its attempt: nothing changes.
+    await onSessionEvent(ctx, root, timed(startedEvent("ses_child_reopen"), 20))
+    await onSessionEvent(ctx, root, timed(succeededEvent("ses_child_reopen"), 25))
+    expect(await loadRun(root, child.id)).toEqual(saved)
+    // Processed late, after the follow-up's attempt started: still not that attempt's end.
+    const followup: RunRecord = {
+      ...child,
+      state: "working",
+      attempts: [...child.attempts, { n: 2, state: "admitted", startedAt: at(100), trigger: "followup" }],
+    }
+    await saveRun(root, followup)
+    await onSessionEvent(ctx, root, timed(succeededEvent("ses_child_reopen"), 25))
+    expect((await loadRun(root, child.id))?.attempts[1]?.state).toBe("admitted")
+    // The follow-up's own run ends it.
+    await onSessionEvent(ctx, root, timed(succeededEvent("ses_child_reopen"), 5_000))
+    expect((await loadRun(root, child.id))?.attempts[1]?.state).toBe("no_report")
+    // An event without a time is handled as before.
+    expect(await onSessionEvent(ctx, root, startedEvent("ses_child_reopen"))).toBeDefined()
+  })
+})
+
 test("a starting child reaches idle when its first turn ends", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()

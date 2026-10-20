@@ -390,6 +390,9 @@ export async function applyPublishParts(
     permissions,
     customByAgent,
     orders: new Map(session.orders),
+    unseenRoles: new Set(
+      [...(input.teamRoleOverrides?.keys() ?? []), ...(input.specialRoleOverrides?.keys() ?? [])].filter((agent) => !allRoles.some((role) => role.agent === agent)),
+    ),
   })
 
   if (sessionFp !== prevSession?.fingerprint) {
