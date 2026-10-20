@@ -104,6 +104,10 @@ export const Info = Schema.Struct({
         Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1)),
       ).annotate({ description: "Attention sound volume from 0 to 1" }),
       sound_pack: Schema.optional(Schema.String).annotate({ description: "Active attention sound pack ID" }),
+      protocol: Schema.optional(Schema.Literals(["auto", "osc99", "osc777", "osc9"])).annotate({
+        description:
+          "Desktop notification escape sequence; auto asks the terminal. Read at start, for terminals that cannot be detected (Windows Terminal over SSH)",
+      }),
       sounds: Schema.optional(Schema.Record(AttentionSoundName, Schema.optionalKey(Schema.String))).annotate({
         description: "Sound file overrides by attention event",
       }),
@@ -263,6 +267,7 @@ export type Resolved = Omit<Info, "attention" | "cursor" | "keybinds" | "leader"
     volume: number
     sound_pack: string
     sounds: AttentionSoundPaths
+    protocol: "auto" | "osc99" | "osc777" | "osc9"
   }
   keybinds: TuiKeybind.BindingLookupView
   leader: { timeout: number }
@@ -309,6 +314,7 @@ export function resolve(
       volume: input.attention?.volume ?? 0.4,
       sound_pack: input.attention?.sound_pack ?? "opencode.default",
       sounds: input.attention?.sounds ?? {},
+      protocol: input.attention?.protocol ?? "auto",
     },
     keybinds: createBindingLookup(TuiKeybind.toBindingConfig(TuiKeybind.parse(keybinds)), {
       bindingDefaults: TuiKeybind.bindingDefaults(),

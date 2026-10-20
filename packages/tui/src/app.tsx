@@ -295,6 +295,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           const { Drive } = yield* Effect.promise(() => import("@opencode/simulation/frontend"))
           return yield* Drive.create(options, input.app.version)
         }
+        // OpenTUI reads the notification protocol once, when the renderer starts; a renderer
+        // handed over from the update screen keeps the one it started with.
+        if (config.attention.protocol !== "auto" && process.env.OPENTUI_NOTIFICATION_PROTOCOL === undefined)
+          process.env.OPENTUI_NOTIFICATION_PROTOCOL = config.attention.protocol
         return yield* Effect.acquireRelease(
           Effect.tryPromise({
             try: () => createCliRenderer(options),

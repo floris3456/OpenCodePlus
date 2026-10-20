@@ -302,6 +302,8 @@ export type AttentionSound =
   | boolean
   | {
       readonly name?: AttentionSoundName
+      /** A built-in OpenCodePlus sound id (`bip-bop-01`) or an absolute path to a sound file; played instead of `name`. */
+      readonly file?: string
       readonly volume?: number
       readonly when?: AttentionWhen
     }

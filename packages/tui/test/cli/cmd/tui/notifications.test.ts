@@ -5,7 +5,8 @@ import type { AttentionNotifyOptions, Context, Route, ToastOptions } from "@open
 
 type Session = { id: string; title: string; parentID?: string }
 
-async function setup(route: Route = { type: "session", sessionID: "session" }) {
+// Without Plus on the server these notifications are the TUI's; with Plus they are its `attention` event's.
+async function setup(route: Route = { type: "session", sessionID: "session" }, plus = false) {
   const notifications: AttentionNotifyOptions[] = []
   const toasts: ToastOptions[] = []
   const handlers = new Map<OpenCodeEvent["type"], ((event: OpenCodeEvent) => void)[]>()
@@ -22,6 +23,12 @@ async function setup(route: Route = { type: "session", sessionID: "session" }) {
   }
 
   await Notifications.setup({
+    client: {
+      rpc: () => ({
+        "settings.get": () =>
+          plus ? Promise.resolve({}) : Promise.reject({ type: "rpc.unavailable", message: "RPC is unavailable: opencode.plus" }),
+      }),
+    },
     ui: {
       router: { current: () => route },
       toast: { show: (toast: ToastOptions) => toasts.push(toast) },
@@ -54,6 +61,9 @@ async function setup(route: Route = { type: "session", sessionID: "session" }) {
       },
     },
   } as unknown as Context)
+  // The server's answer arrives before any event in these tests.
+  await Promise.resolve()
+  await Promise.resolve()
 
   return {
     notifications,
@@ -146,6 +156,16 @@ const permissionNotification: AttentionNotifyOptions = {
 }
 
 describe("internal notifications TUI plugin", () => {
+  test("leaves notifications to Plus when the server has it, and still shows failures as toasts", async () => {
+    const harness = await setup(undefined, true)
+    harness.emit({ id: "evt_form", created: 0, type: "form.created", data: { form: form("form_plus") } })
+    harness.emit(executionStarted("evt_start"))
+    harness.emit(executionFailed("evt_failed"))
+    harness.emit(executionSucceeded("evt_done"))
+    expect(harness.notifications).toEqual([])
+    expect(harness.toasts.map((toast) => toast.title)).toEqual(["Session failed"])
+  })
+
   test("shows execution failures as session-scoped toasts without needing an assistant message", async () => {
     const harness = await setup()
     harness.emit(executionStarted("started"))

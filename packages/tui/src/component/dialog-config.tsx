@@ -308,6 +308,15 @@ export const settings: Setting[] = [
     keywords: ["sound volume", "audio volume"],
   },
   {
+    title: "Notification protocol (next start)",
+    category: "Alerts",
+    path: ["attention", "protocol"],
+    default: "auto",
+    values: ["auto", "osc99", "osc777", "osc9"],
+    labels: ["auto", "OSC 99", "OSC 777", "OSC 9"],
+    keywords: ["desktop notifications", "osc", "kitty", "konsole", "ghostty", "wezterm", "windows terminal", "iterm", "ssh"],
+  },
+  {
     title: "Release highlights",
     category: "Alerts",
     path: ["highlights"],

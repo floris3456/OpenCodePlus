@@ -12,12 +12,14 @@ import { Schema } from "effect"
 import stripAnsi from "strip-ansi"
 import * as TuiAudio from "./audio"
 import {
+  builtInSoundPaths,
   defaultSoundPath,
   questionSoundPath,
   permissionSoundPath,
   errorSoundPath,
   subagentDoneSoundPath,
 } from "#attention-sounds"
+import { isBuiltInSound } from "@opencode/plus/attention-settings"
 
 type FocusState = "unknown" | "focused" | "blurred"
 
@@ -101,15 +103,16 @@ export function createTuiAttention(input: {
   input.renderer.on("focus", onFocus)
   input.renderer.on("blur", onBlur)
 
-  function soundCandidates(name: AttentionSoundName) {
+  function soundCandidates(name: AttentionSoundName, file: string | undefined) {
+    if (file !== undefined) return [isBuiltInSound(file) ? builtInSoundPaths[file] : file]
     return [input.config.attention.sounds[name], BUILTIN_SOUNDS[name]].filter(
       (item, index, list): item is string => typeof item === "string" && list.indexOf(item) === index,
     )
   }
 
-  async function playSound(name: AttentionSoundName, volume: number) {
+  async function playSound(name: AttentionSoundName, chosen: string | undefined, volume: number) {
     try {
-      for (const file of soundCandidates(name)) {
+      for (const file of soundCandidates(name, chosen)) {
         const current = await audio.loadSoundFile(file).catch((error) => {
           console.debug("failed to load attention sound", { file, error })
           return null
@@ -158,7 +161,7 @@ export function createTuiAttention(input: {
           requestedSound?.name && Schema.is(Config.AttentionSoundName)(requestedSound.name)
             ? requestedSound.name
             : "default"
-        const sound = volume === undefined || soundSkip ? false : await playSound(soundName, volume)
+        const sound = volume === undefined || soundSkip ? false : await playSound(soundName, requestedSound?.file, volume)
 
         if (!notification && !sound) {
           if (notificationRequested && notificationSkip) return skipped(notificationSkip)

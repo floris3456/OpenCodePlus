@@ -1,7 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { AttentionSoundName } from "@opencode/plugin/tui/context"
+import { Definition } from "@opencode/plus/rpc"
 
-function notify(
+function notifyFor(
   context: Plugin.Context,
   sessionID: string | undefined,
   message: string,
@@ -21,6 +22,16 @@ function notify(
 export default Plugin.define({
   id: "opencode.notifications",
   setup(context) {
+    // An OpenCodePlus server decides notifications itself (its `attention` event, shown by
+    // packages/plus/src/tui/attention.ts); these are for a server without Plus.
+    const plus = { present: undefined as boolean | undefined }
+    void context.client.rpc(Definition)["settings.get"](undefined).then(
+      () => (plus.present = true),
+      (error: unknown) => (plus.present = (error as { type?: unknown } | undefined)?.type !== "rpc.unavailable"),
+    )
+    const notify = (...args: Parameters<typeof notifyFor>) => {
+      if (plus.present === false) notifyFor(...args)
+    }
     const errored = new Set<string>()
     const terminal = new Set<string>()
     const forms = new Set<string>()
