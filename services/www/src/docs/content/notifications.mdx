@@ -1,0 +1,92 @@
+---
+title: "Notifications"
+---
+
+OpenCodePlus tells you when a chat needs you: a desktop notification, a sound, or both. Each of
+six events has its own switch and its own sound.
+
+| Event | When | Default |
+| --- | --- | --- |
+| Done | A chat's final reply while nothing it started still runs: no subagent, team run or background shell | notification, `bip-bop-01` |
+| Reply | Every final reply, also while such work runs. A reply that is also Done raises only Done | off |
+| Subagent or team member done | A subagent's or team member's final reply, down to a number of levels (1: the chat's own) | off |
+| Question | A question, form or permission prompt, at any level | notification, `bip-bop-03` |
+| Error | A failed turn of the chat, or of a subagent or team member within those levels | notification, `nope-03` |
+| Cache miss | A cache notice (Settings › OpenCodePlus › Cache notices for decides which) | off |
+
+An interrupted turn raises nothing.
+
+## Settings
+
+Open `/settings` in the TUI and search for `notifications`. Each event has a notification switch
+and a sound; the sound picker plays a sound with `ctrl+p`.
+
+```text
+Notifications
+  Done: notification                       on
+  Done: sound                      bip-bop-01
+  Subagent or team member done: levels      1
+  Test a notification
+```
+
+These settings belong to the service, so every TUI and every machine connected to it shares them.
+
+## Sounds
+
+A sound is `off`, one of the built-in sounds, or an absolute path to an `.mp3`, `.wav`, `.ogg` or
+`.flac` file on the machine the service runs on.
+
+| Built-in sounds |
+| --- |
+| `alert-01` … `alert-10` |
+| `bip-bop-01` … `bip-bop-10` |
+| `nope-01` … `nope-12` |
+| `staplebops-01` … `staplebops-07` |
+| `yup-01` … `yup-06` |
+
+## Per agent
+
+An agent can have its own settings: [Instructions](/instructions) › the agent › Settings ›
+Notifications. Its rows start as "As in Settings"; `enter` changes a row, `r` returns it to the
+settings above.
+
+```bash
+$ opencodeplus instructions set item:global:build:setting:attention.done.sound --text yup-06
+```
+
+- Done, Reply, Question, Error and Cache miss follow the agent of the chat they happen in.
+- Subagent or team member done follows the agent of the chat the subagent or team member works
+  for.
+
+## In the TUI
+
+A TUI shows the events of the chats it has open (the current chat, its tabs, and the chats above
+them) and plays their sounds. Its own switches stay in charge: Settings › Alerts.
+
+| Alerts row | Effect |
+| --- | --- |
+| Notifications | Desktop notifications, only while the terminal window is unfocused |
+| Sounds | Sounds |
+| Volume | Sound volume |
+| Notification protocol (next start) | Force OSC 99, OSC 777 or OSC 9 when the terminal is not recognized |
+
+The notification is an escape sequence the terminal turns into a desktop notification, so it
+works over SSH too. Most terminals are recognized; force a protocol for one that is not, for
+example Windows Terminal over SSH.
+
+| Protocol | Terminals |
+| --- | --- |
+| OSC 99 | kitty, foot, Konsole |
+| OSC 777 | Ghostty, WezTerm, GNOME Terminal and other VTE terminals, Windows Terminal |
+| OSC 9 | iTerm2, Terminal.app |
+
+## Sounds on your own machine
+
+A TUI plays sounds on the machine it runs on. When you work on another machine over SSH, run the
+sound player on your own: it plays every chat's sounds there, and the TUIs leave the sounds to it.
+
+```bash
+$ opencodeplus notify me@devbox
+```
+
+See [`notify`](/cli/commands#notify) for its options.

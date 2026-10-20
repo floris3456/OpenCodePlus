@@ -52,6 +52,7 @@ export const docsSections: DocsSection[] = [
           { title: "Policies", slug: "policies" },
           { title: "Instructions", slug: "instructions" },
           { title: "Warming", slug: "warming" },
+          { title: "Notifications", slug: "notifications" },
         ],
       },
     ],
