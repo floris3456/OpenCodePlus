@@ -2657,26 +2657,9 @@ export function setModelSettings(
   })
 }
 
+// Every other field stays, the compaction and image fields included.
 function withoutField(record: ModelRecord, field: ModelWarmingField): ModelRecord {
-  return {
-    type: "model",
-    level: record.level,
-    agent: record.agent,
-    ...(record.team !== undefined ? { team: record.team } : {}),
-    ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
-    providerID: record.providerID,
-    modelID: record.modelID,
-    ...(record.variant === undefined ? {} : { variant: record.variant }),
-    ...(record.active === undefined ? {} : { active: record.active }),
-    ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
-    ...(field === "warming" || record.warming === undefined ? {} : { warming: record.warming }),
-    ...(field === "interval" || record.interval === undefined ? {} : { interval: record.interval }),
-    ...(field === "waiting" || record.waiting === undefined ? {} : { waiting: record.waiting }),
-    ...(field === "prompt" || record.prompt === undefined ? {} : { prompt: record.prompt }),
-    ...(record.removed === undefined ? {} : { removed: record.removed }),
-    ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
-    updated: record.updated,
-  }
+  return Object.fromEntries(Object.entries(record).filter((entry) => entry[0] !== field)) as ModelRecord
 }
 
 /** setModelSettings for the warming time alone; undefined clears it. */

@@ -295,6 +295,12 @@ test("model rows set and clear compaction fields without touching the rest", () 
   expect(planted).toHaveLength(2)
   expect(planted[1]).toMatchObject({ level: "project", agent: "alpha", coldCompact: "on" })
   expect(planted[1]?.active).toBeUndefined()
-  // A warming save on the row keeps its compaction fields.
+  // A warming save on the row keeps its compaction fields, and so does clearing one.
   expect(setModelSettings(set, address, claude, { prompt: "ping" }, UPDATED)[0]).toMatchObject({ compactWarm: "on", coldModels: ["a/b"] })
+  const imaged = setModelCompaction(set, address, claude, { imageShrink: "1568" }, UPDATED)
+  for (const field of ["warming", "interval", "waiting", "prompt"] as const) {
+    const unset = setModelSettings(imaged, address, claude, { [field]: null }, UPDATED)[0]
+    expect([field, unset]).toMatchObject([field, { compactWarm: "on", coldModels: ["a/b"], imageShrink: "1568", active: true }])
+  }
+  expect("warming" in (setModelSettings(imaged, address, claude, { warming: null }, UPDATED)[0] ?? {})).toBe(false)
 })
