@@ -176,7 +176,7 @@ test("a retained landed child refuses corrections before any admission or receip
     await saveRun(root, child)
     const before = await loadRun(root, child.id)
     await atomicJson(path.join(root, "runs", parent.id, "merge", "landed.json"), {
-      id: "landed", parentRun: parent.id, childRun: child.id, state: "landed", childHead: child.head,
+      id: "landed", parentRun: parent.id, childRun: child.id, childBranch: child.branch, state: "landed", childHead: child.head,
     })
     const session = recordSession()
     const result = await createTeamApi(context({ session: session.domain }), teamState()).followup(followupInput({ budget: { tokens: 1 } }), callerFor(parent))
@@ -834,6 +834,131 @@ test("followup with rebase refuses a conflict, a dirty worktree and a working ch
       await saveRun(root, { ...child, state: "working" })
       expect(rejected(await api.followup(followupInput({ requestID: "r-busy", rebase: true }), callerFor(parent))).code).toBe("E_BUSY")
       expect(session.prompted).toEqual([])
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+// A child delegated on the parent's checkout, with one commit and a done
+// report, as team_integrate finds it. Its branch follows delegation's naming.
+async function landingFixture(root: string) {
+  const scratch = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-followup-landed-"))
+  const main = path.join(scratch, "main")
+  const worktree = path.join(scratch, "child")
+  await fs.mkdir(main)
+  await git(main, ["init", "-q", "-b", "main"])
+  await git(main, ["config", "user.name", "team-test"])
+  await git(main, ["config", "user.email", "team-test@local"])
+  await fs.writeFile(path.join(main, "README.md"), "# landed\n")
+  await git(main, ["add", "README.md"])
+  await git(main, ["commit", "-q", "-m", "feat: initial"])
+  const base = await git(main, ["rev-parse", "HEAD"])
+  const branch = "team/implementer/fixab12-20260101-1200"
+  await git(main, ["worktree", "add", "-q", "-b", branch, worktree, base])
+  await fs.writeFile(path.join(worktree, "child.ts"), "export const child = 1\n")
+  await git(worktree, ["add", "child.ts"])
+  await git(worktree, ["commit", "-q", "-m", "feat: child work"])
+  const childHead = await git(worktree, ["rev-parse", "HEAD"])
+  const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa", { directory: worktree, branch, base, head: childHead, projectDirectory: main })
+  const parentRecord = { ...parent, directory: main, branch: "main", base, head: base }
+  await saveRun(root, parentRecord)
+  await saveRun(root, child)
+  await writeBrief(root, child)
+  await writeDone(root, child.id, 1)
+  return { scratch, main, worktree, base, childHead, parent: parentRecord, child }
+}
+
+async function writeDone(root: string, runID: string, n: number) {
+  await atomicJson(path.join(root, "runs", runID, `report-${n}.json`), { run: runID, attempt: n, status: "done", summary: "done", commits: [] })
+}
+
+function recordMovingSession() {
+  const calls: Array<{ call: "move" | "prompt"; input: Record<string, unknown> }> = []
+  const domain = {
+    get: () => Effect.succeed({ id: Session.ID.make("ses_child_001") }),
+    move: (input: Record<string, unknown>) => Effect.sync(() => void calls.push({ call: "move", input })),
+    prompt: (input: Record<string, unknown>) => Effect.sync(() => void calls.push({ call: "prompt", input })) as never,
+    wait: () => Effect.succeed(undefined),
+  } as unknown as SessionDomain
+  return { calls, domain }
+}
+
+test("a followup to a landed child reopens it at its parent's HEAD, and it can land again", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await landingFixture(root)
+    try {
+      const session = recordMovingSession()
+      const api = createTeamApi(context({ session: session.domain }), teamState())
+      expect(required(await api.integrate({ run: repo.child.id }, callerFor(repo.parent)))).toMatchObject({ state: "landed", worktree: "removed" })
+      const landedHead = await git(repo.main, ["rev-parse", "HEAD"])
+      expect(await loadRun(root, repo.child.id)).toMatchObject({ worktree: "removed", directory: repo.worktree })
+
+      expect(
+        required(await api.followup(followupInput({ run: repo.child.id, requestID: "more-1", prompt: "Also export a second constant." }), callerFor(repo.parent))),
+      ).toMatchObject({ attempt: 2, state: "admitted" })
+      const reopened = await loadRun(root, repo.child.id)
+      if (reopened === undefined) throw new Error("missing child record")
+      // A new worktree under the team's own area, on a new branch named like delegation's.
+      expect(reopened.directory).not.toBe(repo.worktree)
+      expect(reopened.directory.startsWith(await fs.realpath(path.join(root, "worktrees", "opencode", "implementer")))).toBe(true)
+      expect(reopened.branch).toMatch(/^team\/implementer\/fixab12-r2-\d{8}-\d{4}$/)
+      expect(reopened).toMatchObject({ base: landedHead, head: landedHead, worktree: "present", state: "working", projectDirectory: repo.main })
+      expect(reopened.history.filter((entry) => "trigger" in entry && entry.trigger === "reopened")).toMatchObject([{ from: "idle", to: "idle" }])
+      expect(await git(reopened.directory, ["rev-parse", "HEAD"])).toBe(landedHead)
+      expect(await fs.readFile(path.join(reopened.directory, "child.ts"), "utf8")).toBe("export const child = 1\n")
+      // The chat moves to the new worktree before it is prompted there.
+      expect(session.calls.map((entry) => entry.call)).toEqual(["move", "prompt"])
+      expect(session.calls[0]?.input).toEqual({ sessionID: repo.child.sessionID, directory: reopened.directory, delivery: "steer" })
+      const text = String(session.calls[1]?.input.text)
+      expect(text).toContain(`Plus made you a new worktree at ${reopened.directory}, on your parent's current HEAD ${landedHead.slice(0, 12)}`)
+      expect(text).toContain("Also export a second constant.")
+      // Its earlier landing does not make the reopened generation landed.
+      expect(
+        required(await api.followup(followupInput({ run: repo.child.id, requestID: "more-2", prompt: "Name it second." }), callerFor(repo.parent))),
+      ).toMatchObject({ state: "queued" })
+      expect(session.calls.map((entry) => entry.call)).toEqual(["move", "prompt", "prompt"])
+
+      // The reopened child commits, settles done, and lands and is cleaned up again.
+      await fs.writeFile(path.join(reopened.directory, "second.ts"), "export const second = 2\n")
+      await git(reopened.directory, ["add", "second.ts"])
+      await git(reopened.directory, ["-c", "user.name=team-test", "-c", "user.email=team-test@local", "commit", "-q", "-m", "feat: second constant"])
+      const second = await git(reopened.directory, ["rev-parse", "HEAD"])
+      await saveRun(root, { ...(await loadRun(root, repo.child.id))!, state: "idle" })
+      await writeDone(root, repo.child.id, 2)
+      const again = required(await api.integrate({ run: repo.child.id }, callerFor(repo.parent))) as { alreadyLanded?: boolean }
+      expect(again).toMatchObject({ state: "landed", head: second, worktree: "removed" })
+      expect(again.alreadyLanded).toBeUndefined()
+      expect(await git(repo.main, ["rev-parse", "HEAD"])).toBe(second)
+      expect(await fs.stat(reopened.directory).then(() => true, () => false)).toBe(false)
+      expect(await loadRun(root, repo.child.id)).toMatchObject({ worktree: "removed", branch: reopened.branch, head: second })
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("a landed child is reopened only for a prompt to a live run; otherwise nothing moves", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await landingFixture(root)
+    try {
+      const session = recordMovingSession()
+      const api = createTeamApi(context({ session: session.domain }), teamState())
+      required(await api.integrate({ run: repo.child.id }, callerFor(repo.parent)))
+      session.calls.length = 0
+      const landed = await loadRun(root, repo.child.id)
+      if (landed === undefined) throw new Error("missing child record")
+      // A budget alone changes the budget and leaves the worktree removed.
+      expect(required(await api.followup(followupInput({ run: repo.child.id, requestID: "b-1", prompt: undefined, budget: { tokens: 5 }, reason: "more room" }), callerFor(repo.parent)))).toMatchObject({ budget: { tokens: 5 } })
+      expect(await loadRun(root, repo.child.id)).toMatchObject({ worktree: "removed", directory: repo.worktree, branch: repo.child.branch })
+      // A terminal run is not reopened.
+      await saveRun(root, { ...landed, state: "superseded" })
+      expect(rejected(await api.followup(followupInput({ run: repo.child.id, requestID: "t-1" }), callerFor(repo.parent))).code).toBe("E_TERMINAL")
+      // A removed worktree whose branch never landed (the landed one was another generation) is refused.
+      await saveRun(root, { ...landed, branch: "team/implementer/other-20260101-1300" })
+      expect(rejected(await api.followup(followupInput({ run: repo.child.id, requestID: "n-1" }), callerFor(repo.parent))).code).toBe("E_WORKTREE_REMOVED")
+      expect(session.calls).toEqual([])
+      expect((await git(repo.main, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree "))).toEqual([`worktree ${await fs.realpath(repo.main)}`])
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

@@ -208,7 +208,7 @@ export async function enqueue(root: string, input: EnqueueInput): Promise<MergeE
         dirty,
       )
     const existing = await queue(root, input.parentRun)
-    const landed = existing.find((e) => e.childRun === input.childRun && e.state === "landed")
+    const landed = existing.find((e) => e.childRun === input.childRun && e.childBranch === input.childBranch && e.state === "landed")
     if (landed !== undefined) {
       const sha = landed.landedHead ?? landed.childHead
       throw toolError("E_ALREADY", `Child ${input.childRun} is already landed at ${sha}.`, sha)

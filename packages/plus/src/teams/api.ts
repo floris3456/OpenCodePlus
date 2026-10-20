@@ -1272,9 +1272,13 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
 // a child whose commits came in with another's landing is in (s12-d: a fix
 // built on the first implementer's commit landed both).
 async function unlandedDone(root: string, parent: RunRecord, directory: string, head: string): Promise<RunRecord[]> {
-  const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => entry.childRun))
-  const children = await Promise.all(parent.children.filter((id) => !landed.has(id)).map((id) => loadRun(root, id)))
-  const open = children.filter((run): run is RunRecord => run !== undefined && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state))
+  // Landed per worktree generation: a reopened child's new branch is open again.
+  const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => `${entry.childRun} ${entry.childBranch}`))
+  const children = await Promise.all(parent.children.map((id) => loadRun(root, id)))
+  const open = children.filter(
+    (run): run is RunRecord =>
+      run !== undefined && !landed.has(`${run.id} ${run.branch}`) && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state),
+  )
   const reports = await Promise.all(open.map(async (run) => ({ run, report: await latestReport(root, run.id) })))
   const done = reports
     .filter((entry) => (entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns") && Array.isArray(entry.report.data.commits) && entry.report.data.commits.length > 0)

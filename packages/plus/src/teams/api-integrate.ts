@@ -67,7 +67,8 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
       parent.children,
     )
   const entries = await queue(root, parent.id)
-  const landed = entries.find((item) => item.childRun === child.id && item.state === "landed")
+  // Per worktree generation: a child reopened after landing has a new branch.
+  const landed = entries.find((item) => item.childRun === child.id && item.childBranch === child.branch && item.state === "landed")
   if (landed !== undefined) {
     // The merge is already a fact. Retry only cleanup, using its saved entry,
     // regardless of subsequent parent commits, dirt, checks or report changes.
