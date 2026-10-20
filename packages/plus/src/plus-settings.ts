@@ -2,6 +2,7 @@ import { Product } from "@opencode/util/product"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { attentionOf, DEFAULT_ATTENTION } from "./attention-settings.js"
 import type { PlusSettings } from "./rpc.js"
 
 // Plus's global switches: the server half of the Settings › OpenCodePlus rows
@@ -20,6 +21,7 @@ const DEFAULTS: PlusSettings = {
   noticeMinTokens: 0,
   noticeKinds: "misses-and-partials",
   noticeDismiss: "everywhere",
+  attention: DEFAULT_ATTENTION,
 }
 
 export function plusSettingsPath(): string {
@@ -64,5 +66,6 @@ function settingsOf(value: unknown): PlusSettings {
     noticeMinTokens: pick(NOTICE_MIN_TOKENS, "noticeMinTokens"),
     noticeKinds: pick(["misses-and-partials", "misses"] as const, "noticeKinds"),
     noticeDismiss: pick(["everywhere", "this-tui"] as const, "noticeDismiss"),
+    attention: attentionOf(record.attention),
   }
 }

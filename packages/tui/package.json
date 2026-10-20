@@ -24,7 +24,13 @@
     "./util/form": "./src/util/form.ts",
     "./logo": "./src/logo.ts",
     "./component/spinner": "./src/component/spinner.tsx",
-    "./component/register-spinner": "./src/component/register-spinner.ts"
+    "./component/register-spinner": "./src/component/register-spinner.ts",
+    "./attention-sounds": {
+      "bun": "./src/attention-sounds.bun.ts",
+      "node": "./src/attention-sounds.node.ts",
+      "default": "./src/attention-sounds.bun.ts"
+    },
+    "./audio": "./src/audio.ts"
   },
   "imports": {
     "#attention-sounds": {

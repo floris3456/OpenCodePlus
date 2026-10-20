@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { DEFAULT_ATTENTION } from "../src/attention-settings.js"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { JSX } from "@opentui/solid"
 import { createCacheNotices } from "../src/tui/cache-notices.js"
@@ -41,6 +42,7 @@ async function render(options: {
     noticeMinTokens: 0,
     noticeKinds: "misses-and-partials",
     noticeDismiss: options.dismiss ?? "everywhere",
+    attention: DEFAULT_ATTENTION,
   }
   const notices = { list: options.notices }
   const fixture = await renderPlusFixture({

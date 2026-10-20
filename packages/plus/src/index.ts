@@ -21,7 +21,7 @@ import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserB
 import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
-import { applyPublishParts, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
+import { applyPublishParts, attentionRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
@@ -94,6 +94,9 @@ import { monitorCache, monitorDismiss, monitorFact, monitorMark, monitorNotices,
 import { ledgerAt, type Ledger } from "./monitor/ledger.js"
 import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
 import { plusSettings } from "./plus-settings.js"
+import { agentAttention, mergeAttention, type AttentionRow } from "./attention-settings.js"
+import { attentionStore } from "./attention.js"
+import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
 import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
@@ -164,6 +167,8 @@ export interface PlusState {
   semaphore: Semaphore.Semaphore
   /** Every agent's resolved permission rows from the last publish; the team tools read their rows here. */
   permissions: PermissionTable | undefined
+  /** Every agent's notification rows from the last publish, resolved down its chain (attention-watch.ts). */
+  attentionRows: ReadonlyMap<string, Readonly<Partial<Record<AttentionRow, string>>>>
   /** Hook-side permission state that outlives one publish (pending approvals, "always" answers). */
   enforcement: EnforcementState
   agentObserver?: Registration
@@ -231,6 +236,7 @@ export function createState(storage?: StorageDomain): PlusState {
     cachedScopes: { global: new Set(), defaults: new Set() },
     teamOutputIds: new Map(),
     permissions: undefined,
+    attentionRows: new Map(),
     enforcement: enforcementState(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
@@ -293,6 +299,7 @@ export default Plugin.define({
         ),
       )
       yield* watchHostEvents(ctx, state)
+      yield* watchAttention(ctx, state)
       yield* watchSharedStore(ctx, state)
       yield* ctx.session.hook("moved", (event) => transferSessionModel(ctx, state, event.source, event.destination))
       // Core runs warming hooks in registration order on one event, so Plus
@@ -3945,11 +3952,19 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       }),
     "settings.get": () => Effect.promise(() => plusSettings.read()),
     "settings.set": (input) =>
-      Effect.promise(() =>
-        plusSettings.update(
-          Object.fromEntries(Object.entries(input).filter((entry) => entry[1] !== undefined)),
-        ),
-      ),
+      Effect.promise(async () => {
+        const { attention, ...rest } = input
+        const current = await plusSettings.read()
+        const merged = attention === undefined ? undefined : mergeAttention(current.attention, attention)
+        if (merged !== undefined && "error" in merged) throw new Error(merged.error)
+        return plusSettings.update({
+          ...Object.fromEntries(Object.entries(rest).filter((entry) => entry[1] !== undefined)),
+          ...(merged === undefined ? {} : { attention: merged.settings }),
+        })
+      }),
+    "attention.player": (input) => Effect.sync(() => ({ players: attentionStore.player(input.id) })),
+    "attention.sound": (input) => Effect.promise(() => readAttentionSound(input.sound)),
+    "attention.test": (input) => attentionTest(state, input),
   }
 }
 
@@ -5667,6 +5682,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.cachedModelSettings = []
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
+      state.attentionRows = new Map()
       state.teamOutputIds = new Map()
       state.hostModels = undefined
       state.hostCatalog = undefined
@@ -5939,6 +5955,7 @@ function publishFresh(
         },
         deferAgentControls: true,
       }
+      state.attentionRows = attentionRowsOf(applyInput)
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
@@ -6171,6 +6188,95 @@ function emitWarmingChanged(state: PlusState, sessionID: string): Effect.Effect<
   const registration = state.registration
   if (!registration) return Effect.void
   return registration.events.emit("warming.changed", { sessionID }).pipe(Effect.orDie)
+}
+
+// Notifications and sounds (attention-watch.ts): this folder's events, decided with the global
+// settings under each agent's rows.
+function watchAttention(ctx: Context, state: PlusState): Effect.Effect<void, never, Scope.Scope> {
+  const watcher = createAttentionWatcher({
+    parentOf: (sessionID) => parentChatOf(ctx, sessionID),
+    chatOf: async (sessionID) => {
+      const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) }))
+      return {
+        ...(session.agent === undefined ? {} : { agent: String(session.agent) }),
+        ...(session.title === undefined || session.title.length === 0 ? {} : { title: session.title }),
+      }
+    },
+    settingsFor: (agent) => attentionFor(state, agent),
+    workRuns: (sessionID) => warmingStore.workRuns(sessionID),
+    notices: async () => monitorNotices(await plusSettings.read()).notices,
+    emit: (attention) => Effect.runPromise(emitAttention(state, attention)),
+  })
+  return Effect.gen(function* () {
+    yield* Effect.addFinalizer(() => Effect.sync(() => watcher.dispose()))
+    yield* ctx.event.subscribe().pipe(
+      Stream.runForEach((event) =>
+        Effect.promise(() => watcher.handle(event)).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("plus attention event failed", { cause, type: event.type })),
+        ),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+  })
+}
+
+/** The notification settings an agent resolves: Settings › Notifications under its own rows. */
+async function attentionFor(state: Pick<PlusState, "attentionRows">, agent: string | undefined): Promise<Plus.AttentionSettings> {
+  const global = (await plusSettings.read()).attention
+  const rows = agent === undefined ? undefined : state.attentionRows.get(agent)
+  return rows === undefined ? global : agentAttention(global, rows)
+}
+
+function emitAttention(state: PlusState, attention: Plus.Attention): Effect.Effect<void> {
+  const registration = state.registration
+  if (!registration) return Effect.void
+  return registration.events.emit("attention", attention).pipe(Effect.orDie)
+}
+
+// A sound named by path is read here for a player on another machine.
+const SOUND_FILES = new Set([".mp3", ".wav", ".ogg", ".flac"])
+const MAX_SOUND_BYTES = 5 * 1024 * 1024
+
+async function readAttentionSound(sound: string): Promise<Plus.AttentionSoundData> {
+  if (!path.isAbsolute(sound) || !SOUND_FILES.has(path.extname(sound).toLowerCase()))
+    throw new Error("A sound file is an absolute path to an .mp3, .wav, .ogg or .flac file")
+  const file = Bun.file(sound)
+  if (file.size > MAX_SOUND_BYTES) throw new Error(`Sound files are at most ${MAX_SOUND_BYTES / 1024 / 1024} MB`)
+  return { data: Buffer.from(await file.arrayBuffer()).toString("base64"), name: path.basename(sound) }
+}
+
+// /settings and `opencodeplus notify --test`: one occurrence with an agent's settings, whether
+// they are on or not, so a test always shows what the event does.
+function attentionTest(state: PlusState, input: Plus.AttentionTestInput): Effect.Effect<Plus.Attention> {
+  return Effect.gen(function* () {
+    const settings = (yield* Effect.promise(() => attentionFor(state, input.agent)))[input.kind]
+    const attention: Plus.Attention = {
+      id: `test:${crypto.randomUUID()}`,
+      kind: input.kind,
+      sessionID: "",
+      rootID: "",
+      depth: 0,
+      ...(input.agent === undefined ? {} : { agent: input.agent }),
+      title: "OpenCodePlus",
+      message: `Test: ${ATTENTION_TEST_LABELS[input.kind]}`,
+      notify: settings.notify,
+      ...(settings.sound === "off" ? {} : { sound: settings.sound }),
+      player: attentionStore.players() > 0,
+      test: true,
+      at: Date.now(),
+    }
+    yield* emitAttention(state, attention)
+    return attention
+  })
+}
+
+const ATTENTION_TEST_LABELS: Readonly<Record<Plus.AttentionKind, string>> = {
+  done: "a chat is done",
+  reply: "a chat replied while its work still runs",
+  child: "a subagent or team member is done",
+  question: "a question needs your answer",
+  error: "a chat failed",
+  cacheMiss: "a cache miss",
 }
 
 function emitTeamsChanged(state: PlusState): Effect.Effect<void> {

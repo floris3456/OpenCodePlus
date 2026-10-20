@@ -1295,6 +1295,94 @@ export const WarmingCompactInput = Schema.Struct({
 // shape the cache notices every TUI of this server shows.
 export const NoticeKinds = Schema.Literals(["misses-and-partials", "misses"])
 export const NoticeDismiss = Schema.Literals(["everywhere", "this-tui"])
+
+// Notifications and sounds for agent events (docs/plans/plus-1.3.18-notifications.md). Each event
+// has a desktop notification switch and a sound: "off", a built-in sound id (attention.ts
+// BUILT_IN_SOUNDS) or an absolute file path on the server. `child` reaches `depth` levels down.
+export const AttentionKind = Schema.Literals(["done", "reply", "child", "question", "error", "cacheMiss"])
+export type AttentionKind = typeof AttentionKind.Type
+export interface AttentionEventSettings extends Schema.Schema.Type<typeof AttentionEventSettings> {}
+export const AttentionEventSettings = Schema.Struct({
+  notify: Schema.Boolean,
+  sound: Schema.String,
+}).annotate({ identifier: "Plus.AttentionEventSettings" })
+export interface AttentionChildSettings extends Schema.Schema.Type<typeof AttentionChildSettings> {}
+export const AttentionChildSettings = Schema.Struct({
+  notify: Schema.Boolean,
+  sound: Schema.String,
+  depth: Schema.Number,
+}).annotate({ identifier: "Plus.AttentionChildSettings" })
+export interface AttentionSettings extends Schema.Schema.Type<typeof AttentionSettings> {}
+export const AttentionSettings = Schema.Struct({
+  done: AttentionEventSettings,
+  reply: AttentionEventSettings,
+  child: AttentionChildSettings,
+  question: AttentionEventSettings,
+  error: AttentionEventSettings,
+  cacheMiss: AttentionEventSettings,
+}).annotate({ identifier: "Plus.AttentionSettings" })
+const AttentionEventSettingsInput = Schema.Struct({
+  notify: Schema.optionalKey(Schema.Boolean),
+  sound: Schema.optionalKey(Schema.String),
+})
+export interface AttentionSettingsInput extends Schema.Schema.Type<typeof AttentionSettingsInput> {}
+export const AttentionSettingsInput = Schema.Struct({
+  done: Schema.optionalKey(AttentionEventSettingsInput),
+  reply: Schema.optionalKey(AttentionEventSettingsInput),
+  child: Schema.optionalKey(Schema.Struct({
+    notify: Schema.optionalKey(Schema.Boolean),
+    sound: Schema.optionalKey(Schema.String),
+    depth: Schema.optionalKey(Schema.Number),
+  })),
+  question: Schema.optionalKey(AttentionEventSettingsInput),
+  error: Schema.optionalKey(AttentionEventSettingsInput),
+  cacheMiss: Schema.optionalKey(AttentionEventSettingsInput),
+}).annotate({ identifier: "Plus.AttentionSettingsInput" })
+
+// One occurrence, emitted to every client of the server only when its notification or sound is
+// on. `rootID` is the chat it belongs to, `depth` how far below it (0: the chat itself).
+// `player` is true while a sound player (`opencodeplus notify`) is connected: TUIs then leave the
+// sound to it.
+export interface Attention extends Schema.Schema.Type<typeof Attention> {}
+export const Attention = Schema.Struct({
+  id: Schema.String,
+  kind: AttentionKind,
+  sessionID: Schema.String,
+  rootID: Schema.String,
+  depth: Schema.Number,
+  agent: Schema.optionalKey(Schema.String),
+  title: Schema.String,
+  message: Schema.String,
+  notify: Schema.Boolean,
+  sound: Schema.optionalKey(Schema.String),
+  player: Schema.Boolean,
+  /** A test from /settings or `opencodeplus notify --test`, not a real event. */
+  test: Schema.optionalKey(Schema.Boolean),
+  at: Schema.Number,
+}).annotate({ identifier: "Plus.Attention" })
+
+/** A sound player's heartbeat: it counts as connected for 45 s after each one. */
+export interface AttentionPlayerInput extends Schema.Schema.Type<typeof AttentionPlayerInput> {}
+export const AttentionPlayerInput = Schema.Struct({ id: Schema.String }).annotate({ identifier: "Plus.AttentionPlayerInput" })
+export interface AttentionPlayers extends Schema.Schema.Type<typeof AttentionPlayers> {}
+export const AttentionPlayers = Schema.Struct({ players: Schema.Number }).annotate({ identifier: "Plus.AttentionPlayers" })
+/** A sound file named by path in the settings, read on the server for a player elsewhere. */
+export interface AttentionSoundInput extends Schema.Schema.Type<typeof AttentionSoundInput> {}
+export const AttentionSoundInput = Schema.Struct({ sound: Schema.String }).annotate({ identifier: "Plus.AttentionSoundInput" })
+export interface AttentionSoundData extends Schema.Schema.Type<typeof AttentionSoundData> {}
+export const AttentionSoundData = Schema.Struct({
+  /** Base64 of the file's bytes. */
+  data: Schema.String,
+  /** The file name, for its extension. */
+  name: Schema.String,
+}).annotate({ identifier: "Plus.AttentionSoundData" })
+/** Emit a test occurrence of one event with the settings of an agent (default: Defaults). */
+export interface AttentionTestInput extends Schema.Schema.Type<typeof AttentionTestInput> {}
+export const AttentionTestInput = Schema.Struct({
+  kind: AttentionKind,
+  agent: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.AttentionTestInput" })
+
 export interface PlusSettings extends Schema.Schema.Type<typeof PlusSettings> {}
 export const PlusSettings = Schema.Struct({
   coldCompact: Schema.Boolean,
@@ -1305,6 +1393,7 @@ export const PlusSettings = Schema.Struct({
   noticeKinds: NoticeKinds,
   /** Whether opening a notice removes it from every TUI or only from the one it was opened in. */
   noticeDismiss: NoticeDismiss,
+  attention: AttentionSettings,
 }).annotate({ identifier: "Plus.Settings" })
 
 export interface PlusSettingsInput extends Schema.Schema.Type<typeof PlusSettingsInput> {}
@@ -1314,6 +1403,7 @@ export const PlusSettingsInput = Schema.Struct({
   noticeMinTokens: Schema.optionalKey(Schema.Number),
   noticeKinds: Schema.optionalKey(NoticeKinds),
   noticeDismiss: Schema.optionalKey(NoticeDismiss),
+  attention: Schema.optionalKey(AttentionSettingsInput),
 }).annotate({ identifier: "Plus.SettingsInput" })
 
 export interface WarmingStatus extends Schema.Schema.Type<typeof WarmingStatus> {}
@@ -2510,6 +2600,12 @@ const PortableWarmingCompactInput = Schema.toStandardSchemaV1(
 )
 const PortablePlusSettings = Schema.toStandardSchemaV1(PlusSettings)
 const PortablePlusSettingsInput = Schema.toStandardSchemaV1(PlusSettingsInput)
+const PortableAttention = Schema.toStandardSchemaV1(Attention)
+const PortableAttentionPlayerInput = Schema.toStandardSchemaV1(AttentionPlayerInput)
+const PortableAttentionPlayers = Schema.toStandardSchemaV1(AttentionPlayers)
+const PortableAttentionSoundInput = Schema.toStandardSchemaV1(AttentionSoundInput)
+const PortableAttentionSoundData = Schema.toStandardSchemaV1(AttentionSoundData)
+const PortableAttentionTestInput = Schema.toStandardSchemaV1(AttentionTestInput)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(
@@ -2985,6 +3081,21 @@ export const Definition = Rpc.define({
       output: PortablePlusSettings,
       errors: {},
     },
+    "attention.player": {
+      input: PortableAttentionPlayerInput,
+      output: PortableAttentionPlayers,
+      errors: {},
+    },
+    "attention.sound": {
+      input: PortableAttentionSoundInput,
+      output: PortableAttentionSoundData,
+      errors: {},
+    },
+    "attention.test": {
+      input: PortableAttentionTestInput,
+      output: PortableAttention,
+      errors: {},
+    },
     "monitor.query": {
       input: PortableMonitorQueryInput,
       output: PortableMonitorReport,
@@ -3124,6 +3235,9 @@ export const Definition = Rpc.define({
     },
     "warming.changed": {
       schema: PortableWarmingChanged,
+    },
+    attention: {
+      schema: PortableAttention,
     },
   },
 })

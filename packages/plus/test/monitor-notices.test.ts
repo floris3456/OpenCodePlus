@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
+import { DEFAULT_ATTENTION } from "../src/attention-settings.js"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { dismissNotice, queryNotices, sessionChecklist } from "../src/monitor/notices.js"
@@ -15,6 +16,7 @@ const settings: PlusSettings = {
   noticeMinTokens: 0,
   noticeKinds: "misses-and-partials",
   noticeDismiss: "everywhere",
+  attention: DEFAULT_ATTENTION,
 }
 
 /** One measured step that read `read` of 4,100 input tokens from the cache. */

@@ -58,6 +58,7 @@ import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
+import { isAttentionRow, type AttentionRow } from "../attention-settings.js"
 import { runPublish } from "./publish-runtime.js"
 import type { OrderRecord } from "./folders.js"
 import { arrangeBySlot, effectiveSystemOrder, slotOfPart, storedSystemOrder } from "./system-order.js"
@@ -503,7 +504,8 @@ export async function applyPublishParts(
 
 export function controlPlans(input: ApplyInput): readonly { agent: string; rows: readonly { id: string; text: string; enabled: boolean }[] }[] {
   return input.agents.flatMap((agent) => {
-    const rows = input.items.filter((item) => isControl(item.id) && applies(item, agent.id))
+    // Notification rows change no agent field: Plus reads them itself (attentionRowsOf).
+    const rows = input.items.filter((item) => isControl(item.id) && !isAttentionRow(item.id) && applies(item, agent.id))
     const unique = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
       const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
       if (item === undefined) return []
@@ -518,6 +520,22 @@ export function controlPlans(input: ApplyInput): readonly { agent: string; rows:
     })
     return unique.length === 0 ? [] : [{ agent: agent.id, rows: unique }]
   })
+}
+
+/** Every agent's notification rows resolved down its chain; only rows set somewhere are present. */
+export function attentionRowsOf(input: ApplyInput): ReadonlyMap<string, Readonly<Partial<Record<AttentionRow, string>>>> {
+  return new Map(
+    input.agents.map((agent) => {
+      const rows = input.items.filter((item) => isAttentionRow(item.id) && applies(item, agent.id))
+      const texts = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
+        const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
+        if (item === undefined) return []
+        const text = resolvedFor(item, agent, input).assembled
+        return text === "" ? [] : [[id, text] as const]
+      })
+      return [agent.id, Object.fromEntries(texts)] as const
+    }),
+  )
 }
 
 export async function applyControlsWithPlans(

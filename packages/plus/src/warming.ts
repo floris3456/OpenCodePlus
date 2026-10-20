@@ -225,6 +225,8 @@ export interface WarmingStore {
   setActiveReader(reader: ActiveReader): void
   /** The chat that started this one (a subagent's or team worker's parent): it keeps warm while this runs. */
   parent(sessionID: string, parent: string): void
+  /** Whether something this chat started (a subagent, a team worker, at any depth) still runs; its own turn does not count. */
+  workRuns(sessionID: string): Promise<boolean>
   /** Invalidate cached compaction truth for this chat. */
   invalidateCompaction(sessionID: string, completedAt?: number): void
   /** Configure the durable compaction history reader. */
@@ -638,6 +640,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     setActiveReader(reader) {
       activeReader = reader
     },
+    workRuns: (sessionID) => waitingAfterTurn(sessionID, sessionID),
     parent(sessionID, parent) {
       // Links outlive a run: an idle subagent still links its own running subagent up.
       parents.delete(sessionID)

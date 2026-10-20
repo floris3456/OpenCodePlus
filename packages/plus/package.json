@@ -22,7 +22,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./tui": "./src/tui/index.tsx",
-    "./rpc": "./src/rpc.ts"
+    "./rpc": "./src/rpc.ts",
+    "./attention-settings": "./src/attention-settings.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
