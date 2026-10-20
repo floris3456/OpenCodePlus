@@ -48,12 +48,14 @@ function createHarness(): CommandsHarness {
           return { ...server }
         },
         "monitor.notices": async () => ({ notices: [] }),
+        "attention.open": async () => ({ tuis: 1 }),
         events: { on: () => () => {} },
       }),
     },
     data: {
       on: () => () => {},
       listen: () => () => {},
+      session: { get: () => undefined },
       location: {
         default: () => undefined,
         agent: { list: () => [], sync: async () => {} },

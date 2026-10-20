@@ -56,6 +56,7 @@ function createHarness(): ThinkingToastHarness {
           stepCalls.push(input)
           return currentStepResult
         },
+        "attention.open": async () => ({ tuis: 1 }),
         events: { on: () => () => {} },
       }),
     },
@@ -77,6 +78,7 @@ function createHarness(): ThinkingToastHarness {
       },
       session: {
         status: () => "idle",
+        get: () => undefined,
       },
     },
     keymap: {
