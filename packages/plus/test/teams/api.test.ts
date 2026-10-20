@@ -185,9 +185,11 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(value.base).toBe(repo.head)
       expect((await fs.stat(value.directory)).isDirectory()).toBe(true)
       expect(sessions.created).toHaveLength(1)
-      const create = sessions.created[0] as { agent: string; location: { directory: string } }
+      const create = sessions.created[0] as { agent: string; location: { directory: string }; title: string }
       expect(create.agent).toBe("implementer")
       expect(create.location.directory).toBe(value.directory)
+      // Titled from the Brief, so no model request goes to a title.
+      expect(create.title).toStartWith("implementer: Fix the agent filter in the query module")
       const persisted = await loadRun(root, value.run)
       expect(persisted?.sessionID).toBe(value.session)
       expect(persisted?.paths).toEqual(["packages/plus/src/*"])

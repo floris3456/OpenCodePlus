@@ -462,7 +462,10 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     ctx.location.workspaceID === undefined
       ? Location.Ref.make({ directory })
       : Location.Ref.make({ directory, workspaceID: ctx.location.workspaceID })
-  const child = await Effect.runPromise(sessions.create({ agent: Agent.ID.make(brief.role), location })).catch(
+  // Titled from its Brief: an untitled chat would spend a model request on a
+  // title as its first prompt lands.
+  const title = `${brief.role}: ${(brief.objective.split("\n")[0] ?? "").slice(0, 100)}`
+  const child = await Effect.runPromise(sessions.create({ agent: Agent.ID.make(brief.role), location, title })).catch(
     async (error) => {
       // The session never started. The pre-registered run would otherwise
       // claim a bounds slot forever (reconcile skips records with no session
