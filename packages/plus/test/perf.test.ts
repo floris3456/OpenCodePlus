@@ -363,7 +363,9 @@ test("on-demand tool counts match the old level-wide sweep for every owner", () 
   for (const level of ["project", "global", "defaults", "preset"] as const) {
     const expected = sweepCounts(fixture.nodes, level, fixture.codemode)
     expect(expected.size).toBeGreaterThan(0)
-    for (const [key, count] of expected) expect(toolCountOf(fixture.memo, key, fixture.codemode)).toEqual(count)
+    // The title agent sends no tools, so it has no count (the sweep would say 0 on).
+    for (const [key, count] of expected)
+      expect(toolCountOf(fixture.memo, key, fixture.codemode)).toEqual(/:title$/.test(key) ? undefined : count)
   }
 }, 600_000)
 
