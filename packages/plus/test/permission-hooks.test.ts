@@ -376,6 +376,28 @@ test("closing Where never reopens what Files it may change closed: no core allow
   expect(edit("docs/plans/p.md")).toBeUndefined()
 })
 
+test("a lead's refused source edit names the members it delegates such changes to", async () => {
+  const lead = linked("crew-lead", "orchestrator")
+  const maker = linked("crew-maker", "implementer")
+  const table = presetTable({ members: [lead, maker] })
+  const { recorded } = await installed(table)
+  const edit = async (agent: string) =>
+    refusal((await before(recorded, { tool: "edit", agent, input: { path: "src/cli.ts", oldString: "a", newString: "b" } })).exit)
+  const refused = await edit(lead.id)
+  expect(refused).toContain("still allowed: Plan files (docs/plans/, docs/handoffs/), Test files (*.test.*, test/)")
+  expect(refused).toContain("Other files are changed by a member you delegate to with team_delegate (crew-lead, crew-maker)")
+  // A member that delegates nothing gets no such line, and one whose files are open no refusal.
+  const closed = presetTable({
+    members: [lead, maker],
+    records: [change(lead, "perm:team_delegate:to.crew-lead", { state: "off" }), change(lead, "perm:team_delegate:to.crew-maker", { state: "off" })],
+  })
+  const off = await installed(closed)
+  const plain = refusal((await before(off.recorded, { tool: "write", agent: lead.id, input: { path: "src/cli.ts", content: "x" } })).exit)
+  expect(plain).toContain("Files it may change")
+  expect(plain).not.toContain("team_delegate")
+  expect(await edit(maker.id)).toBeUndefined()
+})
+
 test("siblings of one action are one question: it names every tool, and its always exempts none", async () => {
   const table = tableFor(["instructions_set", "instructions_delete"], {
     "perm:instructions_set:approval.every": true,

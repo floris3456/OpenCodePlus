@@ -195,6 +195,8 @@ export interface Call {
   /** The Location directory: relative paths resolve here, and "outside this checkout" means outside it. */
   readonly directory: string
   readonly teamMembers: ReadonlySet<string>
+  /** The members the agent may delegate to: a closed "Files it may change" refusal names them for the other files. */
+  readonly delegates?: readonly string[]
   readonly exists?: (file: string) => boolean
   /** A browser tab's current page, as the browser tools last reported it. */
   readonly tabUrl?: (tabID: string) => string | undefined
@@ -386,8 +388,13 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
     const fallback = group.find((row) => row.item.fallback === true)
     if (fallback === undefined || fallback.on) return undefined
     const paths = call.tool === "patch" ? patchPaths(stringsAt(call.input, "patchText")[0] ?? "") : stringsAt(call.input, "path")
-    // The refusal names the files this agent may still change, so its next call can be one of them.
+    // The refusal names the files this agent may still change, so its next call can be one of them,
+    // and who changes the others when it delegates: a lead read "not yours" as "not to be done".
     const open = group.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
+    const handOver =
+      call.delegates === undefined || call.delegates.length === 0
+        ? ""
+        : `. Other files are changed by a member you delegate to with team_delegate (${call.delegates.join(", ")})`
     for (const file of paths) {
       const relative = path.relative(call.directory, path.resolve(call.directory, expandHome(file)))
       const opened = group.some(
@@ -396,7 +403,7 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
           row.item.allow === true &&
           (row.item.patterns ?? []).some((pattern) => wildcardMatch(file, pattern) || wildcardMatch(relative, pattern)),
       )
-      if (!opened) return denied(allowListMessage(fallback.item.message ?? "this file may not be changed here", open))
+      if (!opened) return denied(`${allowListMessage(fallback.item.message ?? "this file may not be changed here", open)}${handOver}`)
     }
     return undefined
   }
@@ -833,6 +840,13 @@ export function narrowSchema(schema: Json, rows: readonly PermRow[]): boolean {
 }
 
 // The members an agent may delegate to, from its "Delegate to" rows.
+// The team members an agent's Delegate to rows open. (The table holds no tool
+// switches: a member whose team_delegate is off has these rows off too in
+// every shipped preset.)
+function delegatesOf(table: PermissionTable, agent: string): string[] {
+  return delegateTargets(table.toolRows(agent, "team_delegate")).filter((member) => table.teamMembers.has(member))
+}
+
 export function delegateTargets(rows: readonly PermRow[]): string[] {
   return rows
     .filter((row) => row.item.category === "to" && row.on && row.item.ruleId !== "to.other-teams")
@@ -1055,6 +1069,7 @@ export async function installEnforcement(
           sessionID,
           directory,
           teamMembers: table.teamMembers,
+          ...(["edit", "write", "patch"].includes(governing.tool) ? { delegates: delegatesOf(table, agent) } : {}),
           exists,
           agent,
           tabUrl: (tab) => state.tabs.get(tab),
