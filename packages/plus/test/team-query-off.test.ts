@@ -9,7 +9,7 @@ import { discover } from "../src/instructions/discover.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item, type Level, type PresetRef, type Scopes } from "../src/instructions/model.js"
 import { chainContext } from "../src/instructions/presets.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
-import { codeTools, teamTools } from "../src/teams/policy.js"
+import { teamTools } from "../src/teams/policy.js"
 import { CodeModeCatalog } from "../../core/src/codemode/catalog.js"
 import { CodeModeInstructions } from "../../core/src/codemode/instructions.js"
 import { Tool as CoreTool } from "../../core/src/tool.js"
@@ -324,9 +324,9 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
 // ceiling of Code Mode team tools, because its team tool rows are that ceiling.
 test("a non-member agent sees no team tool while an implementer-preset member sees exactly its ceiling", async () => {
   const agents = agentHarness([agentInfo("build", "upstream")])
-  const registered = teamTools.map((name) =>
-    pluginTool("team", name, `team ${name}`, codeTools.includes(name as (typeof codeTools)[number])),
-  )
+  // Every team tool registered for Code Mode, as an Exposure row can put
+  // one: the catalog is where a deny on its name shows.
+  const registered = teamTools.map((name) => pluginTool("team", name, `team ${name}`, true))
   const ctx = context({
     agent: agents.domain,
     tool: toolDomainFor(registered),
@@ -381,7 +381,5 @@ test("a non-member agent sees no team tool while an implementer-preset member se
   expect(await visible("build")).toEqual([])
   // The implementer ceiling (no team_status: it addresses only its own run).
   const ceiling = ["checkpoint", "finish", "diff", "get_context", "check"]
-  expect((await visible(member)).toSorted()).toEqual(
-    ceiling.filter((name) => codeTools.includes(name as (typeof codeTools)[number])).map((name) => `team.${name}`).toSorted(),
-  )
+  expect((await visible(member)).toSorted()).toEqual(ceiling.map((name) => `team.${name}`).toSorted())
 })

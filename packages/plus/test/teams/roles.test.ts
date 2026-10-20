@@ -4,7 +4,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createHandlers, createState } from "../../src/index.js"
-import { directTools, teamTools } from "../../src/teams/policy.js"
+import { teamTools } from "../../src/teams/policy.js"
 import { fullContext } from "../harness.js"
 import { presetInput, resolvedStates } from "./preset-table.js"
 
@@ -70,15 +70,15 @@ const coordinators = new Set(["orchestrator", "planner", "build-seat"])
 const shellOpen = new Set(["orchestrator", "planner", "build-seat"])
 const secretsClosed = ["planner", "orchestrator", "implementer", "reviewer", "scout"]
 
-// The host's own tools plus the team namespace as Plus registers it: direct
-// tools stay on the provider's list, code tools go through Code Mode.
+// The host's own tools plus the team namespace as Plus registers it: every
+// team tool direct, on the provider's list.
 const hostTools = [
   { id: "read", description: "Read a file.", options: { codemode: false } },
   { id: "shell", description: "Run a command.", options: { codemode: false } },
   ...teamTools.map((name) => ({
     id: name,
     description: `team ${name}`,
-    options: { namespace: "team", permission: `team.${name}`, codemode: !(directTools as readonly string[]).includes(name) },
+    options: { namespace: "team", permission: `team.${name}`, codemode: false },
   })),
 ]
 

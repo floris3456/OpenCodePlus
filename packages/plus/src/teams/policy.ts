@@ -8,9 +8,13 @@ export type Reach = "descendants" | "others"
 // real handler in `teams/api.ts`; a tool with no implementation is absent, not
 // registered-and-failing. Web and code search are not team tools at all: they
 // come from the `search` MCP server, whose tool rows say who may use them.
-// Direct tools are native (`codemode: false`); code tools reach the model
-// through the Code Mode catalog.
-export const directTools = [
+//
+// Every team tool is direct (`codemode: false`). The read tools (status,
+// get_context, diff, list, check) were Code Mode ones; models called them by
+// their direct names anyway (3 of 20 calls in a live run failed so), and a
+// member has at most a dozen, so the catalog saved nothing worth that. A level
+// can still move one into Code Mode with its Exposure row.
+export const teamTools = [
   "delegate",
   "finish",
   "followup",
@@ -18,20 +22,12 @@ export const directTools = [
   "checkpoint",
   "set_checks",
   "stop",
+  "status",
+  "get_context",
+  "diff",
+  "list",
+  "check",
 ] as const
-
-export const codeTools = ["status", "get_context", "diff", "list", "check"] as const
-
-export const toolSurfaces = {
-  direct: directTools.map((name) => `team_${name}`),
-  codeMode: codeTools.map((name) => `tools.team.${name}`),
-}
-
-export const toolGuidance =
-  `Direct tools (call them directly; Code Mode search does not list them): ${toolSurfaces.direct.join(", ")}.\n` +
-  `Code Mode tools (call them inside execute): ${toolSurfaces.codeMode.join(", ")}.`
-
-export const teamTools = [...directTools, ...codeTools] as const
 export type TeamTool = (typeof teamTools)[number]
 
 // Tools whose runs a member addresses by id, and so carry Runs rows.

@@ -11,7 +11,7 @@ import { append, type ToolCallOutcome } from "./audit.js"
 import type { TeamApi, TeamApiResult, TeamCaller } from "./api.js"
 import { gitRaw } from "./git.js"
 import { rowState, unattendedMessage, type PermissionTable } from "../instructions/permission-enforce.js"
-import { toolGuidance, type TeamTool } from "./policy.js"
+import type { TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -52,7 +52,7 @@ const StopDescription =
 const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
-const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again.\n" + toolGuidance
+const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again."
 const CheckDescription =
   "Run one of your assigned checks in your worktree, or any project check (get_context projectChecks; path when it needs one). Only assigned checks judge your finish."
 
@@ -382,7 +382,7 @@ export async function registerTeamTools(
   }
 
   const toolReg = await runRegistration(ctx.tool.transform, (editor) => {
-    editor.namespace({ name: namespace, description: "Team runs: read run state and run checks.\n" + toolGuidance })
+    editor.namespace({ name: namespace, description: "Team runs: read run state and run checks." })
     const add = (tool: Tool.Info) => {
       editor.add({
         ...tool,
@@ -394,7 +394,7 @@ export async function registerTeamTools(
       description: DelegateDescription,
       input: Brief,
       output: Schema.Unknown,
-      options: teamOptions("delegate", false),
+      options: teamOptions("delegate"),
       origin,
       execute: (input, context) => runGated("delegate", input, context, ctx, state, (args, caller) => api.delegate(args, caller)),
     })
@@ -403,7 +403,7 @@ export async function registerTeamTools(
       description: FinishDescription,
       input: Report,
       output: Schema.Unknown,
-      options: teamOptions("finish", false),
+      options: teamOptions("finish"),
       origin,
       execute: (input, context) => runGated("finish", input, context, ctx, state, (args, caller) => api.finish(args, caller)),
     })
@@ -412,7 +412,7 @@ export async function registerTeamTools(
       description: FollowupDescription,
       input: FollowupInput,
       output: Schema.Unknown,
-      options: teamOptions("followup", false),
+      options: teamOptions("followup"),
       origin,
       execute: (input, context) => runGated("followup", input, context, ctx, state, (args, caller) => api.followup(args, caller)),
     })
@@ -421,7 +421,7 @@ export async function registerTeamTools(
       description: IntegrateDescription,
       input: IntegrateInput,
       output: Schema.Unknown,
-      options: teamOptions("integrate", false),
+      options: teamOptions("integrate"),
       origin,
       execute: (input, context) => runGated("integrate", input, context, ctx, state, (args, caller) => api.integrate(args, caller)),
     })
@@ -430,7 +430,7 @@ export async function registerTeamTools(
       description: CheckpointDescription,
       input: CheckpointInput,
       output: Schema.Unknown,
-      options: teamOptions("checkpoint", false),
+      options: teamOptions("checkpoint"),
       origin,
       execute: (input, context) => runGated("checkpoint", input, context, ctx, state, (args, caller) => api.checkpoint(args, caller)),
     })
@@ -439,7 +439,7 @@ export async function registerTeamTools(
       description: SetChecksDescription,
       input: SetChecksInput,
       output: Schema.Unknown,
-      options: teamOptions("set_checks", false),
+      options: teamOptions("set_checks"),
       origin,
       execute: (input, context) => runGated("set_checks", input, context, ctx, state, (args, caller) => api.set_checks(args, caller)),
     })
@@ -448,7 +448,7 @@ export async function registerTeamTools(
       description: StopDescription,
       input: StopInput,
       output: Schema.Unknown,
-      options: teamOptions("stop", false),
+      options: teamOptions("stop"),
       origin,
       execute: (input, context) => runGated("stop", input, context, ctx, state, (args, caller) => api.stop(args, caller)),
     })
@@ -457,7 +457,7 @@ export async function registerTeamTools(
       description: StatusDescription,
       input: StatusInput,
       output: Schema.Unknown,
-      options: teamOptions("status", true),
+      options: teamOptions("status"),
       origin,
       execute: (input, context) => runGated("status", input, context, ctx, state, (args, caller) => api.status(args, caller)),
     })
@@ -466,7 +466,7 @@ export async function registerTeamTools(
       description: DiffDescription,
       input: DiffInput,
       output: Schema.Unknown,
-      options: teamOptions("diff", true),
+      options: teamOptions("diff"),
       origin,
       execute: (input, context) => runGated("diff", input, context, ctx, state, (args, caller) => api.diff(args, caller)),
     })
@@ -475,7 +475,7 @@ export async function registerTeamTools(
       description: ListDescription,
       input: ListInput,
       output: Schema.Unknown,
-      options: teamOptions("list", true),
+      options: teamOptions("list"),
       origin,
       execute: (input, context) => runGated("list", input, context, ctx, state, (args, caller) => api.list(args, caller)),
     })
@@ -484,14 +484,12 @@ export async function registerTeamTools(
       description: GetContextDescription,
       input: GetContextInput,
       output: Schema.Unknown,
-      options: teamOptions("get_context", true),
+      options: teamOptions("get_context"),
       origin,
       execute: (input, context) => runGated("get_context", input, context, ctx, state, async (args, caller) => {
         const result = await api.get_context(args, caller)
         if (!result.ok) return result
         const table = permissions()
-        // Which team tools are direct and which Code Mode is in the
-        // namespace's and this tool's own description already.
         const targets = delegationTargets(table, caller.agent).filter((target) => table?.teamMembers.has(target))
         return { ok: true, value: { ...(result.value as object), ...(targets.length === 0 ? {} : { delegationTargets: targets }) } }
       }),
@@ -501,7 +499,7 @@ export async function registerTeamTools(
       description: CheckDescription,
       input: CheckInput,
       output: Schema.Unknown,
-      options: teamOptions("check", true),
+      options: teamOptions("check"),
       origin,
       execute: (input, context) => runGated("check", input, context, ctx, state, (args, caller) => api.check(args, caller)),
     })
@@ -519,8 +517,9 @@ export async function registerTeamTools(
   }
 }
 
-function teamOptions(name: TeamTool, codemode: boolean) {
-  return { namespace, codemode, permission: `team.${name}` }
+// Direct, every one (policy.ts says why); the namespace names their group.
+function teamOptions(name: TeamTool) {
+  return { namespace, codemode: false, permission: `team.${name}` }
 }
 
 function runGated<A>(

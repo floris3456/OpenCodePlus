@@ -62,8 +62,6 @@ const removedNames = [
   "tavily_extract",
 ] as const
 
-const codemodeFalse = new Set(["delegate", "finish", "followup", "integrate", "checkpoint", "set_checks", "stop"])
-
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat.`
 
@@ -245,7 +243,7 @@ async function runMessage(
   return outcome.message
 }
 
-test("every team tool registers under namespace team with codemode and permission", async () => {
+test("every team tool registers direct under namespace team with its permission", async () => {
   const tools = await registeredTools()
   const registered = teamNames.map((name) => need(tools, `team_${name}`))
   expect(registered).toHaveLength(12)
@@ -253,7 +251,7 @@ test("every team tool registers under namespace team with codemode and permissio
     const name = teamNames[index] as string
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
     expect(tool.options?.namespace).toBe("team")
-    expect(tool.options?.codemode).toBe(!codemodeFalse.has(name))
+    expect(tool.options?.codemode).toBe(false)
     expect(tool.options?.permission).toBe(`team.${name}`)
   }
 })
@@ -266,7 +264,7 @@ test("the team namespace advertises nothing it cannot do", async () => {
   )
 })
 
-test("get_context lists the caller's permitted custom roster and leaves tool surfaces to descriptions", async () => {
+test("get_context lists the caller's permitted custom roster and nothing about tool surfaces", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const lead = linked("custom-lead", "orchestrator", "crew")
     const table = presetTable({
@@ -284,11 +282,8 @@ test("get_context lists the caller's permitted custom roster and leaves tool sur
       expect(output.output).toMatchObject({ delegationTargets: ["custom-lead", "custom-maker"] })
       expect(output.output).not.toHaveProperty("toolSurfaces")
       expect(output.output).not.toHaveProperty("guidance")
-      const description = need(created.tools, "team_get_context").description
-      expect(description).toContain("Code Mode search does not list them")
-      for (const name of teamNames) expect(description).toContain(codemodeFalse.has(name) ? `team_${name}` : `tools.team.${name}`)
-      // Direct tools are sent with every request: delegate does not repeat the guidance.
-      expect(need(created.tools, "team_delegate").description).not.toContain("Code Mode search does not list them")
+      // Every team tool is direct: no description explains two surfaces.
+      for (const name of teamNames) expect(need(created.tools, `team_${name}`).description).not.toContain("Code Mode")
       await saveRun(root, makeRun("w-2222222222222222", "denied", "ses_empty_roster"))
       const empty = await Effect.runPromise(need(created.tools, "team_get_context").execute({}, toolContext("ses_empty_roster", "denied")))
       expect(empty.output).not.toHaveProperty("delegationTargets")

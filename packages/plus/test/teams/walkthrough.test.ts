@@ -33,7 +33,7 @@ import { createTeamApi } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
 import { peek } from "../../src/teams/inbox.js"
 import { gc, onSessionEvent } from "../../src/teams/lifecycle.js"
-import { codeTools, teamTools } from "../../src/teams/policy.js"
+import { teamTools } from "../../src/teams/policy.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Policy } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
@@ -309,14 +309,14 @@ test("[20b] a team member's ceiling and native denies are instructions rows", as
 test("[20c] a non-member catalog has zero team tools; an implementer-preset member's is exactly the old implementer ceiling", async () => {
   banner("20c", "a non-member catalog has zero team tools; a member's is exactly its ceiling")
   const member = "implementer"
-  const codeSet = new Set<string>(codeTools)
+  // Registered as Plus does: every team tool direct.
   const registered = teamTools.map((name) => ({
     id: `team_${name}`,
     name,
     description: `team ${name}`,
     input: Schema.Struct({}),
     output: Schema.String,
-    options: { namespace: "team", codemode: codeSet.has(name), permission: `team.${name}` },
+    options: { namespace: "team", codemode: false, permission: `team.${name}` },
     origin: { type: "plugin", name: "opencode.plus" } as const,
     execute: () => Effect.die("unused tool.execute"),
   }))
@@ -410,14 +410,13 @@ test("[20c] a non-member catalog has zero team tools; an implementer-preset memb
   // The old implementer ceiling, which the implementer preset's tool rows reproduce.
   const ceiling = ["checkpoint", "finish", "diff", "get_context", "check"]
   // Direct tools whose row is off leave the member's request through its
-  // tool plans (the session context hook); Code Mode ones leave the core
-  // catalog through a deny on their name.
+  // tool plans (the session context hook).
   const dropped = new Set(applied.tools.filter((plan) => plan.agent === member && !plan.enabled).map((plan) => plan.tool))
   const memberCatalog = await visible(member)
   const seen = { native: memberCatalog.native.filter((name) => !dropped.has(name)), codemode: memberCatalog.codemode }
   call(`tool catalog for agent ${member} (team entries)`, undefined, seen)
-  expect(seen.native).toEqual(ceiling.filter((name) => !codeSet.has(name)).map((name) => `team_${name}`).toSorted())
-  expect(seen.codemode).toEqual(ceiling.filter((name) => codeSet.has(name)).map((name) => `team.${name}`).toSorted())
+  expect(seen.native).toEqual(ceiling.map((name) => `team_${name}`).toSorted())
+  expect(seen.codemode).toEqual([])
 }, 60000)
 
 test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification, integrate", async () => {
