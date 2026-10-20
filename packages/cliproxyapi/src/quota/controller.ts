@@ -281,6 +281,8 @@ export class QuotaController {
       if ((event.boundary.checkpoint ?? "") === switching) {
         event.compact = true
         event.portable = true
+        // Never natively on the used-up account, whatever the chat's compaction strategy.
+        event.strategy = "local"
         // Models Pacer named with the refusal win over this client's configured ones.
         const named = (route.stored.switchModels ?? []).map((model) => Model.Ref.parse(model))
         if (named.length > 0) {

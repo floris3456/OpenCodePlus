@@ -785,16 +785,18 @@ for (const strategy of ["auto", "remote"] as const) {
     }),
   )
 
-  it.live(`a portable ${strategy} compaction that names no model keeps only Anthropic's readable summary`, () =>
+  it.live(`a portable ${strategy} compaction keeps only Anthropic's readable summary, whatever summary model is set`, () =>
     Effect.gen(function* () {
       const fixture = yield* setup({ anthropic: "direct", config: { strategy } })
       yield* fixture.prompt("Earlier conversation")
       expect(yield* fixture.compact).toEqual({ status: "completed" })
       yield* fixture.prompt("Newer conversation")
+      // A threshold handoff with the chat's usual summary model set: only `local` would send it there.
       yield* fixture.hooks.register("session", "compaction.decide", (event) =>
         Effect.sync(() => {
           event.compact = true
           event.portable = true
+          event.compactionModel = Model.Ref.parse("unavailable/summary")
         }),
       )
       expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({
@@ -838,12 +840,13 @@ for (const portable of [true, false]) {
       yield* fixture.prompt("Earlier conversation")
       expect(yield* fixture.compact).toEqual({ status: "completed" })
       yield* fixture.prompt("Newer conversation")
+      // As Plus and CPA arm a cold chat or an account switch: cheap named models, written locally.
       yield* fixture.hooks.register("session", "compaction.decide", (event) =>
         Effect.sync(() => {
           event.compact = true
           event.compactionModel = named.ref
+          event.strategy = "local"
           if (portable) event.portable = true
-          else event.strategy = "local"
         }),
       )
       expect(yield* fixture.compaction.compact({ reason: "auto", context: yield* fixture.load })).toEqual({

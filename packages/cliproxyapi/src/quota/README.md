@@ -19,9 +19,10 @@ The CPA plugin controls the 20%/10% five-hour and 15%/5% seven-day thresholds.
 Notices enter the affected chat with `resume: false` and appear above its composer.
 Auto compaction uses Core's native safe-boundary decision hook. It requests a
 portable summary when an account change requires one; it never overrides
-`auto: false`. The summary models named for the switch write it, even under a
-remote compaction strategy. When none are named, a remote or auto strategy on a
-Claude route keeps only the readable text of Anthropic's own compaction.
+`auto: false`. An account switch (the account is used up) asks for a local
+summary, written by the models named for it, whatever the chat's compaction
+strategy. Other handoffs keep the chat's strategy: auto or remote on a Claude
+route keeps only the readable text of Anthropic's own compaction.
 
 Healthy existing bindings retain their normal compaction strategy. Auto-off
 handoffs retain readable history and tool pairs, clearing account-bound proof;

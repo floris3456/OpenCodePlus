@@ -740,10 +740,10 @@ test("an account-switch refusal compacts once with the configured model, then th
     },
   ])
   expect(await f.controller.warming("ses_test", "proxy", "model")).toBe(false)
-  // Core's decision before the rebuilt request asks for a portable summary by the configured model.
+  // Core's decision before the rebuilt request asks for a local portable summary by the configured model.
   const retried = f.event()
   await f.controller.decide(retried)
-  expect(retried).toMatchObject({ compact: true, portable: true, metadata: { "quota.switch": true } })
+  expect(retried).toMatchObject({ compact: true, portable: true, strategy: "local", metadata: { "quota.switch": true } })
   expect(retried.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model#high"))
   // The completed checkpoint needs no second compaction and is what CPA receives next.
   const compacted = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new" } }

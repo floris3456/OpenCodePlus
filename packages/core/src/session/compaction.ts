@@ -320,18 +320,10 @@ export const layer = Layer.effect(
       // Auto discovers native support from the executable route unless the model explicitly prefers a
       // summary. Local/remote force their respective strategy; the decision hook may override the agent.
       const configuredStrategy = decision.strategy ?? context.agent.info.compaction?.strategy ?? "auto"
-      // `compactionFallbacks`, when present, is the whole list and replaces `compactionFallback`.
-      const fallbacks =
-        decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
       const operations = context.model.model.route.compact
-      // Models the decision names for a portable summary (an account switch, a cold chat, compactWith) write
-      // it. Without them only a trigger checkpoint, whose summary is readable text, can stand in for one;
-      // an endpoint window is opaque.
-      const strategy =
-        decision.portable &&
-        (decision.compactionModel !== undefined || fallbacks.length > 0 || operations?.trigger === undefined)
-          ? "local"
-          : configuredStrategy
+      // A portable checkpoint keeps only readable text, which a trigger checkpoint has and an endpoint window
+      // does not. Plugins that arm cheap models for a cold chat or an account switch ask for `local`.
+      const strategy = decision.portable && operations?.trigger === undefined ? "local" : configuredStrategy
       // Native compaction cannot recover a context the provider already rejected: the replacement window
       // would come from the same rejected endpoint. Only auto or local may recover an overflow.
       if (trigger.reason === "overflow" && strategy === "remote")
@@ -494,6 +486,9 @@ export const layer = Layer.effect(
             }),
           ),
         )
+      // `compactionFallbacks`, when present, is the whole list and replaces `compactionFallback`.
+      const fallbacks =
+        decision.compactionFallbacks ?? (decision.compactionFallback ? [decision.compactionFallback] : [])
       const choices: (Agent.Compaction["model"] | undefined)[] = [decision.compactionModel, ...fallbacks]
       const attempt = (index: number): Effect.Effect<{ owner: Trigger; result: Result }, Failure> =>
         local(choices[index]).pipe(

@@ -33,6 +33,10 @@ import {
 // An armed list (a team `compactWith`; the in-memory consumeColdCompaction)
 // takes priority over all of it: it is an explicit instruction for one chat,
 // and it has no `optional`: a manual compaction reports its failure.
+//
+// Cold, armed and account-switch summaries are written locally by those cheap
+// models, whatever the per-model strategy says. Every other compaction keeps
+// the chat's strategy, so `auto` and `remote` compact natively when they can.
 
 // "First step of a new prompt": core's decision boundary cannot say it (its
 // `fresh` is only a brand-new epoch, which is never cold), so Plus's own
@@ -119,6 +123,8 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
     event.system = effective.instructions.value
   const coldModels = effective.coldModels.value
   if (event.metadata?.["quota.switch"] === true) {
+    // The account is used up: its summary is written locally, never natively on that account.
+    event.strategy = "local"
     if (coldModels.length > 0) armModels(event, coldModels)
     event.explanation = { ...event.explanation, trigger: "handoff" }
     return
@@ -135,10 +141,11 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
   })
 }
 
-/** #1 writes the summary; #2… are its fallbacks, replacing CPA's single one. */
+/** #1 writes the summary locally, over any remote strategy; #2… are its fallbacks, replacing CPA's single one. */
 function armModels(event: SessionCompactionDecision, models: readonly string[]): void {
   event.compact = true
   event.portable = true
+  event.strategy = "local"
   event.compactionModel = Model.Ref.parse(models[0]!)
   if (models.length > 1) event.compactionFallbacks = models.slice(1).map((model) => Model.Ref.parse(model))
   delete event.compactionFallback

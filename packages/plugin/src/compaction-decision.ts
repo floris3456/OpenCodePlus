@@ -35,10 +35,9 @@ export interface SessionCompactionDecision {
    */
   images?: "compact" | "leave-out" | "error"
   /**
-   * Require a text checkpoint without account-bound provider state. The models this decision names
-   * (`compactionModel`, fallbacks) write it as a local summary. When it names none, `auto` and `remote`
-   * keep only the readable summary of a native checkpoint (Anthropic); a route whose native window is
-   * opaque writes a local summary instead.
+   * Require a text checkpoint without account-bound provider state. Under `auto` or `remote`, a route whose
+   * native checkpoint carries a readable summary (Anthropic) keeps only that text; a route whose native
+   * window is opaque writes a local summary. Set `strategy: "local"` to have `compactionModel` write it.
    */
   portable?: boolean
   /** Override the agent's compaction strategy for this compaction. */
@@ -60,8 +59,7 @@ export interface SessionCompactionDecision {
   system?: string
   /**
    * Write the local summary with this model instead of the agent's compaction model. The session keeps
-   * its own model. Remote (provider-native) compaction ignores it, except that a portable summary is then
-   * written by it.
+   * its own model. Remote (provider-native) compaction ignores it.
    */
   compactionModel?: Model.Ref
   /**

@@ -271,6 +271,25 @@ test("a quota.switch decision with an empty chat-model list keeps CPA's own mode
   expect(event.compactionFallbacks).toBeUndefined()
 })
 
+test("cold, compactWith and account-switch summaries are local under a remote strategy; a threshold handoff stays remote", () => {
+  const remote = { rows: { compactionStrategy: { value: "remote", level: "project" as const } } }
+  const coldEvent = decision()
+  decideCompaction(coldEvent, { ...remote, every: settings({ coldModels: ["proxy/cheap"] }), cold: cold() })
+  expect(coldEvent).toMatchObject({ strategy: "local", portable: true, compactionModel: Model.Ref.parse("proxy/cheap") })
+  const armed = decision()
+  decideCompaction(armed, { ...remote, armed: ["team/cheap"] })
+  expect(armed).toMatchObject({ strategy: "local", compactionModel: Model.Ref.parse("team/cheap") })
+  // A switch keeps CPA's own models when the chat model has no cold list, and is still local.
+  const switching = decision({ metadata: { "quota.switch": true }, compact: true, portable: true })
+  switching.compactionModel = Model.Ref.parse("proxy/cpa-model")
+  decideCompaction(switching, remote)
+  expect(switching).toMatchObject({ strategy: "local", compactionModel: Model.Ref.parse("proxy/cpa-model") })
+  // CPA's threshold handoff: the account still has usage, so the chat's own strategy decides.
+  const handoff = decision({ metadata: { "quota.handoff": "intent" }, compact: true, portable: true })
+  decideCompaction(handoff, remote)
+  expect(handoff.strategy).toBe("remote")
+})
+
 test("compactionRowsOf resolves the agent model row down the store chain", () => {
   const modelRecord = (overrides: Partial<ModelRecord>): ModelRecord => ({
     type: "model",
