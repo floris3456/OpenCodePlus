@@ -147,7 +147,7 @@ const fixture = Effect.gen(function* () {
     return part.state
   })
   const instructions = Effect.fn("agentControls.instructions")(function* (
-    method: "set" | "reset" | "show",
+    method: "set" | "reset" | "read",
     input: Record<string, unknown>,
   ) {
     const state = yield* tool("execute", {
@@ -161,7 +161,7 @@ const fixture = Effect.gen(function* () {
     expect(state.metadata?.toolCalls).toEqual([expect.objectContaining({ status: "completed" })])
     return text
   })
-  expect(yield* instructions("show", { id: "item:project:controls-probe:system:role" })).toContain(targetID)
+  expect(yield* instructions("read", { id: "item:project:controls-probe:system:role" })).toContain(targetID)
   return { opencode, plus, location, llm, caller, target, tool, instructions }
 })
 
@@ -183,7 +183,7 @@ it.live(
       expect((yield* f.plus["instructions.snapshot"](undefined, { location: f.location })).agents).toContainEqual(
         expect.objectContaining({ id: targetID, scope: "project" }),
       )
-      expect(yield* f.instructions("show", { id: "item:project:controls-probe:system:role" })).toContain(targetID)
+      expect(yield* f.instructions("read", { id: "item:project:controls-probe:system:role" })).toContain(targetID)
 
       // Existing OpenCode semantics admit explicit agent IDs. Off removes UI availability
       // and prohibits execution; it does not change switchAgent/create admission here.
