@@ -1960,8 +1960,10 @@ const compact: TriggerCompactOperation = Effect.fn("AnthropicMessages.compact")(
     Effect.timeoutOption("10 seconds"),
     Effect.catch(() => Effect.succeed(Option.none())),
   )
-  if (Option.isNone(support) || !support.value.capabilities.compaction.supported)
-    return yield* ProviderShared.unsupportedOperation({ operation: "compaction", route: ADAPTER, message: "On-demand compaction capability is unsupported or unavailable from the Models API; use local compaction" })
+  // Only an explicit "unsupported" refuses. Relays such as CLIProxyAPI answer from a model catalogue
+  // without capabilities, so an unanswered probe leaves the decision to the compaction request itself.
+  if (Option.isSome(support) && !support.value.capabilities.compaction.supported)
+    return yield* ProviderShared.unsupportedOperation({ operation: "compaction", route: ADAPTER, message: "The Models API reports on-demand compaction as unsupported for this model; use local compaction" })
   // Legacy unsigned blocks use different placement/strategy rules. Until a provider
   // acceptance test establishes interoperability, preserve their text locally.
   if (ordinary.messages.some((message) => message.content.some((block) => block.type === "compaction" && !block.signature)))

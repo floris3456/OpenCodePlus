@@ -60,6 +60,21 @@ testEffect(dynamicResponse((input) => Effect.sync(() => {
   expect(error.reason._tag).toBe("UnsupportedOperation")
 }))
 
+// CLIProxyAPI answers from its own model catalogue, which states no capabilities; a relay may also not know the route.
+for (const [answer, body, status] of [
+  ["a catalogue entry without capabilities", { id: "claude-opus-5-5", type: "model", display_name: "Claude Opus 5.5", max_input_tokens: 1_000_000, max_tokens: 128_000 }, 200],
+  ["model not found", { error: { message: "Model not found", type: "invalid_request_error", code: "model_not_found" } }, 404],
+] as const) {
+  testEffect(dynamicResponse((input) => Effect.sync(() => {
+    if (input.request.method === "GET") return input.respond(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+    expect(JSON.parse(input.text).compaction).toMatchObject({ type: "summarize" })
+    return input.respond(events, { headers: { "content-type": "text/event-stream" } })
+  }))).effect(`C2 a Models API answer that does not say (${answer}) leaves the decision to the compaction request`, () => Effect.gen(function* () {
+    const response = yield* LLMClient.compact(request, { mechanism: "trigger" })
+    expect(response.checkpoint).toMatchObject({ text: block.content, signature: block.signature })
+  }))
+}
+
 testEffect(dynamicResponse((input) => Effect.sync(() => {
   expect(input.request.method).toBe("GET")
   return input.respond(JSON.stringify({ capabilities: { compaction: { supported: true } } }), { headers: { "content-type": "application/json" } })
