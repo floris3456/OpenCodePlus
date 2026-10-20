@@ -291,7 +291,12 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   let taskID = brief.task
   if (taskID !== undefined) {
     const planRun = await findPlanForTask(root, taskID)
-    if (planRun === undefined) return fail("E_TASK_BLOCKED", `Task ${taskID} not found.`, [])
+    if (planRun === undefined)
+      return fail(
+        "E_TASK_BLOCKED",
+        `Task ${taskID} not found: task claims only a rework task a team_integrate returned you. Omit it for any other work.`,
+        { task: null },
+      )
     try {
       await claim(root, planRun, taskID, childID)
     } catch (error) {

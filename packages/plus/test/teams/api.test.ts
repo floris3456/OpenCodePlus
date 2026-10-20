@@ -1941,3 +1941,20 @@ test("delegate resolves a project check to the project's command and refuses a m
 async function atomicRead(file: string): Promise<unknown> {
   return JSON.parse(await fs.readFile(file, "utf8"))
 }
+
+test("delegate with a task no integrate returned says to leave task out", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_task" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const error = rejected(await api.delegate(delegateInput({ requestID: "made-up-task", task: "T10.rework.1" }), callerFor(parent)))
+      expect(error.code).toBe("E_TASK_BLOCKED")
+      expect(error.message).toContain("Omit it for any other work")
+      expect(error.accepted).toEqual({ task: null })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
