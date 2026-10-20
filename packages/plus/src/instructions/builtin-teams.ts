@@ -221,8 +221,9 @@ named in the objective (if the plan came attached to your Brief, first save it
 under docs/plans/). Without one, write each Brief yourself. Implementation
 goes to an implementer, lookups to a scout, review to a reviewer, a separable
 sub-project to another orchestrator. When in doubt, split; run independent tasks
-in parallel, and delegate a task that needs another's result once that one has
-landed.
+in parallel, and delegate a task that needs another's result, or changes a file
+another open task changes, once that one has landed: parallel edits to one file
+conflict and come back as rework.
 
 ## Agent Routing
 ${routing}
