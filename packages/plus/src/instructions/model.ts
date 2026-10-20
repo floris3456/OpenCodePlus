@@ -1025,6 +1025,8 @@ export interface ModelRecord {
   readonly warming?: string
   /** Time between keep-alive requests, such as "4m" or "3m30s"; absent inherits (Defaults › Models, then the host). */
   readonly interval?: string
+  /** How long a chat stays warm while it waits on its own work, such as "2h"; "off" keeps its warming time; absent inherits. */
+  readonly waiting?: string
   /** The keep-alive request's text; absent inherits. */
   readonly prompt?: string
   /**
@@ -2580,6 +2582,30 @@ export function parseInterval(text: string): { readonly interval: number } | { r
   return { interval }
 }
 
+// Warm while waiting: how long after its last request a chat stays warm while
+// it waits on its own work (a running command or tool call, a subagent, a team
+// run it delegated), when warming is on for it. "off" or a time from 1m to
+// 24h; the chat's window is then the longer of its warming time and this.
+export const WAITING_DEFAULT_MS = 2 * 60 * 60 * 1000
+
+/** A waiting time in milliseconds; 0 is "off" (the chat keeps its warming time). */
+export function parseWaiting(text: string): { readonly waiting: number } | { readonly error: string } {
+  const value = text.trim().toLowerCase().replaceAll(" ", "")
+  if (value === "off") return { waiting: 0 }
+  const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value)
+  if (match === null || value.length === 0)
+    return { error: `"${text.trim()}" is not a waiting time: use off or a time such as 90m, 2h or 4h` }
+  const waiting = (Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)) * 1000
+  if (waiting < 60_000) return { error: `Waiting time must be at least 1m, got "${text.trim()}"` }
+  if (waiting > WARMING_MAX_MS) return { error: `Waiting time must be at most 24h, got "${text.trim()}"` }
+  return { waiting }
+}
+
+/** The canonical stored form: "off" or hours/minutes/seconds such as "2h" or "1h30m". */
+export function formatWaiting(waiting: number): string {
+  return waiting === 0 ? "off" : formatDuration(waiting)
+}
+
 export const PROMPT_MAX_LENGTH = 2000
 
 /** The keep-alive text: any non-empty text up to 2000 characters, trimmed. */
@@ -2591,7 +2617,8 @@ export function parsePrompt(text: string): { readonly prompt: string } | { reado
 }
 
 /** The warming fields a model row carries. */
-export type ModelWarmingField = "warming" | "interval" | "prompt"
+export type ModelWarmingField = "warming" | "interval" | "waiting" | "prompt"
+export const MODEL_WARMING_FIELDS: readonly ModelWarmingField[] = ["warming", "interval", "waiting", "prompt"]
 
 /**
  * One save's warming fields in stored form: a string sets the field, `null`
@@ -2644,6 +2671,7 @@ function withoutField(record: ModelRecord, field: ModelWarmingField): ModelRecor
     ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
     ...(field === "warming" || record.warming === undefined ? {} : { warming: record.warming }),
     ...(field === "interval" || record.interval === undefined ? {} : { interval: record.interval }),
+    ...(field === "waiting" || record.waiting === undefined ? {} : { waiting: record.waiting }),
     ...(field === "prompt" || record.prompt === undefined ? {} : { prompt: record.prompt }),
     ...(record.removed === undefined ? {} : { removed: record.removed }),
     ...(record.originalCandidate === undefined ? {} : { originalCandidate: record.originalCandidate }),
@@ -2705,7 +2733,7 @@ export type ResolvedModelFields = { readonly [field in ModelWarmingField]?: { re
 /** Every warming field the agent's chain sets for `target`, each with the level that set it. */
 export function resolveModelFields(input: ModelInput, target: ModelRefLike): ResolvedModelFields {
   return Object.fromEntries(
-    (["warming", "interval", "prompt"] as const).flatMap((field) => {
+    MODEL_WARMING_FIELDS.flatMap((field) => {
       const found = resolveModelField(input, target, field)
       return found === undefined ? [] : [[field, found]]
     }),

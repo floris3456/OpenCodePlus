@@ -32,6 +32,7 @@ import {
   ensureActivateModel,
   fingerprint,
   formatDuration,
+  formatWaiting,
   formatWarming,
   hasModelRecordAt,
   merge,
@@ -43,6 +44,7 @@ import {
   parseInterval,
   parseModelItemId,
   parsePrompt,
+  parseWaiting,
   parseWarming,
   removeModelRecord,
   reset as resetModelRecords,
@@ -2838,6 +2840,8 @@ export interface ModelEditFields {
   readonly warming?: string
   /** undefined = leave the ping interval alone; "" clears it; else a parseInterval value. */
   readonly interval?: string
+  /** undefined = leave warm while waiting alone; "" clears it; else a parseWaiting value. */
+  readonly waiting?: string
   /** undefined = leave the keep-alive text alone; "" clears it; else a parsePrompt value. */
   readonly prompt?: string
   readonly editedField?: "model" | "effort"
@@ -2885,6 +2889,7 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
     : {
         ...(local.warming === undefined ? {} : { warming: local.warming }),
         ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.waiting === undefined ? {} : { waiting: local.waiting }),
         ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
       }
   let originalCandidate: OriginalCandidate | undefined = local?.originalCandidate
@@ -2952,12 +2957,15 @@ export function editModelRow(input: MemoInput, rowId: string, fields: ModelEditF
   if (warming !== undefined && "error" in warming) return { refusal: warming.error }
   const interval = fields.interval === undefined || fields.interval.trim().length === 0 ? undefined : parseInterval(fields.interval)
   if (interval !== undefined && "error" in interval) return { refusal: interval.error }
+  const waiting = fields.waiting === undefined || fields.waiting.trim().length === 0 ? undefined : parseWaiting(fields.waiting)
+  if (waiting !== undefined && "error" in waiting) return { refusal: waiting.error }
   const prompt = fields.prompt === undefined || fields.prompt.trim().length === 0 ? undefined : parsePrompt(fields.prompt)
   if (prompt !== undefined && "error" in prompt) return { refusal: prompt.error }
-  const fieldsSet = fields.warming !== undefined || fields.interval !== undefined || fields.prompt !== undefined
+  const fieldsSet = fields.warming !== undefined || fields.interval !== undefined || fields.waiting !== undefined || fields.prompt !== undefined
   const settings = {
     ...(fields.warming === undefined ? {} : { warming: warming === undefined ? null : formatWarming(warming) }),
     ...(fields.interval === undefined ? {} : { interval: interval === undefined ? null : formatDuration(interval.interval) }),
+    ...(fields.waiting === undefined ? {} : { waiting: waiting === undefined ? null : formatWaiting(waiting.waiting) }),
     ...(fields.prompt === undefined ? {} : { prompt: prompt === undefined ? null : prompt.prompt }),
   }
   const merged: ModelWarmingFields = { ...(targetChanged ? carried : {}), ...settings }
@@ -3025,6 +3033,7 @@ export function modelFieldEdit(
   const base = { providerID: target.providerID, modelID: target.modelID, ...(target.variant === undefined ? {} : { variant: target.variant }) }
   if (field === "warming") return { fields: { ...base, warming: text } }
   if (field === "interval") return { fields: { ...base, interval: text } }
+  if (field === "waiting") return { fields: { ...base, waiting: text } }
   if (field === "prompt") return { fields: { ...base, prompt: text } }
   const asTyped =
     field === "compactionInput" || field === "compactionOutput" || field === "imageConvert" || field === "imageShrink" || field === "imagesFull" ? { [field]: text }
@@ -3097,7 +3106,7 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
   )
   if (local === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
 
-  if (parsed.field === "warming" || parsed.field === "interval" || parsed.field === "prompt") {
+  if (parsed.field === "warming" || parsed.field === "interval" || parsed.field === "waiting" || parsed.field === "prompt") {
     if (local[parsed.field] === undefined) return { refusal: `"${found.node.label}" has no override to reset` }
     const next = setModelSettings(models, addr, parsed.target, { [parsed.field]: null }, now())
     if (JSON.stringify(next) === JSON.stringify(models)) return { refusal: `"${found.node.label}" has no override to reset` }
@@ -3154,6 +3163,7 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
       const carried: ModelWarmingFields = {
         ...(local.warming === undefined ? {} : { warming: local.warming }),
         ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.waiting === undefined ? {} : { waiting: local.waiting }),
         ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
       }
       const wasActive = local.active === true
@@ -3210,6 +3220,7 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
       const carried: ModelWarmingFields = {
         ...(local.warming === undefined ? {} : { warming: local.warming }),
         ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.waiting === undefined ? {} : { waiting: local.waiting }),
         ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
       }
       const added = addModelRecord(tombstoneModelRecord(models, addr, local, now()), addr, target, now())
@@ -3259,6 +3270,7 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
       const carried: ModelWarmingFields = {
         ...(local.warming === undefined ? {} : { warming: local.warming }),
         ...(local.interval === undefined ? {} : { interval: local.interval }),
+        ...(local.waiting === undefined ? {} : { waiting: local.waiting }),
         ...(local.prompt === undefined ? {} : { prompt: local.prompt }),
       }
       const wasActive = local.active === true
@@ -3604,6 +3616,7 @@ function warmingSummaryOf(settings: ModelWarmingFields): string {
   const parts = [
     ...(settings.warming === undefined || settings.warming === null ? [] : [`${settings.warming}`]),
     ...(settings.interval === undefined || settings.interval === null ? [] : [`every ${settings.interval}`]),
+    ...(settings.waiting === undefined || settings.waiting === null ? [] : [`waiting ${settings.waiting}`]),
     ...(settings.prompt === undefined || settings.prompt === null ? [] : ["a prompt"]),
   ]
   return parts.length === 0 ? "inherits" : parts.join(", ")

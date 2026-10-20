@@ -4,11 +4,14 @@ import { cacheLifetime } from "../monitor/cache.js"
 import { BUILT_IN_IMAGES, choicesOf, IMAGE_FIELD_LABELS, IMAGE_FIELDS, imageFieldOf, imageValueOf, type ImageField } from "../image-settings.js"
 import {
   formatDuration,
+  formatWaiting,
   formatWarming,
   parseInterval,
   parseModelItemId,
   parsePrompt,
+  parseWaiting,
   parseWarming,
+  WAITING_DEFAULT_MS,
   addModelRecord,
   resolveModelField,
   scopedTo,
@@ -46,6 +49,8 @@ export interface ModelSettingsRecord extends ModelCompactionFields {
   readonly warming?: string
   /** Time between keep-alive requests such as "4m" or "3m30s"; absent inherits. */
   readonly interval?: string
+  /** Warm while waiting on its own work: "off" or a time such as "2h"; absent inherits. */
+  readonly waiting?: string
   /** The keep-alive request's text; absent inherits. */
   readonly prompt?: string
   /** Variant used when an agent's model row names no variant; absent inherits. */
@@ -53,8 +58,8 @@ export interface ModelSettingsRecord extends ModelCompactionFields {
   readonly updated: string
 }
 
-export type ModelSettingsField = "warming" | "interval" | "prompt" | "effort"
-export const MODEL_SETTINGS_FIELDS: readonly ModelSettingsField[] = ["warming", "interval", "prompt", "effort"]
+export type ModelSettingsField = "warming" | "interval" | "waiting" | "prompt" | "effort"
+export const MODEL_SETTINGS_FIELDS: readonly ModelSettingsField[] = ["warming", "interval", "waiting", "prompt", "effort"]
 
 /** A Defaults › Models row: one model, or every model when both ids are absent. */
 export interface ModelSettingsKey {
@@ -112,6 +117,11 @@ export interface EffectiveWarming {
   readonly on: Effective<boolean>
   readonly duration: Effective<number>
   readonly interval: Effective<number>
+  /**
+   * Warm while waiting, rounded up to whole intervals; 0 is off. Neither
+   * opencode.json nor the host proposes one: below the rows it is the built-in 2h.
+   */
+  readonly waiting: Effective<number>
   readonly prompt: Effective<string>
 }
 
@@ -131,6 +141,7 @@ interface Layer {
   readonly on?: boolean
   readonly duration?: number
   readonly interval?: number
+  readonly waiting?: number
   readonly prompt?: string
 }
 
@@ -155,10 +166,16 @@ export function effectiveWarming(input: {
   }
   const interval = pick("interval")
   const duration = pick("duration")
+  const waitingLayer = layers.find((entry) => entry.waiting !== undefined)
+  const waiting: Effective<number> =
+    waitingLayer?.waiting === undefined
+      ? { value: WAITING_DEFAULT_MS, from: "built-in" }
+      : { value: waitingLayer.waiting, from: waitingLayer.from }
   return {
     on: pick("on"),
     duration: { ...duration, value: roundWarming(duration.value, interval.value) },
     interval,
+    waiting: { ...waiting, value: waiting.value === 0 ? 0 : roundWarming(waiting.value, interval.value) },
     prompt: pick("prompt"),
   }
 }
@@ -181,9 +198,11 @@ function rowLayers(row: ResolvedModelFields | undefined): Layer[] {
   if (row === undefined) return []
   const warming = row.warming === undefined ? undefined : warmingLayer(row.warming.value, row.warming.level)
   const interval = row.interval === undefined ? undefined : intervalOf(row.interval.value)
+  const waiting = row.waiting === undefined ? undefined : waitingOf(row.waiting.value)
   return [
     ...(warming === undefined ? [] : [warming]),
     ...(row.interval === undefined || interval === undefined ? [] : [{ from: row.interval.level, interval }]),
+    ...(row.waiting === undefined || waiting === undefined ? [] : [{ from: row.waiting.level, waiting }]),
     ...(row.prompt === undefined ? [] : [{ from: row.prompt.level, prompt: row.prompt.value }]),
   ]
 }
@@ -191,11 +210,13 @@ function rowLayers(row: ResolvedModelFields | undefined): Layer[] {
 function recordLayer(record: ModelSettingsRecord, from: SettingFrom): Layer {
   const warming = record.warming === undefined ? undefined : warmingLayer(record.warming, from)
   const interval = record.interval === undefined ? undefined : intervalOf(record.interval)
+  const waiting = record.waiting === undefined ? undefined : waitingOf(record.waiting)
   return {
     from,
     ...(warming?.on === undefined ? {} : { on: warming.on }),
     ...(warming?.duration === undefined ? {} : { duration: warming.duration }),
     ...(interval === undefined ? {} : { interval }),
+    ...(waiting === undefined ? {} : { waiting }),
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
   }
 }
@@ -212,6 +233,11 @@ function warmingLayer(text: string, from: SettingFrom): Layer | undefined {
 function intervalOf(text: string): number | undefined {
   const parsed = parseInterval(text)
   return "error" in parsed ? undefined : parsed.interval
+}
+
+function waitingOf(text: string): number | undefined {
+  const parsed = parseWaiting(text)
+  return "error" in parsed ? undefined : parsed.waiting
 }
 
 /**
@@ -348,18 +374,22 @@ export function roundedWarmingFor(
 export function warmingFieldsOf(input: {
   readonly warming?: string
   readonly interval?: string
+  readonly waiting?: string
   readonly prompt?: string
 }): { readonly fields: ModelWarmingFields } | { readonly error: string } {
   const warming = input.warming === undefined ? undefined : warmingField(input.warming)
   if (warming !== undefined && typeof warming === "object" && warming !== null) return warming
   const interval = input.interval === undefined ? undefined : intervalField(input.interval)
   if (interval !== undefined && typeof interval === "object" && interval !== null) return interval
+  const waiting = input.waiting === undefined ? undefined : waitingField(input.waiting)
+  if (waiting !== undefined && typeof waiting === "object" && waiting !== null) return waiting
   const prompt = input.prompt === undefined ? undefined : promptField(input.prompt)
   if (prompt !== undefined && typeof prompt === "object" && prompt !== null) return prompt
   return {
     fields: {
       ...(warming === undefined ? {} : { warming }),
       ...(interval === undefined ? {} : { interval }),
+      ...(waiting === undefined ? {} : { waiting }),
       ...(prompt === undefined ? {} : { prompt }),
     },
   }
@@ -377,6 +407,13 @@ function intervalField(text: string): string | null | { readonly error: string }
   const parsed = parseInterval(text)
   if ("error" in parsed) return parsed
   return formatDuration(parsed.interval)
+}
+
+function waitingField(text: string): string | null | { readonly error: string } {
+  if (text.trim().length === 0) return null
+  const parsed = parseWaiting(text)
+  if ("error" in parsed) return parsed
+  return formatWaiting(parsed.waiting)
 }
 
 function promptField(text: string): string | null | { readonly error: string } {
@@ -763,6 +800,7 @@ export interface ModelDefaultView {
   readonly on: Effective<boolean>
   readonly duration: Effective<number>
   readonly interval: Effective<number>
+  readonly waiting: Effective<number>
   readonly prompt: Effective<string>
   readonly effort?: Effective<string>
   /** The row itself sets at least one field (the rest may still come from below). */
@@ -782,6 +820,7 @@ export function modelDefaultView(input: {
     on: effective.on,
     duration: effective.duration,
     interval: effective.interval,
+    waiting: effective.waiting,
     prompt: effective.prompt,
     ...(effort === undefined ? {} : { effort }),
     own: input.record !== undefined,
@@ -789,14 +828,17 @@ export function modelDefaultView(input: {
 }
 
 /**
- * The row's one-line summary: "warm 30m · every 4m", "warming off", the
- * default effort, and — for a row that sets nothing itself — where the values
- * come from ("opencode.json", "every model", "built-in").
+ * The row's one-line summary: "warm 30m · every 4m", "warming off", a warm
+ * while waiting time some row sets ("waiting 4h"; the built-in 2h is not
+ * repeated on every row), the default effort, and — for a row that sets
+ * nothing itself — where the values come from ("opencode.json", "every
+ * model", "built-in").
  */
 export function modelDefaultValue(view: ModelDefaultView): string {
   const core = view.on.value ? `warm ${formatDuration(view.duration.value)} · every ${formatDuration(view.interval.value)}` : "warming off"
+  const waiting = view.on.value && view.waiting.from !== "built-in" ? ` · waiting ${formatWaiting(view.waiting.value)}` : ""
   const effort = view.effort === undefined ? "" : ` · effort ${view.effort.value}`
-  return `${core}${effort}${view.own ? "" : sourceSuffix(view)}`
+  return `${core}${waiting}${effort}${view.own ? "" : sourceSuffix(view)}`
 }
 
 const SOURCE_RANK: Record<SettingFrom, number> = {
@@ -812,13 +854,19 @@ const SOURCE_RANK: Record<SettingFrom, number> = {
   chat: 0,
 }
 
-// The distinct sources of the values the summary prints (warming, interval and
-// the effort), most specific first, so a mixed row reads "every model ·
-// opencode.json" and a wholly inherited one "built-in". The prompt's source
-// stays in the inspector's per-field detail.
+// The distinct sources of the values the summary prints (warming, interval,
+// the waiting time and the effort), most specific first, so a mixed row reads
+// "every model · opencode.json" and a wholly inherited one "built-in". The
+// prompt's source stays in the inspector's per-field detail.
 function sourceSuffix(view: ModelDefaultView): string {
   const sources = new Set<SettingFrom>(
-    [view.on, view.duration, view.interval, ...(view.effort === undefined ? [] : [view.effort])].map((field) => field.from),
+    [
+      view.on,
+      view.duration,
+      view.interval,
+      ...(view.on.value ? [view.waiting] : []),
+      ...(view.effort === undefined ? [] : [view.effort]),
+    ].map((field) => field.from),
   )
   const named = [...sources].filter((from) => from !== "built-in").toSorted((left, right) => SOURCE_RANK[left] - SOURCE_RANK[right])
   if (named.length === 0) return " · built-in"
@@ -944,6 +992,7 @@ export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
   compactionOutput: "Output token threshold",
   warming: "Warming",
   interval: "Ping every",
+  waiting: "Warm while waiting",
   prompt: "Keep-alive prompt",
   effort: "Effort",
   compactWarm: "Compact before cold",
@@ -962,7 +1011,7 @@ export function isDefaultSwitchField(field: ModelDefaultField): field is "compac
 
 // An agent/member/preset model row opens into the same field rows as a
 // Defaults › Models row, grouped: Model, Effort under the row, the Warming
-// group (Warming, Ping every, Keep-alive prompt, Compact before cold and the
+// group (Warming, Ping every, Warm while waiting, Keep-alive prompt, Compact before cold and the
 // cold-cache list), the Compaction group (Strategy, token thresholds, Model, Instructions) and the Images group
 // (Convert large image, Shrink large image, When image context is full).
 // The item id carries the field and the candidate, so
@@ -975,6 +1024,7 @@ export type ModelFieldName =
   | "effort"
   | "warming"
   | "interval"
+  | "waiting"
   | "prompt"
   | "compactWarm"
   | "coldCompact"
@@ -989,6 +1039,7 @@ export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
   "effort",
   "warming",
   "interval",
+  "waiting",
   "prompt",
   "compactWarm",
   "coldCompact",
@@ -1006,6 +1057,7 @@ export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
   effort: "Effort",
   warming: "Warming",
   interval: "Ping every",
+  waiting: "Warm while waiting",
   prompt: "Keep-alive prompt",
   compactWarm: "Compact before cold",
   coldCompact: COLD_COMPACT_LABEL,
@@ -1064,6 +1116,7 @@ export function modelSettingEffective(
   if (field === "warming")
     return { text: view.on.value ? formatDuration(view.duration.value) : "off", from: view.on.value ? view.duration.from : view.on.from }
   if (field === "interval") return { text: formatDuration(view.interval.value), from: view.interval.from }
+  if (field === "waiting") return { text: formatWaiting(view.waiting.value), from: view.waiting.from }
   if (field === "prompt") return { text: view.prompt.value, from: view.prompt.from }
   return view.effort === undefined ? undefined : { text: view.effort.value, from: view.effort.from }
 }
@@ -1166,6 +1219,9 @@ export function pingChoices(lifetime: number | undefined): readonly string[] {
 /** Warming's fixed totals; Custom… types any other time from 1m to 24h. */
 export const WARMING_TIMES: readonly string[] = ["15m", "30m", "45m", "1h", "1h30m", "2h", "4h", "8h"]
 
+/** Warm while waiting's fixed times; Custom… types any other time from 1m to 24h. */
+export const WAITING_TIMES: readonly string[] = ["1h", "1h30m", "2h", "3h", "4h", "8h"]
+
 /** The dropdown value that opens the one-line prompt; no time or variant is spelled this way. */
 export const CUSTOM_CHOICE = "custom…"
 
@@ -1177,12 +1233,13 @@ export interface ModelFieldChoice {
 }
 
 /**
- * The dropdown for a Warming, Ping every or Effort field on any model row:
- * Inherit (clears), the fixed values, and Custom… for the prompt. `now` is
- * the value Inherit falls back to; `variants` are the model's own variants.
+ * The dropdown for a Warming, Ping every, Warm while waiting or Effort field
+ * on any model row: Inherit (clears), the fixed values, and Custom… for the
+ * prompt. `now` is the value Inherit falls back to; `variants` are the
+ * model's own variants.
  */
 export function modelFieldChoices(
-  field: "warming" | "interval" | "effort",
+  field: "warming" | "interval" | "waiting" | "effort",
   input: { readonly now: string; readonly lifetime?: number; readonly variants?: readonly string[]; readonly everyModel: boolean },
 ): ModelFieldChoice[] {
   if (field === "warming")
@@ -1197,6 +1254,13 @@ export function modelFieldChoices(
     return [
       { title: `Inherit (now ${input.now})`, value: "" },
       ...pingChoices(input.lifetime).map((time) => ({ title: time, value: time })),
+      { title: "Custom…", value: CUSTOM_CHOICE },
+    ]
+  if (field === "waiting")
+    return [
+      { title: `Inherit (now ${input.now})`, value: "" },
+      { title: "Off", value: "off", description: "keeps the warming time" },
+      ...WAITING_TIMES.map((time) => ({ title: time, value: time })),
       { title: "Custom…", value: CUSTOM_CHOICE },
     ]
   return [

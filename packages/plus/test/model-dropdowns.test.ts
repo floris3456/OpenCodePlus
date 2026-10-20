@@ -42,6 +42,12 @@ test("Ping every's Inherit names the value it falls back to, then the lifetime's
   expect(choices.at(-1)?.value).toBe(CUSTOM_CHOICE)
 })
 
+test("Warm while waiting's Inherit names the value it falls back to, then Off, the fixed times and Custom…", () => {
+  const choices = modelFieldChoices("waiting", { now: "2h · built-in", everyModel: false })
+  expect(choices.map((choice) => choice.title)).toEqual(["Inherit (now 2h · built-in)", "Off", "1h", "1h30m", "2h", "3h", "4h", "8h", "Custom…"])
+  expect(choices.map((choice) => choice.value)).toEqual(["", "off", "1h", "1h30m", "2h", "3h", "4h", "8h", CUSTOM_CHOICE])
+})
+
 test("Effort offers the model's variants, and Every model adds Custom… since it has none of its own", () => {
   const model = modelFieldChoices("effort", { now: "", variants: ["low", "high"], everyModel: false })
   expect(model.map((choice) => choice.title)).toEqual(["(inherit / none)", "high", "low"])

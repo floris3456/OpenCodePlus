@@ -1790,6 +1790,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const parsed = warmingFieldsOf({
         ...(input.warming === undefined || input.warming === null ? {} : { warming: input.warming }),
         ...(input.interval === undefined || input.interval === null ? {} : { interval: input.interval }),
+        ...(input.waiting === undefined || input.waiting === null ? {} : { waiting: input.waiting }),
         ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
       })
       if ("error" in parsed) return invalidModelSettings(parsed.error)
@@ -1807,11 +1808,12 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.compactionOutput === undefined ? {} : { compactionOutput: input.compactionOutput }),
       })
       if ("error" in compact) return invalidModelSettings(compact.error)
-      const cleared = (value: string | null | undefined, field: "warming" | "interval" | "prompt") =>
+      const cleared = (value: string | null | undefined, field: "warming" | "interval" | "waiting" | "prompt") =>
         value === undefined ? undefined : value === null ? null : (parsed.fields[field] ?? null)
       const fields = {
         warming: cleared(input.warming, "warming"),
         interval: cleared(input.interval, "interval"),
+        waiting: cleared(input.waiting, "waiting"),
         prompt: cleared(input.prompt, "prompt"),
         ...(input.effort === undefined
           ? {}
@@ -5097,6 +5099,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
+      ...(record.waiting === undefined ? {} : { waiting: record.waiting }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
       ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
@@ -7040,6 +7043,7 @@ function toSnapshot(
             ...(record.basedOn === undefined ? {} : { basedOn: record.basedOn }),
             ...(record.warming === undefined ? {} : { warming: record.warming }),
             ...(record.interval === undefined ? {} : { interval: record.interval }),
+            ...(record.waiting === undefined ? {} : { waiting: record.waiting }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
             ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
             ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),

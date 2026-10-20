@@ -20,7 +20,16 @@ import { query } from "../src/instructions/query.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { load, save, canonical } from "../src/instructions/store.js"
 import { editModelRow } from "../src/instructions/ops.js"
-import { formatDuration, parseInterval, parsePrompt, parseWarming, setModelSettings, type ModelRecord } from "../src/instructions/model.js"
+import {
+  formatDuration,
+  parseInterval,
+  parsePrompt,
+  parseWaiting,
+  parseWarming,
+  setModelSettings,
+  WAITING_DEFAULT_MS,
+  type ModelRecord,
+} from "../src/instructions/model.js"
 import {
   BUILT_IN_WARMING,
   decodeHostWarming,
@@ -108,6 +117,52 @@ test("warming fields parse to stored values, empty clears, bad values refuse", (
   expect(warmingFieldsOf({})).toEqual({ fields: {} })
   // The warming time still gates through parseWarming (off/on/1m..24h).
   expect(parseWarming("off")).toEqual({ on: false })
+})
+
+test("warm while waiting parses to off or 1m..24h, stores canonically and clears when empty", () => {
+  expect(parseWaiting("off")).toEqual({ waiting: 0 })
+  expect(parseWaiting(" 2h ")).toEqual({ waiting: 120 * MINUTE })
+  expect(parseWaiting("1h 30m")).toEqual({ waiting: 90 * MINUTE })
+  expect("error" in parseWaiting("on")).toBe(true)
+  expect("error" in parseWaiting("30s")).toBe(true)
+  expect("error" in parseWaiting("25h")).toBe(true)
+  expect(warmingFieldsOf({ waiting: "90m" })).toEqual({ fields: { waiting: "1h30m" } })
+  expect(warmingFieldsOf({ waiting: "OFF" })).toEqual({ fields: { waiting: "off" } })
+  expect(warmingFieldsOf({ waiting: "" })).toEqual({ fields: { waiting: null } })
+  const bad = warmingFieldsOf({ waiting: "later" })
+  expect("error" in bad && bad.error).toContain("not a waiting time")
+  // Defaults rows and agent model rows store and clear it like the other fields.
+  const stored = setModelSettingsRecord([], {}, { waiting: "4h", interval: "5m" }, UPDATED)
+  expect(stored).toEqual([record({ waiting: "4h", interval: "5m" })])
+  expect(setModelSettingsRecord(stored, {}, { waiting: null }, UPDATED)).toEqual([record({ interval: "5m" })])
+  const target = { providerID: "anthropic", modelID: "claude" }
+  const row = setModelSettings([modelRow({ interval: "5m" })], { level: "project", agent: "alpha" }, target, { waiting: "off" }, UPDATED)
+  expect(row[0]).toMatchObject({ waiting: "off", interval: "5m" })
+  const cleared = setModelSettings(row, { level: "project", agent: "alpha" }, target, { waiting: null }, UPDATED)
+  expect(cleared[0]).toMatchObject({ interval: "5m" })
+  expect(cleared[0]).not.toHaveProperty("waiting")
+})
+
+test("warm while waiting resolves row, this model, Every model, built-in 2h, rounded up to whole pings", () => {
+  // Nothing sets it: the built-in 2h, whatever opencode.json says about warming.
+  expect(effectiveWarming({ host: { on: true, interval: 4 * MINUTE } }).waiting).toEqual({ value: WAITING_DEFAULT_MS, from: "built-in" })
+  expect(WAITING_DEFAULT_MS).toBe(120 * MINUTE)
+  const every = record({ waiting: "3h" })
+  const model = record({ providerID: "anthropic", modelID: "claude", waiting: "off" })
+  expect(effectiveWarming({ every }).waiting).toEqual({ value: 180 * MINUTE, from: "every" })
+  expect(effectiveWarming({ model, every }).waiting).toEqual({ value: 0, from: "model" })
+  expect(effectiveWarming({ row: { waiting: { value: "90m", level: "global" } }, model, every }).waiting).toEqual({
+    value: 92 * MINUTE,
+    from: "global",
+  })
+  // Rounded up to whole pings like a warming time: 90m with the built-in 4m ping is 92m, 61m is 64m; off stays off.
+  expect(effectiveWarming({ every: record({ waiting: "61m", interval: "4m" }) }).waiting.value).toBe(64 * MINUTE)
+  // A stored value that no longer parses sets nothing.
+  expect(effectiveWarming({ every: record({ waiting: "soon" }) }).waiting).toEqual({ value: WAITING_DEFAULT_MS, from: "built-in" })
+  // The Defaults row shows it only when some row sets it.
+  expect(modelDefaultValue(modelDefaultView({ record: record({ warming: "30m" }) }))).toBe("warm 32m · every 4m")
+  expect(modelDefaultValue(modelDefaultView({ record: record({ warming: "30m", waiting: "4h" }) }))).toBe("warm 32m · every 4m · waiting 4h")
+  expect(modelSettingValue(modelDefaultView({ every }), "waiting", undefined)).toBe("3h · every model")
 })
 
 test("decodeHostWarming reads the scoped config forms and ignores anything else", () => {
@@ -672,6 +727,53 @@ test("instructions tools set, reset and show one Defaults › Models field", asy
   expect(after).not.toHaveProperty("interval")
 })
 
+test("warm while waiting sets, shows and clears through the instructions tools on Defaults and agent model rows", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude")],
+    classifications: { "": "general", claude: "general" },
+  })
+  await registerInstructionTools(ctx, createPlusApi(ctx, createState()))
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const show = need(tools, "instructions_read")
+  const reset = need(tools, "instructions_reset")
+  const defaults = async () => (await load(project)).records.find((entry) => entry.type === "modelSettings")
+  // Defaults › Models › Every model: the typed field on the row, stored canonically.
+  await runOk(set, { id: "item:defaults:/models:modeldefault:*", waiting: "90m" })
+  expect(await defaults()).toMatchObject({ waiting: "1h30m" })
+  expect(await runOk(show, { id: "item:defaults:/models:modelsetting:waiting:*" })).toMatchObject({
+    field: "waiting",
+    value: { text: "1h32m", from: "model" },
+  })
+  // It shows rounded up to whole 4m pings. The field row takes text; off is a value of its own, a bad time is refused.
+  await runOk(set, { id: "item:defaults:/models:modelsetting:waiting:*", text: "off" })
+  expect(await defaults()).toMatchObject({ waiting: "off" })
+  expect((await runFail(set, { id: "item:defaults:/models:modelsetting:waiting:*", text: "soon" })).message).toContain("not a waiting time")
+  expect((await runFail(set, { id: "item:defaults:/models:modeldefault:*", waiting: "25h" })).message).toContain("at most 24h")
+  // reset clears it: the row inherits the built-in 2h again.
+  await runOk(reset, { id: "item:defaults:/models:modelsetting:waiting:*" })
+  expect(await defaults()).toBeUndefined()
+  expect(await runOk(show, { id: "item:defaults:/models:modelsetting:waiting:*" })).toMatchObject({
+    value: { text: "2h", from: "built-in" },
+  })
+
+  // An agent's model row: its field row and the typed field write that agent's record.
+  const field = `item:project:build:${modelFieldItemId({ providerID: "anthropic", modelID: "claude" }, "waiting")}`
+  const agentRecord = async () => (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
+  await runOk(set, { id: field, text: "3h" })
+  expect(await agentRecord()).toMatchObject({ providerID: "anthropic", modelID: "claude", waiting: "3h" })
+  await runOk(set, { id: "item:project:build:model:anthropic/claude", waiting: "4h", interval: "4m" })
+  expect(await agentRecord()).toMatchObject({ waiting: "4h", interval: "4m" })
+  // r on the field clears only that field.
+  await runOk(reset, { id: field })
+  const after = await agentRecord()
+  expect(after).not.toHaveProperty("waiting")
+  expect(after).toMatchObject({ interval: "4m" })
+})
+
 test("an agent's model row opens into field rows and one field edits and resets through the tool", async () => {
   const project = await tempProject()
   const buildPath = path.join(project, ".opencode", "agent", "build.md")
@@ -690,7 +792,7 @@ test("an agent's model row opens into field rows and one field edits and resets 
   const fields = rows.filter((row) => row.id.startsWith("item:project:build:modelfield:"))
   // Compaction holds the early token thresholds: the only place they are set.
   expect(fields.map((row) => row.label)).toEqual([
-    "Model", "Effort", "Warming", "Ping every", "Keep-alive prompt",
+    "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Keep-alive prompt",
     "Compact before cold", "Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions",
     "Convert large image", "Shrink large image", "When image context is full",
   ])

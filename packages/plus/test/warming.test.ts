@@ -10,6 +10,7 @@ import { Session } from "@opencode/schema/session"
 import { AbsolutePath } from "@opencode/schema/schema"
 import {
   formatWarming,
+  WAITING_DEFAULT_MS,
   parseWarming,
   resolveModelWarming,
   setModelWarming,
@@ -28,7 +29,7 @@ import {
   type PlusState,
 } from "../src/index.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
-import { createWarmingStore, decideWarming, WAITING_WARMING_MS, WARMING_DEFAULTS, warmingStore, type ChatCompactionDefaults, type WarmingRows } from "../src/warming.js"
+import { createWarmingStore, decideWarming, WARMING_DEFAULTS, warmingStore, type ChatCompactionDefaults, type WarmingRows } from "../src/warming.js"
 import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
 import { Effect, Stream } from "effect"
 import { context } from "./harness.js"
@@ -99,7 +100,7 @@ test("warming values parse to off, on, or a total time between 1m and 24h", () =
 test("the per-chat switch beats the model rows, which beat the host configuration", () => {
   const twoHours = { warming: { value: "2h", level: "project" as const } }
   // Nothing set: core's proposal passes through untouched, including "off".
-  expect(decideWarming({ configured, rows: {}, chat: undefined })).toEqual({ settings: configured, source: "config" })
+  expect(decideWarming({ configured, rows: {}, chat: undefined })).toEqual({ settings: configured, source: "config", waiting: WAITING_DEFAULT_MS })
   expect(decideWarming({ configured: undefined, rows: {}, chat: undefined })).toEqual({ settings: undefined, source: "config" })
   // The model row switches it off, or sets the total time over the configuration.
   expect(decideWarming({ configured, rows: { row: { warming: { value: "off", level: "project" } } }, chat: undefined })).toEqual({
@@ -119,6 +120,7 @@ test("the per-chat switch beats the model rows, which beat the host configuratio
   expect(decideWarming({ configured, rows: { row: { warming: { value: "off", level: "project" } } }, chat: "on" })).toEqual({
     settings: configured,
     source: "chat",
+    waiting: WAITING_DEFAULT_MS,
   })
   expect(decideWarming({ configured: undefined, rows: { row: twoHours }, chat: "on" }).settings?.duration).toBe(120 * MINUTE)
 })
@@ -332,7 +334,7 @@ test("the store applies the decision to the hook event and records the window fo
   expect((await store.status("ses_warm", 1_000_000 + 3 * MINUTE)).active).toBe(false)
 })
 
-test("a chat waiting on its own running work stays warm up to 75 minutes, then falls back", async () => {
+test("a chat waiting on its own running work stays warm for its warm while waiting time (2h by default), then falls back", async () => {
   const store = createWarmingStore(await tempFile())
   // Like core: each warming request proposes the settings the store returned last time.
   const proposed = new Map<string, SessionWarming["settings"]>()
@@ -353,8 +355,8 @@ test("a chat waiting on its own running work stays warm up to 75 minutes, then f
 
   // The chat's own command (or any tool call) still runs.
   store.running("ses_warm", true)
-  expect(await decide("warm", 28)).toBe(WAITING_WARMING_MS)
-  expect((await store.status("ses_warm", 1_000_000 + 40 * MINUTE)).expires).toBe(1_000_000 + WAITING_WARMING_MS)
+  expect(await decide("warm", 28)).toBe(WAITING_DEFAULT_MS)
+  expect((await store.status("ses_warm", 1_000_000 + 40 * MINUTE)).expires).toBe(1_000_000 + WAITING_DEFAULT_MS)
   // It ends: back to 30 minutes, though core now proposes the longer window it was given.
   store.running("ses_warm", false)
   expect(await decide("warm", 29)).toBe(30 * MINUTE)
@@ -362,13 +364,13 @@ test("a chat waiting on its own running work stays warm up to 75 minutes, then f
   // A subagent it started runs while the chat itself is idle.
   store.running("ses_child", true)
   store.parent("ses_child", "ses_warm")
-  expect(await decide("warm", 29.5)).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 29.5)).toBe(WAITING_DEFAULT_MS)
 
   // A grandchild runs while the subagent between them is idle.
   store.running("ses_child", false)
   store.running("ses_grandchild", true)
   store.parent("ses_grandchild", "ses_child")
-  expect(await decide("warm", 36)).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 36)).toBe(WAITING_DEFAULT_MS)
   // Another chat is not kept warm by work it did not start.
   expect(await decide("warm", 36, "ses_other")).toBe(30 * MINUTE)
 
@@ -381,6 +383,57 @@ test("a chat waiting on its own running work stays warm up to 75 minutes, then f
   store.running("ses_warm", true)
   expect(await decide("activity", 50, "ses_warm", { row: { warming: { value: "2h", level: "project" } } })).toBe(120 * MINUTE)
   expect(await decide("warm", 54, "ses_warm", { row: { warming: { value: "off", level: "project" } } })).toBeUndefined()
+})
+
+test("the waiting window is the chat's own warm while waiting time, never shorter than its warming time", async () => {
+  // The decision carries the resolved time: the built-in 2h, a row's own, Defaults', or off.
+  expect(decideWarming({ configured, rows: {}, chat: undefined }).waiting).toBe(120 * MINUTE)
+  expect(decideWarming({ configured, rows: { row: { waiting: { value: "4h", level: "project" } } }, chat: undefined }).waiting).toBe(240 * MINUTE)
+  expect(decideWarming({ configured, rows: { model: defaultsRecord({ waiting: "90m" }) }, chat: undefined }).waiting).toBe(90 * MINUTE)
+  expect(decideWarming({ configured, rows: { every: defaultsRecord({ waiting: "off" }) }, chat: undefined }).waiting).toBe(0)
+  // Rounded up to whole 2m pings, like a warming time.
+  expect(decideWarming({ configured, rows: { row: { waiting: { value: "61m", level: "project" } } }, chat: undefined }).waiting).toBe(62 * MINUTE)
+
+  const store = createWarmingStore(await tempFile())
+  const decide = async (sessionID: string, rows: WarmingRows) => {
+    const next = event({ sessionID: Session.ID.make(sessionID) })
+    await store.decide(next, rows)
+    return next.settings?.duration
+  }
+  for (const id of ["ses_default", "ses_own", "ses_defaults", "ses_off", "ses_short", "ses_cold"]) store.running(id, true)
+  expect(await decide("ses_default", {})).toBe(120 * MINUTE)
+  expect(await decide("ses_own", { row: { waiting: { value: "4h", level: "project" } }, model: defaultsRecord({ waiting: "1h" }) })).toBe(240 * MINUTE)
+  expect(await decide("ses_defaults", { model: defaultsRecord({ waiting: "90m" }) })).toBe(90 * MINUTE)
+  // Off keeps the chat's warming time; a waiting time below it does not shorten it.
+  expect(await decide("ses_off", { row: { waiting: { value: "off", level: "project" } } })).toBe(30 * MINUTE)
+  expect(await decide("ses_short", { row: { waiting: { value: "20m", level: "project" } } })).toBe(30 * MINUTE)
+  // Warming off for the chat: no window, however long it would wait.
+  expect(
+    await decide("ses_cold", { row: { warming: { value: "off", level: "project" }, waiting: { value: "4h", level: "project" } } }),
+  ).toBeUndefined()
+  expect((await store.status("ses_own", 1_000_000 + MINUTE)).expires).toBe(1_000_000 + 240 * MINUTE)
+})
+
+test("settle keeps the waiting time the chat's rows decided at its last request", async () => {
+  const clock = { now: 1_000_000 }
+  const store = createWarmingStore(await tempFile(), { now: () => clock.now })
+  const start = async (sessionID: string, waiting: string) => {
+    const kid = `${sessionID}_kid`
+    store.parent(kid, sessionID)
+    store.running(kid, true)
+    const next = event({ sessionID: Session.ID.make(sessionID) })
+    await store.decide(next, { row: { waiting: { value: waiting, level: "project" } } })
+    return next.settings?.duration
+  }
+  expect(await start("ses_long", "3h")).toBe(180 * MINUTE)
+  expect(await start("ses_off", "off")).toBe(30 * MINUTE)
+  // The chats' own turns end while the subagents they started still run: each
+  // window restarts from the end of the turn with the chat's own waiting time.
+  clock.now = 1_000_000 + 10 * MINUTE
+  expect(await store.settle("ses_long")).toEqual(["ses_long"])
+  expect(await store.status("ses_long", clock.now)).toMatchObject({ since: clock.now, expires: clock.now + 180 * MINUTE })
+  expect(await store.settle("ses_off")).toEqual(["ses_off"])
+  expect(await store.status("ses_off", clock.now)).toMatchObject({ since: clock.now, expires: clock.now + 30 * MINUTE })
 })
 
 // Like core: each warming request proposes the settings the store returned last time.
@@ -412,7 +465,7 @@ test("a start whose end was missed cannot hold the waiting window: each keep-ali
   // The turn starts; its end event never arrives, so the busy flag stays set.
   store.running("ses_warm", true)
   running.add("ses_warm")
-  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  expect(await decide("activity", 0)).toBe(WAITING_DEFAULT_MS)
   running.delete("ses_warm")
   // The next keep-alive gives the configured window, though the stale flag says the chat runs.
   expect(await decide("warm", 4)).toBe(30 * MINUTE)
@@ -420,16 +473,16 @@ test("a start whose end was missed cannot hold the waiting window: each keep-ali
 
   // Controls: while core reports the chat, or a subagent it started, running, the waiting window holds.
   running.add("ses_warm")
-  expect(await decide("warm", 8)).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 8)).toBe(WAITING_DEFAULT_MS)
   running.delete("ses_warm")
   store.parent("ses_child", "ses_warm")
   running.add("ses_child")
-  expect(await decide("warm", 12)).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 12)).toBe(WAITING_DEFAULT_MS)
   running.delete("ses_child")
   expect(await decide("warm", 16)).toBe(30 * MINUTE)
   // When core cannot be asked, the session events' busy set answers as before.
   host.reachable = false
-  expect(await decide("warm", 20)).toBe(WAITING_WARMING_MS)
+  expect(await decide("warm", 20)).toBe(WAITING_DEFAULT_MS)
 })
 
 test("when a turn ends, the chat and the chats that started it show the configured window at once", async () => {
@@ -441,8 +494,8 @@ test("when a turn ends, the chat and the chats that started it show the configur
   // The chat's own turn: waiting while it runs, configured as soon as it ends.
   store.running("ses_warm", true)
   running.add("ses_warm")
-  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
-  expect(await expires()).toBe(1_000_000 + WAITING_WARMING_MS)
+  expect(await decide("activity", 0)).toBe(WAITING_DEFAULT_MS)
+  expect(await expires()).toBe(1_000_000 + WAITING_DEFAULT_MS)
   // Core still lists the chat until its execution settles; the ended turn does not count.
   store.running("ses_warm", false)
   expect(await store.settle("ses_warm")).toEqual(["ses_warm"])
@@ -457,11 +510,11 @@ test("when a turn ends, the chat and the chats that started it show the configur
   store.running("ses_second", true)
   running.add("ses_child")
   running.add("ses_second")
-  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  expect(await decide("activity", 0)).toBe(WAITING_DEFAULT_MS)
   // The first ends: the second still runs, so the chat keeps waiting.
   store.running("ses_child", false)
   expect(await store.settle("ses_child")).toEqual([])
-  expect(await expires()).toBe(1_000_000 + WAITING_WARMING_MS)
+  expect(await expires()).toBe(1_000_000 + WAITING_DEFAULT_MS)
   // The second's end event is lost. When the first's next turn ends, core says nothing else runs.
   running.delete("ses_second")
   store.running("ses_child", true)
@@ -478,7 +531,7 @@ test("a turn that ends long after its last request restarts a window that still 
   // A question waits on the user; it times out after an hour and the turn ends without another request.
   store.running("ses_warm", true)
   running.add("ses_warm")
-  expect(await decide("activity", 0)).toBe(WAITING_WARMING_MS)
+  expect(await decide("activity", 0)).toBe(WAITING_DEFAULT_MS)
   clock.now = 1_000_000 + 60 * MINUTE
   store.running("ses_warm", false)
   running.delete("ses_warm")
@@ -494,7 +547,7 @@ test("a turn that ends long after its last request restarts a window that still 
     phase: "warm",
     since: clock.now,
     now: clock.now + 2 * MINUTE,
-    settings: { ...configured, duration: WAITING_WARMING_MS },
+    settings: { ...configured, duration: WAITING_DEFAULT_MS },
   })
   await store.decide(warm, {})
   expect(warm.settings?.duration).toBe(30 * MINUTE)
@@ -526,7 +579,7 @@ test("a window resumed after a restart is decided from the configured settings a
   running.add("ses_warm")
   const waiting = resume(1_000_000 + 12 * MINUTE)
   await restarted.decide(waiting, {})
-  expect(waiting.settings?.duration).toBe(WAITING_WARMING_MS)
+  expect(waiting.settings?.duration).toBe(WAITING_DEFAULT_MS)
   running.delete("ses_warm")
   const warm = event({ phase: "warm", now: 1_000_000 + 16 * MINUTE, settings: waiting.settings })
   await restarted.decide(warm, {})
@@ -543,7 +596,7 @@ test("a turn's end event re-decides the chat's window through the host events", 
     warmingStore.running(lead, true)
     const activity = event({ sessionID: lead })
     await warmingStore.decide(activity, {})
-    expect(activity.settings?.duration).toBe(WAITING_WARMING_MS)
+    expect(activity.settings?.duration).toBe(WAITING_DEFAULT_MS)
     const ctx = context({
       event: { subscribe: () => Stream.fromIterable([{ type: "session.execution.succeeded", data: { sessionID: lead } }]) as never },
       session: { get: (input) => Effect.succeed({ id: input.sessionID } as never) },
@@ -588,7 +641,7 @@ test("a subagent waiting out a provider retry still keeps its parent chat warm",
     expect(state.running.has("ses_retry_kid")).toBe(true)
     const lead = event({ sessionID: Session.ID.make("ses_retry_lead"), phase: "warm", now: 1_000_000 + MINUTE })
     await warmingStore.decide(lead, {})
-    expect(lead.settings?.duration).toBe(WAITING_WARMING_MS)
+    expect(lead.settings?.duration).toBe(WAITING_DEFAULT_MS)
   } finally {
     warmingStore.running("ses_retry_kid", false)
     if (prior === undefined) delete process.env.XDG_DATA_HOME

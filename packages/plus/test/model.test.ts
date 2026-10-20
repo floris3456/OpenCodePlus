@@ -746,6 +746,7 @@ test("model field rows name the level that set an inherited value, not the Defau
     ["Effort", "high · global", false],
     ["Warming", "30m · global", false],
     ["Ping every", "4m · global", false],
+    ["Warm while waiting", "2h · built-in", false],
     ["Keep-alive prompt", "keep alive · global", false],
     ["Compact before cold", "off · built-in", false],
     ["Strategy", "Auto · built-in", false],
