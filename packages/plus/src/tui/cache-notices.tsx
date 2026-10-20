@@ -80,9 +80,8 @@ export function createCacheNotices(context: Plugin.Context, options: { readonly 
     )
   }
 
-  const openNotice = (notice: Plus.MonitorNotice) => {
+  const dismissNotice = (notice: Plus.MonitorNotice) => {
     setNotices((list) => list.filter((entry) => entry.requestID !== notice.requestID))
-    options.open(notice)
     if (server()?.noticeDismiss === "this-tui") {
       const at = Date.now()
       void saveLocal((draft) => {
@@ -96,6 +95,10 @@ export function createCacheNotices(context: Plugin.Context, options: { readonly 
     void plus["monitor.dismiss"]({ requestID: notice.requestID }).catch((error: unknown) =>
       context.ui.toast.show({ variant: "error", message: error instanceof Error ? error.message : String(error) }),
     )
+  }
+  const openNotice = (notice: Plus.MonitorNotice) => {
+    dismissNotice(notice)
+    options.open(notice)
   }
 
   const updateServer = async (patch: Plus.PlusSettingsInput) => {
@@ -220,7 +223,14 @@ export function createCacheNotices(context: Plugin.Context, options: { readonly 
     append: "app",
     render: () => (
       <Show when={visible().length > 0}>
-        <NoticeStack context={context} notices={visible} now={now} bottom={monitorOpen()} onOpen={openNotice} />
+        <NoticeStack
+          context={context}
+          notices={visible}
+          now={now}
+          bottom={monitorOpen()}
+          onOpen={openNotice}
+          onDismiss={dismissNotice}
+        />
       </Show>
     ),
   })
@@ -242,6 +252,7 @@ function NoticeStack(props: {
   readonly now: () => number
   readonly bottom: boolean
   readonly onOpen: (notice: Plus.MonitorNotice) => void
+  readonly onDismiss: (notice: Plus.MonitorNotice) => void
 }) {
   const theme = () => props.context.theme
   const dimensions = useTerminalDimensions()
@@ -283,6 +294,18 @@ function NoticeStack(props: {
                 </text>
                 <text fg={theme().text.muted} flexShrink={0} marginLeft={1} wrapMode="none">
                   {age(notice.at)}
+                </text>
+                <text
+                  fg={theme().text.action.secondary.base}
+                  flexShrink={0}
+                  marginLeft={1}
+                  wrapMode="none"
+                  onMouseUp={(event) => {
+                    event.stopPropagation()
+                    props.onDismiss(notice)
+                  }}
+                >
+                  ×
                 </text>
               </box>
               <text fg={theme().text.base} wrapMode="none">

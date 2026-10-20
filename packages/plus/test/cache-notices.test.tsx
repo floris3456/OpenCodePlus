@@ -111,6 +111,8 @@ test("every session's notices stack in the corner; opening one shows it in the m
     expect(frame.indexOf("scene authoring kit")).toBeLessThan(frame.indexOf("scene visuals"))
 
     const lines = frame.split("\n")
+    expect(lines.find((line) => line.includes("Cache miss"))).toContain("×")
+    expect(lines.find((line) => line.includes("Partial cache reuse"))).toContain("×")
     const row = lines.findIndex((line) => line.includes("scene visuals"))
     await fixture.mockMouse.click(lines[row]!.indexOf("scene visuals"), row)
     await sleep(50)
@@ -119,6 +121,55 @@ test("every session's notices stack in the corner; opening one shows it in the m
     const after = await fixture.waitForFrame((text) => !text.includes("scene visuals"))
     // The other notice stays.
     expect(after).toContain("scene authoring kit")
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("× dismisses a notice in every TUI without opening the monitor; the body of the notice still opens it", async () => {
+  const { fixture, opened, dismissed } = await render({
+    notices: [notice("newest", "ses_other", { verdict: "miss", title: "Round 2: scene authoring kit" }), notice("older", "ses_chat", { title: "Round 2: scene visuals" })],
+  })
+  try {
+    const frame = await fixture.waitForFrame((text) => text.includes("scene visuals"))
+    const lines = frame.split("\n")
+    const row = lines.findIndex((line) => line.includes("Partial cache reuse"))
+    await fixture.mockMouse.click(lines[row]!.indexOf("×"), row)
+    await sleep(50)
+    expect(opened).toEqual([])
+    expect(dismissed).toEqual(["older"])
+    const after = await fixture.waitForFrame((text) => !text.includes("scene visuals"))
+    expect(after).toContain("scene authoring kit")
+
+    const rest = after.split("\n")
+    const body = rest.findIndex((line) => line.includes("scene authoring kit"))
+    await fixture.mockMouse.click(rest[body]!.indexOf("scene authoring kit"), body)
+    await sleep(50)
+    expect(opened.map((entry) => entry.requestID)).toEqual(["newest"])
+  } finally {
+    fixture.destroy()
+  }
+})
+
+test("× with dismissal kept per TUI keeps the dismissal on this TUI and does not open the monitor", async () => {
+  const storage = new Map<string, unknown>()
+  const { fixture, opened, dismissed } = await render({
+    dismiss: "this-tui",
+    storage,
+    notices: [notice("theirs", "ses_other", { title: "Their subagent" })],
+  })
+  try {
+    // The server's dismissal mode arrives with the first settings read.
+    await sleep(50)
+    const frame = await fixture.waitForFrame((text) => text.includes("Their subagent"))
+    const lines = frame.split("\n")
+    const row = lines.findIndex((line) => line.includes("Their subagent")) - 1
+    await fixture.mockMouse.click(lines[row]!.indexOf("×"), row)
+    await fixture.waitForFrame((text) => !text.includes("Their subagent"))
+    await sleep(50)
+    expect(opened).toEqual([])
+    expect(dismissed).toEqual([])
+    expect(Object.keys((storage.get("opencode.plus.miss-notices") as { dismissed: Record<string, number> }).dismissed)).toEqual(["theirs"])
   } finally {
     fixture.destroy()
   }
