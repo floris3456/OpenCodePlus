@@ -22,7 +22,7 @@ import type { PlusState } from "../index.js"
 import { checkFiles, missingCheckFiles } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
-import { chatEditRefusal, isScopePath, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
+import { chatEditRefusal, isScopePath, namesProtectedState, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
 import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { setChecksHandler } from "./api-git-ops.js"
@@ -247,12 +247,14 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }
-  const resolved: ResolvedBrief = { ...brief, checks }
+  // Forbidding protected state forbids what no run may change anyway (s3-c:
+  // ".opencodeplus/*" refused two whole briefs), so it is dropped, not refused.
+  const forbidden = brief.scope.forbidden.filter((entry) => !namesProtectedState(entry))
+  const resolved: ResolvedBrief = { ...brief, scope: { ...brief.scope, forbidden }, checks }
 
   const paths = brief.scope.paths
-  for (const candidate of [...paths, ...brief.scope.forbidden]) {
-    if (!isScopePath(candidate)) return fail("E_PATHS", PATHS_MESSAGE, PATHS_ACCEPTED)
-  }
+  const invalid = [...paths, ...forbidden].find((candidate) => !isScopePath(candidate))
+  if (invalid !== undefined) return fail("E_PATHS", `${PATHS_MESSAGE} Not one: "${invalid}".`, PATHS_ACCEPTED)
   const refused = briefRefusal(table, brief)
   if (refused !== undefined) return refused
 

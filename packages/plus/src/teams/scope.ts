@@ -8,11 +8,18 @@ import { editRefusal, type PermissionTable } from "../instructions/permission-en
 const Scope = Schema.Struct({ paths: Schema.Array(Schema.String), forbidden: Schema.Array(Schema.String) })
 export type RunScope = typeof Scope.Type
 
+const PROTECTED_PARTS = [".git", ".cairn", ".beads", ".opencodeplus"]
+
 export function isScopePath(candidate: string): boolean {
   const base = candidate.endsWith("/*") ? candidate.slice(0, -2) : candidate
   return base.length > 0 && !path.isAbsolute(base) && !base.endsWith("/") &&
-    !base.split("/").some((part) => part === "." || part === ".." || part === "" || [".git", ".cairn", ".beads", ".opencodeplus"].includes(part)) &&
+    !base.split("/").some((part) => part === "." || part === ".." || part === "" || PROTECTED_PARTS.includes(part)) &&
     !/[?*\[\]\\\u0000]/.test(base)
+}
+
+/** A path into protected state (.git, .opencodeplus, …), which no run may change whatever its scope. */
+export function namesProtectedState(candidate: string): boolean {
+  return candidate.split("/").some((part) => PROTECTED_PARTS.includes(part))
 }
 
 export async function runScope(root: string, run: RunRecord): Promise<RunScope> {

@@ -1958,3 +1958,26 @@ test("delegate with a task no integrate returned says to leave task out", async 
     }
   })
 }, 30000)
+
+test("delegate drops forbidden entries naming protected state and names an invalid scope path", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_forbid" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const scope = (forbidden: string[]) => ({ paths: ["packages/plus/src/*"], forbidden })
+      const delegated = required(
+        await api.delegate(delegateInput({ requestID: "forbid-1", scope: scope(["packages/plus/src/x.ts", ".opencodeplus/*", ".git"]) }), callerFor(parent)),
+      ) as { run: string }
+      // What no run may change anyway is left out; the rest is kept and enforced.
+      const stored = await Bun.file(path.join(root, "runs", delegated.run, "brief.json")).json()
+      expect(stored.scope).toEqual({ paths: ["packages/plus/src/*"], forbidden: ["packages/plus/src/x.ts"] })
+      const error = rejected(await api.delegate(delegateInput({ requestID: "forbid-2", scope: scope(["/etc/passwd"]) }), callerFor(parent)))
+      expect(error.code).toBe("E_PATHS")
+      expect(error.message).toContain('Not one: "/etc/passwd"')
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
