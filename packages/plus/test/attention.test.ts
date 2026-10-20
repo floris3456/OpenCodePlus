@@ -171,10 +171,10 @@ test("a background shell or a running subagent makes the reply a reply, not done
   await lab.watch.handle(lab.event("evt_exit", "shell.exited", { id: "sh_1" }))
   await lab.watch.handle(lab.event("evt_3", "session.execution.succeeded", { sessionID: "ses_lead" }))
   await lab.watch.handle(lab.event("evt_4", "session.execution.succeeded", { sessionID: "ses_other" }))
-  expect(lab.emitted.map((attention) => [attention.id, attention.kind])).toEqual([
-    ["evt_2", "reply"],
-    ["evt_3", "done"],
-    ["evt_4", "reply"],
+  expect(lab.emitted.map((attention) => [attention.id, attention.kind, attention.message])).toEqual([
+    ["evt_2", "reply", "Replied; its work still runs"],
+    ["evt_3", "done", "Done"],
+    ["evt_4", "reply", "Replied; its work still runs"],
   ])
 })
 

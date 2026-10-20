@@ -3951,19 +3951,27 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         return status
       }),
     "settings.get": () => Effect.promise(() => plusSettings.read()),
-    "settings.set": (input) =>
-      Effect.promise(async () => {
+    "settings.set": (input, context) =>
+      Effect.gen(function* () {
         const { attention, ...rest } = input
-        const current = await plusSettings.read()
+        const current = yield* Effect.promise(() => plusSettings.read())
         const merged = attention === undefined ? undefined : mergeAttention(current.attention, attention)
-        if (merged !== undefined && "error" in merged) throw new Error(merged.error)
-        return plusSettings.update({
-          ...Object.fromEntries(Object.entries(rest).filter((entry) => entry[1] !== undefined)),
-          ...(merged === undefined ? {} : { attention: merged.settings }),
-        })
+        if (merged !== undefined && "error" in merged)
+          return yield* Effect.fail(context.error("settings.invalid", merged.error, { reason: merged.error }))
+        return yield* Effect.promise(() =>
+          plusSettings.update({
+            ...Object.fromEntries(Object.entries(rest).filter((entry) => entry[1] !== undefined)),
+            ...(merged === undefined ? {} : { attention: merged.settings }),
+          }),
+        )
       }),
     "attention.player": (input) => Effect.sync(() => ({ players: attentionStore.player(input.id) })),
-    "attention.sound": (input) => Effect.promise(() => readAttentionSound(input.sound)),
+    "attention.sound": (input, context) =>
+      Effect.gen(function* () {
+        const sound = yield* Effect.promise(() => readAttentionSound(input.sound))
+        if ("reason" in sound) return yield* Effect.fail(context.error("sound.invalid", sound.reason, sound))
+        return sound
+      }),
     "attention.test": (input) => attentionTest(state, input),
   }
 }
@@ -6197,10 +6205,10 @@ function watchAttention(ctx: Context, state: PlusState): Effect.Effect<void, nev
     parentOf: (sessionID) => parentChatOf(ctx, sessionID),
     chatOf: async (sessionID) => {
       const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) }))
-      return {
-        ...(session.agent === undefined ? {} : { agent: String(session.agent) }),
-        ...(session.title === undefined || session.title.length === 0 ? {} : { title: session.title }),
-      }
+      // A chat on the default agent names none; its first turn ends before it has a title.
+      const agent = await currentSessionAgent(ctx, sessionID)
+      const title = session.title !== undefined && session.title.length > 0 ? session.title : path.basename(session.location.directory)
+      return { ...(agent === undefined ? {} : { agent }), title }
     },
     settingsFor: (agent) => attentionFor(state, agent),
     workRuns: (sessionID) => warmingStore.workRuns(sessionID),
@@ -6237,11 +6245,12 @@ function emitAttention(state: PlusState, attention: Plus.Attention): Effect.Effe
 const SOUND_FILES = new Set([".mp3", ".wav", ".ogg", ".flac"])
 const MAX_SOUND_BYTES = 5 * 1024 * 1024
 
-async function readAttentionSound(sound: string): Promise<Plus.AttentionSoundData> {
+async function readAttentionSound(sound: string): Promise<Plus.AttentionSoundData | Plus.SettingsInvalid> {
   if (!path.isAbsolute(sound) || !SOUND_FILES.has(path.extname(sound).toLowerCase()))
-    throw new Error("A sound file is an absolute path to an .mp3, .wav, .ogg or .flac file")
+    return { reason: "A sound file is an absolute path to an .mp3, .wav, .ogg or .flac file" }
   const file = Bun.file(sound)
-  if (file.size > MAX_SOUND_BYTES) throw new Error(`Sound files are at most ${MAX_SOUND_BYTES / 1024 / 1024} MB`)
+  if (!(await file.exists())) return { reason: `No sound file at ${sound} on the server` }
+  if (file.size > MAX_SOUND_BYTES) return { reason: `Sound files are at most ${MAX_SOUND_BYTES / 1024 / 1024} MB` }
   return { data: Buffer.from(await file.arrayBuffer()).toString("base64"), name: path.basename(sound) }
 }
 

@@ -1376,6 +1376,9 @@ export const AttentionSoundData = Schema.Struct({
   /** The file name, for its extension. */
   name: Schema.String,
 }).annotate({ identifier: "Plus.AttentionSoundData" })
+/** A refused change of the Plus settings, or a sound file that cannot be served. */
+export interface SettingsInvalid extends Schema.Schema.Type<typeof SettingsInvalid> {}
+export const SettingsInvalid = Schema.Struct({ reason: Schema.String }).annotate({ identifier: "Plus.SettingsInvalid" })
 /** Emit a test occurrence of one event with the settings of an agent (default: Defaults). */
 export interface AttentionTestInput extends Schema.Schema.Type<typeof AttentionTestInput> {}
 export const AttentionTestInput = Schema.Struct({
@@ -2606,6 +2609,7 @@ const PortableAttentionPlayers = Schema.toStandardSchemaV1(AttentionPlayers)
 const PortableAttentionSoundInput = Schema.toStandardSchemaV1(AttentionSoundInput)
 const PortableAttentionSoundData = Schema.toStandardSchemaV1(AttentionSoundData)
 const PortableAttentionTestInput = Schema.toStandardSchemaV1(AttentionTestInput)
+const PortableSettingsInvalid = Schema.toStandardSchemaV1(SettingsInvalid)
 const PortableWarmingStatus = Schema.toStandardSchemaV1(WarmingStatus.annotate({ identifier: "Plus.WarmingStatus" }))
 const PortableWarmingChanged = Schema.toStandardSchemaV1(WarmingChanged.annotate({ identifier: "Plus.WarmingChanged" }))
 const PortableMonitorQueryInput = Schema.toStandardSchemaV1(
@@ -3079,7 +3083,7 @@ export const Definition = Rpc.define({
     "settings.set": {
       input: PortablePlusSettingsInput,
       output: PortablePlusSettings,
-      errors: {},
+      errors: { "settings.invalid": PortableSettingsInvalid },
     },
     "attention.player": {
       input: PortableAttentionPlayerInput,
@@ -3089,7 +3093,7 @@ export const Definition = Rpc.define({
     "attention.sound": {
       input: PortableAttentionSoundInput,
       output: PortableAttentionSoundData,
-      errors: {},
+      errors: { "sound.invalid": PortableSettingsInvalid },
     },
     "attention.test": {
       input: PortableAttentionTestInput,

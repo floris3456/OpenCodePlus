@@ -1,6 +1,6 @@
 import { formatTokens } from "./tui/monitor/format.js"
 import { attentionStore, decideAttention, type AttentionOccurrence, type AttentionStore } from "./attention.js"
-import type { AttentionSettings, Plus } from "./rpc.js"
+import type { AttentionKind, AttentionSettings, Plus } from "./rpc.js"
 
 // The server half of notifications (docs/plans/plus-1.3.18-notifications.md): each host event
 // that can raise attention is decided once per process and emitted as the Plus RPC event
@@ -69,7 +69,7 @@ export function createAttentionWatcher(deps: AttentionDeps) {
     readonly id: string
     readonly sessionID: string
     readonly occurrence: (depth: number) => Promise<AttentionOccurrence> | AttentionOccurrence
-    readonly message: (subject: string | undefined) => string
+    readonly message: (subject: string | undefined, kind: AttentionKind) => string
     readonly agent?: string
   }) => {
     const chain = await chainOf(input.sessionID)
@@ -92,7 +92,7 @@ export function createAttentionWatcher(deps: AttentionDeps) {
       depth,
       ...(agent === undefined ? {} : { agent }),
       title: (depth === 0 ? chat?.title : root?.title) ?? "OpenCodePlus",
-      message: input.message(depth === 0 ? undefined : (chat?.title ?? agent)),
+      message: input.message(depth === 0 ? undefined : (chat?.title ?? agent), decided.kind),
       notify: decided.settings.notify,
       ...(decided.settings.sound === "off" ? {} : { sound: decided.settings.sound }),
       player: store.players() > 0,
@@ -149,7 +149,7 @@ export function createAttentionWatcher(deps: AttentionDeps) {
           type: "turn",
           waiting: depth === 0 && ((await deps.workRuns(sessionID).catch(() => false)) || store.shells(sessionID) > 0),
         }),
-        message: (subject) => (subject === undefined ? "Done" : `${subject} is done`),
+        message: (subject, kind) => (kind === "reply" ? "Replied; its work still runs" : subject === undefined ? "Done" : `${subject} is done`),
       })
     if (event.type === "session.execution.failed" && sessionID !== undefined) {
       const error = (data.error as { readonly message?: unknown } | undefined)?.message
