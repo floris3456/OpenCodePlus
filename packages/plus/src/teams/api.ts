@@ -32,7 +32,7 @@ import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
 import { wildcardMatch } from "../instructions/permission-catalog.js"
-import type { PermissionTable } from "../instructions/permission-enforce.js"
+import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
 import { render } from "./report.js"
@@ -120,6 +120,7 @@ const policy = Schema.decodeUnknownSync(Policy)({})
 const PATHS_MESSAGE =
   "scope.paths must be files or dir/* inside the repository, never version-control state."
 const PATHS_ACCEPTED = ["src/*", "test/*"]
+const PLAN_PATHS = ["docs/plans/*", "docs/handoffs/*"]
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
 const COMMIT_MESSAGE_RE = /^(feat|fix|docs|chore|refactor|test)(\([^)]+\))?: /
 
@@ -252,31 +253,41 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // Forbidding protected state forbids what no run may change anyway (s3-c:
   // ".opencodeplus/*" refused two whole briefs), so it is dropped, not refused.
   const forbidden = brief.scope.forbidden.filter((entry) => !namesProtectedState(entry))
-  const resolved: ResolvedBrief = { ...brief, scope: { ...brief.scope, forbidden }, checks }
+  // A member that may change plan files but no other (planner, orchestrator)
+  // writes its plan, Brief and handoff files there whatever source paths the
+  // delegator scoped (s5-a, s5-d: an orchestrator scoped to src/ and test/ was
+  // refused its handoff file). Its stored scope takes those folders unless
+  // the delegator forbade them; run and task records keep the delegator's paths.
+  const writesPlans = rowState(table, brief.role, "edit", "allowed.plans")?.on === true && rowState(table, brief.role, "edit", "allowed.*")?.on === false
+  const planPaths = writesPlans
+    ? PLAN_PATHS.filter((entry) => !brief.scope.paths.includes(entry) && scopeRefusal({ paths: [entry], forbidden }, `${entry.slice(0, -2)}/x`) === undefined)
+    : []
+  const resolved: ResolvedBrief = { ...brief, scope: { paths: [...brief.scope.paths, ...planPaths], forbidden }, checks }
 
   const paths = brief.scope.paths
   const invalid = [...paths, ...forbidden].find((candidate) => !isScopePath(candidate))
   if (invalid !== undefined) return fail("E_PATHS", `${PATHS_MESSAGE} Not one: "${invalid}".`, PATHS_ACCEPTED)
   const refused = briefRefusal(table, brief)
   if (refused !== undefined) return refused
-  // A reviewer sees what landed in your checkout, never a child's worktree: a
-  // review delegated while a done child is unlanded reviews the code without
-  // that child's change (s12-a: the reviewer found nothing to review).
+  // A reviewer sees the commit its worktree starts from, by default your
+  // HEAD: a review delegated while a done child is unlanded reviews the code
+  // without that child's change (s12-a: the reviewer found nothing to
+  // review). A base that holds a child's commits reviews it before it lands
+  // (s12-c: the user asked for review before landing).
   if (brief.deliverable.kind === "findings") {
-    const unlanded = await unlandedDone(root, parent)
-    if (unlanded.length > 0)
+    const unlanded = await unlandedDone(root, parent, repo.root, defaultHead)
+    const held = await Promise.all(unlanded.map(async (run) => (await gitRaw(repo.root, [...NO_REPOSITORY_PROGRAMS, "merge-base", "--is-ancestor", run.head, baseSha])).code === 0))
+    if (unlanded.length > 0 && !held.includes(true))
       return fail(
         "E_UNLANDED",
-        `Your children [${unlanded.join(", ")}] reported done but have not landed, and a reviewer sees only what landed in your checkout. Land them with team_integrate first, then delegate the review.`,
-        { run: unlanded[0] },
+        `Your children [${unlanded.map((run) => run.id).join(", ")}] reported done but have not landed, and a reviewer sees only the commit it starts from (your HEAD). Land them with team_integrate first, or review one before it lands with base: its commit (${unlanded.map((run) => `${run.id}: ${run.head.slice(0, 12)}`).join(", ")}).`,
+        { run: unlanded[0]!.id, base: unlanded[0]!.head },
       )
   }
 
-  // The attached file is read before the brief limit: its content counts
-  // toward the limit when it is pasted. A file over the member's
-  // "Attached brief file" limit (limits.attachment, default 8,000 chars) is
-  // not pasted: the Brief names its path and the child reads only what it
-  // needs.
+  // A file up to the member's "Attached brief file" limit (limits.attachment,
+  // default 8,000 chars) is pasted into the Brief; a larger one is named by
+  // path and the child reads only what it needs.
   let attached: { path: string; content: string } | undefined
   const briefFile = brief.briefFile
   if (briefFile !== undefined) {
@@ -304,7 +315,6 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     attached = { path: briefFile, content }
   }
   const attachmentLimit = bound(table, agent, "delegate", "limits.attachment")
-  const attachmentPasted = attached === undefined || attachmentLimit === undefined || attached.content.length <= attachmentLimit
 
   const childID = newRunID("w")
   let taskID = brief.task
@@ -348,10 +358,11 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const ifaceChars = brief.context.interfaces.reduce((n, item) => n + item.path.length + (item.symbol?.length ?? 0) + item.note.length, 0)
   const decisionChars = brief.context.decisions.reduce((n, decision) => n + decision.length, 0)
-  // An attachment counts toward the brief limit only while it is pasted; a
-  // larger one travels as a path, so its size never inflates the Brief.
-  const attachmentChars = attached !== undefined && attachmentPasted ? attached.content.length : 0
-  const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars + attachmentChars
+  // The brief limit counts the text the caller wrote; an attached file has
+  // its own limit. Counting a pasted file too refused a 4,473-char plan with
+  // 1,682 chars of Brief (s5-d), and any file of 6,000-8,000 chars whatever
+  // the Brief, which no shortening could fix.
+  const briefChars = brief.objective.length + (brief.prompt?.length ?? 0) + ifaceChars + decisionChars
   const briefLimit = bound(table, agent, "delegate", "limits.brief")
   if (briefLimit !== undefined && briefChars > briefLimit)
     return fail(
@@ -375,7 +386,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     const first = missingChecks[0]!
     return fail(
       "E_CHECKS",
-      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: commit it first, or name an existing test file.`,
+      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: write and commit that test first (team_checkpoint), or give a check the base already runs (an existing test file, or the project's whole-suite check) and leave the new test to the child.`,
       "an existing test file",
     )
   }
@@ -656,9 +667,32 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   if (isAttemptTerminal(last.state))
     return fail("E_ATTEMPT_ENDED", `Attempt ${n} ended ${last.state} without a report. Continue the Session to open a new attempt.`, "continue the Session")
 
+  // Done is the parent's final word on this run: never while children still
+  // work or their done commits are not in this run's HEAD (s13-b: an
+  // orchestrator reported done right after delegating its first task).
+  const done = args.status === "done" || args.status === "done_with_concerns"
+  if (done) {
+    const working = await openChildren(root, stored.id)
+    if (working.length > 0)
+      return fail(
+        "E_WAITING",
+        `Your children [${working.join(", ")}] are still working, so you are waiting, not done. End your turn without team_finish: each settlement wakes you with its report and a next: line. team_stop a child you no longer need.`,
+        "end your turn",
+      )
+  }
+
   const worktree = stored.directory
   const assigned = await readChecks(root, stored.id)
   const head = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  if (done) {
+    const unlanded = (await unlandedDone(root, stored, worktree, head)).map((run) => run.id)
+    if (unlanded.length > 0)
+      return fail(
+        "E_UNLANDED",
+        `Your children [${unlanded.join(", ")}] reported done but have not landed. Land them with team_integrate, or team_stop the ones you reject, then finish.`,
+        { run: unlanded[0] },
+      )
+  }
   const tree = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"])
   const porcelain = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
@@ -668,7 +702,6 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   const missing = await stale(root, assigned, stored.id, head)
   for (const checkDef of missing) await execute(root, { runID: stored.id, check: checkDef, worktree })
 
-  const done = args.status === "done" || args.status === "done_with_concerns"
   if (done && allows(table, stored.role, "finish", "requirements.checks")) {
     const receipts = await receiptsAt(root, stored.id, head)
     const byId = new Map(receipts.map((receipt) => [receipt.id, receipt] as const))
@@ -1233,14 +1266,21 @@ async function loadCommits(worktree: string, base: string): Promise<Array<{ sha:
   return commits
 }
 
-// The caller's children whose last report is done (or done with concerns) and
-// whose commits have not landed: still open, not stopped, worktree present.
-async function unlandedDone(root: string, parent: RunRecord): Promise<string[]> {
+// The caller's children whose last report is done (or done with concerns)
+// with commits `head` does not hold: still open, not stopped, worktree
+// present. A reviewer's or scout's findings carry no commits and never land;
+// a child whose commits came in with another's landing is in (s12-d: a fix
+// built on the first implementer's commit landed both).
+async function unlandedDone(root: string, parent: RunRecord, directory: string, head: string): Promise<RunRecord[]> {
   const landed = new Set((await queue(root, parent.id)).filter((entry) => entry.state === "landed").map((entry) => entry.childRun))
   const children = await Promise.all(parent.children.filter((id) => !landed.has(id)).map((id) => loadRun(root, id)))
   const open = children.filter((run): run is RunRecord => run !== undefined && run.worktree !== "removed" && !["stopped", "dead", "superseded", "reaped"].includes(run.state))
   const reports = await Promise.all(open.map(async (run) => ({ run, report: await latestReport(root, run.id) })))
-  return reports.filter((entry) => entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns").map((entry) => entry.run.id)
+  const done = reports
+    .filter((entry) => (entry.report?.data.status === "done" || entry.report?.data.status === "done_with_concerns") && Array.isArray(entry.report.data.commits) && entry.report.data.commits.length > 0)
+    .map((entry) => entry.run)
+  const held = await Promise.all(done.map(async (run) => (await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "merge-base", "--is-ancestor", run.head, head])).code === 0))
+  return done.filter((_, index) => !held[index])
 }
 
 async function latestReport(root: string, runID: string): Promise<{ n: number; jsonPath: string; data: Record<string, unknown> } | undefined> {

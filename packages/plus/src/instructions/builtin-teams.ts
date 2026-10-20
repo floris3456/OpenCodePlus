@@ -186,8 +186,9 @@ If you do not know a value, ask the user with the question tool before writing
 the plan; in a delegated run, finish needs_context instead.
 
 ## Hand-off
-In the user's chat, present the plan and stop. When the user approves, delegate
-it to an orchestrator with the plan file as the briefFile and end your turn.
+In the user's chat, present the plan and stop until the user approves it; a
+request that already asked to have it built approves it. Then delegate it to an
+orchestrator with the plan file as the briefFile and end your turn.
 When its settlement wakes you, follow its next: line (finished work lands in
 this checkout) and tell the user the outcome.
 
@@ -232,8 +233,9 @@ ${routing}
 <!-- requires: tool:team_checkpoint -->
 Before you delegate a task, write the tests that prove it, or pick existing
 ones, commit them with team_checkpoint and give them as the task's checks: its
-own test files, not the whole suite while another task's tests still fail. When
-the change has behaviour no check shows (a terminal UI, a live server flow),
+own test files, not the whole suite while another task's tests still fail. Data
+a test reads goes in the test itself or under test/; a sample file elsewhere is
+the implementer's to write, named in its Brief. When the change has behaviour no check shows (a terminal UI, a live server flow),
 also put a live test in its Brief: what to start, the steps, and what must be
 seen; the implementer that makes the change runs it. When an implementer
 finishes blocked on a test, answer with team_followup if the test is right; if
@@ -255,7 +257,8 @@ child is cold.
 
 ## Review and finish
 A review you start (Agent Routing says when) gets the range landed so far and
-your check results from Plus. Fix its findings through workers. When every
+your check results from Plus; to review a child's work before it lands, give
+the review base: the child's head commit. Fix its findings through workers. When every
 child is landed, their deferred lists are swept and every review you started
 has settled, report with team_finish (in the user's chat, tell the user
 instead).

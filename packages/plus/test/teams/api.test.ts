@@ -743,16 +743,15 @@ test("delegate rejects E_REQUEST_ID when the id is reused with new arguments", a
 
 // ── Item 1: Briefs stay short and correct ────────────────────────────────
 
-// The attachment limit counts toward the brief limit; a file over the
-// attachment limit is named by path only, so it cannot inflate the Brief.
-test("a small attachment is pasted and counts toward the brief limit; an over-limit one is named by path only", async () => {
+// The brief limit counts the text the caller wrote; an attached file has its
+// own limit, which decides whether it is pasted or named by path.
+test("an attachment up to its limit is pasted without counting toward the brief limit; a larger one is named by path", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
       await fs.mkdir(path.join(repo.dir, "notes"), { recursive: true })
-      // 7,500 chars of attachment plus the objective and prompt stay under the
-      // 6,000-char brief limit only if the attachment is NOT counted; the
-      // member's attachment limit (8,000) pastes it, so the brief limit refuses.
+      // s5-d: a 7,500-char plan is under the 8,000-char attachment limit but
+      // over the 6,000-char brief limit; it is pasted whole and admitted.
       await fs.writeFile(path.join(repo.dir, "notes", "small.md"), "s".repeat(7_500))
       const parent = baseRun({
         id: "main-0123456789abcdef",
@@ -764,8 +763,14 @@ test("a small attachment is pasted and counts toward the brief limit; an over-li
       })
       await saveRun(root, parent)
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
-      const tooLong = rejected(
+      const pasted = required(
         await api.delegate(delegateInput({ requestID: "attach-small-1", briefFile: "notes/small.md" }), callerFor(parent)),
+      ) as { briefPath: string }
+      expect(await fs.readFile(pasted.briefPath, "utf8")).toContain("s".repeat(7_500))
+
+      // The caller's own text is what the brief limit refuses.
+      const tooLong = rejected(
+        await api.delegate(delegateInput({ requestID: "attach-small-2", briefFile: "notes/small.md", prompt: "p".repeat(4_000), context: { decisions: ["d".repeat(900), "e".repeat(900), "f".repeat(900)] } }), callerFor(parent)),
       )
       expect(tooLong.code).toBe("E_TOO_LONG")
       // The refusal says to shorten the Brief, never to move text into a file.
@@ -773,8 +778,7 @@ test("a small attachment is pasted and counts toward the brief limit; an over-li
       expect(tooLong.message).not.toContain("briefFile")
       expect(tooLong.accepted).toBe("a shorter brief")
 
-      // A file over the attachment limit is named by path only and does not
-      // count toward the brief limit.
+      // A file over the attachment limit is named by path only.
       await fs.writeFile(path.join(repo.dir, "notes", "big.md"), "b".repeat(9_000))
       const value = required(
         await api.delegate(delegateInput({ requestID: "attach-big-1", briefFile: "notes/big.md" }), callerFor(parent)),
@@ -789,9 +793,8 @@ test("a small attachment is pasted and counts toward the brief limit; an over-li
   })
 }, 30000)
 
-// The attachment limit is a member row: raising it pastes a larger file, and
-// the pasted content then counts toward the brief limit.
-test("the Attached brief file row raises the paste limit, and a pasted attachment counts", async () => {
+// The attachment limit is a member row: it sets the largest file pasted.
+test("the Attached brief file row sets the paste limit", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -809,7 +812,7 @@ test("the Attached brief file row raises the paste limit, and a pasted attachmen
       const member = shippedMembers().find((entry) => entry.id === "orchestrator")
       if (member === undefined) throw new Error("missing orchestrator member")
       // Lower the row to 1,000: the 2,000-char file is now over it, so it is
-      // named by path and passes the brief limit.
+      // named by path.
       const table = presetTable({
         records: [change(member, "perm:team_delegate:limits.attachment", { state: "on", text: "1000" })],
       })
@@ -1995,7 +1998,7 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
       // A done child whose commits are still in its own worktree.
       const child = baseRun({ id: "w-abcdabcdabcdabcd", parent: parent.id, directory: repo.dir, state: "idle" })
       await saveRun(root, child)
-      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done" })
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] })
       const review = () =>
         api.delegate(
           delegateInput({ requestID: `review-${Math.random()}`, role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
@@ -2004,6 +2007,22 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
       const unlanded = rejected(await review())
       expect(unlanded.code).toBe("E_UNLANDED")
       expect(unlanded.message).toContain("[w-abcdabcdabcdabcd] reported done but have not landed")
+      expect(unlanded.message).toContain("review one before it lands with base: its commit")
+      // s12-c: a review started from the child's commit sees it before it lands.
+      await git(repo.dir, ["checkout", "-q", "-b", "child-work"])
+      await fs.writeFile(path.join(repo.dir, "change.txt"), "x\n")
+      await git(repo.dir, ["add", "change.txt"])
+      await git(repo.dir, ["commit", "-q", "-m", "feat: change"])
+      const childHead = await git(repo.dir, ["rev-parse", "HEAD"])
+      await git(repo.dir, ["checkout", "-q", "-"])
+      await saveRun(root, { ...child, head: childHead })
+      const early = required(
+        await api.delegate(
+          delegateInput({ requestID: "review-early", role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [], base: childHead }),
+          callerFor(parent),
+        ),
+      ) as { base: string }
+      expect(early.base).toBe(childHead)
       // Once it landed, the review is delegated.
       await atomicJson(path.join(root, "runs", parent.id, "merge", "entry-1.json"), {
         id: "entry-1", parentRun: parent.id, childRun: child.id, childBranch: "b", childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
@@ -2034,6 +2053,103 @@ test("a member that writes its own tests may be given a check on a test file it 
       expect(required(await api.delegate(brief("author-1", ["packages/plus/src/*", "packages/plus/test/new.test.ts"]), callerFor(parent)))).toMatchObject({ state: "starting" })
       // Outside its scope it could not write it: refused as before.
       expect(rejected(await api.delegate(brief("author-2", ["packages/plus/src/*"]), callerFor(parent))).code).toBe("E_CHECKS")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("a member that writes plan files only gets docs/plans and docs/handoffs in its scope unless forbidden", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "build-seat", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_plan_scope" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const delegate = async (requestID: string, role: string, forbidden: string[]) => {
+        const value = required(
+          await api.delegate(
+            delegateInput({ requestID, role, reason: "owned multi-step work", scope: { paths: ["src/*"], forbidden } }),
+            callerFor(parent),
+          ),
+        ) as { run: string }
+        const stored = await Bun.file(path.join(root, "runs", value.run, "brief.json")).json()
+        return { scope: stored.scope.paths, run: (await loadRun(root, value.run))?.paths }
+      }
+      // s5-d: an orchestrator scoped to source paths writes its handoff files.
+      expect(await delegate("plans-1", "orchestrator", [])).toEqual({ scope: ["src/*", "docs/plans/*", "docs/handoffs/*"], run: ["src/*"] })
+      expect((await delegate("plans-2", "orchestrator", ["docs/*"])).scope).toEqual(["src/*"])
+      // An implementer may change every file: its scope stays what was given.
+      expect((await delegate("plans-3", "implementer", [])).scope).toEqual(["src/*"])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// s13-b: an orchestrator reported done right after delegating its first task.
+// Done waits for every child to settle and for done commits to land; a
+// reviewer's findings carry no commits and hold nothing up.
+test("finish done is refused while a child works or a done child's commits have not landed", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = { ...(await finishChild(root, repo, PASSING_TEST)), children: ["w-cccccccccccccccc"] }
+      await saveRun(root, parent)
+      const now = new Date().toISOString()
+      const child = baseRun({
+        id: "w-cccccccccccccccc",
+        parent: parent.id,
+        directory: repo.dir,
+        state: "working",
+        sessionID: "ses_grandchild",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      })
+      await saveRun(root, child)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const finish = () => api.finish(finishInput({ status: "done", summary: "All tasks landed." }), callerFor(parent))
+
+      const waiting = rejected(await finish())
+      expect(waiting.code).toBe("E_WAITING")
+      expect(waiting.message).toContain("[w-cccccccccccccccc] are still working")
+
+      // Settled done with a commit that has not landed.
+      await saveRun(root, { ...child, state: "idle", attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate" }] })
+      const report = { run: child.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] }
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), report)
+      const unlanded = rejected(await finish())
+      expect(unlanded.code).toBe("E_UNLANDED")
+      expect(unlanded.message).toContain("[w-cccccccccccccccc] reported done but have not landed")
+
+      // Findings without commits never land and do not hold the parent.
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { ...report, commits: [] })
+      expect(required(await finish())).toMatchObject({ status: "done" })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// s12-d: a fix built on the first implementer's commit landed both; the first
+// implementer's commits are in the parent's HEAD and hold nothing up.
+test("finish done passes when a done child's commits came in with another landing", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = { ...(await finishChild(root, repo, PASSING_TEST)), children: ["w-dddddddddddddddd"] }
+      await saveRun(root, parent)
+      const now = new Date().toISOString()
+      await saveRun(root, baseRun({
+        id: "w-dddddddddddddddd",
+        parent: parent.id,
+        directory: repo.dir,
+        head: repo.head,
+        sessionID: "ses_carried",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate" }],
+      }))
+      await atomicJson(path.join(root, "runs", "w-dddddddddddddddd", "report-1.json"), { run: "w-dddddddddddddddd", attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] })
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      expect(required(await api.finish(finishInput({ status: "done", summary: "All tasks landed." }), callerFor(parent)))).toMatchObject({ status: "done" })
     } finally {
       await removeRepo(repo.dir)
     }

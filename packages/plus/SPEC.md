@@ -2036,10 +2036,13 @@ Error codes carrying `accepted` today:
 - `E_STALE_PARENT`: `"Your HEAD is <parentHead>; pass it as expectedParentHead (never the child's commit)."`; current parent HEAD commit string (`"<sha>"`)
 - `E_TASK_BLOCKED`: `"Task <taskID> not found."`; empty array (`[]`) when task not found
 - `E_TOO_LONG`: brief length guidance telling the caller to shorten the Brief
-  (`"a shorter brief"`); a pasted attachment counts toward the limit
+  (`"a shorter brief"`); the limit counts the caller's own text (objective, prompt,
+  interfaces, decisions), not an attached file, which its own limit pastes or names by path
 - `E_NO_COMMIT_REPO`: `team_delegate` bootstrap in a repository with no commit
   refuses with a classified message telling the caller to make a first commit;
   no run is created
+- `E_WAITING`: `"end your turn"` when `team_finish` reports done while a child of the run can still settle (each settlement wakes the run)
+- `E_UNLANDED`: `{"run":"<child>"}` when `team_finish` reports done while a child's done report lists commits that have not landed, or a findings review is delegated from a base that holds none of them (`{"run":"<child>","base":"<child head>"}`: a review from the child's commit sees it before it lands)
 - `E_CHECKS_RED`: blocked report status and needs (`{"status":"blocked","needs":[{"kind":"check","detail":"..."}]}`)
 - `E_NOT_ACTOR`: caller is not run owner (`"This session is not the owner of run <id>..."`),
   session has no repository directory (`"This session has no repository directory; open the chat in a git repository to use team tools."`),
