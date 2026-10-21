@@ -593,6 +593,10 @@ export function childSettledText(
   const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    if (run.parent !== null && (run.stoppedBy === run.parent || run.stopRequestedBy === run.parent) && (attempt.state === "interrupted" || run.state === "stopped")) {
+      lines.push("next: nothing is needed; you stopped this child. team_followup resumes it with its context.")
+      return lines.join("\n")
+    }
     if (run.held !== undefined) {
       lines.push(
         "No session activity for an hour, so the host stopped it; it is held and nothing resumes it on its own. It most likely hung (a permission ask nobody answers, a stuck tool or a silent model).",

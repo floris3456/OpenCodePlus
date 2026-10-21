@@ -371,23 +371,17 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       "a shorter brief",
     )
 
-  // A check must be able to run before the child creates anything: every
-  // `bun test FILE` a brief names is resolved against the child's base commit.
-  // A file the base does not hold refuses the delegation, so a run is never
-  // created for a check that cannot pass. The parent commits the file first or
-  // names one that already exists. A member that writes the tests judging its
-  // work (its Requirements for a commit leave check files open; a Basic
-  // orchestrator) may be given one it is to write, inside its scope.paths.
-  const writesItsTests = !allows(table, brief.role, "checkpoint", "requirements.check-files")
+  // A missing check file is writable only when the Brief includes it in scope.
+  // This is also the checkpoint check-files row's explicit scope exception.
   const missingChecks = (await missingCheckFiles(repo.root, baseSha, checks)).filter(
-    (missing) => !(writesItsTests && scopeRefusal({ paths: [...paths], forbidden: [...forbidden] }, missing.file) === undefined),
+    (missing) => scopeRefusal({ paths: [...paths], forbidden: [...forbidden] }, missing.file) !== undefined,
   )
   if (missingChecks.length > 0) {
     const first = missingChecks[0]!
     return fail(
       "E_CHECKS",
-      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: write and commit that test first (team_checkpoint), or give a check the base already runs (an existing test file, or the project's whole-suite check) and leave the new test to the child.`,
-      "an existing test file",
+      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold and the child's scope does not allow it to write. Include the file in scope.paths without forbidding it, or use a test file the base already has.`,
+      "an existing test file or a writable file in scope.paths",
     )
   }
 

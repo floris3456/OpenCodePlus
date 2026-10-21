@@ -1143,10 +1143,10 @@ test("team_stop on a waiting child ends its open attempt interrupted; the stoppi
   })
 })
 
-test("a stop requested while working ends a would-be wait interrupted and tells the parent once", async () => {
+test.each([true, false])("a working child's stop settlement advises its parent only when someone else stopped it (parent stop: %s)", async (parentStop) => {
   await withIsolatedTeamsRoot(async (root) => {
     const runs = family()
-    await saveFamily(root, { ...runs, orch: { ...runs.orch, stopRequested: true } })
+    await saveFamily(root, { ...runs, orch: { ...runs.orch, stopRequested: true, stopRequestedBy: parentStop ? runs.main.id : "another-run" } })
     const sessions = recordSession()
     await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_orch_wait"))
     const orch = await loadRun(root, runs.orch.id)
@@ -1155,6 +1155,8 @@ test("a stop requested while working ends a would-be wait interrupted and tells 
     const told = toldMain(sessions)
     expect(told).toHaveLength(1)
     expect(told[0]?.text).toContain("settled: interrupted")
+    expect(told[0]?.text).toContain(parentStop ? "next: nothing is needed; you stopped this child. team_followup resumes it with its context." : "next: read team_status and team_diff")
+    if (parentStop) expect(told[0]?.text).not.toContain("team_status")
   })
 })
 
