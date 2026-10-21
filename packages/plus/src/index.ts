@@ -3987,9 +3987,16 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
   return Effect.promise(async () => {
     const run = await bySession(teamsDataDir(), event.sessionID)
     if (run !== undefined) {
-      if (run.state === "dead" || run.state === "superseded" || run.state === "reaped") {
+      // Evicting the landed folder closes core's loop before its next ping can
+      // forget the stored window. Reopening must not resume that old window in
+      // the new folder before a real request has populated its cache.
+      const reopened = run.history.findLast((entry) => "trigger" in entry && entry.trigger === "reopened")
+      if (
+        run.worktree === "removed" || run.state === "dead" || run.state === "superseded" || run.state === "reaped" ||
+        (event.phase !== "activity" && reopened !== undefined && event.since < Date.parse(reopened.at))
+      ) {
         event.settings = undefined
-        return false
+        return warmingStore.stop(event.sessionID)
       }
       if (run.state === "stopping" || run.state === "stopped") {
         const warming = await warmingStore.status(event.sessionID, event.now)

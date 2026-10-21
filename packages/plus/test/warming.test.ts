@@ -878,6 +878,30 @@ test("compact before cold is off in a new chat and, switched on, compacts an idl
   store.dispose()
 })
 
+test("ending a landed window cancels compaction and leaves the chat switches ready for real activity", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  const compacted: string[] = []
+  const compact = async (sessionID: string) => { compacted.push(sessionID) }
+  await store.setChat("ses_warm", "on")
+  await store.setCompact("ses_warm", "on")
+  await store.decide(event({}), {}, compact)
+  expect(clock.pending()).toHaveLength(1)
+  expect(store.stop("ses_warm")).toBe(true)
+  expect(store.stop("ses_warm")).toBe(false)
+  expect(clock.pending()).toEqual([])
+  expect(await store.settle("ses_warm")).toEqual([])
+  expect(await store.status("ses_warm")).toMatchObject({ active: false, chat: "on", compact: true })
+  expect((await store.status("ses_warm")).compactAt).toBeUndefined()
+  expect(compacted).toEqual([])
+
+  clock.now += MINUTE
+  await store.decide(event({ since: clock.now, now: clock.now }), {}, compact)
+  expect(await store.status("ses_warm")).toMatchObject({ active: true, since: clock.now })
+  expect(clock.pending()).toEqual([clock.now + configured.duration])
+  store.dispose()
+})
+
 test("compact before cold skips a running chat, a manual compaction, a cold cache, and stops when switched off", async () => {
   const clock = fakeClock(1_000_000)
   const store = createWarmingStore(await tempFile(), clock.options)

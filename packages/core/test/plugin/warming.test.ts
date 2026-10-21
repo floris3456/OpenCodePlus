@@ -15,12 +15,17 @@ import { Session } from "@opencode/core/session"
 import { SessionEvent } from "@opencode/core/session/event"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
+import { AbsolutePath } from "@opencode/schema/schema"
+import { FSUtil } from "@opencode/util/fs-util"
 import { Document, Info, type Entry } from "@opencode/schema/config"
 import { ConfigWarming } from "@opencode/schema/config/warming"
 import { Duration, Effect, Exit, Ref, Schema, Scope, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
+import fs from "node:fs/promises"
+import { statSync } from "node:fs"
+import path from "node:path"
 
 const it = testEffect(PluginTestLayer)
 
@@ -94,6 +99,7 @@ const activate = Effect.fn("activateWarming")(function* (
   const plugin = yield* Plugin.Service
   const sessions = yield* Session.Service
   const hooks = yield* PluginHooks.Service
+  const fs = yield* FSUtil.Service
   const host = yield* PluginHost.make(plugin).pipe(
     Effect.provideService(
       Session.Service,
@@ -133,7 +139,15 @@ const activate = Effect.fn("activateWarming")(function* (
       }),
     ),
   )
-  yield* WarmingPlugin.Plugin.effect(host).pipe(Effect.provideService(Config.Service, config))
+  yield* WarmingPlugin.Plugin.effect(host).pipe(
+    Effect.provideService(Config.Service, config),
+    // Check the real filesystem synchronously here so TestClock cannot advance
+    // past a due ping while the OS stat is still pending on another thread.
+    Effect.provideService(FSUtil.Service, {
+      ...fs,
+      isDir: (directory) => Effect.sync(() => statSync(directory, { throwIfNoEntry: false })?.isDirectory() === true),
+    }),
+  )
 })
 
 const makeSessions = Effect.fn("makeSessions")(function* () {
@@ -234,6 +248,45 @@ const run = Effect.fn("runWarming")(function* (calls: WarmCall[], config: Config
 })
 
 describe("WarmingPlugin", () => {
+  it.effect("drops a removed session directory and warms again after real activity in a new directory", () =>
+    Effect.gen(function* () {
+      const config = yield* makeConfig([
+        document({ warming: { prompt: "ping", interval: "1 second", duration: "1 hour" } }),
+      ])
+      yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+      const calls: WarmCall[] = []
+      yield* activate(calls, config.service)
+      const location = yield* Location.Service
+      const sessions = yield* Session.Service
+      const directory = AbsolutePath.make(path.join(location.directory, "landed"))
+      yield* Effect.promise(() => fs.mkdir(directory))
+      const session = yield* sessions.create({ location: Location.Ref.make({ directory }) })
+      yield* trigger(session.id, ref("alpha", "m1"))
+      yield* advance(3)
+      expect(callsFor(calls, session.id).length).toBeGreaterThan(0)
+
+      yield* Effect.promise(() => fs.rmdir(directory))
+      const before = calls.length
+      yield* advance(3)
+      expect(calls.length).toBe(before)
+      // Recreating the old path must not resurrect the discarded window.
+      yield* Effect.promise(() => fs.mkdir(directory))
+      yield* advance(3)
+      expect(calls.length).toBe(before)
+
+      // A move is durable placement; a subsequent real request starts a fresh window.
+      const bus = yield* Bus.Service
+      yield* bus.publish(SessionEvent.Moved, {
+        sessionID: session.id,
+        location: Location.Ref.make({ directory: location.directory }),
+        projectID: session.projectID,
+      })
+      yield* trigger(session.id, ref("alpha", "m1"))
+      yield* advance(3)
+      expect(calls.length).toBeGreaterThan(before)
+    }),
+  )
+
   it.effect("warms a session from global settings and drops it when global warming is disabled", () =>
     Effect.gen(function* () {
       const config = yield* makeConfig([

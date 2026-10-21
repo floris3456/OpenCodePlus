@@ -1,14 +1,15 @@
 import { expect, test } from "bun:test"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
-import { peek } from "../../src/teams/inbox.js"
-import { reconcile } from "../../src/teams/lifecycle.js"
+import { peek, put } from "../../src/teams/inbox.js"
+import { gc, onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
+import { Policy } from "../../src/teams/schema.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -105,6 +106,78 @@ function startingChild(id: string, parent: string, sessionID: string): RunRecord
     sessionID,
   })
 }
+
+test.each(["superseded", "reaped", "dead", "missing"] as const)("reconcile stops and reaps children of a %s parent", async (state) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = parentRun("main-orphan-parent", "ses_orphan_parent")
+    const child = { ...workingChild("w-orphan-child", parent.id, "ses_orphan_child"), directory: path.join(root, "gone"), budget: { wallMs: 1 } }
+    if (state !== "missing") await saveRun(root, { ...parent, state })
+    await saveRun(root, child)
+    const pending = await put(root, child.id, { kind: "followup", from: parent.id, text: "must not restart this orphan" })
+    const interrupted: string[] = []
+    const ctx = context({ session: {
+      ...sessionHarness(new Set([child.sessionID!])),
+      interrupt: (input) => Effect.promise(async () => {
+        interrupted.push(input.sessionID)
+        // The real host may deliver the execution's end before interrupt returns.
+        await onSessionIdle(ctx, root, child, "interrupted")
+        return { interrupted: true }
+      }),
+    } })
+    await reconcile(ctx, root)
+    expect(interrupted).toEqual([child.sessionID!])
+    expect((await loadRun(root, child.id))?.state).toBe("stopped")
+    expect((await loadRun(root, child.id))?.attempts.at(-1)?.state).toBe("interrupted")
+    expect(await peek(root, parent.id)).toEqual([])
+    expect(await peek(root, child.id)).toEqual([pending])
+    await reconcile(ctx, root)
+    expect(interrupted).toHaveLength(1)
+    const result = await gc(root, Schema.decodeUnknownSync(Policy)({ gc: { reapAfter: "0ms" } }))
+    expect(result.reaped).toContain(child.id)
+    expect((await loadRun(root, child.id))?.state).toBe("reaped")
+  })
+})
+
+test("an orphan is not reapable until its running session has been interrupted", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = { ...parentRun("main-reaped", "ses_reaped"), state: "reaped" as const }
+    const child = workingChild("w-running", parent.id, "ses_running")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const session = sessionHarness(new Set([child.sessionID!]))
+    await reconcile(context({ session: { ...session, interrupt: () => Effect.die("interrupt unavailable") } }), root)
+    expect((await loadRun(root, child.id))?.state).toBe("stopping")
+    expect((await loadRun(root, child.id))?.attempts.at(-1)?.state).toBe("streaming")
+    await reconcile(context({ session: { ...session, interrupt: () => Effect.succeed({ interrupted: true }) } }), root)
+    expect((await loadRun(root, child.id))?.state).toBe("stopped")
+    expect((await loadRun(root, child.id))?.attempts.at(-1)?.state).toBe("interrupted")
+  })
+})
+
+test.each(["working", "idle", "starting", "blocked_input", "dead"] as const)("an orphan in %s becomes reapable even without a live session", async (state) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = { ...parentRun("main-gone", "ses_gone_parent"), state: "reaped" as const }
+    const child = { ...workingChild("w-orphan", parent.id, "ses_gone_child"), state }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await reconcile(context({ session: sessionHarness(new Set()) }), root)
+    expect((await loadRun(root, child.id))?.state).toBe("stopped")
+    expect((await loadRun(root, child.id))?.attempts.at(-1)?.state).toBe("interrupted")
+    expect(await peek(root, parent.id)).toEqual([])
+  })
+})
+
+test.each(["superseded", "reaped", "dead"] as const)("a child's settlement sends no notice to a %s parent", async (state) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = { ...parentRun("main-terminal", "ses_terminal_parent"), state }
+    const child = workingChild("w-settled", parent.id, "ses_settled_child")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await onSessionIdle(context(), root, child, "failed")
+    expect((await loadRun(root, child.id))?.attempts.at(-1)?.state).toBe("failed")
+    expect(await peek(root, parent.id)).toEqual([])
+  })
+})
 
 test("reconcile marks a working run with a missing session dead", async () => {
   await withIsolatedTeamsRoot(async (root) => {

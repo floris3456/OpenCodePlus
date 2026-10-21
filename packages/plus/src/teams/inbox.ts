@@ -6,6 +6,7 @@ import { Schema } from "effect"
 import { toolError } from "./schema.js"
 import { atomicJson, lock, readJson, ulid } from "./store.js"
 import { errCode, io } from "./io.js"
+import { isTerminal, type RunRecord } from "./run.js"
 
 export const DEFAULT_INBOX_UNREAD_BYTES = 262144
 
@@ -21,6 +22,7 @@ export const InboxItem = Schema.Struct({
   from: Schema.String,
   text: Schema.String,
   at: Schema.Number,
+  dedupeKey: Schema.optional(Schema.String),
 })
 export type InboxItem = typeof InboxItem.Type
 
@@ -34,6 +36,8 @@ export interface PutInboxInput {
   text: string
   at?: number
   bounds?: InboxBounds
+  /** At most one pending item with this key; consumption permits another. */
+  dedupeKey?: string
 }
 
 export interface InboxPartition {
@@ -88,10 +92,22 @@ export async function put(
   const maxBytes =
     typeof bounds === "number" ? bounds : (bounds?.inboxUnreadBytes ?? input.bounds?.inboxUnreadBytes ?? DEFAULT_INBOX_UNREAD_BYTES)
   return lock(root, "state", runID, async () => {
+    if (input.kind === "notify" || input.kind === "system" || input.kind === "child.settled") {
+      const run = await readJson<RunRecord>(join(root, "runs", runID, "run.json"))
+      if (run !== undefined && (isTerminal(run.state) || run.state === "dead"))
+        throw toolError("E_RUN_TERMINAL", `Run ${runID} is ${run.state}; it cannot receive notices.`)
+    }
+    if (input.dedupeKey !== undefined) {
+      const pending = (await peek(root, runID)).find((item) => item.dedupeKey === input.dedupeKey)
+      if (pending !== undefined) return pending
+    }
     const n = await pendingBytes(root, runID)
     const id = ulid()
     const at = input.at ?? Date.now()
-    const item: InboxItem = { id, kind: input.kind, from: input.from, text: input.text, at }
+    const item: InboxItem = {
+      id, kind: input.kind, from: input.from, text: input.text, at,
+      ...(input.dedupeKey === undefined ? {} : { dedupeKey: input.dedupeKey }),
+    }
     const content = JSON.stringify(item, null, 2) + "\n"
     const thisBytes = Buffer.byteLength(content, "utf8")
     if (n + thisBytes > maxBytes) {

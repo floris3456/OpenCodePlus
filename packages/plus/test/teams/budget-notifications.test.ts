@@ -8,7 +8,7 @@ import path from "node:path"
 import { context } from "../harness.js"
 import { teamState } from "./preset-table.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
-import { peek } from "../../src/teams/inbox.js"
+import { batchNotify, peek, take } from "../../src/teams/inbox.js"
 import { checkBudgets } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "../../src/teams/usage.js"
@@ -76,7 +76,24 @@ test("session token usage leaves out cache reads", async () => {
   expect(details).toEqual({ used: 180, cacheRead: 5000 })
 })
 
-test("budget notification fires at limit, merges for several children, and repeats after interval", async () => {
+test.each(["dead", "superseded", "reaped"] as const)("budget sweeps never ping a %s parent", async (state) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-terminal", state })
+    const child = baseRun({
+      id: "w-overdue", parent: parent.id, state: "working", sessionID: "ses_overdue",
+      budget: { wallMs: 1 }, createdAt: new Date(0).toISOString(),
+      attempts: [{ n: 1, state: "streaming", trigger: "delegate", startedAt: new Date(0).toISOString() }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await checkBudgets(context(), root, undefined, Date.now())
+    await checkBudgets(context(), root, undefined, Date.now() + 901_000)
+    expect(await peek(root, parent.id)).toEqual([])
+    expect((await loadRun(root, child.id))?.lastBudgetPingAt).toBeUndefined()
+  })
+})
+
+test("budget notices batch for delivery and repeat only after consumption and the interval", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })
     const now = Date.now()
@@ -123,20 +140,29 @@ test("budget notification fires at limit, merges for several children, and repea
     await checkBudgets(ctx, root, undefined, now)
 
     const parentInbox = await peek(root, parent.id)
-    expect(parentInbox).toHaveLength(1)
+    expect(parentInbox).toHaveLength(2)
     expect(parentInbox[0]?.kind).toBe("notify")
-    expect(parentInbox[0]?.text).toContain("w-child-a")
-    expect(parentInbox[0]?.text).toContain("w-child-b")
+    expect(batchNotify(parentInbox).text).toContain("w-child-a")
+    expect(batchNotify(parentInbox).text).toContain("w-child-b")
 
     expect(await peek(root, childA.id)).toHaveLength(0)
     expect(await peek(root, childB.id)).toHaveLength(0)
 
     await checkBudgets(ctx, root, undefined, now + 1000)
-    expect(await peek(root, parent.id)).toHaveLength(1)
+    expect(await peek(root, parent.id)).toEqual(parentInbox)
 
     await checkBudgets(ctx, root, undefined, now + 901_000)
     const parentInboxAfter = await peek(root, parent.id)
-    expect(parentInboxAfter).toHaveLength(2)
+    expect(parentInboxAfter).toEqual(parentInbox)
+    await take(root, parent.id, [parentInbox[0]!.id])
+    await checkBudgets(ctx, root, undefined, now + 902_000)
+    expect(await peek(root, parent.id)).toHaveLength(1)
+    await checkBudgets(ctx, root, undefined, now + 1_802_000)
+    const refreshed = await peek(root, parent.id)
+    expect(refreshed).toHaveLength(2)
+    expect(refreshed.filter((item) => item.from === childA.id)).toHaveLength(1)
+    expect(refreshed.filter((item) => item.from === childB.id)).toHaveLength(1)
+    expect(refreshed.some((item) => item.id === parentInbox[1]!.id)).toBe(true)
   })
 })
 
@@ -250,8 +276,9 @@ test("prompt-only followup does not end the pings", async () => {
     )
     expect(nudge.ok).toBe(true)
 
+    await take(root, parent.id)
     await checkBudgets(ctx, root, undefined, now + 901_000)
-    expect(await peek(root, parent.id)).toHaveLength(2)
+    expect(await peek(root, parent.id)).toHaveLength(1)
   })
 })
 

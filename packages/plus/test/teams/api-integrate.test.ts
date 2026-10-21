@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
 import { Session } from "@opencode/schema/session"
+import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
+import { Provider } from "@opencode/schema/provider"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -15,6 +18,7 @@ import { enqueue, pending, queue } from "../../src/teams/merge.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
 import { create, load } from "../../src/teams/tasks.js"
+import { warmingStore } from "../../src/warming.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const parent = process.env.TMPDIR ?? os.tmpdir()
@@ -408,12 +412,22 @@ test.skipIf(process.platform !== "linux")("landing evicts the child's folder, so
 
 test("successful cleanup records the actual original child head for history", async () => {
   await withReadyChild(async ({ root, repo, parent, child, head }) => {
+    const now = Date.now()
+    const sessionID = Session.ID.make(child.sessionID!)
+    await warmingStore.decide({
+      sessionID, agent: Agent.ID.make(child.role),
+      model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("test") }),
+      phase: "activity", since: now, now,
+      settings: { prompt: "ping", interval: 60000, duration: 300000 },
+    }, {})
+    expect((await warmingStore.status(sessionID, now)).active).toBe(true)
     const value = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: repo.head }, callerFor(parent), shippedTable()))
     expect(value).toMatchObject({ state: "landed", head, worktree: "removed" })
     expect((await loadRun(root, child.id))?.worktree).toBe("removed")
     expect((await loadRun(root, child.id))?.head).toBe(head)
     expect((await loadRun(root, child.id))?.base).toBe(repo.head)
     expect(await fs.stat(child.directory).then(() => true, () => false)).toBe(false)
+    expect((await warmingStore.status(sessionID, now)).active).toBe(false)
   })
 })
 

@@ -3,13 +3,14 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
+import type { SessionWarming } from "@opencode/plugin/effect/session"
 import { Effect } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
-import { decideWarmingFor, type PlusState } from "../../src/index.js"
-import { saveRun, type RunRecord } from "../../src/teams/run.js"
+import { createState, decideWarmingFor } from "../../src/index.js"
+import { saveRun, updateRun, type RunRecord } from "../../src/teams/run.js"
 import { warmingStore } from "../../src/warming.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -55,6 +56,43 @@ function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
   }
 }
 
+test("a landed child's removed worktree ends warming and reopening permits a fresh window", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = Date.now()
+    const run = baseRun({ id: "w-landed-warm", sessionID: "ses_landed_warm", parent: "main-parent", worktree: "removed" })
+    await saveRun(root, run)
+    const state = { ...createState(), warmingCheckedAt: now }
+    const event: SessionWarming = {
+      sessionID: Session.ID.make(run.sessionID!),
+      agent: Agent.ID.make("implementer"),
+      model: Model.Ref.make({ providerID: Provider.ID.make("cliproxyapi"), id: Model.ID.make("gemini-3.8-flash-high") }),
+      phase: "activity", since: now, now,
+      settings: { prompt: "ping", interval: 60000, duration: 300000 },
+    }
+    await warmingStore.decide(event, {})
+    for (const phase of ["warm", "resume"] as const) {
+      const ping = { ...event, phase }
+      await Effect.runPromise(decideWarmingFor(context(), state, ping))
+      expect(ping.settings).toBeUndefined()
+      expect((await warmingStore.status(event.sessionID, now)).active).toBe(false)
+    }
+    await updateRun(root, run.id, (current) => ({
+      ...current, worktree: "present", directory: path.join(root, "reopened"),
+      history: [{ at: new Date(now + 1000).toISOString(), from: "idle", to: "idle", trigger: "reopened" }],
+    }))
+    const resumed = { ...event, phase: "resume" as const, now: now + 1000 }
+    await Effect.runPromise(decideWarmingFor(context(), state, resumed))
+    expect(resumed.settings).toBeUndefined()
+    const reopened = { ...event, since: now + 1000, now: now + 1000 }
+    await Effect.runPromise(decideWarmingFor(context(), state, reopened))
+    expect(reopened.settings).toBeDefined()
+    const ping = { ...reopened, phase: "warm" as const, now: now + 61000 }
+    await Effect.runPromise(decideWarmingFor(context(), state, ping))
+    expect(ping.settings).toBeDefined()
+    expect((await warmingStore.status(event.sessionID, now + 61000)).active).toBe(true)
+  })
+})
+
 test("a stopped run keeps warming until expires, and then stops", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = 1000000
@@ -65,13 +103,7 @@ test("a stopped run keeps warming until expires, and then stops", async () => {
     })
     await saveRun(root, stoppedRun)
 
-    const dummyState = {
-      warmingCheckedAt: now,
-      cachedAgents: [],
-      cachedModels: [],
-      cachedModelSettings: [],
-      cachedScopes: [],
-    } as unknown as PlusState
+    const dummyState = { ...createState(), warmingCheckedAt: Date.now() }
     const dummyCtx = context()
 
     const primeEvent = {
@@ -115,13 +147,7 @@ test("a stopped run keeps warming until expires, and then stops", async () => {
 test("a ping into an unloaded folder does not boot it", async () => {
   await withIsolatedTeamsRoot(async () => {
     const now = 1000000
-    const dummyState = {
-      warmingCheckedAt: now,
-      cachedAgents: [],
-      cachedModels: [],
-      cachedModelSettings: [],
-      cachedScopes: [],
-    } as unknown as PlusState
+    const dummyState = { ...createState(), warmingCheckedAt: Date.now() }
     // A location whose services are dropped: a warm ping must not boot it.
     const dummyCtx = context({ locations: { evict: () => Effect.void, loaded: () => Effect.succeed(false) } })
     const event = {
@@ -141,13 +167,7 @@ test("a ping into an unloaded folder does not boot it", async () => {
 test("a ping into a loaded folder keeps warming", async () => {
   await withIsolatedTeamsRoot(async () => {
     const now = 1000000
-    const dummyState = {
-      warmingCheckedAt: now,
-      cachedAgents: [],
-      cachedModels: [],
-      cachedModelSettings: [],
-      cachedScopes: [],
-    } as unknown as PlusState
+    const dummyState = { ...createState(), warmingCheckedAt: Date.now() }
     const dummyCtx = context({ locations: { evict: () => Effect.void, loaded: () => Effect.succeed(true) } })
     const event = {
       sessionID: Session.ID.make("ses_loaded_warm"),
@@ -185,13 +205,7 @@ test("dead, superseded and reaped runs stop warming immediately", async () => {
       }
       await warmingStore.decide(primeEvent, {})
 
-      const dummyState = {
-        warmingCheckedAt: now,
-        cachedAgents: [],
-        cachedModels: [],
-        cachedModelSettings: [],
-        cachedScopes: [],
-      } as unknown as PlusState
+      const dummyState = { ...createState(), warmingCheckedAt: Date.now() }
       const dummyCtx = context()
 
       const checkEvent = {
