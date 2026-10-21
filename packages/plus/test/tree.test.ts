@@ -770,9 +770,14 @@ test("a set Role/persona marks Base and its active prompt as not sent; an unset 
   expect(unset.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBeUndefined()
   expect(unset.find((node) => node.id === "item:project:Implementer:base:gpt")?.badges.slotNote).toBeUndefined()
   expect(unset.find((node) => node.id === "item:project:Implementer:system:role")?.badges.slotNote).toBe("base prompt sent instead")
-  // Its own body stays in place even with an emptied Role/persona.
+  // A level that empties Role/persona clears the agent's own body too: the base prompt is sent (apply's clearsRole).
   const emptied = expandAll({ items: owned, records: [makeRecord({ item: "system:role", text: "" })], agents: agents() })
-  expect(emptied.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBe("not sent: replaced by Role/persona")
+  expect(emptied.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBeUndefined()
+  expect(emptied.find((node) => node.id === "item:project:Implementer:base:gpt")?.badges.slotNote).toBeUndefined()
+  expect(emptied.find((node) => node.id === "item:project:Implementer:system:role")?.badges.slotNote).toBe("base prompt sent instead")
+  // Its sections left out by their conditions are no edit of its text: the body stays.
+  const off = expandAll({ items: owned, records: [makeRecord({ item: "system:role", state: "off" })], agents: agents() })
+  expect(off.find((node) => node.id === "group:project:Implementer:base")?.badges.slotNote).toBe("not sent: replaced by Role/persona")
 })
 
 test("section rows carry section addresses, stable ids, and nested depths", () => {

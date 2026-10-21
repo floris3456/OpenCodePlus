@@ -14,7 +14,7 @@ import os from "node:os"
 import path from "node:path"
 import { Location } from "@opencode/schema/location"
 import { Project } from "@opencode/schema/project"
-import { apply, applyInstructions, copyName, copyPattern, isSkillCopy } from "../src/instructions/apply.js"
+import { apply, applyInstructions, copyName, copyPattern, isSkillCopy, roleUpdates } from "../src/instructions/apply.js"
 import type { ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
 import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
@@ -201,6 +201,31 @@ test("per-agent role applies assembled text to the owning agent only", async () 
   expect(agents.state.get("alpha")?.system).toBe("custom alpha")
   expect(agents.state.get("beta")?.system).toBe("upstream")
   expect(agents.reloads).toBe(1)
+})
+
+test("an emptied Role/persona clears the agent's own system text so the request sends the base prompt", async () => {
+  // The agent's own text (opencode.json agents.<id>.system): a Defaults edit emptied it.
+  const own = "You are the build seat for the OpenCodePlus workspace."
+  const agents = agentHarness([agentInfo("alpha", own), agentInfo("beta", own)])
+  const ctx = context({ agent: agents.domain })
+  const discovered = await discoverFor(ctx)
+  const records = [makeRecord({ item: "system:role", agent: "alpha", level: "defaults", text: "", basedOn: fingerprint(own), basedOnText: own })]
+  const input = makeInput({
+    items: discovered.items,
+    agents: discovered.agents.map((a) => ({ id: a.id, level: "project" })),
+    scopes: fromBuild(discovered),
+    records,
+  })
+  expect(roleUpdates(input)).toEqual([{ agent: "alpha", text: "" }])
+  const applied = await apply(ctx, input)
+  expect(applied.registrations).toHaveLength(1)
+  // Core sends its base prompt for an agent without a system text of its own.
+  expect(agents.state.get("alpha")?.system).toBe("")
+  expect(agents.state.get("beta")?.system).toBe(own)
+  // Turned off instead, Role/persona still never clears it; an agent with no text of its own has nothing to clear.
+  expect(roleUpdates({ ...input, records: [makeRecord({ item: "system:role", agent: "alpha", level: "defaults", state: "off" })] })).toEqual([])
+  const empty = await discoverFor(context({ agent: agentHarness([agentInfo("alpha", "")]).domain }))
+  expect(roleUpdates(makeInput({ items: empty.items, scopes: fromBuild(empty), records }))).toEqual([])
 })
 
 test("section exclusion removes that text from what is installed", async () => {

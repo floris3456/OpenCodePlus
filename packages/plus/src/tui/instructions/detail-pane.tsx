@@ -133,6 +133,28 @@ export function resolveNode(node: TreeNode, snapshot: Snapshot, memo?: Memo): Re
   return resolveAt(derived, address, upstream, memo)
 }
 
+/**
+ * The upstream text a row's own text replaces, when a level or preset replaces
+ * it: the row shows the replacement, and this is what it hides. For a
+ * Role/persona that is the agent's own system text, from its file or its config.
+ */
+export function replacedText(
+  node: TreeNode,
+  snapshot: Snapshot,
+  memo?: Memo,
+): { readonly text: string; readonly textFrom: From; readonly agentFile?: string } | undefined {
+  const address = node.address
+  if (address === undefined || address.section !== null || controlKind(address.item) !== undefined) return undefined
+  if (address.item.startsWith("perm:") || isModelAddress(address)) return undefined
+  const derived = derivedOf(snapshot)
+  const upstream = upstreamFor(derived, address)
+  if (upstream === undefined || upstream.text.trim().length === 0) return undefined
+  const resolved = resolveAt(derived, address, upstream, memo)
+  if (resolved.textFrom.kind === "upstream" || resolved.text === upstream.text) return undefined
+  const file = address.item === "system:role" && address.agent !== null ? derived.agents.find((agent) => agent.id === address.agent)?.path : undefined
+  return { text: upstream.text, textFrom: resolved.textFrom, ...(file === undefined ? {} : { agentFile: file }) }
+}
+
 export function resolvedText(node: TreeNode, snapshot: Snapshot, memo?: Memo): string {
   const resolved = resolveNode(node, snapshot, memo)
   if (!resolved) return "No item details"
