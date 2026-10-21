@@ -232,7 +232,7 @@ test("every Basic role names only tools its member preset ships on, and forbids 
 test("every Basic body splits into Team member, Delegating and role sections", () => {
   const ids = (member: Parameters<typeof basicBody>[0]) => derive(basicBody(member), "Role/persona").sections.map((section) => section.id)
   const shared = ["team-member", "team-member/runs-and-messages", "team-member/working", "team-member/reporting", "team-member/safety"]
-  const delegating = ["delegating", "delegating/briefs"]
+  const delegating = ["delegating", "delegating/briefs", "delegating/waiting"]
   expect(ids("implementer")).toEqual([
     ...shared,
     "implementer",

@@ -73,8 +73,8 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   const taskOrReq = brief.task ?? brief.requestID
   const paths = brief.scope?.paths ?? []
   const forbidden = brief.scope?.forbidden ?? []
-  const interfaces = brief.context?.interfaces ?? []
-  const decisions = brief.context?.decisions ?? []
+  const interfaces = brief.interfaces
+  const decisions = brief.decisions
   const checks = brief.checks ?? []
   const effort = brief.effort ?? "medium"
   const budget = filled.budget

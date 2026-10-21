@@ -76,7 +76,7 @@ Facts about this repository come from its source. A worker knows only its Brief
 and what it reads; a parent knows only the worker's report and its diff. Work
 fast: when the result is correct, checked and safe enough for the next step,
 move on. A refused call names the input it accepts: correct the input instead of
-repeating the call.`
+repeating the call. Make a call only for its result, never as a placeholder.`
 
 const reporting = `## Reporting
 <!-- requires: tool:team_finish -->
@@ -107,8 +107,13 @@ const delegating = `# Delegating
 A delegated member knows only its Brief: put the outcome, the files to touch
 and the decisions you made in it, and pass long context as a briefFile. Never
 paste history into a Brief or followup. Read only what you need to write the
-Brief: a long file the member must study goes in context.interfaces, and it
-reads it itself.`
+Brief: a long file the member must study goes in interfaces, and it
+reads it itself.
+
+## Waiting
+A team_delegate or team_followup result means the run has started: do not check
+on it with team_list or team_status. End your turn; each settlement wakes you
+with its report.`
 
 // A section that depends on one tool says so on its first line
 // (`<!-- requires: tool:… -->`, requires.ts): turning that tool off for a member

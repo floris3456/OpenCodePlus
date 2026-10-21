@@ -5,7 +5,7 @@ import { Effect, Option, Schema } from "effect"
  * struct fields, array elements, and fields behind optional/default wrappers
  * all follow the same rule. Required fields keep their null so decoding still
  * fails with a schema error. An object or array a model sent as JSON text
- * (a live run sent a Brief's whole `context` so) is read as that value.
+ * (a live run sent a Brief's whole context object so) is read as that value.
  */
 export function stripNullForOptional(schema: Schema.Constraint, input: unknown): unknown {
   return stripNulls(input, schema)
@@ -14,7 +14,7 @@ export function stripNullForOptional(schema: Schema.Constraint, input: unknown):
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
 function stripNulls(given: unknown, schema: Schema.Constraint): unknown {
-  const input = typeof given === "string" && expectsContainer(schema, given) ? Option.getOrElse(decodeJson(given), () => given) : given
+  const input = typeof given === "string" ? fromText(schema, given) : given
   if (input === null || typeof input !== "object") return input
   if (Array.isArray(input)) {
     return input.map((item, index) => {
@@ -35,6 +35,24 @@ function stripNulls(given: unknown, schema: Schema.Constraint): unknown {
     out[key] = stripNulls(value, field)
   }
   return out
+}
+
+// Text where the schema wants another type, read as that value: an object or
+// array sent as JSON text, and a number or boolean sent as text (a planner
+// sent team_diff maxBytes "400000" twice). A field that takes text keeps it.
+function fromText(schema: Schema.Constraint, text: string): unknown {
+  if (expectsContainer(schema, text)) return Option.getOrElse(decodeJson(text), () => text)
+  if (acceptsString(schema)) return text
+  if (acceptsTag(schema, "Number") && /^-?\d+(\.\d+)?$/.test(text.trim())) return Number(text)
+  if (acceptsTag(schema, "Boolean") && (text === "true" || text === "false")) return text === "true"
+  return text
+}
+
+function acceptsTag(schema: Schema.Constraint, tag: string): boolean {
+  if (isUnionSchema(schema)) return schema.members.some((member) => acceptsTag(member, tag))
+  if (isComposedSchema(schema)) return acceptsTag(schema.from, tag)
+  if (isOptionalSchema(schema)) return acceptsTag(schema.schema, tag)
+  return schema.ast._tag === tag
 }
 
 // Text that reads as an object where the schema has a struct, or as an array
@@ -368,22 +386,19 @@ export const Brief = Schema.Struct({
       () => [],
     ),
   }).annotate({ description: "What the child may edit." }),
-  context: field(
-    Schema.Struct({
-      interfaces: field(
-        Schema.Array(Interface)
-          .check(Schema.isMaxLength(20))
-          .annotate({ description: "Code the child must read before changing anything." }),
-        () => [],
-      ),
-      decisions: field(
-        Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
-          .check(Schema.isMaxLength(20))
-          .annotate({ description: "Choices already made, so the child does not reopen them." }),
-        () => [],
-      ),
-    }).annotate({ description: "What the child must know before it starts." }),
-    () => ({ interfaces: [], decisions: [] }),
+  // Top-level, not inside a context object: Haiku sent that object as JSON
+  // text, at times with quotes left unescaped (b4, b6, b8: five refusals).
+  interfaces: field(
+    Schema.Array(Interface)
+      .check(Schema.isMaxLength(20))
+      .annotate({ description: "Code the child must read before changing anything." }),
+    () => [],
+  ),
+  decisions: field(
+    Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
+      .check(Schema.isMaxLength(20))
+      .annotate({ description: "Choices already made, so the child does not reopen them." }),
+    () => [],
   ),
   checks: field(CheckSpecs, () => []),
   effort: field(

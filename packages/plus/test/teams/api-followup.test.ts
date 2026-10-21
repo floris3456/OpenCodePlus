@@ -163,7 +163,8 @@ async function writeBrief(root: string, child: RunRecord): Promise<void> {
     objective: "Fix the agent filter in the query module so scoped listing works as documented.",
     deliverable: { kind: "commit" },
     scope: { paths: ["docs/*"], forbidden: [] },
-    context: { interfaces: [], decisions: [] },
+    interfaces: [],
+    decisions: [],
     checks: [],
     effort: "medium",
   })
