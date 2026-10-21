@@ -458,7 +458,9 @@ export async function onSessionIdle(
       attempt.notified !== true
     const next = announce ? markNotified(idle) : idle
     if (announce && attempt !== undefined) settled.attempt = attempt
-    if (!next.stopRequested || next.state === "stopping") return next
+    // A stopped run's session can still end a turn (a prompt admitted before
+    // the stop): it is stopped already.
+    if (!next.stopRequested || next.state === "stopping" || next.state === "stopped") return next
     settled.stopped = true
     const stopped = transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
     return next.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: next.stopRequestedBy } : stopped
