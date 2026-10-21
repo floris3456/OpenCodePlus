@@ -139,7 +139,13 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   const brief = args.paths === undefined ? undefined : await readJson<ResolvedBrief>(briefPath)
   if (args.paths !== undefined && brief === undefined)
     return fail("E_NO_BRIEF", `Run ${child.id} has no stored brief (runs/${child.id}/brief.json).`, { run: child.id })
-  const widened = brief === undefined ? undefined : { ...brief, scope: { ...brief.scope, paths: [...new Set([...brief.scope.paths, ...args.paths!])] } }
+  // A path the parent forbade by name is the parent's to grant again: a build
+  // seat that forbade src/cli.ts could not widen its own child to it, landed
+  // nothing and started a cold run (b9-s15, b9-s8). A forbidden folder stays.
+  const widened =
+    brief === undefined
+      ? undefined
+      : { ...brief, scope: { paths: [...new Set([...brief.scope.paths, ...args.paths!])], forbidden: brief.scope.forbidden.filter((entry) => entry.endsWith("/*") || !args.paths!.includes(entry)) } }
   if (widened !== undefined) {
     const refused = scopePathsRefusal(table, { ...widened, role: child.role }, caller, args.paths)
     if (refused !== undefined) return refused

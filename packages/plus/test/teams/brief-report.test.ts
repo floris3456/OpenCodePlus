@@ -36,7 +36,7 @@ describe("brief", () => {
         ...briefBase(),
         task: "T3",
         scope: { paths: ["a.ts"], forbidden: ["b.ts"] },
-        interfaces: [{ path: "q.ts", note: "parsed here" }],
+        interfaces: ["q.ts: parsed here"],
         decisions: ["Do not change the grammar"],
         checks: [{ id: "q", argv: ["bun", "test", "q.test.ts"] }],
         prompt: "Be quick",
@@ -48,7 +48,7 @@ describe("brief", () => {
     expect(sections[1].startsWith("## Objective\n")).toBe(true)
     expect(sections[2]).toBe("## Deliverable\ncommit: commit your changes with team_checkpoint; your parent lands them.")
     expect(sections[3]).toBe("## Scope\nMay edit: a.ts\nMust not touch: b.ts")
-    expect(sections[4]).toBe("## Interfaces to read first\n- q.ts — parsed here")
+    expect(sections[4]).toBe("## Interfaces to read first\n- q.ts: parsed here")
     expect(sections[5]).toBe("## Decisions already made\n- Do not change the grammar")
     expect(sections[6]).toBe("## Checks\n- q: bun test q.test.ts")
     // The budget is advisory everywhere: the Brief says so in the same words the roles use.
@@ -161,7 +161,7 @@ test("brief and report text fields take the lengths live runs wrote", async () =
     objective: "Add the import command for the bank's fixed-width export format.",
     deliverable: { kind: "commit" },
     scope: { paths: ["src/*"] },
-    interfaces: [{ path: "docs/reference/nbx-format.md", note: text(550) }],
+    interfaces: [`docs/reference/nbx-format.md: ${text(550)}`],
     decisions: [text(900)],
   }
   expect(() => Schema.decodeUnknownSync(Brief)(brief)).not.toThrow()

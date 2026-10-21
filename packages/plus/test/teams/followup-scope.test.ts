@@ -129,6 +129,20 @@ test("a blocked child's path need widens live edit and checkpoint scope, publish
   expect((await readJson<Brief>(f.briefPath))?.scope.paths).toEqual(paths)
 })
 
+// Live b9-s15, b9-s8: a build seat forbade src/cli.ts by name, then could not
+// widen its own child to it, and started a cold run instead.
+test("a path the parent forbade by name is granted again by a followup; a forbidden folder stays", async () => {
+  await using f = await fixture()
+  await atomicJson(f.briefPath, { ...f.brief, scope: { ...f.brief.scope, forbidden: ["src/private/*", "src/cli.ts"] } })
+  const input = Schema.decodeUnknownSync(FollowupInput)({ run: f.child.id, requestID: "regrant", paths: ["src/cli.ts"], prompt: "Wire it up." })
+  expect(required(await f.api.followup(input, f.caller))).toMatchObject({ attempt: 2, state: "admitted" })
+  const stored = JSON.parse(await fs.readFile(f.briefPath, "utf8")) as { scope: { paths: string[]; forbidden: string[] } }
+  expect(stored.scope.forbidden).toEqual(["src/private/*"])
+  expect((await f.edit("src/cli.ts")).effect).toBe("allow")
+  expect((await f.edit("src/private/key.ts")).effect).toBe("deny")
+  expect(rejected(await f.api.followup({ ...input, requestID: "regrant-private", paths: ["src/private/key.ts"] }, f.caller)).code).toBe("E_SCOPE")
+})
+
 test("paths alone admits the Plus note and a blocked settlement names paths", async () => {
   await using f = await fixture()
   const settled = await loadRun(f.root, f.child.id)

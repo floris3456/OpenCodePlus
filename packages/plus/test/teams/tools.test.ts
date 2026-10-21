@@ -22,7 +22,7 @@ import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { change, linked, presetTable, shippedTable, teamState } from "./preset-table.js"
 import { git } from "../../src/teams/git.js"
-import { peek } from "../../src/teams/inbox.js"
+import { peek, put, take } from "../../src/teams/inbox.js"
 import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { Brief, Report } from "../../src/teams/schema.js"
@@ -256,6 +256,37 @@ test("every team tool registers direct under namespace team with its permission"
     expect(tool.options?.codemode).toBe(false)
     expect(tool.options?.permission).toBe(`team.${name}`)
   }
+})
+
+// Live b9-s12: a lead said it was waiting, then called team_status for a
+// child still working. Such a call answers and ends the turn.
+test("team_status and team_list end the turn while a child works and no news waits; otherwise they do not", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const directory = path.join(root, "repo")
+    await fs.mkdir(directory, { recursive: true })
+    await initRepo(directory)
+    const head = await git(directory, ["rev-parse", "HEAD"])
+    const parent: RunRecord = { ...makeRun("main-0123456789abcdef", "orchestrator", "ses_wait_parent"), kind: "main", directory, base: head, head, state: "working", children: ["w-0123456789abcdef"] }
+    const child: RunRecord = { ...makeRun("w-0123456789abcdef", "implementer", "ses_wait_child"), parent: parent.id, directory, base: head, head, state: "working" }
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const created = testToolContext()
+    const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState()), shippedTable)
+    try {
+      const caller = toolContext("ses_wait_parent", "orchestrator")
+      const call = async (name: string) => (await Effect.runPromise(need(created.tools, name).execute({}, caller))).endTurn
+      expect(await call("team_status")).toBe(true)
+      expect(await call("team_list")).toBe(true)
+      await put(root, parent.id, { kind: "child.settled", from: child.id, text: "[team] settled" })
+      expect(await call("team_list")).toBeUndefined()
+      await take(root, parent.id, (await peek(root, parent.id)).map((item) => item.id))
+      const now = new Date().toISOString()
+      await saveRun(root, { ...child, state: "idle", attempts: [{ n: 1, state: "succeeded", trigger: "delegate", startedAt: now, endedAt: now }] })
+      expect(await call("team_status")).toBeUndefined()
+    } finally {
+      await Effect.runPromise(registration.dispose)
+    }
+  })
 })
 
 for (const delegated of [true, false]) {
@@ -1924,7 +1955,6 @@ test("C — every field path of every registered team tool treats null as omissi
 
   const regressionPaths: Array<[string, FieldPath]> = [
     ["team_delegate", ["checks", 0, "cwd"]],
-    ["team_delegate", ["interfaces", 0, "symbol"]],
     ["team_followup", ["budget", "turns"]],
   ]
 
@@ -1984,7 +2014,7 @@ test("C1 — null in an array element field decodes as omission (delegate checks
   expect(Schema.decodeUnknownSync(schema)(withNull)).toEqual(omitted)
 })
 
-test("C2 — null inside a default-wrapped array element decodes as omission (brief interfaces[0].symbol)", async () => {
+test("C2 — null inside a default-wrapped array element decodes as omission (brief checks[0].path)", async () => {
   const schema = registeredSchema(await registeredTools(), "team_delegate")
   const brief = {
     requestID: "T1-a",
@@ -1995,19 +2025,19 @@ test("C2 — null inside a default-wrapped array element decodes as omission (br
   }
   const omitted = Schema.decodeUnknownSync(schema)({
     ...brief,
-    interfaces: [{ path: "note.md", note: "test" }],
+    checks: [{ id: "test-file", path: "test/x.test.ts" }],
   })
   expect(
     Schema.decodeUnknownSync(schema)({
       ...brief,
-      interfaces: [{ path: "note.md", note: "test", symbol: null }],
+      checks: [{ id: "test-file", path: "test/x.test.ts", use: null }],
     }),
   ).toEqual(omitted)
 })
 
 test("C2b — an object or array sent as JSON text decodes as that value; a text field keeps its text", async () => {
   const schema = registeredSchema(await registeredTools(), "team_delegate")
-  const interfaces = [{ path: "src/csv.ts", note: "the parser with the bug" }]
+  const interfaces = ["src/csv.ts#parseCsv: the parser with the bug"]
   const checks = [{ id: "test" }]
   const brief = {
     requestID: "T1-a",
@@ -2021,7 +2051,12 @@ test("C2b — an object or array sent as JSON text decodes as that value; a text
   expect(Schema.decodeUnknownSync(schema)({ ...brief, interfaces: JSON.stringify(interfaces), checks: JSON.stringify(checks) })).toEqual(asValues)
   expect(asValues).toMatchObject({ objective: brief.objective, prompt: brief.prompt })
   // Text that is not JSON still fails as before.
-  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, interfaces: "[{path: 1}" })).toThrow()
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, checks: "[{id: 1}" })).toThrow()
+  // Text where a list of text is wanted is one entry, even JSON text no parser
+  // reads back (live b9-s9: interfaces with quotes left unescaped).
+  const broken = '[{"path":"src/csv.ts","note":"Handle "" inside quotes"}]'
+  expect(Schema.decodeUnknownSync(schema)({ ...brief, interfaces: broken })).toMatchObject({ interfaces: [broken] })
+  expect(Schema.decodeUnknownSync(schema)({ ...brief, scope: { paths: "src/csv.ts" } })).toMatchObject({ scope: { paths: ["src/csv.ts"] } })
 })
 
 // Live b8-s13: a planner sent team_diff maxBytes "400000", twice.
@@ -2054,7 +2089,7 @@ test("C4 — null on required fields still fails with a schema error at every de
   const cases: Array<[string, unknown]> = [
     ["team_delegate", { ...brief, objective: null }],
     ["team_delegate", { ...brief, checks: [{ id: null, argv: ["bun", "test", "test/x.test.ts"] }] }],
-    ["team_delegate", { ...brief, interfaces: [{ path: null, note: "test" }] }],
+    ["team_delegate", { ...brief, interfaces: [null] }],
     ["team_followup", { run: null, requestID: "probe-budget", prompt: "test" }],
     ["team_finish", { status: null, summary: "Finished all changes cleanly" }],
   ]

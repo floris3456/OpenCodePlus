@@ -38,11 +38,16 @@ function stripNulls(given: unknown, schema: Schema.Constraint): unknown {
 }
 
 // Text where the schema wants another type, read as that value: an object or
-// array sent as JSON text, and a number or boolean sent as text (a planner
-// sent team_diff maxBytes "400000" twice). A field that takes text keeps it.
+// array sent as JSON text, a number or boolean sent as text (a planner sent
+// team_diff maxBytes "400000" twice), and text where a list of text is wanted
+// as a one-entry list (Haiku sent Brief interfaces as JSON text with quotes
+// left unescaped, which no parser reads back). A field that takes text keeps it.
 function fromText(schema: Schema.Constraint, text: string): unknown {
-  if (expectsContainer(schema, text)) return Option.getOrElse(decodeJson(text), () => text)
+  const parsed = expectsContainer(schema, text) ? decodeJson(text) : Option.none()
+  if (Option.isSome(parsed)) return parsed.value
   if (acceptsString(schema)) return text
+  const element = elementAt(schema, 0)
+  if (element !== undefined && acceptsString(element)) return [text]
   if (acceptsTag(schema, "Number") && /^-?\d+(\.\d+)?$/.test(text.trim())) return Number(text)
   if (acceptsTag(schema, "Boolean") && (text === "true" || text === "false")) return text === "true"
   return text
@@ -340,13 +345,6 @@ export const Deliverable = Schema.Struct({
 })
 export type Deliverable = typeof Deliverable.Type
 
-export const Interface = Schema.Struct({
-  path: Schema.String,
-  symbol: Schema.optionalKey(Schema.String),
-  note: Schema.String.check(Schema.isMaxLength(1000)).annotate({ description: "Why the child must read it." }),
-})
-export type Interface = typeof Interface.Type
-
 export const Need = Schema.Struct({
   kind: Schema.Literals(["path", "check", "info", "decision"]).annotate({
     description: "path: a file outside your scope. check: a failing or missing check. info: missing information. decision: a choice your parent must make.",
@@ -386,12 +384,12 @@ export const Brief = Schema.Struct({
       () => [],
     ),
   }).annotate({ description: "What the child may edit." }),
-  // Top-level, not inside a context object: Haiku sent that object as JSON
-  // text, at times with quotes left unescaped (b4, b6, b8: five refusals).
+  // Top-level text lines, not objects inside a context object: Haiku sent
+  // both as JSON text, at times with quotes left unescaped (b4, b6, b8, b9).
   interfaces: field(
-    Schema.Array(Interface)
+    Schema.Array(Schema.String.check(Schema.isMaxLength(1200)))
       .check(Schema.isMaxLength(20))
-      .annotate({ description: "Code the child must read before changing anything." }),
+      .annotate({ description: "Code the child must read before changing anything, one line each: path or path#symbol, then why, e.g. \"src/csv.ts#parseCsv: the parser with the bug\"." }),
     () => [],
   ),
   decisions: field(
@@ -855,7 +853,7 @@ export const FollowupInput = Schema.Struct({
     description: "The correction or answer; it is the child's next message.",
   }),
   paths: Schema.optionalKey(Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(40))).annotate({
-    description: "Files or dir/* to add to the child's edit scope, repository-relative, e.g. [\"src/cli.ts\"]. Answers a path need; forbidden paths stay forbidden. May be sent without prompt.",
+    description: "Files or dir/* to add to the child's edit scope, repository-relative, e.g. [\"src/cli.ts\"]. Answers a path need; a path you forbade by name is granted again, a forbidden folder stays forbidden. May be sent without prompt.",
   }),
   delivery: Schema.optionalKey(Schema.Literals(["now", "queue"])).annotate({
     description:
