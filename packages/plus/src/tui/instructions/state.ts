@@ -172,6 +172,7 @@ export function toRpcRecords(
         ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
         ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
         ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+        ...(record.coldFirst === undefined ? {} : { coldFirst: record.coldFirst }),
         ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
         ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
         ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
@@ -1246,6 +1247,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     if (switchItem !== undefined && node.id.endsWith(":cold"))
       return setModelCompaction(node, { coldCompact: null, coldModels: null })
     if (switchItem !== undefined && switchItem.includes("modelfield:compactWarm:")) return setModelCompaction(node, { compactWarm: null })
+    if (switchItem !== undefined && switchItem.includes("modelfield:coldFirst:")) return setModelCompaction(node, { coldFirst: null })
     if (blockedControlWrite(node)) return false
     if (isModelRowId(node.id) || node.address?.item.startsWith("model:")) {
       const result = resetModelRow(memoInput(), node.id, treeMemo())
@@ -1377,7 +1379,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // level (null clears it so the level below decides), one write.
   async function setModelCompaction(
     node: TreeNode,
-    fields: { compactWarm?: string | null; coldCompact?: string | null; coldModels?: readonly string[] | null; compactionStrategy?: string | null; compactionModel?: string | null; compactionInstructions?: string | null; compactionInput?: string | null; compactionOutput?: string | null; imageConvert?: string | null; imageShrink?: string | null; imagesFull?: string | null },
+    fields: { compactWarm?: string | null; coldFirst?: string | null; coldCompact?: string | null; coldModels?: readonly string[] | null; compactionStrategy?: string | null; compactionModel?: string | null; compactionInstructions?: string | null; compactionInput?: string | null; compactionOutput?: string | null; imageConvert?: string | null; imageShrink?: string | null; imagesFull?: string | null },
   ): Promise<boolean> {
     const result = setModelCompactionRow(memoInput(), node.id, fields, treeMemo())
     if ("refusal" in result) {
@@ -1406,6 +1408,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       prompt?: string | null
       effort?: string | null
       compactWarm?: string | null
+      coldFirst?: string | null
       coldCompact?: string | null
       coldModels?: readonly string[] | null
       compactionStrategy?: string | null
@@ -1682,9 +1685,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     for (const timer of noticeTimers) clearTimeout(timer)
   }
 
-  // Space on a compaction switch: the field row (`Compact before cold`) or the
-  // cold-cache group. Agent rows write the model inventory; Defaults field
-  // rows write through modelSettings.set.
+  // Space on a compaction switch: the field rows (`Compact before cold`,
+  // `Compact cold chats first`) or the cold-cache group. The shown value
+  // decides: "on…" writes off, anything else (off, "as in Settings") writes on.
+  // Agent rows write the model inventory; Defaults field rows write through
+  // modelSettings.set.
   async function toggleModelSwitch(node: TreeNode): Promise<boolean> {
     const item = node.address?.item
     if (item === undefined) {
@@ -1697,7 +1702,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return reflect(editModelSettings, "Model switch")(node, { [setting.field]: value } as never)
     }
     const field = parseModelFieldItemId(item)?.field
-    if (field !== "compactWarm" && field !== "coldCompact") { setStatus(`"${node.label}" is not a model switch`); return false }
+    if (field !== "compactWarm" && field !== "coldFirst" && field !== "coldCompact") { setStatus(`"${node.label}" is not a model switch`); return false }
     return reflect(setModelCompaction, "Model switch")(node, { [field]: value })
   }
 

@@ -146,7 +146,7 @@ const SetDescription =
   "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
   "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
-  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
+  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldFirst (Compact cold chats first for this model, over the Settings switch), coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
   "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
 
 const EditDescription =
@@ -298,6 +298,7 @@ const SetInput = Schema.Struct({
   prompt: Schema.optionalKey(Schema.String),
   effort: Schema.optionalKey(Schema.String),
   compactWarm: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  coldFirst: Schema.optionalKey(Schema.NullOr(Schema.String)),
   coldCompact: Schema.optionalKey(Schema.NullOr(Schema.String)),
   coldModels: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Array(Schema.String)]))),
   compactionStrategy: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -628,7 +629,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
           if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
           if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
-          if (input.compactWarm !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined || input.compactionInput !== undefined || input.compactionOutput !== undefined || input.imageConvert !== undefined || input.imageShrink !== undefined || input.imagesFull !== undefined)
+          if (input.compactWarm !== undefined || input.coldFirst !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined || input.compactionInput !== undefined || input.compactionOutput !== undefined || input.imageConvert !== undefined || input.imageShrink !== undefined || input.imagesFull !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; compaction fields are set on model or Defaults › Models rows` }))
           if (input.warming !== undefined)
             return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
@@ -1455,6 +1456,7 @@ function setModel(
     prompt?: string
     effort?: string
     compactWarm?: string | null
+    coldFirst?: string | null
     coldCompact?: string | null
     coldModels?: string | readonly string[] | null
     compactionStrategy?: string | null
@@ -1615,6 +1617,7 @@ function setModelDefaults(
     prompt?: string
     effort?: string
     compactWarm?: string | null
+    coldFirst?: string | null
     coldCompact?: string | null
     coldModels?: string | readonly string[] | null
     compactionStrategy?: string | null
@@ -1646,6 +1649,7 @@ function setModelDefaults(
       input.prompt === undefined &&
       input.effort === undefined &&
       input.compactWarm === undefined &&
+      input.coldFirst === undefined &&
       input.coldCompact === undefined &&
       input.coldModels === undefined &&
       input.compactionStrategy === undefined &&
@@ -1750,7 +1754,7 @@ function defaultFieldValue(field: string, record: Plus.SnapshotModelSettingsReco
         ? compaction.model.value
         : field === "compactionInstructions"
           ? compaction.instructions.value
-          : field === "compactionInput" || field === "compactionOutput" || field === "compactWarm" || field === "coldModels"
+          : field === "compactionInput" || field === "compactionOutput" || field === "compactWarm" || field === "coldFirst" || field === "coldModels"
             ? compaction[field].value
             : undefined
   return value ?? null

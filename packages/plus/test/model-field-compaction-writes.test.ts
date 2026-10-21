@@ -92,6 +92,41 @@ test("setting compactionModel and compactWarm keeps the prompt; invalid values r
   expect(after.records).toEqual(setModel.models)
 })
 
+test("setting Compact cold chats first writes coldFirst alone; empty clears and a bad value refuses", () => {
+  const base = input([model({ prompt: "CANARY", active: true, compactWarm: "on" })])
+  const rowId = expandedTree(base).find((row) => row.label === "Compact cold chats first")?.id
+  expect(rowId).toBe(fieldRow("coldFirst"))
+  const set = setModelFieldRow(base, fieldRow("coldFirst"), " OFF ")
+  if ("refusal" in set) throw new Error(set.refusal)
+  expect(live(set.models)).toMatchObject({ coldFirst: "off", compactWarm: "on", prompt: "CANARY", active: true, modelID: "nova" })
+
+  const after = input(set.models)
+  const cleared = setModelFieldRow(after, fieldRow("coldFirst"), "")
+  if ("refusal" in cleared) throw new Error(cleared.refusal)
+  expect(live(cleared.models)).not.toHaveProperty("coldFirst")
+  expect(live(cleared.models)).toMatchObject({ compactWarm: "on", prompt: "CANARY" })
+
+  const bad = setModelFieldRow(after, fieldRow("coldFirst"), "sometimes")
+  if (!("refusal" in bad)) throw new Error("expected an on/off refusal")
+  expect(bad.refusal).toBe(`Compact cold chats first must be on or off, got "sometimes"`)
+  expect(after.records).toEqual(set.models)
+
+  const edit = modelFieldEdit("coldFirst", { providerID: "acme", modelID: "nova" }, "on")
+  if (!("compaction" in edit)) throw new Error("expected a compaction edit")
+  expect(edit.compaction).toEqual({ coldFirst: "on" })
+})
+
+test("reset on Compact cold chats first clears this level so the Global value shows again", () => {
+  const base = input([{ ...model({ level: "global" }), coldFirst: "off" }, { ...model({ prompt: "CANARY" }), coldFirst: "on" }])
+  expect(expandedTree(base).find((row) => row.id === fieldRow("coldFirst"))?.badges.value).toBe("on")
+  const reset = resetModelFieldRow(base, fieldRow("coldFirst"))
+  if ("refusal" in reset) throw new Error(reset.refusal)
+  expect(live(reset.models)).not.toHaveProperty("coldFirst")
+  expect(live(reset.models)?.prompt).toBe("CANARY")
+  expect(reset.models.find((record) => record.level === "global" && record.agent === "alpha")?.coldFirst).toBe("off")
+  expect(expandedTree(input(reset.models)).find((row) => row.id === fieldRow("coldFirst"))?.badges.value).toBe("off · global")
+})
+
 test("empty compaction instructions is an explicit empty prompt; reset then inherits", () => {
   const base = input([model({ prompt: "CANARY" })])
   const written = setModelFieldRow(base, fieldRow("compactionInstructions"), "")

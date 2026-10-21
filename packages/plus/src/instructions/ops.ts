@@ -3049,7 +3049,8 @@ export function modelFieldEdit(
       : field === "compactionModel" ? { compactionModel: text }
         : field === "compactionInstructions" ? { compactionInstructions: text }
           : field === "compactWarm" ? { compactWarm: text }
-            : { coldCompact: text }
+            : field === "coldFirst" ? { coldFirst: text }
+              : { coldCompact: text }
   const validated = compactionFieldsOf(asTyped)
   if ("error" in validated) return { error: validated.error }
   return { compaction: validated.fields }
@@ -3125,14 +3126,16 @@ export function resetModelFieldRow(input: MemoInput, rowId: string, sharedMemo?:
     }
   }
 
-  // Compaction fields (Compact before cold, Strategy, Model, Instructions) use
-  // the C1 store: null clears this level so the level below (or Defaults ›
-  // Models) decides again. An explicit empty Instructions is a value, not a
-  // reset, so reset only fires when this level actually sets the field.
+  // Compaction fields (Compact before cold, Compact cold chats first, Strategy,
+  // Model, Instructions) use the C1 store: null clears this level so the level
+  // below (or Defaults › Models) decides again. An explicit empty Instructions
+  // is a value, not a reset, so reset only fires when this level actually sets
+  // the field.
   if (
     parsed.field === "compactionInput" ||
     parsed.field === "compactionOutput" ||
     parsed.field === "compactWarm" ||
+    parsed.field === "coldFirst" ||
     parsed.field === "coldCompact" ||
     parsed.field === "compactionStrategy" ||
     parsed.field === "compactionModel" ||
@@ -3365,8 +3368,10 @@ export function setModelCompactionRow(
   return { models: next, status: `Updated "${node.label}"`, retryHint: `edited "${node.label}" against a stale revision; retry to apply` }
 }
 
-// Space on an agent model row's `compactWarm` field: writes the inverse of the
-// effective value. The cold-cache group has no switch of its own any more.
+// Space on an agent model row's `compactWarm` or `coldFirst` field: writes the
+// inverse of the effective value. A `coldFirst` no row sets ("as in Settings")
+// counts as off, so Space writes on. The cold-cache group has no switch of its
+// own any more.
 export function toggleModelCompactionSwitch(input: MemoInput, rowId: string, sharedMemo?: Memo): ModelOpResult {
   const found = findNode(input, rowId, sharedMemo)
   if (found === undefined) return { refusal: unknownRowRefusal(rowId) }
@@ -3376,26 +3381,27 @@ export function toggleModelCompactionSwitch(input: MemoInput, rowId: string, sha
   if (address === undefined || node.actions?.toggle !== true) return { refusal: `"${node.label}" cannot be toggled` }
   const parsed = parseModuleCompactionSwitch(node)
   if ("refusal" in parsed) return parsed
-  const on = effectiveSwitch(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target, parsed.field)
+  const on = effectiveSwitch(input, found.memo.ctx.scopes, modelScopeOf(address), parsed.target, parsed.field) === true
   return setModelCompactionRow(input, rowId, { [parsed.field]: on ? "off" : "on" } as ModelCompactionFieldValues, sharedMemo)
 }
 
-function parseModuleCompactionSwitch(node: { readonly address?: Address; readonly label: string }): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly field: "compactWarm" } | { readonly refusal: string } {
+function parseModuleCompactionSwitch(node: { readonly address?: Address; readonly label: string }): { readonly target: { providerID: string; modelID: string; variant?: string }; readonly field: "compactWarm" | "coldFirst" } | { readonly refusal: string } {
   const parsed = node.address === undefined ? undefined : parseModelFieldItemId(node.address.item)
-  if (parsed === undefined || parsed.field !== "compactWarm") return { refusal: `"${node.label}" is not a compaction switch` }
+  if (parsed === undefined || (parsed.field !== "compactWarm" && parsed.field !== "coldFirst")) return { refusal: `"${node.label}" is not a compaction switch` }
   return { target: parsed.target, field: parsed.field }
 }
 
-// The effective value of compactWarm for one model row's chain,
+// The effective value of compactWarm or coldFirst for one model row's chain,
 // from the model rows and Defaults › Models (the agent-wide switch has no
-// agent-wide seat: C1 resolves these two from the model row and below only).
+// agent-wide seat: C1 resolves these from the model row and below only).
+// coldFirst is undefined where no row sets it.
 function effectiveSwitch(
   input: MemoInput,
   scopes: Scopes,
   scope: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
-  field: "compactWarm",
-): boolean {
+  field: "compactWarm" | "coldFirst",
+): boolean | undefined {
   const row = resolveModelCompactionFields(
     { models: input.records.filter((record): record is ModelRecord => record.type === "model"), scopes, ...scope },
     target,

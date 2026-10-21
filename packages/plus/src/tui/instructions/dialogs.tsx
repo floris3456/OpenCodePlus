@@ -286,7 +286,7 @@ export function createInstructionsDialogs(
     const current = await currentSnapshot()
     if (disposed || current === undefined) return
     const field = parsed.field
-    if (field === "compactWarm" || field === "coldCompact") {
+    if (field === "compactWarm" || field === "coldFirst" || field === "coldCompact") {
       await state.toggleModelSwitch(node)
       return
     }

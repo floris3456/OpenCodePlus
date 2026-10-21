@@ -208,6 +208,7 @@ const V2OriginalCandidate = Schema.Struct({
 // longer parses sets nothing at resolution instead of dropping the record.
 const CompactionFields = {
   compactWarm: Schema.optional(Schema.String),
+  coldFirst: Schema.optional(Schema.String),
   coldCompact: Schema.optional(Schema.String),
   coldModels: Schema.optional(Schema.Array(Schema.String)),
   compactionStrategy: Schema.optional(Schema.String),
@@ -1389,6 +1390,7 @@ function sortKey(record: StoredRecord): string[] {
 function storedCompaction(record: ModelCompactionFields): ModelCompactionFields {
   return {
     ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+    ...(record.coldFirst === undefined ? {} : { coldFirst: record.coldFirst }),
     ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
     ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
     ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),

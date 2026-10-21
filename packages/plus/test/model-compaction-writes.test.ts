@@ -6,6 +6,7 @@ import {
   addColdModelRow,
   moveColdModelRow,
   removeColdModelRow,
+  resetModelFieldRow,
   setModelCompactionRow,
   toggleModelCompactionSwitch,
 } from "../src/instructions/ops.js"
@@ -133,4 +134,72 @@ test("Compact before cold shows off · built-in when nothing sets it", () => {
   const rows = expandedTree(input([model()]))
   const compactWarm = rows.find((row) => row.id === "item:project:alpha:modelfield:compactWarm:acme/nova")
   expect(compactWarm?.badges.value).toBe("off · built-in")
+})
+
+const coldFirstRow = (records: MemoInput["records"], modelSettings: MemoInput["modelSettings"] = []) =>
+  expandedTree({ ...input(records), modelSettings }).find((row) => row.id === field("coldFirst"))
+
+test("Compact cold chats first sits after Compact before cold in Warming, a switch reading as in Settings", () => {
+  const rows = expandedTree(input([model()]))
+  const warming = rows.filter((row) => row.id.startsWith("item:project:alpha:modelfield:") || row.id === "group:project:alpha:modelgroup:acme/nova:cold")
+  const labels = warming.map((row) => row.label)
+  expect(labels.slice(labels.indexOf("Compact before cold"), labels.indexOf("Compact before cold") + 3)).toEqual([
+    "Compact before cold",
+    "Compact cold chats first",
+    "Cold-cache models",
+  ])
+  const row = coldFirstRow([model()])
+  expect(row?.label).toBe("Compact cold chats first")
+  expect(row?.badges.value).toBe("as in Settings")
+  expect(row?.badges.modified).toBeUndefined()
+  expect(row?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+})
+
+test("Compact cold chats first shows its own value, or the inherited one with its source", () => {
+  expect(coldFirstRow([{ ...model(), coldFirst: "off" }])?.badges).toMatchObject({ value: "off", modified: true })
+  expect(coldFirstRow([{ ...model(), coldFirst: "off" }])?.actions?.reset).toBe(true)
+  expect(coldFirstRow([{ ...model({ level: "global" }), coldFirst: "on" }])?.badges.value).toBe("on · global")
+  const every = { type: "modelSettings" as const, level: "defaults" as const, coldFirst: "on", updated: UPDATED }
+  expect(coldFirstRow([model()], [every])?.badges.value).toBe("on · every model")
+  const own = { type: "modelSettings" as const, level: "defaults" as const, providerID: "acme", modelID: "nova", coldFirst: "off", updated: UPDATED }
+  expect(coldFirstRow([model()], [every, own])?.badges.value).toBe("off · defaults")
+  // The agent's row wins over Defaults › Models.
+  expect(coldFirstRow([{ ...model(), coldFirst: "on" }], [every, own])?.badges.value).toBe("on")
+})
+
+test("Space on Compact cold chats first writes coldFirst at the row's level; r inherits again", () => {
+  const base = input([model({ coldModels: ["a/one"] })])
+  // From "as in Settings" Space writes on, then off, then on.
+  const on = toggleModelCompactionSwitch(base, field("coldFirst"))
+  if ("refusal" in on) throw new Error(on.refusal)
+  expect(on.models.find((entry) => entry.agent === "alpha" && entry.level === "project")).toMatchObject({ coldFirst: "on", coldModels: ["a/one"] })
+  expect(coldFirstRow(on.models)?.badges.value).toBe("on")
+  const off = toggleModelCompactionSwitch({ ...base, records: on.models }, field("coldFirst"))
+  if ("refusal" in off) throw new Error(off.refusal)
+  expect(off.models.find((entry) => entry.agent === "alpha")?.coldFirst).toBe("off")
+  const again = toggleModelCompactionSwitch({ ...base, records: off.models }, field("coldFirst"))
+  if ("refusal" in again) throw new Error(again.refusal)
+  expect(again.models.find((entry) => entry.agent === "alpha")?.coldFirst).toBe("on")
+  // Compact before cold is untouched by the new switch.
+  expect(again.models.find((entry) => entry.agent === "alpha")?.compactWarm).toBeUndefined()
+
+  const reset = resetModelFieldRow({ ...base, records: off.models }, field("coldFirst"))
+  if ("refusal" in reset) throw new Error(reset.refusal)
+  expect(reset.models.find((entry) => entry.agent === "alpha")).not.toHaveProperty("coldFirst")
+  expect(reset.models.find((entry) => entry.agent === "alpha")?.coldModels).toEqual(["a/one"])
+  expect(coldFirstRow(reset.models)?.badges.value).toBe("as in Settings")
+  expect(resetModelFieldRow({ ...base, records: reset.models }, field("coldFirst"))).toEqual({ refusal: `"Compact cold chats first" has no override to reset` })
+})
+
+test("Space on an inherited Compact cold chats first writes the inverse here and leaves the lower row", () => {
+  const base = input([{ ...model({ level: "global" }), coldFirst: "on" }])
+  const off = toggleModelCompactionSwitch(base, field("coldFirst"))
+  if ("refusal" in off) throw new Error(off.refusal)
+  expect(off.models.find((entry) => entry.level === "project" && entry.agent === "alpha")?.coldFirst).toBe("off")
+  expect(off.models.find((entry) => entry.level === "global" && entry.agent === "alpha")?.coldFirst).toBe("on")
+  // A Defaults › Models value is inverted the same way.
+  const every = { type: "modelSettings" as const, level: "defaults" as const, coldFirst: "on", updated: UPDATED }
+  const fromEvery = toggleModelCompactionSwitch({ ...input([model()]), modelSettings: [every] }, field("coldFirst"))
+  if ("refusal" in fromEvery) throw new Error(fromEvery.refusal)
+  expect(fromEvery.models.find((entry) => entry.level === "project" && entry.agent === "alpha")?.coldFirst).toBe("off")
 })

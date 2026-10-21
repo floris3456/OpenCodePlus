@@ -108,6 +108,64 @@ test("bad compaction values refuse with the field named", () => {
       expect(error(compactionFieldsOf({ [field]: value }))).toContain("positive whole token count")
 })
 
+test("Compact cold chats first validates like a switch: on or off, empty and null clear", () => {
+  const error = (result: ReturnType<typeof compactionFieldsOf>) => ("error" in result ? result.error : undefined)
+  expect(compactionFieldsOf({ coldFirst: " OFF " })).toEqual({ fields: { coldFirst: "off" } })
+  expect(compactionFieldsOf({ coldFirst: "on", compactWarm: "off" })).toEqual({ fields: { compactWarm: "off", coldFirst: "on" } })
+  expect(compactionFieldsOf({ coldFirst: "" })).toEqual({ fields: { coldFirst: null } })
+  expect(compactionFieldsOf({ coldFirst: null })).toEqual({ fields: { coldFirst: null } })
+  for (const value of ["yes", "true", "maybe"])
+    expect(error(compactionFieldsOf({ coldFirst: value }))).toBe(`Compact cold chats first must be on or off, got "${value}"`)
+  // The retired switch still refuses, and its message points to the per-model switch as well as Settings.
+  expect(error(compactionFieldsOf({ coldCompact: "on", coldFirst: "on" }))).toBe(COLD_SWITCH_MOVED)
+  expect(COLD_SWITCH_MOVED).toContain("coldFirst")
+})
+
+test("Compact cold chats first resolves row, this model, Every model, else undefined for the Settings switch", () => {
+  // Nothing sets it: undefined, so the global Settings switch decides.
+  expect(effectiveCompaction({}).coldFirst).toEqual({ value: undefined, from: "built-in" })
+  expect(effectiveCompaction({ every: settings({ compactWarm: "on" }) }).coldFirst).toEqual({ value: undefined, from: "built-in" })
+  const every = settings({ coldFirst: "on" })
+  const model = settings({ providerID: "anthropic", modelID: "claude", coldFirst: "off" })
+  expect(effectiveCompaction({ every }).coldFirst).toEqual({ value: true, from: "every" })
+  expect(effectiveCompaction({ every, model }).coldFirst).toEqual({ value: false, from: "model" })
+  const rows = [modelRow({ level: "global", coldFirst: "on" }), modelRow({ level: "project", compactWarm: "on" })]
+  const row = resolveModelCompactionFields({ models: rows, scopes, level: "project", agent: "alpha" }, claude)
+  expect(row.coldFirst).toEqual({ value: "on", level: "global" })
+  expect(effectiveCompaction({ row, every, model }).coldFirst).toEqual({ value: true, from: "global" })
+  // The field resolves on its own: compactWarm says nothing about it.
+  expect(effectiveCompaction({ row: { compactWarm: { value: "on", level: "project" } } }).coldFirst).toEqual({ value: undefined, from: "built-in" })
+  // A stored value that no longer parses sets nothing: the level below decides.
+  expect(effectiveCompaction({ model: settings({ coldFirst: "maybe" }), every }).coldFirst).toEqual({ value: true, from: "every" })
+  expect(effectiveCompaction({ model: settings({ coldFirst: "maybe" }) }).coldFirst).toEqual({ value: undefined, from: "built-in" })
+})
+
+test("coldFirst round-trips through the store on model and Defaults rows, and sets and clears alone", async () => {
+  const project = await isolated()
+  const records: StoredRecord[] = [
+    modelRow({ active: true, coldFirst: "off", coldModels: ["a/b"] }),
+    settings({ coldFirst: "on" }),
+  ]
+  await save(project, { expectedProjectRevision: 0, expectedGlobalRevision: 0, records })
+  const reloaded = await load(project)
+  expect(canonical(reloaded.records).map(stable)).toEqual(canonical(records).map(stable))
+  expect(reloaded.records.find((record): record is ModelRecord => record.type === "model")?.coldFirst).toBe("off")
+  expect(reloaded.records.find((record): record is ModelSettingsRecord => record.type === "modelSettings")?.coldFirst).toBe("on")
+
+  const address = { level: "project" as const, agent: "alpha" }
+  const row = modelRow({ active: true, warming: "45m" })
+  const set = setModelCompaction([row], address, claude, { coldFirst: "off" }, UPDATED)
+  expect(set).toEqual([{ ...row, coldFirst: "off" }])
+  const cleared = setModelCompaction(set, address, claude, { coldFirst: null }, UPDATED)
+  expect(cleared).toEqual([row])
+  // A Defaults save keeps coldFirst unless it names it; clearing the last field removes the row.
+  const key = { providerID: "anthropic", modelID: "claude" }
+  const created = setModelSettingsRecord([], key, { coldFirst: "off" }, UPDATED)
+  expect(created).toEqual([settings({ ...key, coldFirst: "off" })])
+  expect(setModelSettingsRecord(created, key, { warming: "30m" }, UPDATED)[0]).toMatchObject({ warming: "30m", coldFirst: "off" })
+  expect(setModelSettingsRecord(created, key, { coldFirst: null }, UPDATED)).toEqual([])
+})
+
 test("the fields round-trip through the store, and a store without them is unchanged", async () => {
   const project = await isolated()
   const plain: StoredRecord[] = [
@@ -189,6 +247,7 @@ test("compact before cold and the cold-cache list resolve row, this model, Every
     compactionInput: { value: undefined, from: "built-in" },
     compactionOutput: { value: undefined, from: "built-in" },
     compactWarm: { value: false, from: "built-in" },
+    coldFirst: { value: undefined, from: "built-in" },
     coldModels: { value: [], from: "built-in" },
     strategy: { value: "auto", from: "built-in" },
     model: { value: undefined, from: "built-in" },

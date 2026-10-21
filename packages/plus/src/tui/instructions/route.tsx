@@ -1272,14 +1272,15 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     return folderName(node) !== undefined
   }
 
-  // The compaction switch rows (Space toggles): the `Compact before cold` field
-  // and the cold-cache group, on an agent model row or a Defaults model row.
+  // The compaction switch rows (Space toggles): the `Compact before cold` and
+  // `Compact cold chats first` fields and the cold-cache group, on an agent
+  // model row or a Defaults model row.
   function isCompactionSwitch(node: TreeNode | undefined): boolean {
     if (node?.actions?.toggle !== true) return false
     const item = node.address?.item
     if (item === undefined) return false
     const modelField = parseModelFieldItemId(item)
-    if (modelField !== undefined && (modelField.field === "compactWarm" || modelField.field === "coldCompact")) return true
+    if (modelField !== undefined && (modelField.field === "compactWarm" || modelField.field === "coldFirst" || modelField.field === "coldCompact")) return true
     const setting = parseModelSettingItemId(item)
     return setting !== undefined && isDefaultSwitchField(setting.field)
   }

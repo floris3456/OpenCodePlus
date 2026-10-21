@@ -283,6 +283,7 @@ export function snapshotRecordOf(record: StoredRecord): Plus.SnapshotRecord | un
       ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+      ...(record.coldFirst === undefined ? {} : { coldFirst: record.coldFirst }),
       ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
       ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
       ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),

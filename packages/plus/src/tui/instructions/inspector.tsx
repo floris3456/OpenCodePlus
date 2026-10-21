@@ -259,7 +259,7 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
 export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   const notes = controlDetail(node, snapshot, memo).filter((line) => !line.startsWith("Value: "))
   const detail = structureDetail(node)
-  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot), ...modelImageNotes(node)]
+  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot), ...modelImageNotes(node), ...modelColdFirstNotes(node)]
 }
 
 // An Images field under an agent/member/preset model row (a Defaults row says it in modelDefaultsNotes).
@@ -268,6 +268,18 @@ function modelImageNotes(node: TreeNode): string[] {
   const image = IMAGE_FIELDS.find((entry) => entry === field)
   if (image === undefined) return []
   return ["This row's chain wins, then Defaults › Models › this model, then Every model.", ...IMAGE_FIELD_NOTES[image], "Enter picks; Inherit or r restores inheritance."]
+}
+
+// Compact cold chats first has no built-in value: below the model rows the global Settings switch decides.
+const COLD_FIRST_NOTES = [
+  "For chats on this model it overrides Settings › OpenCodePlus › Compact cold chats first; where no row sets it, that switch decides (as in Settings).",
+  "Space switches it on or off; r restores inheritance.",
+]
+
+// Compact cold chats first under an agent/member/preset model row (a Defaults row says it in modelDefaultsNotes).
+function modelColdFirstNotes(node: TreeNode): string[] {
+  if (node.address === undefined || parseModelFieldItemId(node.address.item)?.field !== "coldFirst") return []
+  return ["This row's chain wins, then Defaults › Models › this model, then Every model.", ...COLD_FIRST_NOTES]
 }
 
 // One Defaults › Models row's resolution order, in words. The agent's row wins
@@ -284,6 +296,7 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
       ...IMAGE_FIELD_NOTES[image],
       "Enter picks; Inherit or r restores inheritance.",
     ]
+  if (setting?.field === "coldFirst") return ["The agent's model row chain wins, then this model's Defaults, then Every model.", ...COLD_FIRST_NOTES]
   if (setting?.field === "compactionInput" || setting?.field === "compactionOutput")
     return [
       "The agent's model row chain wins, then this model's Defaults, then Every model. Unset means no extra early trigger.",

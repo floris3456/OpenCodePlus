@@ -37,6 +37,7 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
     const parse = (args: string[]) => parseInstructionsArgs(args, ops, io)
     const fields = [
       "compactWarm",
+      "coldFirst",
       "coldCompact",
       "coldModels",
       "compactionStrategy",
@@ -61,6 +62,7 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
         "row",
         "--requires=null",
         "--compactWarm=off",
+        "--coldFirst=on",
         "--coldCompact=on",
         "--compactionStrategy=summary",
         "--compactionModel=provider/model",
@@ -73,6 +75,7 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
         id: "row",
         requires: null,
         compactWarm: "off",
+        coldFirst: "on",
         coldCompact: "on",
         compactionStrategy: "summary",
         compactionModel: "provider/model",

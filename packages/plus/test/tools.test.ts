@@ -326,7 +326,7 @@ test("C1 registered model set and emitted field reset persist atomically without
   const resetTool = need(tools, "instructions_reset")
   const created = await runOk(need(tools, "instructions_create"), { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "alpha" }) as { id: string }
   await runOk(set, decoded(set, { id: created.id, prompt: "keep alive" }))
-  const values = { compactWarm: "on", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
+  const values = { compactWarm: "on", coldFirst: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
   // Bind the taught typed fields to the registered schema and real write,
   // not just the permissive field-id parser.
   for (const field of Object.keys(values)) expect(teachingSkillContent).toContain(`\`${field}\``)
@@ -349,10 +349,10 @@ test("C1 registered model set and emitted field reset persist atomically without
   const rows = expandedTree(memoInputOf(await snapshotOf(api)))
   expect((await runFail(set, decoded(set, { id: created.id, prompt: "changed", compactionInput: "0" }))).message).toContain("positive whole token count")
   expect(await load(project)).toEqual(before)
-  for (const field of ["compactWarm", "compactionStrategy", "compactionModel", "compactionInstructions", "compactionInput", "compactionOutput"]) {
+  for (const field of ["compactWarm", "coldFirst", "compactionStrategy", "compactionModel", "compactionInstructions", "compactionInput", "compactionOutput"]) {
     const row = rows.find((node) => node.id.startsWith("item:defaults:alpha:") && node.address?.item.startsWith(`modelfield:${field}:`))
     if (row === undefined) throw new Error(`missing emitted ${field} row`)
-    await runOk(set, decoded(set, { id: row.id, text: field === "compactionInput" || field === "compactionOutput" ? "30000" : field === "compactWarm" ? "off" : field === "compactionStrategy" ? "local" : field === "compactionModel" ? "acme/other" : "summarize" }))
+    await runOk(set, decoded(set, { id: row.id, text: field === "compactionInput" || field === "compactionOutput" ? "30000" : field === "compactWarm" ? "off" : field === "coldFirst" ? "on" : field === "compactionStrategy" ? "local" : field === "compactionModel" ? "acme/other" : "summarize" }))
     expect(await own()).toMatchObject({ prompt: "keep alive", active: true })
     await runOk(resetTool, decoded(resetTool, { id: row.id }))
     expect(await own()).not.toHaveProperty(field)
@@ -382,9 +382,9 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
   const rows = expandedTree(memoInputOf(await snapshotOf(api)))
   const row = rows.find((node) => node.address?.item.startsWith("modeldefault:"))
   if (row === undefined) throw new Error("missing Defaults model row")
-  await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
+  await runOk(set, decoded(set, { id: row.id, coldModels: " acme/first#high , acme/second ", compactWarm: "ON", coldFirst: " OFF ", compactionStrategy: "REMOTE", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" }))
   const stored = (await load(project)).records.find((record) => record.type === "modelSettings")
-  expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
+  expect(stored).toMatchObject({ coldModels: ["acme/first#high", "acme/second"], compactWarm: "on", coldFirst: "off", compactionStrategy: "remote", compactionModel: "acme/summary", compactionInstructions: "", prompt: "keep alive" })
   await runOk(set, decoded(set, { id: row.id, compactionInput: "90000", compactionOutput: "off" }))
   expect((await load(project)).records.find((record) => record.type === "modelSettings")).toMatchObject({ compactionInput: "90000", compactionOutput: "off" })
   const before = await load(project)

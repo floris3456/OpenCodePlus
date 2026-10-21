@@ -774,6 +774,7 @@ test("a Defaults › Models row opens into one field row per field", async () =>
   expect([warmingField("interval")?.depth, warmingField("interval")?.badges.value]).toEqual([4, "4m"])
   expect(warmingField("prompt")?.badges.value).toBe(`${BUILT_IN_WARMING.prompt.slice(0, 23)}… · built-in`)
   expect([warmingField("compactWarm")?.depth, warmingField("compactWarm")?.badges.value]).toEqual([4, "off · built-in"])
+  expect([warmingField("coldFirst")?.label, warmingField("coldFirst")?.depth, warmingField("coldFirst")?.badges.value]).toEqual(["Compact cold chats first", 4, "as in Settings"])
   expect(find("group:defaults:/models:modeldefault:*:cold")?.badges.value).toBe("none · a adds one")
   expect([warmingField("warming")?.actions, warmingField("interval")?.actions]).toEqual([
     { toggle: false, edit: true, reset: true, remove: false, split: false, pin: false },
@@ -862,6 +863,69 @@ test("warm while waiting sets, shows and clears through the instructions tools o
   expect(after).toMatchObject({ interval: "4m" })
 })
 
+test("Compact cold chats first persists through tools, RPC, snapshot and reset on Defaults and agent model rows", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude")],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const show = need(tools, "instructions_read")
+  const reset = need(tools, "instructions_reset")
+  const defaults = async () => (await load(project)).records.filter((entry) => entry.type === "modelSettings")
+  const tree = async () => expandedTree(memoInputOf((await api.snapshot()).value))
+  const shown = async (id: string) => (await tree()).find((row) => row.id === id)?.badges.value
+  const every = "item:defaults:/models:modelsetting:coldFirst:*"
+  const claude = "item:defaults:/models:modelsetting:coldFirst:anthropic/claude"
+  // Nothing sets it: read gives null and the rows read as in Settings.
+  expect(await runOk(show, { id: every })).toMatchObject({ field: "coldFirst", value: null })
+  expect(await shown(claude)).toBe("as in Settings")
+  // Every model's typed field, then this model's field row.
+  await runOk(set, { id: "item:defaults:/models:modeldefault:*", coldFirst: "ON" })
+  expect(await defaults()).toEqual([expect.objectContaining({ coldFirst: "on" })])
+  expect(await runOk(show, { id: claude })).toMatchObject({ field: "coldFirst", value: true })
+  expect(await shown(claude)).toBe("on · every model")
+  await runOk(set, { id: claude, text: "off" })
+  expect((await defaults()).find((entry) => entry.providerID === "anthropic")).toMatchObject({ coldFirst: "off" })
+  expect(await shown(claude)).toBe("off")
+  expect((await api.snapshot()).value.modelSettings?.find((entry) => entry.providerID === "anthropic")).toMatchObject({ coldFirst: "off" })
+  expect((await runFail(set, { id: claude, text: "sometimes" })).message).toContain("Compact cold chats first must be on or off")
+  // reset clears the field; null on the typed field clears Every model's.
+  await runOk(reset, { id: claude })
+  expect(await shown(claude)).toBe("on · every model")
+  await runOk(set, { id: "item:defaults:/models:modeldefault:*", coldFirst: null })
+  expect(await defaults()).toEqual([])
+  expect(await shown(every)).toBe("as in Settings")
+
+  // The RPC takes it like any other compaction field.
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const written = await Effect.runPromise(handlers["modelSettings.set"]({ providerID: "anthropic", modelID: "claude", coldFirst: "on" }, thrownContext()))
+  expect(written.record).toMatchObject({ coldFirst: "on" })
+  await Effect.runPromise(handlers["modelSettings.set"]({ providerID: "anthropic", modelID: "claude", coldFirst: null }, thrownContext()))
+  expect(await defaults()).toEqual([])
+
+  // An agent's model row: its field row and the typed field write that agent's record.
+  const field = `item:project:build:${modelFieldItemId({ providerID: "anthropic", modelID: "claude" }, "coldFirst")}`
+  const agentRecord = async () => (await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")
+  expect(await shown(field)).toBe("as in Settings")
+  await runOk(set, { id: field, text: "off" })
+  expect(await agentRecord()).toMatchObject({ providerID: "anthropic", modelID: "claude", coldFirst: "off" })
+  expect((await api.snapshot()).value.records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ coldFirst: "off" })
+  expect(await runOk(show, { id: field })).toMatchObject({ field: "coldFirst", value: "off" })
+  await runOk(set, { id: "item:project:build:model:anthropic/claude", coldFirst: "on", interval: "4m" })
+  expect(await agentRecord()).toMatchObject({ coldFirst: "on", interval: "4m" })
+  await runOk(reset, { id: field })
+  const after = await agentRecord()
+  expect(after).not.toHaveProperty("coldFirst")
+  expect(after).toMatchObject({ interval: "4m" })
+  expect(await shown(field)).toBe("as in Settings")
+})
+
 test("Warm as subagent persists through tools, RPC, snapshot and field reset on Defaults and agent model rows", async () => {
   const project = await tempProject()
   const ctx = fullContext({
@@ -931,7 +995,7 @@ test("an agent's model row opens into field rows and one field edits and resets 
   // Compaction holds the early token thresholds: the only place they are set.
   expect(fields.map((row) => row.label)).toEqual([
     "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Warm as subagent", "Keep-alive prompt",
-    "Compact before cold", "Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions",
+    "Compact before cold", "Compact cold chats first", "Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions",
     "Convert large image", "Shrink large image", "When image context is full",
   ])
   // The row is inherited (the agent's upstream model), so Model and Warming
@@ -939,7 +1003,13 @@ test("an agent's model row opens into field rows and one field edits and resets 
   expect(fields[0]?.badges.value).toBe("anthropic/claude · upstream")
   // Claude warms built in: 30m every 4m, 32m in whole intervals.
   expect(fields[2]?.badges.value).toBe("32m · built-in")
-  expect(fields.filter((row) => row.address?.item !== "modelfield:compactWarm:anthropic/claude").every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
+  // The two switches toggle with Space; every other field edits.
+  const switches = ["modelfield:compactWarm:anthropic/claude", "modelfield:coldFirst:anthropic/claude"]
+  expect(fields.filter((row) => !switches.includes(row.address?.item ?? "")).every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
+  expect(fields.filter((row) => switches.includes(row.address?.item ?? "")).map((row) => [row.label, row.badges.value, row.actions?.toggle, row.actions?.edit, row.actions?.reset])).toEqual([
+    ["Compact before cold", "off · built-in", true, false, false],
+    ["Compact cold chats first", "as in Settings", true, false, false],
+  ])
   const target = { providerID: "anthropic", modelID: "claude" }
   const fieldRow = (field: Parameters<typeof modelFieldItemId>[1]) => `item:project:build:${modelFieldItemId(target, field)}`
 
