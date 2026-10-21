@@ -211,6 +211,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(await Bun.file(path.join(persisted.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
       expect(await git(persisted.directory, ["status", "--porcelain"])).toBe("")
       expect(persisted?.projectDirectory).toBe(repo.dir)
+      await saveRun(root, { ...persisted, attempts: persisted.attempts.map((attempt) => ({ ...attempt, finishNudged: true })) })
       await onSessionEvent(context({ session: sessions.domain }), root, { type: "session.execution.succeeded", data: { sessionID: persisted.sessionID } })
       const replay = required(await api.delegate(delegateInput(), callerFor(parent)))
       expect(replay).toEqual({ ...value, replayed: true, state: "idle" })
