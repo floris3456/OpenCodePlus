@@ -480,6 +480,43 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
   })
 })
 
+// B48 (live b6-s14): a chat's first step called team_list and team_status side
+// by side; each missed the session's run and made its own main run, and the
+// second one's attempt stayed streaming forever.
+test("team calls of one step from a no-run chat bootstrap one root run between them", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-race-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# root\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const harness = toolHarness()
+      const directory = AbsolutePath.make(repoDir)
+      const location = new Location.Info({
+        directory,
+        project: { id: Project.ID.global, directory, canonical: directory },
+      })
+      const pluginCtx = context({ tool: harness.domain, location })
+      await registerTeamTools(pluginCtx, createTeamApi(pluginCtx, teamState()), shippedTable)
+      const toolCtx = toolContext("ses_team_root_race", "orchestrator")
+      const outputs = await Promise.all(
+        ["team_list", "team_status", "team_list"].map((name) =>
+          Effect.runPromise(need(harness.tools, name).execute({}, toolCtx).pipe(Effect.map((result) => result.output as Record<string, unknown>[]))),
+        ),
+      )
+      const runs = new Set(outputs.map((output) => String(output[0]?.run)))
+      expect(runs.size).toBe(1)
+      const entries = await fs.readdir(path.join(root, "runs"))
+      expect(entries.filter((entry) => entry.startsWith("main-"))).toEqual([...runs])
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
 // Item 10 #27: a repository with no commit has no base for a run; the
 // bootstrap answers a classified refusal telling the caller to make a first
 // commit, not a raw git error.
@@ -1801,6 +1838,45 @@ function registeredSchema(tools: Map<string, Tool.Info & { readonly id: string }
   if (!Schema.isSchema(input)) throw new Error(`${id} input is not a schema`)
   return input
 }
+
+test("registered team tool wire schemas have plain optional properties without null branches", async () => {
+  const tools = await registeredTools()
+  const inputs = [...tools.keys()].filter((id) => id.startsWith("team_"))
+  expect(inputs).toHaveLength(teamNames.length)
+
+  function check(value: unknown): void {
+    if (Array.isArray(value)) return value.forEach(check)
+    if (!isRecord(value)) return
+    expect(value.type).not.toBe("null")
+    if (Array.isArray(value.type)) expect(value.type).not.toContain("null")
+    // Empty structs emit `not: { type: "null" }`: that forbids null, rather than allowing it.
+    Object.entries(value).filter(([key]) => key !== "not").forEach(([, child]) => check(child))
+  }
+
+  for (const id of inputs) {
+    // Core's inputJsonSchema uses this conversion before normalizing references/allOf.
+    check(Schema.toJsonSchemaDocument(registeredSchema(tools, id), { onExcessProperty: "error" }))
+  }
+
+  const schema = registeredSchema(tools, "team_delegate")
+  const wire = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" }).schema
+  expect(wire).toMatchObject({ properties: { context: { type: "object" } } })
+  expect(wire.required).not.toContain("context")
+  const brief = {
+    requestID: "wire-schema",
+    role: "implementer",
+    objective: "Keep team tool optional fields simple on the wire",
+    deliverable: { kind: "commit" },
+    scope: {},
+  }
+  const decoded = Schema.decodeUnknownSync(schema)({ ...brief, context: null, prompt: null })
+  expect(decoded).toEqual(Schema.decodeUnknownSync(schema)(brief))
+  expect(decoded).toMatchObject({ context: { interfaces: [], decisions: [] }, checks: [], effort: "medium" })
+  expect(decoded).not.toHaveProperty("prompt")
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, objective: null })).toThrow(Schema.SchemaError)
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, context: undefined })).toThrow(Schema.SchemaError)
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, prompt: undefined })).toThrow(Schema.SchemaError)
+})
 
 test("C — every field path of every registered team tool treats null as omission, required null still fails", async () => {
   const tools = await registeredTools()

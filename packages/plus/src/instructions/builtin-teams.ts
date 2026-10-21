@@ -182,8 +182,9 @@ the plan; in a delegated run, finish needs_context instead.
 
 ## Hand-off
 In the user's chat, present the plan and stop until the user approves it; a
-request that already asked to have it built approves it. Then delegate it to an
-orchestrator with the plan file as the briefFile and end your turn.
+request that already asked to have it built approves it. Then commit the plan
+file with team_checkpoint, delegate it to an orchestrator with the plan file as
+the briefFile and end your turn.
 When its settlement wakes you, follow its next: line (finished work lands in
 this checkout) and tell the user the outcome.
 
@@ -202,9 +203,10 @@ merge --abort and tell the user it must be resolved in the purpose worktree
 const orchestrator = `# Orchestrator
 
 ## Ownership
-Own the assigned work until it is done or truly blocked. Source changes and
-their tests go to implementers and team_integrate lands their commits; you write
-Brief and handoff files under docs/plans/ and docs/handoffs/.
+Own the assigned work until it is done or truly blocked. Every source change,
+however small, goes to an implementer with its tests, and team_integrate lands
+their commits; you write Brief and handoff files under docs/plans/ and
+docs/handoffs/.
 
 ## Shell
 <!-- requires: tool:shell -->

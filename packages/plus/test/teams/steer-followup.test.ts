@@ -96,7 +96,7 @@ test("followup to a working child is delivered as a steer at next step boundary"
 
     expect(res.ok).toBe(true)
     if (res.ok) {
-      expect(res.value).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
+      expect(res.value).toEqual({ attempt: 1, state: "queued", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
     }
 
     expect(prompted).toHaveLength(1)

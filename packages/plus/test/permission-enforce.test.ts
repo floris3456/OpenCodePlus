@@ -568,6 +568,8 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
       "implementer: files its checks run stay unchanged, unless scope.paths names them.",
       "orchestrator needs a reason: say why this member and not another.",
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
+      "reviewer cannot commit: never give it a commit deliverable.",
+      "scout cannot commit: never give it a commit deliverable.",
     ].join("\n"),
   )
   expect(orchestrator.tools.glob?.input).toEqual({ type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] })
@@ -625,6 +627,8 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
       "orchestrator needs a reason: say why this member and not another.",
       "planner accepts plan files only: every scope path must match one of its patterns [docs/plans/*, docs/handoffs/*].",
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
+      "reviewer cannot commit: never give it a commit deliverable.",
+      "scout cannot commit: never give it a commit deliverable.",
     ].join("\n"),
   )
   expect(described(shipped, "implementer").finish).toBe("Report.\nRequirements for done: assigned checks pass at HEAD; worktree committed before done.")

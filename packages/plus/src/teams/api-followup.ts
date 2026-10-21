@@ -37,6 +37,10 @@ import { git, gitRaw, parsePorcelain } from "./git.js"
 import { NO_REPOSITORY_PROGRAMS, provision, slug } from "./worktree.js"
 import { scopePathsRefusal, type TeamApiResult, type TeamCaller } from "./api.js"
 
+// Every working child wakes the parent, not only this one: a parent that read
+// "its settlement wakes you" as its only wake-up started a no-op run to wait on.
+const WAIT = "End your turn now: its settlement wakes you, and so does every other run still working."
+
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
 }
@@ -209,7 +213,7 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     const updated = applyBudget(child, args.budget, args.reason, parent.id)
     await saveRun(root, updated)
     const lastAttempt = updated.attempts.at(-1)?.n ?? 0
-    const output = { attempt: lastAttempt, state: updated.state, next: "End your turn: its settlement wakes you." }
+    const output = { attempt: lastAttempt, state: updated.state, next: WAIT }
     await atomicJson(requestPath, { signature, output, run: child.id })
     return succeeded(output)
   }
@@ -402,7 +406,7 @@ async function followupQueue(
     await updateRun(root, childID, (fresh) => recordInboxDelivery(fresh, [queued.id]))
     await take(root, childID, [queued.id])
     const last = budgeted.attempts.at(-1)
-    const output = { attempt: last?.n ?? 1, state: "queued", next: "End your turn: its settlement wakes you." }
+    const output = { attempt: last?.n ?? 1, state: "queued", next: WAIT }
     await atomicJson(requestPath, { signature, output, run: childID })
     return succeeded(output)
   }
@@ -411,7 +415,7 @@ async function followupQueue(
   const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
   const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id, moveTo)
   const done = admitted.attempts[admitted.attempts.length - 1]
-  const output = { attempt: done?.n ?? 1, state: "admitted", next: "End your turn: its settlement wakes you." }
+  const output = { attempt: done?.n ?? 1, state: "admitted", next: WAIT }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
 }
@@ -451,7 +455,7 @@ async function followupNow(
     )
   const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, undefined, moveTo)
   const done = admitted.attempts[admitted.attempts.length - 1]
-  const output = { attempt: done?.n ?? 1, state: "admitted", next: "End your turn: its settlement wakes you." }
+  const output = { attempt: done?.n ?? 1, state: "admitted", next: WAIT }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
 }

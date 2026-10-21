@@ -675,7 +675,7 @@ test("[20f] a followup to a working child reaches it at its next step, without w
         toolContext(parentRun.sessionID ?? "", "orchestrator"),
       )
       call("team_followup", followup, queued)
-      expect(queued).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
+      expect(queued).toEqual({ attempt: 1, state: "queued", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
 
       // Steered: the host has it before the child's turn ends (core delivers
       // it at the child's next safe step boundary, without interrupting it).

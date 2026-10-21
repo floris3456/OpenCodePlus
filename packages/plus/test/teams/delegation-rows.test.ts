@@ -569,7 +569,9 @@ test("list shows deeper descendants and other runs by the caller's team_list Run
   const grandchild = baseRun({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: child.id })
   const stranger = baseRun({ id: "w-cccccccccccccccc", role: "implementer", parent: "main-ffffffffffffffff" })
   const planner = baseRun({ id: "main-2222222222222222", role: "planner", kind: "main", sessionID: "ses_planner" })
-  for (const run of [parent, child, grandchild, stranger, planner]) await saveRun(root, run)
+  // Another repository's runs stay out of every list (live b6-s14).
+  const elsewhere = baseRun({ id: "w-dddddddddddddddd", role: "implementer", parent: "main-eeeeeeeeeeeeeeee", directory: "/elsewhere/wt", projectDirectory: "/elsewhere" })
+  for (const run of [parent, child, grandchild, stranger, planner, elsewhere]) await saveRun(root, run)
   const listed = async (caller: RunRecord, ...changes: Change[]) =>
     (required(await apiWith(tableWith(...changes)).list({}, callerFor(caller))) as { run: string }[]).map((entry) => entry.run).toSorted()
   const descendants = { agent: parent.role, id: "perm:team_list:runs.descendants", enabled: true }
@@ -595,9 +597,9 @@ test("followup reaches a grandchild only while the caller's Deeper descendants r
   expect(refused.code).toBe("E_NOT_CHILD")
   expect(refused.accepted).toEqual([child.id])
   const deeper = tableWith({ agent: parent.role, id: "perm:team_followup:runs.descendants", enabled: true })
-  expect(required(await apiWith(deeper).followup({ run: grandchild.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
+  expect(required(await apiWith(deeper).followup({ run: grandchild.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
   // A direct child needs no row.
-  expect(required(await apiWith(tableWith()).followup({ run: child.id, requestID: "f-3", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
+  expect(required(await apiWith(tableWith()).followup({ run: child.id, requestID: "f-3", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
 })
 
 test("stop reaches a grandchild only while the caller's Deeper descendants row for team_stop is on, and tells its parent the reason", async () => {

@@ -243,6 +243,34 @@ describe("merge queue", () => {
     expect(after.length).toBe(before.length)
   })
 
+  // Live b6-s5: a planner attached its uncommitted plan; the child saved it,
+  // committed it and then corrected it, and git refused the landing over the
+  // planner's untracked copy (E_INTERNAL with git's own words).
+  test("an untracked copy the child's commits hold is replaced at landing; another version refuses E_DIRTY", async () => {
+    const parent = await makeParent("untracked")
+    const plan = "# Plan\n\nfirst version\n"
+    const child = await makeChild("untracked-1", parent.head, { "plan.md": plan }, "docs: plan as attached")
+    const corrected = await commitFile(child.dir, "plan.md", "# Plan\n\ncorrected\n", "docs: correct the plan")
+    await writeFile(join(parent.dir, "plan.md"), plan)
+    await enqueue(stateDir, { parentRun: "untracked-parent", parentWorktree: parent.dir, childRun: "untracked-child", childBranch: child.branch, childHead: corrected })
+    const result = await drain(stateDir, "untracked-parent", ctxFor(parent.dir))
+    expect(result.processed[0]?.state).toBe("landed")
+    expect(await headOf(parent.dir)).toBe(corrected)
+    expect(await readFile(join(parent.dir, "plan.md"), "utf8")).toBe("# Plan\n\ncorrected\n")
+    expect(await statusOf(parent.dir)).toBe("")
+
+    const other = await makeParent("untracked-other")
+    const second = await makeChild("untracked-2", other.head, { "notes.md": "child notes\n" }, "docs: notes")
+    await writeFile(join(other.dir, "notes.md"), "the parent's own notes\n")
+    const refused = await enqueue(stateDir, { parentRun: "untracked-other-parent", parentWorktree: other.dir, childRun: "untracked-other-child", childBranch: second.branch, childHead: second.head }).then(
+      () => null,
+      (e) => asErr(e),
+    )
+    expect(refused?.code).toBe("E_DIRTY")
+    expect(String(refused?.message)).toContain("Untracked [notes.md] in your worktree would be overwritten: untracked-other-child's commits add another version.")
+    expect(await readFile(join(other.dir, "notes.md"), "utf8")).toBe("the parent's own notes\n")
+  })
+
   test("a conflicting child ends conflict with a rework task and parent untouched", async () => {
     const parentRun = "w-0000000000000011"
     const childRun = "w-0000000000000012"

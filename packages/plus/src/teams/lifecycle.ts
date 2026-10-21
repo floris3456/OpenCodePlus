@@ -620,7 +620,7 @@ export function childSettledText(
       lines.push(
         "No session activity for an hour, so the host stopped it; it is held and nothing resumes it on its own. It most likely hung (a permission ask nobody answers, a stuck tool or a silent model).",
       )
-      lines.push("next: read team_status and team_diff for it, then team_followup to resume it or team_stop.")
+      lines.push(`next: read team_status and team_diff with run: "${run.id}", then team_followup to resume it or team_stop.`)
       return lines.join("\n")
     }
     // The host says why: a provider or quota error is the member's model being
@@ -629,11 +629,11 @@ export function childSettledText(
     if (error !== undefined) {
       lines.push(`Error: ${error.type}${error.status === undefined ? "" : ` (${error.status})`}: ${error.message}`)
       lines.push(
-        "next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member; otherwise read team_status and team_diff, then team_followup or team_stop.",
+        `next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member; otherwise read team_status and team_diff with run: "${run.id}", then team_followup or team_stop.`,
       )
       return lines.join("\n")
     }
-    lines.push("next: read team_status and team_diff for it, then team_followup or team_stop.")
+    lines.push(`next: read team_status and team_diff with run: "${run.id}", then team_followup or team_stop.`)
     return lines.join("\n")
   }
   if (typeof report.summary === "string" && report.summary.trim() !== "") lines.push(report.summary.trim())
@@ -651,17 +651,25 @@ export function childSettledText(
   block("Concerns", list<string>(report.concerns))
   block("Deferred", list<string>(report.deferred))
   block("Findings", list<{ severity?: string; path?: string; detail?: string }>(report.findings).map((f) => `${f.severity} ${f.path}: ${f.detail}`))
-  lines.push(`next: ${nextStep(status, commits.length > 0)}`)
+  lines.push(`next: ${nextStep(run.id, status, commits.length > 0)}`)
   return lines.join("\n")
 }
 
-function nextStep(status: string, committed: boolean): string {
-  if (status === "done" || status === "done_with_concerns") {
-    const weigh = status === "done_with_concerns" ? "weigh the concerns, then " : ""
-    return committed ? `${weigh}check the change with team_diff and land it with team_integrate.` : `${weigh}use the result; there is nothing to land.`
+// The run id is named: a parent told only "team_diff" diffed its own run.
+function nextStep(id: string, status: string, committed: boolean): string {
+  if (status === "done") return committed ? landStep(id) : "use the result; there is nothing to land."
+  if (status === "done_with_concerns") {
+    // A parent that landed the partial work delegated the rest to a new,
+    // cold run although the landed child resumes with its context.
+    const rest = "Work a concern leaves undone goes to this run with team_followup (paths: for files outside its scope), also once it has landed: it keeps its context."
+    return committed ? `weigh the concerns, then ${landStep(id)} ${rest}` : `weigh the concerns and use the result; there is nothing to land. ${rest}`
   }
   if (status === "rejected") return "re-scope: team_stop it and delegate a Brief that fits."
   return "answer the needs with team_followup (paths for a path need), or team_stop it and delegate afresh."
+}
+
+function landStep(id: string): string {
+  return `check the change with team_diff run: "${id}", then land it with team_integrate run: "${id}".`
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;
