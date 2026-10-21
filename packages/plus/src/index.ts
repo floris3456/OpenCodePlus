@@ -100,7 +100,7 @@ import { agentAttention, mergeAttention, type AttentionRow } from "./attention-s
 import { attentionStore } from "./attention.js"
 import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
-import { coldListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
+import { armedColdListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionWarming } from "@opencode/plugin/effect/session"
@@ -4109,8 +4109,9 @@ export function compactDefaultsOf(
   return {
     compactWarm: effective.compactWarm.value,
     compactWarmFrom: effective.compactWarm.from === "built-in" ? "built-in" : "model",
-    // Cold arming only fires while the global "Compact cold chats first" is on.
-    coldModels: coldCompact ? effective.coldModels.value : [],
+    // Cold arming only fires while "Compact cold chats first" is on for the
+    // model: its own switch, else the global Settings switch.
+    coldModels: (effective.coldFirst.value ?? coldCompact) ? effective.coldModels.value : [],
   }
 }
 
@@ -4158,10 +4159,11 @@ export function decideCompactionFor(
     // Cold is consulted before every step (core's `auto` decisions, retries
     // included), not only a new message's first: a running agent's cache goes
     // cold too, while it waits on a long tool call or a subagent, or when its
-    // keep-alives or steps do not go through. Only when the switch is on for
-    // the chat's model and its model has a cold-cache list to compact with.
+    // keep-alives or steps do not go through. Only when Compact cold chats
+    // first is on for the chat's model (its own switch, else the Settings one)
+    // and the model has a cold-cache list to compact with.
     const consulted =
-      event.reason === "auto" && settings.coldCompact && coldListOf(state, event.agent, event.model).length > 0
+      event.reason === "auto" && armedColdListOf(state, event.agent, event.model, settings.coldCompact).length > 0
     const cold = consulted ? await coldFor(event, ledger, pacer) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     decideCompaction(event, {

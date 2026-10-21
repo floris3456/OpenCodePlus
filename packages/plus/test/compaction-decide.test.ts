@@ -14,7 +14,7 @@ import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
-import { createHandlers, createState, decideCompactionFor, warmingStatusFor, type PlusState } from "../src/index.js"
+import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, warmingStatusFor, type PlusState } from "../src/index.js"
 import { warmingStore } from "../src/warming.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { effectiveCompaction, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
@@ -653,4 +653,35 @@ test("Pacer's confirmed reading decides once it can know the chat's latest reque
   const recent = fakeLedger(requestRow(now - 30_000, { sessionID, ended: now - 20_000 }), fiveMinuteFingerprint())
   expect(await warmingStatusFor(sessionID, now, recent, pacer("confirmed", now - 1))).toMatchObject({ warmUntil: now + 4.5 * MINUTE, warmBy: "monitor" })
   expect(asked).toEqual([])
+})
+
+test("a model's own Compact cold chats first beats the Settings switch both ways; unset, the Settings switch decides", async () => {
+  const now = Date.now()
+  const arms = async (sessionID: string, coldFirst: "on" | "off" | undefined, global: boolean) => {
+    await plusSettings.update({ coldCompact: global })
+    try {
+      const state = {
+        ...coldState([]),
+        cachedModelSettings: [
+          settings({ providerID: "proxy", modelID: "chat-model", coldModels: ["proxy/one"], ...(coldFirst === undefined ? {} : { coldFirst }) }),
+        ],
+      }
+      const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model"), boundary: { fresh: false, portable: true } })
+      const ledger = fakeLedger(requestRow(now - 70 * MINUTE, { sessionID }), oneHourFingerprint())
+      await Effect.runPromise(decideCompactionFor(wiringContext(), state, event, ledger, noPacer))
+      return {
+        compact: event.compact === true,
+        footer: compactDefaultsOf(state, "build", { providerID: "proxy", id: "chat-model" }, global).coldModels,
+      }
+    } finally {
+      await plusSettings.update({ coldCompact: false })
+    }
+  }
+  // An expensive model on, with Settings off.
+  expect(await arms("ses_first_on", "on", false)).toEqual({ compact: true, footer: ["proxy/one"] })
+  // A cheap model off, with Settings on.
+  expect(await arms("ses_first_off", "off", true)).toEqual({ compact: false, footer: [] })
+  // Unset: as in Settings.
+  expect(await arms("ses_first_unset_on", undefined, true)).toEqual({ compact: true, footer: ["proxy/one"] })
+  expect(await arms("ses_first_unset_off", undefined, false)).toEqual({ compact: false, footer: [] })
 })
