@@ -289,7 +289,9 @@ test("a child with no completed step has no context size", async () => {
   expect(await sessionContextTokens(ctx, run)).toBeUndefined()
 })
 
-test("context notice fires once when a child's context passes 100k", async () => {
+// A child's context size is its own model's to manage (compactionInput); a
+// notice to its parent would wake the parent for nothing it can act on.
+test("a child's large context sends its parent nothing", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })
     const now = Date.now()
@@ -305,43 +307,7 @@ test("context notice fires once when a child's context passes 100k", async () =>
     await saveRun(root, parent)
     await saveRun(root, child)
 
-    const histories: Record<string, readonly unknown[]> = {
-      ses_child_ctx: [assistantStep(2_000, 120_000, 1_000)],
-    }
-    const ctx = contextHarness(histories)
-
-    await checkBudgets(ctx, root, undefined, now)
-
-    const inbox = await peek(root, parent.id)
-    expect(inbox).toHaveLength(1)
-    expect(inbox[0]?.kind).toBe("notify")
-    expect(inbox[0]?.text).toContain("w-child-ctx")
-    expect(inbox[0]?.text).toContain("123k")
-
-    // A larger context later does not speak again: one message per child run.
-    histories.ses_child_ctx = [assistantStep(3_000, 200_000, 1_000)]
-    await checkBudgets(ctx, root, undefined, now + 60_000)
-    expect(await peek(root, parent.id)).toHaveLength(1)
-  })
-})
-
-test("a child below 100k context stays silent", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })
-    const now = Date.now()
-    const child = baseRun({
-      id: "w-child-small",
-      role: "implementer",
-      parent: parent.id,
-      sessionID: "ses_child_small",
-      state: "working",
-      createdAt: new Date(now - 10000).toISOString(),
-      attempts: [{ n: 1, state: "streaming", startedAt: new Date(now - 10000).toISOString(), trigger: "delegate" }],
-    })
-    await saveRun(root, parent)
-    await saveRun(root, child)
-
-    const ctx = contextHarness({ ses_child_small: [assistantStep(10_000, 80_000, 0)] })
+    const ctx = contextHarness({ ses_child_ctx: [assistantStep(2_000, 190_000, 1_000)] })
     await checkBudgets(ctx, root, undefined, now)
     expect(await peek(root, parent.id)).toHaveLength(0)
   })

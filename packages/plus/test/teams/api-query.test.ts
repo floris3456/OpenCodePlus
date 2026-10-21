@@ -6,12 +6,13 @@ import { listHandler } from "../../src/teams/api-query.js"
 import { shippedTable, teamState } from "./preset-table.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { context } from "../harness.js"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
 import { TokenUsage } from "@opencode/schema/token-usage"
 import { git } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
+import { DiffInput } from "../../src/teams/schema.js"
 
 // Real temp git repositories where a real HEAD matters, a real temp
 // XDG_DATA_HOME state root, real RunRecords written with saveRun. No mocks
@@ -206,6 +207,29 @@ test("removed worktree diff uses retained commits, not the surviving parent's di
       expect(diff.patch).toContain("+committed child change")
       expect(diff.patch).not.toContain("parent dirt")
       expect(required(await api.diff({ run: child.id, maxBytes: 10 }, callerFor(parent)))).toMatchObject({ truncated: true })
+    } finally { await removeRepo(repo.dir) }
+  })
+})
+
+// Leads and reviewers pass the short shas reports and settlements print.
+test("team_diff takes a short commit as from", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-5a0000000000000a", role: "orchestrator", directory: repo.dir, kind: "main" })
+      await fs.writeFile(path.join(repo.dir, "README.md"), "second\n")
+      await git(repo.dir, ["commit", "-am", "fix: second"])
+      const middle = await git(repo.dir, ["rev-parse", "HEAD"])
+      await fs.writeFile(path.join(repo.dir, "README.md"), "third\n")
+      await git(repo.dir, ["commit", "-am", "fix: third"])
+      const child = baseRun({ id: "w-5b0000000000000b", parent: parent.id, directory: repo.dir, base: repo.head, head: await git(repo.dir, ["rev-parse", "HEAD"]) })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      const input = Schema.decodeUnknownSync(DiffInput)({ run: child.id, from: middle.slice(0, 7) })
+      const diff = required(await createTeamApi(context(), teamState()).diff(input, callerFor(parent))) as { patch: string }
+      expect(diff.patch).toContain("+third")
+      expect(diff.patch).not.toContain("+second")
+      expect(() => Schema.decodeUnknownSync(DiffInput)({ run: child.id, from: "HEAD~1" })).toThrow()
     } finally { await removeRepo(repo.dir) }
   })
 })

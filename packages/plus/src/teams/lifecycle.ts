@@ -27,8 +27,8 @@ import {
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
-import { Policy, CONTEXT_NOTICE_TOKENS, budgetDimensions, budgetExhaustion, parseDuration } from "./schema.js"
-import { sessionContextTokens, sessionTokens } from "./usage.js"
+import { Policy, budgetDimensions, budgetExhaustion, parseDuration } from "./schema.js"
+import { sessionTokens } from "./usage.js"
 import { bound } from "./reach.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { RETRY_SCHEDULED, SessionOutcomes, type SessionOutcome } from "./session-events.js"
@@ -1017,25 +1017,6 @@ export interface OverBudgetChildInfo {
   dims: Array<{ name: string; used: number; budget: number }>
 }
 
-// Tells a child's parent once, the first time the child's context passes
-// CONTEXT_NOTICE_TOKENS. The marker lives on the child's record like the
-// budget-ping marker, so a later, larger context does not speak again and a
-// process restart does not repeat it.
-async function notifyContextOnce(ctx: Context, root: string, record: RunRecord, now: number): Promise<void> {
-  if (record.contextNotifiedAt !== undefined || record.parent === null) return
-  const contextTokens = await sessionContextTokens(ctx, record)
-  if (contextTokens === undefined || contextTokens < CONTEXT_NOTICE_TOKENS) return
-  const text =
-    `Child ${record.id} (${record.role}) has a ${formatContextTokens(contextTokens)}-token context. ` +
-    `It is not compacted for you; follow up with a narrower task, or stop it, if that is too much.`
-  await notifySafe(root, record.parent, record.id, text)
-  await updateRun(root, record.id, (fresh) => ({ ...fresh, contextNotifiedAt: new Date(now).toISOString() }))
-}
-
-function formatContextTokens(tokens: number): string {
-  return `${Math.round(tokens / 1000)}k`
-}
-
 export async function checkBudgets(
   ctx: Context,
   root: string,
@@ -1057,10 +1038,6 @@ export async function checkBudgets(
     const record = await loadRecordSafe(root, entry)
     if (record === undefined || isTerminal(record.state)) continue
     if (record.state !== "working" || !record.parent) continue
-
-    // A child's context size is reported to its parent once per run, whether
-    // or not the child has an advisory budget configured.
-    await notifyContextOnce(ctx, root, record, now)
 
     const hasConfiguredBudget =
       typeof record.budget.turns === "number" ||
