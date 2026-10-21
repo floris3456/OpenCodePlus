@@ -24,7 +24,7 @@ import type {
   VcsInfo,
 } from "@opencode/client"
 import type { ResolvedTheme } from "@opencode/theme/tui"
-import type { CliRenderer, KeyEvent, MarkdownCodeBlockRenderer, Renderable } from "@opentui/core"
+import type { CliRenderer, KeyEvent, MarkdownCodeBlockRenderer, MarkdownOptions, Renderable, SyntaxStyle } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import type { Store } from "solid-js/store"
 
@@ -651,6 +651,12 @@ export interface Context {
   readonly themeMode: "dark" | "light"
   readonly markdown: {
     registerCodeBlockRenderer(language: string, render: MarkdownCodeBlockRenderer): () => void
+    /** The theme's syntax style, as the host's own markdown uses it. Reactive. */
+    syntax(): SyntaxStyle
+    /** The registered code-block renderers, for a plugin's own `<markdown>`. Reactive. */
+    renderNode(): MarkdownOptions["renderNode"]
+    /** Whether markdown markers are hidden: the user's rendered/raw choice for chats. Reactive. */
+    concealed(): boolean
   }
   readonly keymap: Keymap
   readonly storage: Storage

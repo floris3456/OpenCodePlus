@@ -161,6 +161,7 @@ export function PluginProvider(props: ParentProps<{ packages: PackageSource; dir
       id,
       options: item.options,
       owned,
+      markdown,
       registry: {
         has: (kind, name) => Boolean(store.registrations[id]?.[kind][name]),
         set: (
