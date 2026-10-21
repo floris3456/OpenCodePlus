@@ -4,7 +4,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { Location } from "@opencode/schema/location"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
-import { Duration, Effect, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
+import { Duration, Effect, Fiber, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
 import { batchNotify, partition, peek, put, take, type InboxItem } from "./inbox.js"
 import { io, errCode } from "./io.js"
 import { gitRaw, parsePorcelain } from "./git.js"
@@ -705,6 +705,9 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
     ctx.session
       .prompt({ sessionID: Session.ID.make(sessionID), text: delivery.text })
       .pipe(
+        // Admission normally takes milliseconds; a hang leaves the run working
+        // with its inbox undelivered, so say so in the log while it lasts.
+        slowWarning("team inbox prompt", { run: run.id, sessionID }),
         Effect.onError(() =>
           Effect.ignore(
             io(() =>
@@ -724,6 +727,29 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
   )
   await take(root, run.id, delivery.items.map((item) => item.id))
   return working
+}
+
+/** Logs a warning every 30 s while `effect` runs, and once more when a slow one ends. */
+export function slowWarning(label: string, fields: Record<string, string>) {
+  return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.gen(function* () {
+      const started = Date.now()
+      const warn = yield* Effect.forkDetach(
+        Effect.sleep(Duration.seconds(30)).pipe(
+          Effect.andThen(Effect.suspend(() => Effect.logWarning(`${label} is slow`, { ...fields, waitedMs: Date.now() - started }))),
+          Effect.repeat(Schedule.spaced(Duration.seconds(30))),
+        ),
+      )
+      return yield* effect.pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            yield* Fiber.interrupt(warn)
+            const waited = Date.now() - started
+            if (waited >= 30_000) yield* Effect.logWarning(`${label} ended`, { ...fields, waitedMs: waited })
+          }),
+        ),
+      )
+    })
 }
 
 function renderInbox(items: readonly InboxItem[]): string {

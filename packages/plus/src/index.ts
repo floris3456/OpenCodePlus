@@ -31,7 +31,7 @@ import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
 import { buildRunTree, byDirectory, bySession, loadRun } from "./teams/run.js"
-import { onSessionEvent, startSweep } from "./teams/lifecycle.js"
+import { onSessionEvent, slowWarning, startSweep } from "./teams/lifecycle.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
@@ -322,7 +322,7 @@ export default Plugin.define({
             // A new prompt is the only place cold compaction may arm.
             markPromptAdmitted(String(event.sessionID))
           }
-        }),
+        }).pipe(slowWarning("plus prompt hook", { sessionID: String(event?.sessionID ?? ""), directory: ctx.location.directory })),
       )
       yield* ctx.session.hook("compaction", (event) => state.sessionPins.markRebuild(String(event.sessionID)))
       yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
