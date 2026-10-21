@@ -28,7 +28,7 @@ export const opencodeParts = [
   { name: "date", slot: "core/date", title: "Date", text: "OpenCode adds today's date." },
   { name: "environment", slot: "core/environment", title: "Environment", text: "OpenCode describes where it runs: the working directory, the workspace root, whether it is a git repository, and the platform." },
   { name: "entries", slot: "api", title: "Session entries", text: "OpenCode adds the instructions a client attached to this session." },
-  { name: "tools-note", slot: "core/tools-note", title: "Worktree note", text: "OpenCode reminds the model to move the session into a worktree it created and wants to work in." },
+  { name: "tools-note", slot: "core/tools-note", title: "Worktree note", text: "OpenCode reminds the model to move the session into a worktree it created and wants to work in. Only an agent that can call session_move gets it." },
 ] as const
 
 export function opencodePartItemId(name: string): string {

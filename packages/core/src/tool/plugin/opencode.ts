@@ -89,11 +89,19 @@ export const Plugin = {
   effect: Effect.fn("OpenCodeTools.Plugin")(function* (ctx: Context) {
     const access = yield* FileAccess.Service
     const permission = yield* Permission.Service
+    // Only an agent that can call session_move gets the note: directly, or through Code Mode.
     const hook = (event: SessionHooks["context"]) =>
       Effect.sync(() => {
+        const call =
+          "opencode_session_move" in event.tools
+            ? "`opencode_session_move`"
+            : "execute" in event.tools
+              ? "`execute` to call `tools.opencode.session_move`"
+              : undefined
+        if (call === undefined) return
         event.system.push(
           SystemPart.make(
-            "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using `execute` to call `tools.opencode.session_move` and make the worktree the session's working directory.",
+            `When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using ${call} and make the worktree the session's working directory.`,
             { instruction: { key: "core/tools-note" } },
           ),
         )

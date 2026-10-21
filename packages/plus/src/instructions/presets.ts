@@ -346,7 +346,8 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   reviewer: {
     ...worker,
     ...readOnly,
-    ...rows(off, ["skill:opencode"]),
+    // None of its skills ships on, so the skill tool would only cost tokens.
+    ...rows(off, ["skill:opencode", "tool:skill"]),
     // It keeps team_check (shipped on): a finding about tests rests on running them.
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
@@ -354,7 +355,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   scout: {
     ...worker,
     ...readOnly,
-    ...rows(off, ["skill:opencode"]),
+    ...rows(off, ["skill:opencode", "tool:skill"]),
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list", "check", "diff"]),
   },
   // The build seat is the user's chat: nobody delegates to it, so it has no

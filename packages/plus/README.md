@@ -225,7 +225,7 @@ What the Basic member presets set (on = permitted):
 
 | | planner | orchestrator | implementer | reviewer | scout | build seat |
 | --- | --- | --- | --- | --- | --- | --- |
-| `shell` tool | off | on, except changing files, commits or refs | off | off | off | on |
+| `shell` tool | on, only `git worktree add` and `git merge` change anything | on, except changing files, commits or refs | off | off | off | on |
 | `question` tool | on | off | off | off | off | on |
 | paths outside the checkout (read/edit Where, `external_directory`) | on | on | off | off | off | on |
 | `subagent` tool | off | off | off | off | off | on |
@@ -249,7 +249,7 @@ passwords, and session databases.
 Team tools are tool rows: a planner lacks `check` (it keeps
 `checkpoint` to commit its plan file when delegated, and `integrate` to land in
 your checkout what the orchestrator it delegated to reports done); an
-orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
+orchestrator keeps `checkpoint` for its Brief, handoff and test files only; an implementer keeps only `checkpoint`,
 `finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`,
 `get_context` and `check`; a scout only `finish` and `get_context`; a build seat has
 every team tool but `finish` (nobody delegates to it). A chat run (no Brief)
