@@ -705,7 +705,7 @@ function runGatedInner<A>(
       )
     }
     const waiting = name === "status" || name === "list" ? yield* Effect.promise(() => waitingOn(teamsDataDir(), owned.id)) : []
-    if (waiting.length > 0 && Object.keys(input as object).length === 0) return { output: { waiting, next: WAITING }, endTurn: true }
+    if (waiting.length > 0 && onlyAsksAbout(name, input as object, waiting)) return { output: { waiting, next: WAITING }, endTurn: true }
     return {
       output: result.value,
       ...((name === "finish" && owned.parent != null) || waiting.length > 0 ? { endTurn: true } : {}),
@@ -720,8 +720,16 @@ const WAITING = "Nothing new: these runs are still working. Your turn ends here;
 // wakes the caller. Leads said "I'm waiting" and called team_status or
 // team_list anyway: a step for nothing (b8, b9-s12). Asked with no filter it
 // gets this short answer instead of every run's status, which the context
-// would carry for nothing (b13-s13); a call that names runs or filters gets
-// what it asked for.
+// would carry for nothing (b13-s13), and so does a status that names only
+// runs still working (b15-s12); a call that names another run or filters
+// gets what it asked for.
+function onlyAsksAbout(name: string, input: object, waiting: readonly string[]): boolean {
+  const keys = Object.keys(input)
+  if (keys.length === 0) return true
+  const runs = (input as { runs?: readonly string[] }).runs
+  return name === "status" && keys.length === 1 && runs !== undefined && runs.every((id) => waiting.includes(id))
+}
+
 async function waitingOn(root: string, runID: string): Promise<string[]> {
   const run = await loadRun(root, runID)
   if (run === undefined) return []

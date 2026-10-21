@@ -258,8 +258,8 @@ test("every team tool registers direct under namespace team with its permission"
   }
 })
 
-// Live b9-s12, b13-s13: a lead said it was waiting, then called team_status for a
-// child still working. Such a call gets a short answer and ends the turn.
+// Live b9-s12, b13-s13, b15-s12: a lead said it was waiting, then called team_status
+// for a child still working. Such a call gets a short answer and ends the turn.
 test("team_status and team_list answer briefly and end the turn while a child works and no news waits; otherwise they do not", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const directory = path.join(root, "repo")
@@ -275,15 +275,18 @@ test("team_status and team_list answer briefly and end the turn while a child wo
     try {
       const caller = toolContext("ses_wait_parent", "orchestrator")
       const call = async (name: string) => (await Effect.runPromise(need(created.tools, name).execute({}, caller))).endTurn
+      const brief = {
+        output: { waiting: [child.id], next: "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report." },
+        endTurn: true,
+      }
       for (const name of ["team_status", "team_list"])
-        expect(await Effect.runPromise(need(created.tools, name).execute({}, caller))).toEqual({
-          output: { waiting: [child.id], next: "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report." },
-          endTurn: true,
-        })
-      // A call that names runs gets what it asked for, and is still a wait.
-      const named = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))
+        expect(await Effect.runPromise(need(created.tools, name).execute({}, caller))).toEqual(brief)
+      // A status that names only runs still working is the same wait.
+      expect(await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))).toEqual(brief)
+      // One that names another run gets what it asked for, and is still a wait.
+      const named = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [parent.id, child.id] }, caller))
       expect(named.endTurn).toBe(true)
-      expect((named.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[child.id, "working"]])
+      expect((named.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[parent.id, "working"], [child.id, "working"]])
       await put(root, parent.id, { kind: "child.settled", from: child.id, text: "[team] settled" })
       expect(await call("team_list")).toBeUndefined()
       await take(root, parent.id, (await peek(root, parent.id)).map((item) => item.id))
@@ -669,12 +672,16 @@ test("team_status reports each run's worktree state through the registered tool"
   await withIsolatedTeamsRoot(async (root) => {
     const session = "ses_team_status_worktree"
     const caller = makeRun("w-5555555555555555", "orchestrator", session)
+    // Settled children: a status of runs still working is a wait with a short answer.
+    const now = new Date().toISOString()
+    const settled = [{ n: 1, state: "succeeded" as const, trigger: "delegate" as const, startedAt: now, endedAt: now }]
     const removed: RunRecord = {
       ...makeRun("w-6666666666666666", "implementer", "ses_team_status_removed"),
       parent: caller.id,
       worktree: "removed",
+      attempts: settled,
     }
-    const live = { ...makeRun("w-7777777777777777", "implementer", "ses_team_status_present"), parent: caller.id }
+    const live = { ...makeRun("w-7777777777777777", "implementer", "ses_team_status_present"), parent: caller.id, attempts: settled }
     await saveRun(root, caller)
     await saveRun(root, removed)
     await saveRun(root, live)

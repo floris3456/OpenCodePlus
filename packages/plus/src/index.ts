@@ -6632,15 +6632,14 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
       }
       // Each Instructions write lands in the global config directory every
       // folder's Config watches, so every folder's skill and agent registries
-      // reload and announce it. An idle folder applies that on its next use
-      // instead of rediscovering on every write.
-      if (idleLocation(state)) {
-        state.pendingRefresh = true
-        return Effect.void
-      }
-      return refreshFromHost(ctx, state).pipe(
-        Effect.catchCause((cause) => Effect.logWarning("plus refresh failed", { cause, type: event.type })),
-      )
+      // reload and announce it, several events per write. An idle folder
+      // applies that on its next use; a folder in use refreshes once after the
+      // burst, as for a store notice. One refresh per event, each taking the
+      // process refresh lock in turn, kept prompts in other folders waiting
+      // for theirs for up to minutes (B69).
+      state.pendingRefresh = true
+      if (!idleLocation(state)) scheduleRefresh(ctx, state)
+      return Effect.void
     }),
     Effect.forkScoped({ startImmediately: true }),
     Effect.asVoid,
@@ -7101,15 +7100,19 @@ export function stuckRefreshes(): string {
 // location's pending refresh: one refresh that never ends stops every prompt
 // in every location (B18: a landed child's removed worktree, whose host reads
 // never answered). So a team worktree's location whose directory is gone is
-// not refreshed, and a refresh gives the lock up after a minute.
+// not refreshed, and a refresh gives the lock up after a minute. The directory
+// is checked again once the lock is held: a landing removes the worktree while
+// its refresh waits in line (B69).
 const REFRESH_LIMIT = Duration.seconds(60)
 
 export function refreshFromHost(ctx: Context, state: PlusState, limit: Duration.Duration = REFRESH_LIMIT): Effect.Effect<void> {
   const at = ctx.location.directory
-  if (at.startsWith(path.join(teamsDataDir(), "worktrees") + path.sep) && !fsSync.existsSync(at)) return Effect.void
+  const gone = () => at.startsWith(path.join(teamsDataDir(), "worktrees") + path.sep) && !fsSync.existsSync(at)
+  if (gone()) return Effect.void
   refreshPhase(at, "refresh: waiting for the process refresh lock")
   return refreshProcessSemaphore.withPermits(1)(
     Effect.gen(function* () {
+      if (gone()) return
       refreshPhase(at, "refresh: loading the stores")
       const hasHostChange = state.pendingHostChange
       const forced = hasHostChange || state.pendingForce
