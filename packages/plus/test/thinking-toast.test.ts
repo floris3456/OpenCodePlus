@@ -113,6 +113,9 @@ function createHarness(): ThinkingToastHarness {
       prompt: {
         guard: () => () => {},
       },
+      usage: {
+        window: () => () => {},
+      },
       dialog: { clear: () => {} },
       toast: {
         show: (toast: { variant?: string; message: string }) => {

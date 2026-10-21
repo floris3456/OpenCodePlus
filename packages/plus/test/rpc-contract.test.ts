@@ -62,6 +62,7 @@ test("every method and event is declared", () => {
     "link.set",
     "checks.suggest",
     "checks.save",
+    "compaction.window",
     "warming.status",
     "warming.set",
     "warming.compact",
