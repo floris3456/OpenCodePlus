@@ -1,5 +1,5 @@
 import type { CliRenderer, CapturedFrame } from "@opentui/core"
-import { RGBA } from "@opentui/core"
+import { RGBA, SyntaxStyle } from "@opentui/core"
 import { createTestRenderer, type MockMouse } from "@opentui/core/testing"
 import { render, type JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
@@ -64,6 +64,9 @@ export function createSnapshot(overrides?: Partial<Snapshot>): Snapshot {
   }
 }
 
+// One syntax style for every fixture: the inspector and the editor render markdown with it.
+const syntax = SyntaxStyle.create()
+
 export function createTestTheme() {
   const white = RGBA.fromHex("#ffffff")
   const black = RGBA.fromHex("#000000")
@@ -94,6 +97,7 @@ export function createTestTheme() {
     categorical: [scale(blue), scale(green), scale(yellow), scale(red)],
     border: { base: gray },
     scrollbar: { base: gray },
+    markdown: { text: white },
     diff: {
       text: { added: green, removed: red, context: white, hunkHeader: gray },
       background: { added: black, removed: black, context: black },
@@ -580,6 +584,9 @@ export async function renderPlusFixture(options: RenderFixtureOptions): Promise<
     themeMode: "dark",
     markdown: {
       registerCodeBlockRenderer: () => () => {},
+      syntax: () => syntax,
+      renderNode: () => undefined,
+      concealed: () => true,
     },
     keymap: {
       layer: (fn: KeymapLayerCallback) => {

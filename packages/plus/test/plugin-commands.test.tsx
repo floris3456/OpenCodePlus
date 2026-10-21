@@ -90,6 +90,10 @@ function createHarness(): CommandsHarness {
       prompt: {
         guard: () => () => {},
       },
+      // The context % provider (usage-window.ts) registers at setup too.
+      usage: {
+        window: () => () => {},
+      },
       dialog: { clear: () => {} },
       toast: { show: () => {} },
       agents: {

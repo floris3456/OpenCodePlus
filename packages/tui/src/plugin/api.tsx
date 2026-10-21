@@ -11,7 +11,7 @@ import type {
   Toast,
 } from "@opencode/plugin/tui/context"
 import type { Placement, PlacementKind } from "./structure"
-import { infoStringToFiletype, type MarkdownCodeBlockRenderer } from "@opentui/core"
+import { infoStringToFiletype, type MarkdownCodeBlockRenderer, type MarkdownOptions } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { useClient } from "../context/client"
 import { useData } from "../context/data"
@@ -100,6 +100,8 @@ export function createPluginContext(input: {
   options: Readonly<Record<string, any>> | undefined
   owned: Dispose[]
   registry: Registry
+  /** Every active plugin's code-block renderers, as the host's markdown uses them. */
+  markdown?: () => MarkdownOptions["renderNode"]
 }): Context {
   const host = input.host
   input.owned.push(async () => host.panel?.release(input.id))
@@ -192,6 +194,9 @@ export function createPluginContext(input: {
         input.registry.set("markdown", name, render)
         return registration("markdown", name)
       },
+      syntax: () => host.themes.currentSyntax(),
+      renderNode: () => input.markdown?.(),
+      concealed: () => (host.config.data.session?.markdown ?? "rendered") === "rendered",
     },
     keymap: {
       layer(factory) {

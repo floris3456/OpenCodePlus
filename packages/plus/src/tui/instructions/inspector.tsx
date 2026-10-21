@@ -21,6 +21,7 @@ import {
   provenanceLine,
   renderRanges,
   replacedText,
+  resolveNode,
   resolvedText,
   scrubInfo,
   sectionExcluded,
@@ -29,6 +30,7 @@ import {
   displayLevel,
 } from "./detail-pane.js"
 import { structureDetail } from "./descriptions.js"
+import { MarkdownText } from "./markdown.js"
 import { folderHolding } from "../../instructions/folders.js"
 import { settingsTarget, toolWords, type Row, type ToolCount } from "./workspace.js"
 
@@ -331,17 +333,24 @@ export function Inspector(props: InspectorProps) {
         : fact[2] === "subdued"
           ? theme().text.muted
           : theme().text.base
+  // An agent's Description and its compaction instructions are text an agent reads, shown whole
+  // like a tool's description; the other settings are one value.
+  const textControl = (node: TreeNode) => node.address?.item === "setting:description" || node.address?.item === "compaction:instructions"
   const value = (node: TreeNode, snapshot: Snapshot) => {
     const item = node.address?.item
     if (item === undefined || controlKind(item) === undefined) return undefined
+    if (textControl(node) && resolvedText(node, snapshot, props.memo?.()).trim().length > 0) return undefined
     return controlDetail(node, snapshot, props.memo?.()).find((line) => line.startsWith("Value: "))?.slice("Value: ".length)
   }
-  const hasText = (node: TreeNode) =>
+  // Rows with no item behind them (model fields, Defaults › Models settings) have no text to show.
+  const hasText = (node: TreeNode, snapshot: Snapshot) =>
     node.address !== undefined &&
     node.enabledRow === undefined &&
-    controlKind(node.address.item) === undefined &&
+    (controlKind(node.address.item) === undefined || textControl(node)) &&
     !node.address.item.startsWith("model:") &&
-    !node.address.item.startsWith("perm:")
+    !node.address.item.startsWith("perm:") &&
+    resolveNode(node, snapshot, props.memo?.()) !== undefined &&
+    (!textControl(node) || resolvedText(node, snapshot, props.memo?.()).trim().length > 0)
   return (
     <box flexGrow={1} flexDirection="column" minHeight={0} minWidth={0} paddingLeft={1} paddingRight={1}>
       <Show
@@ -386,29 +395,36 @@ export function Inspector(props: InspectorProps) {
                       </text>
                     )}
                   </For>
-                  <Show when={hasText(node())}>
+                  <Show when={hasText(node(), snapshot())}>
+                    {/* Sent text renders as markdown; an excluded part stays plain and struck through. */}
                     <box flexDirection="column" flexShrink={0} paddingTop={1}>
                       <Show
                         when={node().address?.section === null}
                         fallback={
-                          <text
-                            fg={sectionExcluded(node(), snapshot(), props.memo?.()) ? theme().text.muted : theme().text.base}
-                            attributes={excludedAttributes(sectionExcluded(node(), snapshot(), props.memo?.()))}
-                            wrapMode="word"
+                          <Show
+                            when={!sectionExcluded(node(), snapshot(), props.memo?.())}
+                            fallback={
+                              <text fg={theme().text.muted} attributes={excludedAttributes(true)} wrapMode="word">
+                                {resolvedText(node(), snapshot(), props.memo?.())}
+                              </text>
+                            }
                           >
-                            {resolvedText(node(), snapshot(), props.memo?.())}
-                          </text>
+                            <MarkdownText context={props.context} content={resolvedText(node(), snapshot(), props.memo?.())} />
+                          </Show>
                         }
                       >
                         <For each={(() => { const whole = wholeItemText(node(), snapshot(), props.memo?.()); return renderRanges(whole.text, whole.ranges) })()}>
                           {(part) => (
-                            <text
-                              fg={part.excluded ? theme().text.muted : theme().text.base}
-                              attributes={excludedAttributes(part.excluded)}
-                              wrapMode="word"
+                            <Show
+                              when={!part.excluded}
+                              fallback={
+                                <text fg={theme().text.muted} attributes={excludedAttributes(true)} wrapMode="word">
+                                  {`${part.body} [excluded]`}
+                                </text>
+                              }
                             >
-                              {`${part.body}${part.excluded ? " [excluded]" : ""}`}
-                            </text>
+                              <MarkdownText context={props.context} content={part.body} />
+                            </Show>
                           )}
                         </For>
                       </Show>
