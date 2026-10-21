@@ -148,23 +148,32 @@ it.effect("groups available models by provider with paging", () =>
   }),
 )
 
-it.effect("appends the worktree note as an identified system part", () =>
+it.effect("appends the worktree note only for an agent that can call session_move", () =>
   Effect.gen(function* () {
     const plugins = yield* Plugin.Service
     const hooks = yield* PluginHooks.Service
     yield* OpenCodeTools.Plugin.effect(yield* PluginHost.make(plugins))
-    const event: SessionHooks["context"] = {
-      sessionID: Session.ID.make("ses_worktree_note"),
-      agent: Agent.ID.make("build"),
-      model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("alpha") }),
-      system: [SystemPart.make("Agent prompt")],
-      messages: [],
-      tools: {},
-      options: {},
-    }
-    yield* hooks.trigger("session", "context", event)
-    expect(event.system.at(-1)?.text).toStartWith("When you create a worktree")
-    expect(event.system.at(-1)?.metadata).toEqual({ instruction: { key: "core/tools-note" } })
+    const tool = { description: "", input: {} }
+    const note = Effect.fnUntraced(function* (tools: SessionHooks["context"]["tools"]) {
+      const event: SessionHooks["context"] = {
+        sessionID: Session.ID.make("ses_worktree_note"),
+        agent: Agent.ID.make("build"),
+        model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("alpha") }),
+        system: [SystemPart.make("Agent prompt")],
+        messages: [],
+        tools,
+        options: {},
+      }
+      yield* hooks.trigger("session", "context", event)
+      return event.system.slice(1)
+    })
+    const codemode = yield* note({ execute: tool })
+    expect(codemode.map((part) => part.text)).toEqual([
+      "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using `execute` to call `tools.opencode.session_move` and make the worktree the session's working directory.",
+    ])
+    expect(codemode[0]?.metadata).toEqual({ instruction: { key: "core/tools-note" } })
+    expect((yield* note({ opencode_session_move: tool }))[0]?.text).toContain("consider using `opencode_session_move` and")
+    expect(yield* note({ read: tool })).toEqual([])
   }),
 )
 
