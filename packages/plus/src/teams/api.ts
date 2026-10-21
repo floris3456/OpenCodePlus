@@ -214,8 +214,9 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     if (replay.signature !== signature)
       return fail("E_REQUEST_ID", `requestID "${brief.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
     if (replay.output !== undefined) {
+      // The stored result, with the run's state now: it may have settled since.
       const current = replay.run === undefined ? undefined : await loadRun(root, replay.run)
-      return succeeded({ ...replay.output, state: current?.state ?? null, replayed: true, receipt: replay.output, current: current === undefined ? null : { state: current.state, attempt: current.attempts.at(-1)?.n ?? 0, worktree: current.worktree } })
+      return succeeded({ ...replay.output, replayed: true, state: current?.state ?? null })
     }
   }
   const maxDepth = bound(table, agent, "delegate", "limits.depth")
@@ -632,19 +633,13 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const output = {
     run: childID,
-    session: String(child.id),
+    requestID: brief.requestID,
     task: taskID,
     state: "starting",
-    directory: created.dir,
     branch: created.branch,
     base: baseSha,
-    briefPath: path.join(runDir, "brief.md"),
-    budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
-    requestedModel,
-    loadedModel,
-    resolvedModel,
-    instructionsHash,
-    configDigest,
+    ...(resolvedModel === null ? {} : { model: `${resolvedModel.providerID}/${resolvedModel.modelID}${resolvedModel.variant === undefined ? "" : `@${resolvedModel.variant}`}` }),
+    next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report.",
   }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
@@ -1089,7 +1084,9 @@ async function checkHandler(args: CheckInput, caller: TeamCaller, table: Permiss
   // Beyond its assigned checks a run may run any project check: the project's
   // people named those commands, so they run unattended. Its result informs
   // the run; only assigned checks judge its finish.
-  const assignedCheck = assigned.find((entry) => entry.id === args.id && args.path === undefined) ?? (await projectCheck(record, args, assigned))
+  const assignedCheck = assigned.find((entry) => entry.id === args.id && (
+    args.path === undefined || entry.argv.some((arg) => !path.isAbsolute(arg) && path.normalize(arg) === path.normalize(args.path!))
+  )) ?? (await projectCheck(record, args, assigned))
   // Checks it may run (Permissions of team_check): a test-file check or a
   // package-script check this member's rows turned off is refused before it
   // runs, with the report that says what to do instead.
@@ -1111,12 +1108,20 @@ async function checkHandler(args: CheckInput, caller: TeamCaller, table: Permiss
 // be. An id that is neither throws E_UNKNOWN_CHECK naming both lists.
 async function projectCheck(record: RunRecord, args: CheckInput, assigned: readonly Check[]): Promise<Check> {
   const project = await readProjectChecks(record.directory).catch(() => undefined)
-  if (project?.checks.some((check) => check.id === args.id) !== true)
+  if (project?.checks.some((check) => check.id === args.id) !== true) {
+    const fixed = assigned.find((check) => check.id === args.id)
+    if (fixed !== undefined)
+      throw toolError(
+        "E_UNKNOWN_CHECK",
+        `Check "${args.id}" is assigned with a fixed command (${fixed.argv.join(" ")}): call it without path.`,
+        { id: args.id },
+      )
     throw toolError(
       "E_UNKNOWN_CHECK",
       `Check "${args.id}" is neither assigned nor a project check. Assigned: [${assigned.map((check) => check.id).join(", ")}]. ${checksNote(project)}`,
       { id: assigned[0]?.id ?? project?.checks[0]?.id ?? "test" },
     )
+  }
   // Its receipts must not pass for an assigned check's of the same id (one
   // named with another path).
   const id = assigned.some((check) => check.id === args.id) ? `${args.id}-own` : args.id
@@ -1349,18 +1354,6 @@ async function reportDisplayPath(root: string, runID: string, stored: { n: numbe
   return stored.jsonPath
 }
 
-async function taskStateOf(root: string, taskID: string): Promise<string | null> {
-  const dir = path.join(root, "tasks")
-  const entries = await readdir(dir).catch(() => [])
-  for (const name of entries) {
-    if (!name.endsWith(".json") || name.startsWith(".")) continue
-    const graph = await readJson<{ tasks?: Record<string, { state?: unknown }> }>(path.join(dir, name))
-    const task = graph?.tasks?.[taskID]
-    if (task !== undefined && typeof task.state === "string") return task.state
-  }
-  return null
-}
-
 // The parent's other children still at work: who else may be changing which
 // files now. Not the task graph: every delegation adds its task to the one
 // install-wide ad-hoc graph, so its tasks are no run's siblings.
@@ -1395,7 +1388,6 @@ async function statusOf(ctx: Context, root: string, id: string) {
     checks.push({ id: checkDef.id, passed: receipt?.passed ?? null, atHead })
   }
   const stored = await latestReport(root, id)
-  const taskState = record.task === null ? null : await taskStateOf(root, record.task)
   const usage = await sessionTokenUsage(ctx, record)
   const tokensUsed = usage?.used
   const contextTokens = await sessionContextTokens(ctx, record)
@@ -1408,7 +1400,6 @@ async function statusOf(ctx: Context, root: string, id: string) {
     attempt: last?.n ?? 0,
     attemptState: last?.state ?? "queued",
     task: record.task,
-    taskState,
     head,
     base: record.base,
     dirty: dirtyFiles.length > 0,

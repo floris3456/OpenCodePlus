@@ -121,7 +121,7 @@ test("a blocked child's path need widens live edit and checkpoint scope, publish
   expect(required(await f.api.checkpoint({ files: ["src/cli.ts"], message: "feat: wire CLI" }, f.worker))).toMatchObject({ committed: true })
   expect(await git(f.child.directory, ["show", "HEAD:src/cli.ts"])).toBe("export const cli = true")
   const saved = await loadRun(f.root, f.child.id)
-  expect(required(await f.api.followup(input, f.caller))).toMatchObject({ replayed: true })
+  expect(required(await f.api.followup(input, f.caller))).toEqual({ attempt: 2, state: "working", replayed: true, next: "End your turn: its settlement wakes you." })
   expect(await loadRun(f.root, f.child.id)).toEqual(saved)
   expect(f.prompts).toHaveLength(1)
   expect(f.published).toHaveLength(1)

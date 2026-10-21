@@ -169,9 +169,9 @@ function startSweeps(root: string): { stop: () => Promise<void> } {
   }
 }
 
-function provisioned(result: { ok: boolean; value?: unknown; error?: unknown }): { run: string; directory: string } {
+function provisioned(result: { ok: boolean; value?: unknown; error?: unknown }): { run: string } {
   if (!result.ok) throw new Error(`delegate failed: ${JSON.stringify(result.error)}`)
-  return result.value as { run: string; directory: string }
+  return result.value as { run: string }
 }
 
 async function dirExists(p: string): Promise<boolean> {
@@ -972,13 +972,13 @@ test("two concurrent delegates provision and start under a running sweep", async
         ])
         for (const result of results) {
           const started = provisioned(result)
+          const stored = await loadRun(root, started.run)
+          if (stored === undefined) throw new Error("missing child run")
           // The host resolves this directory when it opens the child session;
           // the soak failed here with `NotFound: FileSystem.realPath`.
-          expect(await fs.realpath(started.directory)).toBe(started.directory)
-          const stored = await loadRun(root, started.run)
+          expect(await fs.realpath(stored.directory)).toBe(stored.directory)
           expect(stored?.state).toBe("starting")
           expect(stored?.worktree).toBe("present")
-          expect(stored?.directory).toBe(started.directory)
         }
         expect(sessions.created).toHaveLength(2)
         expect(sessions.prompted).toHaveLength(2)
@@ -1017,8 +1017,9 @@ test("twenty back-to-back delegates provision and start under a running sweep", 
       try {
         for (let i = 0; i < 20; i++) {
           const started = provisioned(await api.delegate(delegateBrief(`run-${i}`), callerFor(parent)))
-          expect(await fs.realpath(started.directory)).toBe(started.directory)
           const stored = await loadRun(root, started.run)
+          if (stored === undefined) throw new Error("missing child run")
+          expect(await fs.realpath(stored.directory)).toBe(stored.directory)
           expect(stored?.state).toBe("starting")
           expect(stored?.worktree).toBe("present")
           if (stored !== undefined)

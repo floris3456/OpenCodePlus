@@ -305,6 +305,43 @@ test("Zod schemas validate, transform, and describe typed tools", async () => {
   )
 })
 
+test("tool input retries top-level JSON objects and arrays after validation fails", async () => {
+  const tool: Info = {
+    name: "nested",
+    description: "Nested input",
+    input: Schema.Struct({ context: Schema.Struct({ interfaces: Schema.Array(Schema.String) }), paths: Schema.Array(Schema.String) }),
+    output: Schema.Unknown,
+    execute: (input) => Effect.succeed({ output: input }),
+  }
+  expect(await Effect.runPromise(execute(tool, { context: '  {"interfaces":["export"]} ', paths: '["src/export.ts"]' }, context))).toMatchObject({
+    output: { context: { interfaces: ["export"] }, paths: ["src/export.ts"] },
+  })
+})
+
+test("valid string fields retain JSON text", async () => {
+  const tool: Info = {
+    name: "text",
+    description: "String input",
+    input: Schema.Struct({ context: Schema.String }),
+    output: Schema.String,
+    execute: (input) => Effect.succeed({ output: input.context }),
+  }
+  expect(await Effect.runPromise(execute(tool, { context: '{"interfaces":[]}' }, context))).toMatchObject({ output: '{"interfaces":[]}' })
+})
+
+test("failed JSON repair retains the original input issues", async () => {
+  const tool: Info = {
+    name: "nested",
+    description: "Nested input",
+    input: Schema.Struct({ context: Schema.Struct({ count: Schema.Number }) }),
+    execute: () => Effect.succeed({ content: "unused" }),
+  }
+  const input = { context: '{"count":"wrong"}' }
+  expect(await Effect.runPromise(Effect.flip(execute(tool, input, context)))).toEqual(new Tool.Error({
+    message: `Invalid arguments for tool "nested":\n- context: Expected object\n\nArguments provided:\n${JSON.stringify(input, null, 2)}\n\nUpdate the arguments and call the tool again.`,
+  }))
+})
+
 test("portable schema failures become tool failures", async () => {
   const input = {
     "~standard": {

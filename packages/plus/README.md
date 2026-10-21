@@ -393,8 +393,15 @@ a compatibility alias for attempts, and the existing `turns` budget likewise
 counts attempts. `tokensUsed` is the public Session's cumulative total (input,
 output, reasoning and cache), or `null` if unavailable, not per-attempt usage.
 Status uses these totals for advisory budgets; no hard interrupt is
-implied. Replayed admissions label the original `receipt` and expose a fresh
-`current` observation without submitting the work again.
+implied. Replaying an identical `requestID` returns the stored admission result
+unchanged without submitting the work again.
+
+`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, next }`;
+`model` is the resolved `provider/model[@variant]` when known. Its `next` says
+to delegate other runs in the same step, then end the turn: each settlement
+wakes the caller with its report. `team_followup` returns `{ attempt, state, next }`,
+with `next: "End your turn: its settlement wakes you."`. Session, worktree,
+Brief, budget and model provenance remain in the saved run data.
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
@@ -531,6 +538,8 @@ on the third attempt.
   grant permissions and the child's accepted paths and limits still apply;
   forbidden paths stay forbidden. Plus refreshes its Edit scope row and
   prefixes the prompt with the added paths; `paths` alone sends that note.
+  Work still needing an out-of-scope file or check reports `blocked`, with
+  one `path` or `check` need per item, rather than `done_with_concerns`.
 - `team_get_context` on a root run has no `brief` and `briefPath: null`
   rather than failing `E_NO_BRIEF`. A delegated run's Brief is its first
   message, so `brief` (the rendered text) comes back only once a compaction
@@ -576,8 +585,15 @@ on the third attempt.
   queue waits for a clean parent. Conflicts and new check failures go back to
   the same child with `team_followup rebase: true`; a fresh implementer with
   the rework task is the fallback only when the child cannot resume.
+  Another conflict creates the next rework sibling even while the original
+  task remains in rework. `team_status` keeps `task` but omits `taskState`:
+  the task graph does not track landings.
 - `team_get_context` reports the worktree's live `head`, the value
   `checkpoint` and `integrate` compare against.
+- `team_check` with an assigned id and its existing argv path runs that
+  assigned check (relative paths are normalized). Another path runs the
+  same-named project check with a separate receipt; if no such project check
+  exists, the refusal asks for `{ id }` to run the fixed assigned command.
 - A `finish` finding's severity is `error`, `warning` or `note` (a located
   fact, how a scout answers).
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default
@@ -586,6 +602,9 @@ on the third attempt.
 - Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
   run record, reports and receipts intact while marking `worktree: "removed"`.
 - Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission at every depth: array elements (`checks: [{ id, argv, cwd: null }]`) and fields behind optional/default wrappers (`context: { interfaces: null }`, `followup({ budget: { turns: null } })`) included; `null` on required fields strictly produces a schema validation error.
+- If tool input validation fails, Core retries once with top-level JSON-text
+  objects or arrays parsed (for example a stringified `context`). Valid string
+  fields stay strings; a failed retry keeps the original validation error.
 - In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds. The bounds themselves are the member's `team_delegate` → `Limits` rows, and the refusal says to end the turn and delegate after a settling child wakes the caller.
 - Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.

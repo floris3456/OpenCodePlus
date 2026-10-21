@@ -220,7 +220,7 @@ test("Corrections by followup: off refuses a correction with its words, on queue
   const refused = rejected(await apiWith(tableWith(["perm:team_get_context:accepts.followup", "off"])).followup({ run: child.id, requestID: "f-1", prompt }, callerFor(parent)))
   expect(refused.code).toBe("E_NO_FOLLOWUP")
   expect(refused.message).toStartWith(`${alice.id} takes no corrections by followup: delegate a fresh run`)
-  expect(required(await apiWith(tableWith(["perm:team_get_context:accepts.followup", "on"])).followup({ run: child.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued" })
+  expect(required(await apiWith(tableWith(["perm:team_get_context:accepts.followup", "on"])).followup({ run: child.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
 })
 
 test("Delegate from a delegated run: off refuses a delegated run's delegation with its words, on lets it through", async () => {

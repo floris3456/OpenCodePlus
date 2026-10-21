@@ -197,8 +197,8 @@ test("queued followup lands in the child inbox and get_context sees it", async (
     const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const value = required(
       await api.followup(followupInput(), callerFor(parent)),
-    ) as { attempt: number; state: string }
-    expect(value).toEqual({ attempt: 2, state: "admitted" })
+    ) as { attempt: number; state: string; next: string }
+    expect(value).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
     const items = await peek(root, child.id)
     expect(items).toHaveLength(1)
     expect(items[0]?.kind).toBe("followup")
@@ -369,13 +369,13 @@ test("same requestID twice is idempotent, different args fail E_REQUEST_ID", asy
     const api = createTeamApi(context({ session: recordSession().domain }), teamState())
     const first = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
-    ) as { attempt: number; state: string }
-    expect(first).toEqual({ attempt: 2, state: "admitted" })
+    ) as { attempt: number; state: string; next: string }
+    expect(first).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
     expect(await peek(root, child.id)).toHaveLength(1)
     const second = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
     )
-    expect(second).toMatchObject({ ...first, replayed: true, receipt: first, current: { state: "working", attempt: 2 } })
+    expect(second).toEqual({ ...(first as object), replayed: true, state: "working" })
     expect(await peek(root, child.id)).toHaveLength(1)
     const error = rejected(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "A different followup text entirely here." }), callerFor(parent)),
@@ -402,7 +402,7 @@ test("budget in the call changes only given dimensions and writes history", asyn
         callerFor(parent),
       ),
     )
-    expect(value).toEqual({ attempt: 2, state: "admitted" })
+    expect(value).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
     const updated = await loadRun(root, child.id)
     expect(updated?.budget).toEqual({ turns: 10, tokens: 1000, wallMs: 5000 })
     expect(updated?.history.some((h) => "reason" in h && h.reason === "Increase turns allowance")).toBe(true)
@@ -418,7 +418,7 @@ test("a stopped child resumes once, consumes stop intent, and replays after sett
     const ctx = context({ session: sessions.domain })
     const api = createTeamApi(ctx, teamState())
     const input = followupInput()
-    expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "admitted" })
+    expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
     expect((await loadRun(root, child.id))?.stopRequested).toBeUndefined()
     await onSessionEvent(ctx, root, { type: "session.execution.started", data: { sessionID: child.sessionID } })
     await onSessionEvent(ctx, root, { type: "session.execution.succeeded", data: { sessionID: child.sessionID } })
@@ -426,7 +426,8 @@ test("a stopped child resumes once, consumes stop intent, and replays after sett
     expect(settled?.state).toBe("idle")
     expect(settled?.attempts).toHaveLength(2)
     expect(settled?.attempts[0]).toEqual(child.attempts[0])
-    expect(required(await api.followup(input, callerFor(parent)))).toMatchObject({ replayed: true, current: { state: "idle", attempt: 2 } })
+    // A replay returns the stored result with the child's state now.
+    expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "idle", replayed: true, next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(1)
     expect(await peek(root, child.id)).toEqual([])
   })
@@ -592,8 +593,8 @@ test("delivery now on an idle child prompts, moves to working and returns admitt
         followupInput({ run: child.id, requestID: "now-1", delivery: "now", prompt: "Continue in place: fix the off-by-one now." }),
         callerFor(parent),
       ),
-    ) as { attempt: number; state: string }
-    expect(value).toEqual({ attempt: 2, state: "admitted" })
+    ) as { attempt: number; state: string; next: string }
+    expect(value).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.text).toContain("fix the off-by-one")
     const moved = await loadRun(root, child.id)
@@ -615,7 +616,7 @@ test("queue default on an idle child prompts and returns admitted with the real 
         followupInput({ run: child.id, requestID: "queue-idle-1", prompt: "Continue in place: cover the idle handoff now." }),
         callerFor(parent),
       ),
-    ) as { attempt: number; state: string }
+    ) as { attempt: number; state: string; next: string }
     expect(value.state).toBe("admitted")
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.text).toContain("idle handoff")
@@ -644,8 +645,8 @@ test("queue on a working child delivers as a steer and keeps current attempt", a
         followupInput({ run: child.id, requestID: "queue-busy-1", prompt: "Continue in place: queue while working now." }),
         callerFor(parent),
       ),
-    ) as { attempt: number; state: string }
-    expect(value).toEqual({ attempt: 1, state: "queued" })
+    ) as { attempt: number; state: string; next: string }
+    expect(value).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.delivery).toBe("steer")
     const kept = await loadRun(root, child.id)
@@ -671,15 +672,15 @@ test("two queued followups to a working child keep the current attempt and steer
         followupInput({ run: child.id, requestID: "queue-twice-1", prompt: "First queued followup while working here." }),
         callerFor(parent),
       ),
-    ) as { attempt: number; state: string }
+    ) as { attempt: number; state: string; next: string }
     const second = required(
       await api.followup(
         followupInput({ run: child.id, requestID: "queue-twice-2", prompt: "Second queued followup while working here." }),
         callerFor(parent),
       ),
-    ) as { attempt: number; state: string }
-    expect(first).toEqual({ attempt: 1, state: "queued" })
-    expect(second).toEqual({ attempt: 1, state: "queued" })
+    ) as { attempt: number; state: string; next: string }
+    expect(first).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
+    expect(second).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(2)
     expect(sessions.prompted[0]?.delivery).toBe("steer")
     expect(sessions.prompted[1]?.delivery).toBe("steer")
@@ -705,8 +706,8 @@ test("a followup delivered as a steer to a working child is not repeated when it
         followupInput({ run: child.id, requestID: "queue-idle-handoff", prompt: "Continue in place: also cover the empty list." }),
         callerFor(parent),
       ),
-    ) as { attempt: number; state: string }
-    expect(queued).toEqual({ attempt: 1, state: "queued" })
+    ) as { attempt: number; state: string; next: string }
+    expect(queued).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(1)
     expect(sessions.prompted[0]?.delivery).toBe("steer")
     // When the session goes idle, the steered message was already delivered so it is not repeated
@@ -735,8 +736,8 @@ test("now whose prompt rejects restores the run and allows a same-requestID retr
     expect(restored?.attempts[0]?.n).toBe(1)
     const sessions = recordSession()
     const retryApi = createTeamApi(context({ session: sessions.domain }), teamState())
-    const retried = required(await retryApi.followup(input, callerFor(parent))) as { attempt: number; state: string }
-    expect(retried).toEqual({ attempt: 2, state: "admitted" })
+    const retried = required(await retryApi.followup(input, callerFor(parent))) as { attempt: number; state: string; next: string }
+    expect(retried).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(1)
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("working")
@@ -1005,7 +1006,8 @@ test("a landed child is reopened only for a prompt to a live run; otherwise noth
       const landed = await loadRun(root, repo.child.id)
       if (landed === undefined) throw new Error("missing child record")
       // A budget alone changes the budget and leaves the worktree removed.
-      expect(required(await api.followup(followupInput({ run: repo.child.id, requestID: "b-1", prompt: undefined, budget: { tokens: 5 }, reason: "more room" }), callerFor(repo.parent)))).toMatchObject({ budget: { tokens: 5 } })
+      expect(required(await api.followup(followupInput({ run: repo.child.id, requestID: "b-1", prompt: undefined, budget: { tokens: 5 }, reason: "more room" }), callerFor(repo.parent)))).toEqual({ attempt: 1, state: repo.child.state, next: "End your turn: its settlement wakes you." })
+      expect((await loadRun(root, repo.child.id))?.budget.tokens).toBe(5)
       expect(await loadRun(root, repo.child.id)).toMatchObject({ worktree: "removed", directory: repo.worktree, branch: repo.child.branch })
       // A terminal run is not reopened.
       await saveRun(root, { ...landed, state: "superseded" })

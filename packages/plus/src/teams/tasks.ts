@@ -373,7 +373,7 @@ export async function reworkTask(
         legal,
       )
     }
-    if (!canTaskTransition(parent.state, "rework")) {
+    if (parent.state !== "rework" && !canTaskTransition(parent.state, "rework")) {
       const legal = legalTargets(parent.state)
       throw toolError(
         "E_TASK_TRANSITION",
@@ -399,10 +399,12 @@ export async function reworkTask(
       attempts: 0,
       history: [],
     }
-    g.tasks[parentTaskID] = {
-      ...parent,
-      state: "rework",
-      history: [...parent.history, { at, from: parent.state, to: "rework" as TaskState, by: "merge" }],
+    if (parent.state !== "rework") {
+      g.tasks[parentTaskID] = {
+        ...parent,
+        state: "rework",
+        history: [...parent.history, { at, from: parent.state, to: "rework" as TaskState, by: "merge" }],
+      }
     }
     await atomicJson(taskFile(root, planRun), g)
     return id

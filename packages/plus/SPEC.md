@@ -1712,6 +1712,19 @@ and `stop` (native, `codemode: false`), and
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
+Delegate returns `{ run, requestID, task, state, branch, base, model?, next }`,
+with the resolved model as `provider/model[@variant]` when known and
+`next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report."`.
+Followup returns `{ attempt, state, next }`, with
+`next: "End your turn: its settlement wakes you."` for admitted, queued and
+budget-only calls. Identical request IDs return the stored output unchanged.
+Session/worktree paths, Brief paths, budgets, model provenance and hashes stay
+in durable run data rather than these admission responses.
+
+Core retries failed input validation once after parsing top-level string fields
+that contain JSON objects or arrays. Originally valid input is untouched; an
+invalid retry preserves the original input and issues in the error.
+
 Landings derive their checks automatically (`teams/merge.ts`): the landing
 child's assigned checks, those of every child already landed in the parent's
 merge queue, and the parent's own Brief checks (none for a user chat).
@@ -1745,6 +1758,19 @@ new files become untracked, without a pending Git operation. The prompt names
 the conflicts and all touched files and asks it to resolve both sides' intent,
 check, checkpoint every change and finish. A fresh child with the rework task
 is needed only if the original cannot resume.
+
+Repeated conflicts create the next rework sibling without a second transition
+of a task already in `rework`. `team_status` returns `task`, not `taskState`:
+the task graph does not track successful landings.
+
+An assigned `team_check` id with a path already in its argv (normalized
+relative paths) runs the assigned command and records its assigned receipt.
+Another path resolves a same-named project check with its separate `-own`
+receipt; without that project check, the error names the fixed command and
+accepts `{ id }` without a path.
+
+The report status description directs unfinished work needing out-of-scope
+files or checks to `blocked`, with one `path` or `check` need per item.
 
 A check may name a test file missing at the base when the child's writable
 scope includes it, for every member. Outside scope or forbidden is `E_CHECKS`.

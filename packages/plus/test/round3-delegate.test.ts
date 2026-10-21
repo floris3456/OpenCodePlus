@@ -232,18 +232,17 @@ test("delegateThroughHost creates the child through the real handler over the ho
     })
     expect(outcome.via).toBe("team.delegate")
 
-    const output = outcome.output as { run: string; session: string; directory: string; briefPath: string }
-    const child = await loadRun(root, output.run)
+    // The result names the run; its session, worktree and Brief are on the record.
+    const run = (outcome.output as { run: string }).run
+    const child = await loadRun(root, run)
     expect(child?.parent).toBe(parentRunID)
-    expect(child?.sessionID).toBe(output.session)
     expect(child?.role).toBe("implementer")
-    expect(child?.directory).toBe(output.directory)
-    expect(child?.directory.startsWith(path.join(root, "worktrees"))).toBe(true)
+    const output = { run, session: child?.sessionID ?? "", directory: child?.directory ?? "" }
+    expect(output.directory.startsWith(path.join(root, "worktrees"))).toBe(true)
     expect((await fs.stat(output.directory)).isDirectory()).toBe(true)
-    expect(await Bun.file(output.briefPath).exists()).toBe(true)
-    expect(output.briefPath).toBe(path.join(root, "runs", output.run, "brief.md"))
+    expect(await Bun.file(path.join(root, "runs", run, "brief.md")).exists()).toBe(true)
     expect(await Bun.file(path.join(output.directory, ".git")).exists()).toBe(true)
-    expect((await loadRun(root, parentRunID))?.children).toContain(output.run)
+    expect((await loadRun(root, parentRunID))?.children).toContain(run)
 
     // The host bridge carried the Location the real handler made for the child,
     // and delivered the rendered brief to the child session.

@@ -595,9 +595,9 @@ test("followup reaches a grandchild only while the caller's Deeper descendants r
   expect(refused.code).toBe("E_NOT_CHILD")
   expect(refused.accepted).toEqual([child.id])
   const deeper = tableWith({ agent: parent.role, id: "perm:team_followup:runs.descendants", enabled: true })
-  expect(required(await apiWith(deeper).followup({ run: grandchild.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued" })
+  expect(required(await apiWith(deeper).followup({ run: grandchild.id, requestID: "f-2", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
   // A direct child needs no row.
-  expect(required(await apiWith(tableWith()).followup({ run: child.id, requestID: "f-3", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued" })
+  expect(required(await apiWith(tableWith()).followup({ run: child.id, requestID: "f-3", prompt }, callerFor(parent)))).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
 })
 
 test("stop reaches a grandchild only while the caller's Deeper descendants row for team_stop is on, and tells its parent the reason", async () => {

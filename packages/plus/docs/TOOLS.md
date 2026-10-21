@@ -383,6 +383,14 @@ implementer/reviewer/scout combinations checked in the API
 Registration: `packages/plus/src/teams/tools.ts`, `registerTeamTools`.
 Every tool's permission action is `team.<name>`.
 
+`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, next }`.
+The model is the resolved `provider/model[@variant]` when known; `next` says
+"Delegate any other runs in this same step, then end your turn: each settlement
+wakes you with its report." `team_followup` returns `{ attempt, state, next }`,
+with "End your turn: its settlement wakes you." Identical request IDs replay
+the stored result unchanged. Session/worktree details and model provenance
+remain in saved run records.
+
 `team_integrate` automatically checks the rebased tip with the child's checks,
 already-landed children's checks and the parent's Brief checks. Commands with
 the same argv/cwd run once. The child's checks must pass; other failures block
@@ -406,6 +414,17 @@ leaves unstaged conflicts and untracked new files for the same child. Its
 prompt names all touched files; resolve, check, checkpoint them and finish.
 A fresh implementer with the rework task is the fallback if it cannot resume.
 Busy or dirty children still refuse a rebase.
+Repeated conflicts create the next rework sibling even if the task is already
+in `rework`. `team_status` retains `task` but omits the graph's `taskState`,
+which does not track landings.
+
+An assigned check id with its own argv path runs the assigned check, comparing
+normalized relative paths. A different path runs the same-named project check
+with a separate receipt, or refuses with the fixed command and accepted
+`{ id }` when there is no such project check.
+
+Work that still needs files or checks outside scope reports `blocked`, with
+one `path` or `check` need per item; it is not `done_with_concerns`.
 
 A missing assigned test file is accepted when the child's writable scope
 includes it. Outside scope or forbidden is `E_CHECKS`; finish still requires
@@ -422,6 +441,10 @@ For `done` and `done_with_concerns`, assigned checks with “Assigned checks pas
 at HEAD” on require committed work: dirty tracked or untracked files cause
 `E_DIRTY` before checks run. The refusal names the files to checkpoint or revert;
 the existing Plus project file exception is retained.
+
+Core retries invalid tool input once with top-level JSON-text objects or arrays
+parsed. Valid string fields stay strings; a failed retry returns the original
+validation issues and arguments.
 
 Validation ceilings: run ids match `^(main|w)-[0-9a-f]{16}$`
 (`packages/plus/src/teams/schema.ts:18`); heads are 40 hex chars

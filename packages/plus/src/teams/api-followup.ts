@@ -97,7 +97,7 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
       return fail("E_REQUEST_ID", `requestID "${args.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
-    if (replay.output !== undefined) return succeeded({ ...replay.output, replayed: true, receipt: replay.output, current: { run: child.id, state: child.state, attempt: child.attempts.at(-1)?.n ?? 0, worktree: child.worktree } })
+    if (replay.output !== undefined) return succeeded({ ...replay.output, replayed: true, state: child.state })
   }
   const rounds = bound(table, caller.agent, "followup", "limits.rounds")
   if (rounds !== undefined && child.attempts.length > rounds)
@@ -209,7 +209,7 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     const updated = applyBudget(child, args.budget, args.reason, parent.id)
     await saveRun(root, updated)
     const lastAttempt = updated.attempts.at(-1)?.n ?? 0
-    const output = { attempt: lastAttempt, state: updated.state, budget: updated.budget }
+    const output = { attempt: lastAttempt, state: updated.state, next: "End your turn: its settlement wakes you." }
     await atomicJson(requestPath, { signature, output, run: child.id })
     return succeeded(output)
   }
@@ -400,7 +400,7 @@ async function followupQueue(
     await updateRun(root, childID, (fresh) => recordInboxDelivery(fresh, [queued.id]))
     await take(root, childID, [queued.id])
     const last = budgeted.attempts.at(-1)
-    const output = { attempt: last?.n ?? 1, state: "queued" }
+    const output = { attempt: last?.n ?? 1, state: "queued", next: "End your turn: its settlement wakes you." }
     await atomicJson(requestPath, { signature, output, run: childID })
     return succeeded(output)
   }
@@ -409,7 +409,7 @@ async function followupQueue(
   const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
   const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id, moveTo)
   const done = admitted.attempts[admitted.attempts.length - 1]
-  const output = { attempt: done?.n ?? 1, state: "admitted" }
+  const output = { attempt: done?.n ?? 1, state: "admitted", next: "End your turn: its settlement wakes you." }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
 }
@@ -449,7 +449,7 @@ async function followupNow(
     )
   const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, undefined, moveTo)
   const done = admitted.attempts[admitted.attempts.length - 1]
-  const output = { attempt: done?.n ?? 1, state: "admitted" }
+  const output = { attempt: done?.n ?? 1, state: "admitted", next: "End your turn: its settlement wakes you." }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
 }

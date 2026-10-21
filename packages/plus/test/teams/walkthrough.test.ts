@@ -445,15 +445,18 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
         scope: { paths: ["docs/note.md"] },
         checks: [{ id: "note", argv: ["bun", "test", "note.test.ts"] }],
       }
-      const delegated = await runOk<{ run: string; session: string; directory: string; branch: string; base: string; briefPath: string }>(
+      const delegated = await runOk<{ run: string; requestID: string; branch: string; base: string; next: string }>(
         need(fixture.tools, "team_delegate"),
         brief,
         parent,
       )
       call("team_delegate", brief, delegated)
       const childRun = delegated.run
+      const record = await loadRun(root, childRun)
+      if (record === undefined || record.sessionID === null) throw new Error("missing child run or session")
       expect(childRun.startsWith("w-")).toBe(true)
-      expect(await dirExists(delegated.directory)).toBe(true)
+      expect(delegated.requestID).toBe(brief.requestID)
+      expect(await dirExists(record.directory)).toBe(true)
 
       // text last, so a " | " inside it stays in its cell.
       const scopeQuery = { where: `run:${childRun}`, fields: ["id", "label", "badges", "source", "text"] }
@@ -487,7 +490,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(scopeShown.patterns).toEqual(["docs/note.md"])
       expect(scopeShown.enabled).toBe(true)
 
-      const child = toolContext(delegated.session, "implementer")
+      const child = toolContext(record.sessionID, "implementer")
       const childContext = await runOk<{ run: string; brief: { objective: string }; scope: { paths: string[] } }>(
         need(fixture.tools, "team_get_context"),
         {},
@@ -497,10 +500,10 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(childContext.run).toBe(childRun)
       expect(childContext.scope.paths).toEqual(["docs/note.md"])
 
-      await fs.mkdir(path.join(delegated.directory, "docs"), { recursive: true })
-      await fs.writeFile(path.join(delegated.directory, "docs", "note.md"), `# note for ${childRun}\n`)
+      await fs.mkdir(path.join(record.directory, "docs"), { recursive: true })
+      await fs.writeFile(path.join(record.directory, "docs", "note.md"), `# note for ${childRun}\n`)
       const checkpointInput = {
-        expectedHead: await git(delegated.directory, ["rev-parse", "HEAD"]),
+        expectedHead: await git(record.directory, ["rev-parse", "HEAD"]),
         files: ["docs/note.md"],
         message: "docs: add the walkthrough note",
       }
@@ -524,7 +527,7 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
 
       // The host publishes session.idle; in-process the walkthrough delivers it
       // through the same exported handler the plugin subscribes with.
-      await onSessionEvent(fixture.ctx, root, { type: "session.idle", properties: { sessionID: delegated.session } })
+      await onSessionEvent(fixture.ctx, root, { type: "session.idle", properties: { sessionID: record.sessionID } })
       const inbox = await peek(root, rootRun)
       call(`cat ${path.join(root, "runs", rootRun, "inbox", `${inbox[0].id}.json`)}`, undefined, inbox[0])
       expect(inbox).toHaveLength(1)
@@ -551,8 +554,8 @@ test("[20d] root bootstrap, delegate, context, checkpoint, finish, notification,
       expect(await fs.readFile(path.join(repo.dir, "docs", "note.md"), "utf8")).toContain(childRun)
 
       call("git worktree list", undefined, await git(repo.dir, ["worktree", "list"]))
-      call(`test -d ${delegated.directory}`, undefined, String(await dirExists(delegated.directory)))
-      expect(await dirExists(delegated.directory)).toBe(false)
+      call(`test -d ${record.directory}`, undefined, String(await dirExists(record.directory)))
+      expect(await dirExists(record.directory)).toBe(false)
       call(`git rev-parse ${delegated.branch}`, undefined, await git(repo.dir, ["rev-parse", delegated.branch]))
       const runDir = path.join(root, "runs", childRun)
       call(`cat ${path.join(runDir, "run.json")}`, undefined, await Bun.file(path.join(runDir, "run.json")).text())
@@ -666,13 +669,13 @@ test("[20f] a followup to a working child reaches it at its next step, without w
       await enableShippedTeam(await registerAll(fixture.ctx))
 
       const followup = { run: child.id, requestID: "ev-f1", prompt: "Also cover the empty-list case." }
-      const queued = await runOk<{ attempt: number; state: string }>(
+      const queued = await runOk<{ attempt: number; state: string; next: string }>(
         need(fixture.tools, "team_followup"),
         followup,
         toolContext(parentRun.sessionID ?? "", "orchestrator"),
       )
       call("team_followup", followup, queued)
-      expect(queued).toEqual({ attempt: 1, state: "queued" })
+      expect(queued).toEqual({ attempt: 1, state: "queued", next: "End your turn: its settlement wakes you." })
 
       // Steered: the host has it before the child's turn ends (core delivers
       // it at the child's next safe step boundary, without interrupting it).
