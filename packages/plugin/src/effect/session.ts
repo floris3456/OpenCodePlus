@@ -190,6 +190,8 @@ export interface SessionWarmingSettings {
  * `warmed` is an outcome notification only; changes to its settings are ignored.
  */
 export interface SessionWarming {
+  /** True for a session with a parent. Core proposes no settings; plugins may opt it in. */
+  readonly subagent?: boolean
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref

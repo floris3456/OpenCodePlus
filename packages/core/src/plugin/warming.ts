@@ -36,6 +36,7 @@ const Stored = Schema.Struct({
 })
 
 type ActiveSession = {
+  subagent?: boolean
   last: number
   /** Start of the warming window: the latest non-warming request, or the end of the turn after it. */
   since: number
@@ -140,8 +141,8 @@ export const Plugin = define({
 
         // Plugins may stop warming or re-time the window right before each warming request.
         const settings = yield* decide(
-          { sessionID, agent: current.agent, model: current.model, phase: "warm", since: current.since, now },
-          current.settings,
+          { sessionID, agent: current.agent, model: current.model, phase: "warm", since: current.since, now, ...(current.subagent ? { subagent: true } : {}) },
+          current.subagent ? undefined : current.settings,
         )
         if (current.epoch !== epoch) return
         if (!settings) return yield* drop(sessionID, current)
@@ -188,6 +189,7 @@ export const Plugin = define({
             agent: current.agent,
             model: current.model,
             phase: "warmed",
+            ...(current.subagent ? { subagent: true } : {}),
             since: current.since,
             now: yield* Clock.currentTimeMillis,
             error: pingError,
@@ -264,14 +266,13 @@ export const Plugin = define({
     ) =>
       Effect.gen(function* () {
         const session = yield* ctx.session.get({ sessionID: event.sessionID }).pipe(Effect.orDie)
-        if (session.parentID) return
 
         const active = sessions.get(event.sessionID)
-        const configured = yield* loadSettings(event.model)
+        const configured = session.parentID ? undefined : yield* loadSettings(event.model)
 
         const now = yield* Clock.currentTimeMillis
         const settings = yield* decide(
-          { sessionID: event.sessionID, agent: event.agent, model: event.model, phase: "activity", kind, since: now, now },
+          { sessionID: event.sessionID, agent: event.agent, model: event.model, phase: "activity", kind, since: now, now, ...(session.parentID ? { subagent: true } : {}) },
           configured,
         )
         if (!settings) {
@@ -296,6 +297,7 @@ export const Plugin = define({
           return
         }
         const scheduled: ActiveSession = {
+          ...(session.parentID ? { subagent: true } : {}),
           last: now,
           since: now,
           expires: now + settings.duration,
@@ -365,7 +367,7 @@ export const Plugin = define({
       )
         return yield* forget(sessionID)
       const session = yield* ctx.session.get({ sessionID }).pipe(Effect.option)
-      if (Option.isNone(session) || session.value.parentID) return yield* forget(sessionID)
+      if (Option.isNone(session)) return yield* forget(sessionID)
       // Another Location runs this session and resumes its window.
       if (
         session.value.location.directory !== ctx.location.directory ||
@@ -374,11 +376,12 @@ export const Plugin = define({
         return
       const window = stored.value
       const settings = yield* decide(
-        { sessionID, agent: window.agent, model: window.model, phase: "resume", since: window.since, now },
-        yield* loadSettings(window.model),
+        { sessionID, agent: window.agent, model: window.model, phase: "resume", since: window.since, now, ...(session.value.parentID ? { subagent: true } : {}) },
+        session.value.parentID ? undefined : yield* loadSettings(window.model),
       )
       if (!settings || now >= window.since + settings.duration) return yield* forget(sessionID)
       const resumed: ActiveSession = {
+        ...(session.value.parentID ? { subagent: true } : {}),
         last: window.last,
         since: window.since,
         expires: window.since + settings.duration,
