@@ -1,6 +1,7 @@
 import path from "node:path"
 import { readdir } from "node:fs/promises"
 import type { Context } from "@opencode/plugin/effect/plugin"
+import { warmingStore } from "../warming.js"
 import { Session } from "@opencode/schema/session"
 import { Effect, Option } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
@@ -256,6 +257,7 @@ async function cleanupLanded(ctx: Context, root: string, run: string, head: stri
     // timeout: release them first.
     await evictRunFolder(ctx, child)
     await removeReleased(root, child.directory, { repoRoot, repoKey })
+    if (child.sessionID !== null) warmingStore.stop(child.sessionID)
   })().then(() => undefined, thrownError)
   if (removal !== undefined) return { run, worktree: "retained", reason: removal.message, code: removal.code }
   // Only successful, verified removal owns this field. A cleanup/persistence

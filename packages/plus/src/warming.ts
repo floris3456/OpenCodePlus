@@ -221,6 +221,8 @@ export interface WarmingStore {
    * Returns the chats whose window changed.
    */
   settle(sessionID: string): Promise<string[]>
+  /** End this window and cancel compact-before-cold; real activity can start a new one. */
+  stop(sessionID: string): boolean
   /** Configure the host's read of the chats running now (core's active set). */
   setActiveReader(reader: ActiveReader): void
   /** The chat that started this one (a subagent's or team worker's parent): it keeps warm while this runs. */
@@ -566,6 +568,16 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
     },
     async status(sessionID, at = now()) {
       return statusOf(sessionID, (await load()).get(sessionID), at)
+    },
+    stop(sessionID) {
+      const changed = tracked.has(sessionID) || scheduled.has(sessionID) || coldAt.has(sessionID)
+      unschedule(sessionID)
+      tracked.delete(sessionID)
+      coldAt.delete(sessionID)
+      configuredDuration.delete(sessionID)
+      compactors.delete(sessionID)
+      busy.delete(sessionID)
+      return changed
     },
     async setChat(sessionID, chat) {
       const map = await load()
