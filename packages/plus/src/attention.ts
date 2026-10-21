@@ -103,7 +103,7 @@ export const attentionStore = createAttentionStore()
 
 /** What happened in a chat, before the settings say which event it is. */
 export type AttentionOccurrence =
-  /** A turn succeeded. `waiting`: something the chat started still runs. */
+  /** A turn succeeded. `waiting`: something the chat started still runs (a child then is not done). */
   | { readonly type: "turn"; readonly waiting: boolean }
   | { readonly type: "failed" }
   | { readonly type: "question" }
@@ -126,7 +126,7 @@ export function decideAttention(
     if (!attentionOn(own.error) || (depth > 0 && !childReach)) return undefined
     return { kind: "error", settings: own.error }
   }
-  if (depth > 0) return childReach ? { kind: "child", settings: root.child } : undefined
+  if (depth > 0) return childReach && !occurrence.waiting ? { kind: "child", settings: root.child } : undefined
   if (!occurrence.waiting && attentionOn(own.done)) return { kind: "done", settings: own.done }
   return attentionOn(own.reply) ? { kind: "reply", settings: own.reply } : undefined
 }

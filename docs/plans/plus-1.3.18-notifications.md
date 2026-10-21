@@ -22,7 +22,7 @@ opencodeplus; local releases also build Linux x64 and macOS.
 | --- | --- |
 | `done` | A chat's final reply (its turn succeeded) while nothing it started still runs: no subagent, no team run, no background shell |
 | `reply` | Every final reply of a chat, also while such work runs. A reply that is also `done` fires only `done`; with `done` off it fires `reply` |
-| `child` | A subagent's or team member's final reply, down to `depth` levels below the chat (1 = its own subagents and team members) |
+| `child` | A subagent's or team member's final reply, down to `depth` levels below the chat (1 = its own subagents and team members); none while work it started still runs. A team member's message says how its report settled (`scout needs context: Find …`, `implementer is done: …`) |
 | `question` | A question, form or permission prompt, at any depth |
 | `error` | A failed turn of the chat, or of a child within `depth` when `child` is on |
 | `cacheMiss` | A cache notice (the monitor's notice settings decide which misses count) |

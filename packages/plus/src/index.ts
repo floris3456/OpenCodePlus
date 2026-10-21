@@ -31,6 +31,7 @@ import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
 import { buildRunTree, byDirectory, bySession, loadRun } from "./teams/run.js"
+import { readJson } from "./teams/store.js"
 import { onSessionEvent, slowWarning, startSweep } from "./teams/lifecycle.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
@@ -6220,6 +6221,7 @@ function watchAttention(ctx: Context, state: PlusState): Effect.Effect<void, nev
       const title = session.title !== undefined && session.title.length > 0 ? session.title : path.basename(session.location.directory)
       return { ...(agent === undefined ? {} : { agent }), title }
     },
+    settledOf: (sessionID) => memberSettled(ctx, sessionID),
     settingsFor: (agent) => attentionFor(state, agent),
     workRuns: (sessionID) => warmingStore.workRuns(sessionID),
     notices: async () => monitorNotices(await plusSettings.read()).notices,
@@ -6925,6 +6927,29 @@ export function settleWarming(state: PlusState, sessionID: string): Effect.Effec
     Effect.flatMap((changed) => Effect.forEach(changed, (chat) => emitWarmingChanged(state, chat), { discard: true })),
     Effect.catchCause((cause) => Effect.logWarning("plus warming settle failed", { cause, sessionID })),
   )
+}
+
+// A delegated team member's turn ended: its report says how ("scout needs context: Find …"), not
+// a bare "is done". Its chat title is "<role>: <objective>".
+const settledWords: Readonly<Record<string, string>> = {
+  done: "is done",
+  done_with_concerns: "is done, with concerns",
+  blocked: "is blocked",
+  needs_context: "needs context",
+  rejected: "rejected its Brief",
+}
+
+export async function memberSettled(ctx: Context, sessionID: string): Promise<string | undefined> {
+  const run = await bySession(teamsDataDir(), sessionID).catch(() => undefined)
+  const attempt = run?.attempts.at(-1)
+  if (run === undefined || run.kind !== "w" || attempt === undefined) return undefined
+  const report = await readJson<{ status?: unknown }>(path.join(teamsDataDir(), "runs", run.id, `report-${attempt.n}.json`))
+  const words = typeof report?.status === "string" ? settledWords[report.status] : undefined
+  const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
+  const title = session?.title ?? ""
+  const objective = title.startsWith(`${run.role}: `) ? title.slice(run.role.length + 2) : title
+  const what = objective.length > 80 ? `${objective.slice(0, 79)}…` : objective
+  return `${run.role} ${words ?? "stopped without a report"}${what.length === 0 ? "" : `: ${what}`}`
 }
 
 export async function parentChatOf(ctx: Context, sessionID: string): Promise<string | undefined> {

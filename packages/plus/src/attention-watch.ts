@@ -29,6 +29,8 @@ export interface AttentionDeps {
   readonly settingsFor: (agent: string | undefined) => Promise<AttentionSettings>
   /** Whether a subagent or team worker this chat started still runs. */
   readonly workRuns: (sessionID: string) => Promise<boolean>
+  /** A team member's ended turn, as its report settled it ("scout needs context: Find …"). */
+  readonly settledOf?: (sessionID: string) => Promise<string | undefined>
   readonly notices: () => Promise<readonly Plus.MonitorNotice[]>
   readonly emit: (attention: Plus.Attention) => Promise<void>
   readonly store?: AttentionStore
@@ -142,17 +144,20 @@ export function createAttentionWatcher(deps: AttentionDeps) {
       return
     }
     if (event.type === "session.step.ended") return lookForNotices()
-    if (event.type === "session.execution.succeeded" && sessionID !== undefined)
+    if (event.type === "session.execution.succeeded" && sessionID !== undefined) {
+      const settled = { text: undefined as string | undefined }
       return raise({
         id: event.id,
         sessionID,
-        // Only a top-level chat's own waiting work decides between done and reply.
-        occurrence: async (depth) => ({
-          type: "turn",
-          waiting: depth === 0 && ((await deps.workRuns(sessionID).catch(() => false)) || store.shells(sessionID) > 0),
-        }),
-        message: (subject, kind) => (kind === "reply" ? "Replied; its work still runs" : subject === undefined ? "Done" : `${subject} is done`),
+        // Work the chat started still runs: a top-level chat replied, a child is not done yet.
+        occurrence: async (depth) => {
+          if (depth > 0) settled.text = await deps.settledOf?.(sessionID).catch(() => undefined)
+          return { type: "turn", waiting: (await deps.workRuns(sessionID).catch(() => false)) || store.shells(sessionID) > 0 }
+        },
+        message: (subject, kind) =>
+          kind === "reply" ? "Replied; its work still runs" : subject === undefined ? "Done" : (settled.text ?? `${subject} is done`),
       })
+    }
     if (event.type === "session.execution.failed" && sessionID !== undefined) {
       const error = (data.error as { readonly message?: unknown } | undefined)?.message
       return raise({
