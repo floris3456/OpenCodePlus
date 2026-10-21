@@ -792,7 +792,9 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
       ? transition(settled, "idle", settled.state === "working" ? "turn_ended" : "connected")
       : settled
   await saveRun(root, idle)
-  return succeeded(body)
+  // The child wrote the report: echoing it back costs its next request the
+  // whole text again (a scout's 6 KB of findings). It gets what Plus added.
+  return succeeded({ run: body.run, attempt: n, status: args.status, head, commits, checks: reportChecks, dirty: body.dirty, dirtyFiles: body.dirtyFiles, reportPath })
 }
 
 async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {

@@ -1069,6 +1069,9 @@ test("finish done with a green check records the report and commits", async () =
       expect(value.checks).toEqual([{ id: "t", passed: true, head: value.head, at: expect.any(Number) }])
       expect(value.commits).toEqual([{ sha: value.head, subject: "test: add unit test" }])
       expect(await Bun.file(value.reportPath).exists()).toBe(true)
+      // The report the child wrote is not echoed back to it; the file has it.
+      expect(value).not.toHaveProperty("summary")
+      expect(await Bun.file(value.reportPath).text()).toContain("Filter fixed and covered.")
       const moved = await loadRun(root, child.id)
       expect(moved?.attempts[moved.attempts.length - 1]?.state).toBe("succeeded")
       expect(moved?.head).toBe(value.head)
