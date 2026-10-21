@@ -385,7 +385,7 @@ test("every emitted field is present and correct for a populated run", async () 
       expect(gone?.head).toBe(missing.head)
       expect(gone?.reportStatus).toBeNull()
       expect(gone?.runtime).toBe("stopped")
-      const pending = baseRun({ id: "w-cccccccccccccccc", directory: "/tmp/wt-team-query-gone", state: "idle" })
+      const pending = baseRun({ id: "w-cccccccccccccccc", directory: "/tmp/wt-team-query-gone", projectDirectory: repo.dir, state: "idle" })
       await saveRun(root, pending)
       const planner = baseRun({
         id: "main-ffffffffffffffff",
@@ -402,6 +402,30 @@ test("every emitted field is present and correct for a populated run", async () 
       expect(pendingEntry?.runtime).toBe("pending")
     } finally {
       await removeRepo(repo.dir)
+    }
+  })
+})
+
+// Live b6-s14: one store serves every project, and a build seat read another
+// project's idle children as runs of its own. A worktree of the same
+// repository is the same repository.
+test("list shows other runs of this repository, its worktrees included, and none of another", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    const other = await makeRepo()
+    const worktree = `${repo.dir}-wt`
+    try {
+      await git(repo.dir, ["worktree", "add", "-b", "side", worktree])
+      const planner = baseRun({ id: "main-ffffffffffffffff", role: "planner", kind: "main", directory: repo.dir, projectDirectory: repo.dir, sessionID: "ses_planner_repo" })
+      const sibling = baseRun({ id: "main-1111111111111111", role: "build-seat", kind: "main", directory: worktree, projectDirectory: worktree, state: "working" })
+      const foreign = baseRun({ id: "w-2222222222222222", role: "implementer", parent: "main-3333333333333333", directory: `${other.dir}-child`, projectDirectory: other.dir })
+      for (const run of [planner, sibling, foreign]) await saveRun(root, run)
+      const listed = (required(await listHandler({}, callerFor(planner), shippedTable())) as ListEntry[]).map((entry) => entry.run)
+      expect(listed.toSorted()).toEqual([sibling.id, planner.id].toSorted())
+    } finally {
+      await git(repo.dir, ["worktree", "remove", "--force", worktree])
+      await removeRepo(repo.dir)
+      await removeRepo(other.dir)
     }
   })
 })

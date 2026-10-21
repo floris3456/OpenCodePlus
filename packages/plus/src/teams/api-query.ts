@@ -1,13 +1,14 @@
 import { readdir } from "node:fs/promises"
 import path from "node:path"
 import { teamsDataDir } from "../instructions/paths.js"
-import { git } from "./git.js"
+import { git, gitRaw } from "./git.js"
 import { isTerminal, loadRun, type RunRecord } from "./run.js"
 import { ListInput, toolError } from "./schema.js"
 import { readJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { mayReach, relationOf } from "./reach.js"
+import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -59,13 +60,27 @@ function finished(record: RunRecord): boolean {
 // descendants and other runs of this repository by its team_list Runs rows (a
 // planner's ship on, the old "planners see every run" rule). Other
 // repositories' runs stay out: one store serves every project, and a build
-// seat read another project's idle children as runs of its own.
+// seat read another project's idle children as runs of its own. A repository
+// is its git common directory, so its worktrees' chats count as one; a
+// directory git cannot read is its own path.
 async function visibleTo(root: string, all: RunRecord[], self: RunRecord, agent: string, table?: PermissionTable): Promise<RunRecord[]> {
-  const project = self.projectDirectory ?? self.directory
+  const repos = new Map<string, Promise<string>>()
+  const repoOf = (record: RunRecord) => {
+    const directory = record.projectDirectory ?? record.directory
+    const known = repos.get(directory)
+    if (known !== undefined) return known
+    const found = gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--path-format=absolute", "--git-common-dir"]).then(
+      (result) => (result.code === 0 && result.out !== "" ? result.out : directory),
+      () => directory,
+    )
+    repos.set(directory, found)
+    return found
+  }
+  const own = await repoOf(self)
   const out: RunRecord[] = []
   for (const record of all) {
     const relation = await relationOf(root, self, record)
-    if (relation === "other" && (record.projectDirectory ?? record.directory) !== project) continue
+    if (relation === "other" && (await repoOf(record)) !== own) continue
     if (mayReach(table, agent, "list", relation)) out.push(record)
   }
   return out
