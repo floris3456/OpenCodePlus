@@ -787,8 +787,14 @@ test("an attachment up to its limit is pasted without counting toward the brief 
       expect(tooLong.message).not.toContain("briefFile")
       expect(tooLong.accepted).toBe("a shorter brief")
 
-      // A file over the attachment limit is named by path only.
+      // A file over the attachment limit is named by path only, so the child's
+      // base must hold it: uncommitted, the delegation is refused.
       await fs.writeFile(path.join(repo.dir, "notes", "big.md"), "b".repeat(9_000))
+      const uncommitted = rejected(await api.delegate(delegateInput({ requestID: "attach-big-0", briefFile: "notes/big.md" }), callerFor(parent)))
+      expect(uncommitted.code).toBe("E_PATHS")
+      expect(uncommitted.message).toContain("team_checkpoint it, then delegate")
+      await git(repo.dir, ["add", "notes/big.md"])
+      await git(repo.dir, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "notes"])
       const value = required(
         await api.delegate(delegateInput({ requestID: "attach-big-1", briefFile: "notes/big.md" }), callerFor(parent)),
       ) as { run: string }
