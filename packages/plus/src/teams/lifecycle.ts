@@ -440,10 +440,11 @@ export async function onSessionIdle(
   // state-lock hold: this pass must not save a record it read before a
   // concurrent removal, and it must not open a second read-modify-write window
   // between settling and stopping.
-  const settled: { attempt?: AttemptRecord; stopped: boolean } = { stopped: false }
+  const settled: { attempt?: AttemptRecord; stopped: boolean; nudged: boolean } = { stopped: false, nudged: false }
   const marked = await updateRun(root, run.id, async (current) => {
     if (isTerminal(current.state)) return current
     const ended = await settleAttempt(root, current, outcome, error)
+    settled.nudged = ended.attempts.at(-1)?.finishNudged === true && current.attempts.at(-1)?.finishNudged !== true
     // A stop ends a waiting attempt too: nobody will continue it.
     const settledIdle = toIdle(current.stopRequested === true ? interruptOpenAttempt(ended) : ended)
     // A turn the host stopped after an hour of silence most likely hung; the
@@ -466,6 +467,7 @@ export async function onSessionIdle(
     return next.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: next.stopRequestedBy } : stopped
   })
   if (marked === undefined) return (await loadRun(root, run.id)) ?? run
+  if (settled.nudged) await put(root, marked.id, { kind: "system", from: "plus", text: FINISH_NUDGE })
   if (settled.attempt !== undefined) await notifyParent(ctx, root, marked, settled.attempt)
   if (settled.stopped) {
     await evictRunFolder(ctx, marked)
@@ -496,8 +498,17 @@ async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutco
   // continues this same attempt (deliverInbox). Only a run with no open child
   // and no pending child news ended its attempt without a report.
   if (await waitingOnChildren(root, current)) return current
+  // A delegated run whose turn ended without team_finish is asked once to
+  // report (b8-s5: an orchestrator ended on a summary text, and its parent
+  // spent four calls finding out and asking). The attempt stays open and the
+  // request continues it; a second turn without a report ends it.
+  if (current.parent !== null && current.parent !== undefined && current.stopRequested !== true && last.finishNudged !== true)
+    return { ...current, attempts: [...current.attempts.slice(0, -1), { ...last, finishNudged: true }] }
   return attemptTransition(toFinishing(current), "no_report", "validated")
 }
+
+const FINISH_NUDGE =
+  "Your turn ended without team_finish, so your parent has heard nothing. Report now with team_finish: done when the Brief's work is committed, otherwise done_with_concerns or blocked, saying what is left."
 
 /** A retry wait ends when the step settles or a new execution starts. */
 function withoutRetrying(run: RunRecord): RunRecord {

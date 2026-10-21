@@ -24,6 +24,8 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  /** Plus asked this delegated attempt once to report after a turn ended without team_finish. */
+  finishNudged?: boolean
   /** Error types already notified to the parent during this attempt. */
   notifiedErrors?: string[]
   /** Why the host ended this attempt failed (a provider or quota error, say), as the host reported it. */

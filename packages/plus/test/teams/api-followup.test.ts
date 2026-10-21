@@ -13,7 +13,7 @@ import { change, presetTable, shippedMembers, teamState } from "./preset-table.j
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek } from "../../src/teams/inbox.js"
 import { onSessionEvent } from "../../src/teams/lifecycle.js"
-import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
+import { loadRun, saveRun, updateRun, type RunRecord } from "../../src/teams/run.js"
 import { FollowupInput, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
 import { git, gitRaw } from "../../src/teams/git.js"
@@ -163,7 +163,8 @@ async function writeBrief(root: string, child: RunRecord): Promise<void> {
     objective: "Fix the agent filter in the query module so scoped listing works as documented.",
     deliverable: { kind: "commit" },
     scope: { paths: ["docs/*"], forbidden: [] },
-    context: { interfaces: [], decisions: [] },
+    interfaces: [],
+    decisions: [],
     checks: [],
     effort: "medium",
   })
@@ -421,6 +422,8 @@ test("a stopped child resumes once, consumes stop intent, and replays after sett
     expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "admitted", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
     expect((await loadRun(root, child.id))?.stopRequested).toBeUndefined()
     await onSessionEvent(ctx, root, { type: "session.execution.started", data: { sessionID: child.sessionID } })
+    // Settlement replay is independent of the one-time finish reminder.
+    await updateRun(root, child.id, (run) => ({ ...run, attempts: run.attempts.map((attempt) => attempt.n === 2 ? { ...attempt, finishNudged: true } : attempt) }))
     await onSessionEvent(ctx, root, { type: "session.execution.succeeded", data: { sessionID: child.sessionID } })
     const settled = await loadRun(root, child.id)
     expect(settled?.state).toBe("idle")
@@ -694,7 +697,7 @@ test("a followup delivered as a steer to a working child is not repeated when it
     const now = new Date().toISOString()
     const { parent, child } = parentChild("main-0123456789abcdef", "w-6666666666666666", {
       state: "working",
-      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate", finishNudged: true }],
     })
     await saveRun(root, parent)
     await saveRun(root, child)

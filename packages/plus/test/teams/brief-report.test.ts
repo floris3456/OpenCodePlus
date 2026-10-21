@@ -17,7 +17,8 @@ function briefBase() {
     objective: "Make instructions list filter by agent correctly in all cases here",
     deliverable: { kind: "commit" as const },
     scope: { paths: ["packages/plus/src/a.ts"], forbidden: [] as string[] },
-    context: { interfaces: [], decisions: [] as string[] },
+    interfaces: [],
+    decisions: [] as string[],
     checks: [],
     effort: "medium" as const,
   }
@@ -35,10 +36,8 @@ describe("brief", () => {
         ...briefBase(),
         task: "T3",
         scope: { paths: ["a.ts"], forbidden: ["b.ts"] },
-        context: {
-          interfaces: [{ path: "q.ts", note: "parsed here" }],
-          decisions: ["Do not change the grammar"],
-        },
+        interfaces: [{ path: "q.ts", note: "parsed here" }],
+        decisions: ["Do not change the grammar"],
         checks: [{ id: "q", argv: ["bun", "test", "q.test.ts"] }],
         prompt: "Be quick",
       },
@@ -162,7 +161,8 @@ test("brief and report text fields take the lengths live runs wrote", async () =
     objective: "Add the import command for the bank's fixed-width export format.",
     deliverable: { kind: "commit" },
     scope: { paths: ["src/*"] },
-    context: { interfaces: [{ path: "docs/reference/nbx-format.md", note: text(550) }], decisions: [text(900)] },
+    interfaces: [{ path: "docs/reference/nbx-format.md", note: text(550) }],
+    decisions: [text(900)],
   }
   expect(() => Schema.decodeUnknownSync(Brief)(brief)).not.toThrow()
   const report = { status: "done_with_concerns", summary: text(4900), concerns: [text(900)], deferred: [text(550)], needs: [{ kind: "info", detail: text(900) }] }

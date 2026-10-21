@@ -90,11 +90,12 @@ test("Brief.prompt of 4001 chars is rejected", () => {
   expect(Option.isNone(Schema.decodeUnknownOption(Brief)({ ...briefBase, prompt: "x".repeat(4001) }))).toBe(true)
   const decoded = Schema.decodeUnknownSync(Brief)({ ...briefBase, prompt: "x".repeat(4000) })
   expect(decoded.prompt?.length).toBe(4000)
-  // Defaults apply on decode: checks, effort, scope.forbidden, context.
+  // Defaults apply on decode: checks, effort, scope.forbidden, interfaces, decisions.
   expect(decoded.checks).toEqual([])
   expect(decoded.effort).toBe("medium")
   expect(decoded.scope.forbidden).toEqual([])
-  expect(decoded.context).toEqual({ interfaces: [], decisions: [] })
+  expect(decoded.interfaces).toEqual([])
+  expect(decoded.decisions).toEqual([])
 })
 
 const lines = (n: number): string => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")

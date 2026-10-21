@@ -1860,8 +1860,9 @@ test("registered team tool wire schemas have plain optional properties without n
 
   const schema = registeredSchema(tools, "team_delegate")
   const wire = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" }).schema
-  expect(wire).toMatchObject({ properties: { context: { type: "object" } } })
-  expect(wire.required).not.toContain("context")
+  expect(wire).toMatchObject({ properties: { interfaces: { type: "array" }, decisions: { type: "array" } } })
+  expect(wire.properties).not.toHaveProperty("context")
+  expect(wire.required).not.toContain("interfaces")
   const brief = {
     requestID: "wire-schema",
     role: "implementer",
@@ -1869,12 +1870,12 @@ test("registered team tool wire schemas have plain optional properties without n
     deliverable: { kind: "commit" },
     scope: {},
   }
-  const decoded = Schema.decodeUnknownSync(schema)({ ...brief, context: null, prompt: null })
+  const decoded = Schema.decodeUnknownSync(schema)({ ...brief, interfaces: null, prompt: null })
   expect(decoded).toEqual(Schema.decodeUnknownSync(schema)(brief))
-  expect(decoded).toMatchObject({ context: { interfaces: [], decisions: [] }, checks: [], effort: "medium" })
+  expect(decoded).toMatchObject({ interfaces: [], decisions: [], checks: [], effort: "medium" })
   expect(decoded).not.toHaveProperty("prompt")
   expect(() => Schema.decodeUnknownSync(schema)({ ...brief, objective: null })).toThrow(Schema.SchemaError)
-  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, context: undefined })).toThrow(Schema.SchemaError)
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, interfaces: undefined })).toThrow(Schema.SchemaError)
   expect(() => Schema.decodeUnknownSync(schema)({ ...brief, prompt: undefined })).toThrow(Schema.SchemaError)
 })
 
@@ -1923,7 +1924,7 @@ test("C — every field path of every registered team tool treats null as omissi
 
   const regressionPaths: Array<[string, FieldPath]> = [
     ["team_delegate", ["checks", 0, "cwd"]],
-    ["team_delegate", ["context", "interfaces", 0, "symbol"]],
+    ["team_delegate", ["interfaces", 0, "symbol"]],
     ["team_followup", ["budget", "turns"]],
   ]
 
@@ -1983,7 +1984,7 @@ test("C1 — null in an array element field decodes as omission (delegate checks
   expect(Schema.decodeUnknownSync(schema)(withNull)).toEqual(omitted)
 })
 
-test("C2 — null inside a default-wrapped array element decodes as omission (brief context.interfaces[0].symbol)", async () => {
+test("C2 — null inside a default-wrapped array element decodes as omission (brief interfaces[0].symbol)", async () => {
   const schema = registeredSchema(await registeredTools(), "team_delegate")
   const brief = {
     requestID: "T1-a",
@@ -1994,19 +1995,19 @@ test("C2 — null inside a default-wrapped array element decodes as omission (br
   }
   const omitted = Schema.decodeUnknownSync(schema)({
     ...brief,
-    context: { interfaces: [{ path: "note.md", note: "test" }] },
+    interfaces: [{ path: "note.md", note: "test" }],
   })
   expect(
     Schema.decodeUnknownSync(schema)({
       ...brief,
-      context: { interfaces: [{ path: "note.md", note: "test", symbol: null }] },
+      interfaces: [{ path: "note.md", note: "test", symbol: null }],
     }),
   ).toEqual(omitted)
 })
 
 test("C2b — an object or array sent as JSON text decodes as that value; a text field keeps its text", async () => {
   const schema = registeredSchema(await registeredTools(), "team_delegate")
-  const context = { interfaces: [{ path: "src/csv.ts", note: "the parser with the bug" }], decisions: ["keep parseCsv's signature"] }
+  const interfaces = [{ path: "src/csv.ts", note: "the parser with the bug" }]
   const checks = [{ id: "test" }]
   const brief = {
     requestID: "T1-a",
@@ -2016,11 +2017,22 @@ test("C2b — an object or array sent as JSON text decodes as that value; a text
     scope: { paths: ["packages/plus/src/x.ts"] },
     prompt: '["a note", "not a list"]',
   }
-  const asValues = Schema.decodeUnknownSync(schema)({ ...brief, context, checks })
-  expect(Schema.decodeUnknownSync(schema)({ ...brief, context: JSON.stringify(context), checks: JSON.stringify(checks) })).toEqual(asValues)
+  const asValues = Schema.decodeUnknownSync(schema)({ ...brief, interfaces, checks })
+  expect(Schema.decodeUnknownSync(schema)({ ...brief, interfaces: JSON.stringify(interfaces), checks: JSON.stringify(checks) })).toEqual(asValues)
   expect(asValues).toMatchObject({ objective: brief.objective, prompt: brief.prompt })
   // Text that is not JSON still fails as before.
-  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, context: "{interfaces: []" })).toThrow()
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, interfaces: "[{path: 1}" })).toThrow()
+})
+
+// Live b8-s13: a planner sent team_diff maxBytes "400000", twice.
+test("C2c — a number or boolean sent as text decodes as that value; a text field keeps digits as text", async () => {
+  const tools = await registeredTools()
+  const decode = (id: string, input: unknown) => Schema.decodeUnknownSync(registeredSchema(tools, id))(input)
+  expect(decode("team_diff", { run: "w-0123456789abcdef", maxBytes: "400000" })).toMatchObject({ maxBytes: 400000 })
+  expect(decode("team_list", { all: "true" })).toMatchObject({ all: true })
+  expect(decode("team_followup", { run: "w-0123456789abcdef", requestID: "b-1", budget: { turns: "3" }, reason: "more room" })).toMatchObject({ budget: { turns: 3 } })
+  expect(decode("team_checkpoint", { files: ["a.ts"], message: "123" })).toMatchObject({ message: "123" })
+  expect(() => decode("team_diff", { run: "w-0123456789abcdef", maxBytes: "40k" })).toThrow()
 })
 
 test("C3 — null inside an optional struct field decodes as omission (followup budget.turns)", async () => {
@@ -2042,7 +2054,7 @@ test("C4 — null on required fields still fails with a schema error at every de
   const cases: Array<[string, unknown]> = [
     ["team_delegate", { ...brief, objective: null }],
     ["team_delegate", { ...brief, checks: [{ id: null, argv: ["bun", "test", "test/x.test.ts"] }] }],
-    ["team_delegate", { ...brief, context: { interfaces: [{ path: null, note: "test" }] } }],
+    ["team_delegate", { ...brief, interfaces: [{ path: null, note: "test" }] }],
     ["team_followup", { run: null, requestID: "probe-budget", prompt: "test" }],
     ["team_finish", { status: null, summary: "Finished all changes cleanly" }],
   ]

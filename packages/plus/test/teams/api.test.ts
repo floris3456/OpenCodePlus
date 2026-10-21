@@ -211,6 +211,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(await Bun.file(path.join(persisted.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
       expect(await git(persisted.directory, ["status", "--porcelain"])).toBe("")
       expect(persisted?.projectDirectory).toBe(repo.dir)
+      await saveRun(root, { ...persisted, attempts: persisted.attempts.map((attempt) => ({ ...attempt, finishNudged: true })) })
       await onSessionEvent(context({ session: sessions.domain }), root, { type: "session.execution.succeeded", data: { sessionID: persisted.sessionID } })
       const replay = required(await api.delegate(delegateInput(), callerFor(parent)))
       expect(replay).toEqual({ ...value, replayed: true, state: "idle" })
@@ -779,7 +780,7 @@ test("an attachment up to its limit is pasted without counting toward the brief 
 
       // The caller's own text is what the brief limit refuses.
       const tooLong = rejected(
-        await api.delegate(delegateInput({ requestID: "attach-small-2", briefFile: "notes/small.md", prompt: "p".repeat(4_000), context: { decisions: ["d".repeat(900), "e".repeat(900), "f".repeat(900)] } }), callerFor(parent)),
+        await api.delegate(delegateInput({ requestID: "attach-small-2", briefFile: "notes/small.md", prompt: "p".repeat(4_000), decisions: ["d".repeat(900), "e".repeat(900), "f".repeat(900)] }), callerFor(parent)),
       )
       expect(tooLong.code).toBe("E_TOO_LONG")
       // The refusal says to shorten the Brief; an attached file does not count
@@ -2030,7 +2031,7 @@ test("delegate refuses a Brief naming an uncommitted file unless it is the brief
       expect(refused).toMatchObject({ ok: false, error: { code: "E_PATHS", accepted: { files: ["nbx-brief.md"] } } })
       expect(refused.ok ? "" : refused.error.message).toContain("The Brief names [nbx-brief.md], which has uncommitted changes in your checkout")
       // A tracked file with changes is the same: the child sees its committed version.
-      const tracked = await api.delegate(delegateInput({ requestID: "unseen-2", context: { decisions: ["Keep README.md as it is."] } }), callerFor(parent))
+      const tracked = await api.delegate(delegateInput({ requestID: "unseen-2", decisions: ["Keep README.md as it is."] }), callerFor(parent))
       expect(tracked).toMatchObject({ ok: false, error: { code: "E_PATHS", accepted: { files: ["README.md"] } } })
       // Attached, it reaches the child; a name inside another word is no mention.
       await fs.writeFile(path.join(repo.dir, "README.md"), "# team api test\n")

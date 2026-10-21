@@ -930,6 +930,7 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     }
     if (name === "team_finish") definition.description += requirements(rows, "Requirements for done")
     if (name === "team_checkpoint") definition.description += requirements(rows, "Requirements for a commit")
+    if (name === "edit" || name === "write" || name === "patch") definition.description += editableFiles(rows, delegatesOf(table, agent).length > 0)
     if (narrowed || targets !== undefined) definition.input = schema as typeof definition.input
   }
 }
@@ -965,6 +966,17 @@ function checkFilesRule(table: PermissionTable, target: string): string[] {
 // (E_ROLE): a user who asked the scout for a fix got that refusal first.
 function noCommit(table: PermissionTable, target: string): string[] {
   return table.toolEnabled(target, "team_checkpoint") ? [] : [`${target} cannot commit: never give it a commit deliverable.`]
+}
+
+// The files an agent may change while its "Files it may change" category is
+// closed, in the words its refusal uses: said up front, orchestrators stopped
+// writing a source file only after the refusal (b6-s3, b8-s3).
+function editableFiles(rows: readonly PermRow[], delegates: boolean): string {
+  const group = rows.filter((row) => row.item.category === "allowed")
+  const fallback = group.find((row) => row.item.fallback === true)
+  if (fallback === undefined || fallback.on) return ""
+  const open = group.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
+  return `\nFiles you may change here: ${open.length === 0 ? "none" : open.join(", ")}${delegates ? "; a member you delegate to changes the others" : ""}.`
 }
 
 // The agent's own requirement rows of one tool ("Requirements for done",

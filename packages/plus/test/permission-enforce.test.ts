@@ -657,6 +657,32 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
   expect(described(changed, "implementer").finish).toBe("Report.\nRequirements for done: worktree committed before done.")
 })
 
+// Live b6-s3, b8-s3: a root orchestrator wrote a source file and only the
+// refusal told it which files it may change. The edit tools say so up front.
+test("narrowTools names the files an agent may change on its edit tools while that category is closed", () => {
+  const shipped = presetTable({ members: shippedMembers() })
+  const edits = (agent: string) => {
+    const event: Pick<SessionContext, "agent" | "tools"> = {
+      agent: Agent.ID.make(agent),
+      tools: {
+        edit: { description: "Edit a file.", input: { type: "object", properties: { path: { type: "string" } } } },
+        write: { description: "Write a file.", input: { type: "object", properties: { path: { type: "string" } } } },
+      },
+    }
+    narrowTools(event, shipped)
+    return { edit: event.tools.edit?.description ?? "", write: event.tools.write?.description ?? "" }
+  }
+  const orchestrator = edits("orchestrator")
+  expect(orchestrator.edit).toStartWith("Edit a file.\nFiles you may change here: ")
+  expect(orchestrator.edit).toContain("Plan files")
+  expect(orchestrator.edit).toEndWith("; a member you delegate to changes the others.")
+  expect(orchestrator.write).toBe(orchestrator.edit.replace("Edit a file.", "Write a file."))
+  expect(edits("planner").edit).toContain("Files you may change here: ")
+  // A member that may change any file hears nothing more.
+  expect(edits("implementer").edit).toBe("Edit a file.")
+  expect(edits("build-seat").edit).toBe("Edit a file.")
+})
+
 // Two members of one kind differ by what they are for: their descriptions
 // ride with team_delegate, as each resolves (a user's own over the preset's).
 test("narrowTools tells a delegator what each open member is for, from its Description row", () => {
