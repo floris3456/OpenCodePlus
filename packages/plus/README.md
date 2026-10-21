@@ -449,6 +449,8 @@ the new HEAD for the parent's finish.
 Finish and landing reuse a passing receipt with the same check definition and
 measured Git tree, including checks run before checkpointing that exact content;
 reused results are labelled with `reused: true` and retain the original check time.
+Landed and red integration results explain this exact-tree proof in `verified`,
+with the check ids and original times in `checks`, rather than bare `reusedChecks`.
 
 A Brief may assign a test file the child will create when it is inside
 `scope.paths` and not forbidden. A missing file outside scope is `E_CHECKS`.
@@ -495,6 +497,11 @@ transitions to `working` (`prompt` for idle, `resume` for others), following the
 Resuming a `stopped` or `dead` run consumes the `stopRequested` intent its own stop already
 satisfied, so the resumed turn settles `idle` instead of stopping again; a stop intent on a run that
 has not stopped yet is still honoured at settlement. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
+
+A scheduled provider retry notifies the parent only when its wait is at least
+10 minutes, once per error type per attempt (per busy period for plain
+subagents). Short retries keep their status but do not wake the parent, even
+on the third attempt.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`. Without a report, its attempt is `no_report` — unless the run

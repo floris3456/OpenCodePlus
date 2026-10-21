@@ -1723,9 +1723,17 @@ including aliases of a deduplicated command, keep receipts at the landed HEAD.
 Receipts record `measuredTree` from tracked and untracked, non-ignored files without
 changing the real index; finish on a clean worktree and landing reuse passing
 same-definition, same-tree proof, labelled `reused` with its original `at` time.
+Landed and red tool results put the reused ids and receipt times in `checks`
+and explain in `verified` that those commands passed on the exact rebased tree,
+so they need not run again. Internal merge records keep `reusedChecks`.
 Legacy receipts without `measuredTree` retain their clean-HEAD binding rules.
 No separate integration-check list is stored. Unknown instruction-row records
 remain orphaned; they neither recreate a removed tool nor block publication.
+
+Scheduled provider retries notify a team run's parent only for waits of at
+least 10 minutes, once per error type per attempt. Plain subagents follow the
+same threshold, once per error type per busy period. Short waits never notify
+merely because the retry count reached three; team retry status still updates.
 
 On a landing conflict, `next` sends the same child `team_followup` with
 `rebase: true`. A clean, idle child first attempts an ordinary rebase. If it

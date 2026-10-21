@@ -391,7 +391,14 @@ only if they pass at the parent's HEAD. Pre-existing failures are returned as
 `team_check` records the measured tree even before a checkpoint; `team_finish`
 and `team_integrate` reuse passing same-definition proof when the committed tree
 matches, returning `reused: true` and the original check time (integration lists
-these in `reusedChecks`). Clean-worktree requirements and mutation rejection still apply.
+these in `checks`, alongside a `verified` statement explaining that the same
+commands passed on this exact rebased tree and need not run again). Landed and
+red results both carry that explanation; internal merge records retain
+`reusedChecks`. Clean-worktree requirements and mutation rejection still apply.
+
+Provider retry notices wake a parent only for a scheduled wait of at least
+10 minutes, once per error type per team attempt or plain-subagent busy period.
+A third short retry does not notify; the team's retry status still updates.
 
 A conflict's `next` asks for `team_followup` with `rebase: true`: Plus keeps
 the old tip reachable, replays the whole change onto the parent's HEAD, and

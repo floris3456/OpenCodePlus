@@ -261,10 +261,7 @@ export async function onSessionEvent(
       const lastAttempt = lastIndex >= 0 ? record.attempts[lastIndex] : undefined
 
       const alreadyNotified = (lastAttempt?.notifiedErrors ?? []).includes(errorObj.type)
-      const waitMs = at - Date.now()
-      const waitGe60s = waitMs >= 60_000
-      const thirdRetry = attemptNum >= 3
-      const shouldNotify = !alreadyNotified && (waitGe60s || thirdRetry)
+      const shouldNotify = !alreadyNotified && at - Date.now() >= 10 * 60_000
 
       let nextAttempts = record.attempts
       if (shouldNotify && lastAttempt !== undefined) {
@@ -396,7 +393,7 @@ async function onSubagentEvent(ctx: Context, sessionID: string, type: string, pa
   const at = typeof payload.at === "number" ? payload.at : Date.now()
   const attempt = typeof payload.attempt === "number" ? payload.attempt : 1
   const notified = subagentNotices.get(sessionID) ?? new Set<string>()
-  if (notified.has(error.type) || (at - Date.now() < 60_000 && attempt < 3)) return
+  if (notified.has(error.type) || at - Date.now() < 10 * 60_000) return
   // Claimed before any await: concurrent deliveries of the same event see it.
   subagentNotices.set(sessionID, notified.add(error.type))
   for (const key of [...subagentNotices.keys()].slice(0, Math.max(0, subagentNotices.size - 500))) subagentNotices.delete(key)

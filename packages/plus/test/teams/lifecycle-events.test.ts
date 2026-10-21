@@ -1174,13 +1174,13 @@ function retryScheduledEvent(
       sessionID,
       assistantMessageID: "msg_001",
       attempt: opts.attempt ?? 1,
-      at: opts.at ?? Date.now() + 90_000,
+      at: opts.at ?? Date.now() + 30 * 60_000,
       error: opts.error ?? { type: "rate_limit", message: "quota reached" },
     },
   }
 }
 
-test("a 90 s retry notifies the parent once", async () => {
+test("a 30 min retry notifies the parent once", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({
       id: "main-parent0000001",
@@ -1197,7 +1197,7 @@ test("a 90 s retry notifies the parent once", async () => {
 
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
-    const at = Date.now() + 90_000
+    const at = Date.now() + 30 * 60_000
     const err = { type: "rate_limit", message: "Rate limit exceeded on provider endpoint" }
 
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_001", { attempt: 1, at, error: err }))
@@ -1256,10 +1256,10 @@ test("a plain subagent's long retry notifies its parent chat once per error type
         },
       },
     })
-    const at = Date.now() + 15 * 60_000
+    const at = Date.now() + 30 * 60_000
     const quota = { type: "HttpError", message: "", status: 429 }
-    // A short first retry stays quiet: most transient errors clear by themselves.
-    await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 2, at: Date.now() + 4_000, error: quota }))
+    // Even a third short retry stays quiet and does not claim the error type.
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 3, at: Date.now() + 90_000, error: quota }))
     expect(prompted).toEqual([])
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_sub_001", { attempt: 3, at, error: quota }))
     const date = new Date(at)
@@ -1299,13 +1299,13 @@ test("a second retry with the same error type does not notify again", async () =
 
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
-    const at1 = Date.now() + 90_000
+    const at1 = Date.now() + 30 * 60_000
     const err = { type: "rate_limit", message: "quota exceeded" }
 
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_002", { attempt: 1, at: at1, error: err }))
     expect(await peek(root, parent.id)).toHaveLength(1)
 
-    const at2 = Date.now() + 120_000
+    const at2 = Date.now() + 30 * 60_000
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_002", { attempt: 2, at: at2, error: err }))
 
     const updatedChild = await loadRun(root, child.id)
@@ -1336,7 +1336,7 @@ test("a different error type notifies again", async () => {
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
 
-    const at1 = Date.now() + 90_000
+    const at1 = Date.now() + 30 * 60_000
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_003", {
       attempt: 1,
       at: at1,
@@ -1344,7 +1344,7 @@ test("a different error type notifies again", async () => {
     }))
     expect(await peek(root, parent.id)).toHaveLength(1)
 
-    const at2 = Date.now() + 90_000
+    const at2 = Date.now() + 30 * 60_000
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_003", {
       attempt: 2,
       at: at2,
@@ -1361,7 +1361,7 @@ test("a different error type notifies again", async () => {
   })
 })
 
-test("a 5 s retry does not notify until the third in a row", async () => {
+test("a third 90 s team retry stays quiet; a later 30 min wait notifies once", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({
       id: "main-parent0000004",
@@ -1378,33 +1378,25 @@ test("a 5 s retry does not notify until the third in a row", async () => {
 
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
-    const err = { type: "transient", message: "short glitch" }
+    const err = { type: "provider.internal", message: "short glitch", status: 502 }
 
-    // 1st retry: 5 s wait -> no notify
-    const at1 = Date.now() + 5_000
-    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 1, at: at1, error: err }))
-    expect(await peek(root, parent.id)).toHaveLength(0)
-    let updated = await loadRun(root, child.id)
-    expect(updated?.retrying?.attempt).toBe(1)
-    expect(updated?.attempts[0]?.notifiedErrors ?? []).toHaveLength(0)
-
-    // 2nd retry: 5 s wait -> no notify
-    const at2 = Date.now() + 5_000
-    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 2, at: at2, error: err }))
-    expect(await peek(root, parent.id)).toHaveLength(0)
-    updated = await loadRun(root, child.id)
-    expect(updated?.retrying?.attempt).toBe(2)
-    expect(updated?.attempts[0]?.notifiedErrors ?? []).toHaveLength(0)
-
-    // 3rd retry: 5 s wait, attempt 3 (third in a row) -> notifies!
-    const at3 = Date.now() + 5_000
-    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 3, at: at3, error: err }))
+    for (const attempt of [1, 2, 3]) {
+      await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt, at: Date.now() + 90_000, error: err }))
+      expect(await peek(root, parent.id)).toEqual([])
+      expect(sessions.prompted).toEqual([])
+      const updated = await loadRun(root, child.id)
+      expect(updated?.retrying?.attempt).toBe(attempt)
+      expect(updated?.attempts[0]?.notifiedErrors ?? []).toEqual([])
+    }
+    const at = Date.now() + 30 * 60_000
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 4, at, error: err }))
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_004", { attempt: 5, at, error: err }))
     const items = await peek(root, parent.id)
     expect(items).toHaveLength(1)
-    expect(items[0]?.text).toContain("attempt 3")
-    updated = await loadRun(root, child.id)
-    expect(updated?.retrying?.attempt).toBe(3)
-    expect(updated?.attempts[0]?.notifiedErrors).toEqual(["transient"])
+    expect(items[0]?.text).toContain("attempt 4")
+    const updated = await loadRun(root, child.id)
+    expect(updated?.retrying?.attempt).toBe(5)
+    expect(updated?.attempts[0]?.notifiedErrors).toEqual(["provider.internal"])
   })
 })
 
