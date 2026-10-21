@@ -93,13 +93,13 @@ describe("brief", () => {
     expect(out).toContain("## Attached: big.md\n(8001 chars, over the 8000-character attachment limit: read the file itself, only what you need.)")
     expect(out).not.toContain(big.slice(0, 100))
     const small = render(briefBase(), { budget: policy.effort.small, attached: { path: "s.md", content: "hello" } })
-    expect(small).toContain("## Attached: s.md\nhello")
+    expect(small).toContain("## Attached: s.md (its whole text, below; nothing to read)\nhello")
   })
 
   test("the attachment limit is the member's row, and an over-limit file is named by path only", () => {
     const content = "y".repeat(100)
     const pasted = render(briefBase(), { budget: policy.effort.small, attached: { path: "a.md", content }, attachmentLimit: 200 })
-    expect(pasted).toContain(`## Attached: a.md\n${content}`)
+    expect(pasted).toContain(`## Attached: a.md (its whole text, below; nothing to read)\n${content}`)
     const named = render(briefBase(), { budget: policy.effort.small, attached: { path: "a.md", content }, attachmentLimit: 50 })
     expect(named).toContain("## Attached: a.md\n(100 chars, over the 50-character attachment limit: read the file itself, only what you need.)")
     expect(named).not.toContain(content)
