@@ -83,7 +83,7 @@ The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and sh
 
 ## set and reset
 
-\`set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, prompt?, effort? })\` changes one row; several calls can run in one \`execute\`.
+\`set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, subagent?, prompt?, effort? })\` changes one row; several calls can run in one \`execute\`.
 
 - \`text\` replaces the row's text (a whole row or one section; saving a whole row replaces this level's section texts inside it). \`state\` is \`on\`|\`off\`; a bare \`set({ id })\` toggles. \`pin\` (\`true\`|\`false\`) pins a Code Mode tool. When a more specific level hides the write, \`status\` names that row.
 - Agent and member rows: \`set({ id, state: "off" })\` (the agent stays editable but cannot run) and \`set({ id, mode: "primary" })\` / \`"subagent"\` / \`"all"\`. \`set({ id, rename })\` renames a Project/Global user agent, team member or team; every record that names it follows.
@@ -101,7 +101,8 @@ Each agent has a Models group: the candidates down its chain plus its upstream m
 
 - \`set({ id, active: true })\` (or a bare \`set({ id })\`) makes that candidate the active one at that level; \`reset({ id })\` clears the flag there. \`create({ kind: "model", providerID, modelID, variant?, level?, agent? })\` adds a candidate and activates it (\`level\` defaults to \`project\`; project, global and preset need \`agent\`). \`delete({ id, confirm: true })\` removes it; the active model refuses until another is active. \`text\` on a model row replaces the candidate (\`provider/model[#variant]\`).
 - A team member without a stand-alone agent is addressed through its member row, e.g. \`item:global:Basic/:Planner:model:acme/x\`; a flat \`item:global:Planner:model:…\` id is refused with the row to use.
-- Field rows \`modelfield:<field>:<provider>/<model>[@variant]\` (model, effort, warming, interval, waiting, prompt and the compaction fields below) take \`text\` (empty inherits); \`reset\` clears just that field.
+- Field rows \`modelfield:<field>:<provider>/<model>[@variant]\` (model, effort, warming, interval, waiting, subagent, prompt and the compaction fields below) take \`text\` (empty inherits); \`reset\` clears just that field.
+- \`subagent\` (Warm as subagent) is \`on\`/\`off\`, empty inherits; built-in off. It resolves from the agent's model row through Defaults › Models › this model, then Every model. When on, sessions with a parent warm using this tab's interval, total time, waiting time and prompt, independently of \`warming\`. The chat's own on/off switch wins. Top-level chats and team members are unaffected.
 - Keep-alive: \`warming\` (\`off\`, \`on\`, or 1m–24h such as \`45m\` or \`2h\`, rounded up to whole intervals), \`interval\` (30s–24h, e.g. \`4m\`), \`waiting\` (warm while waiting: while a chat waits on its own work — a running command or tool, a subagent, a team run — it stays warm at least this long when warming is on for it; \`off\` or 1m–24h, built-in \`2h\`) and \`prompt\` (the keep-alive text); empty inherits. With nothing set, warming is on for Claude (every 4m for 30m) and GPT-5.6 and later (every 25m for 1h30m) and off for other models. A Defaults › Models row also takes \`effort\` (the default variant) and \`state on|off\` for its warming switch; \`read\` gives each effective value and its source.
 
 ## Per-model compaction and images

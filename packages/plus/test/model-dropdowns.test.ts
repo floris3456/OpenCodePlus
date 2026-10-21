@@ -54,3 +54,11 @@ test("Effort offers the model's variants, and Every model adds Custom… since i
   const every = modelFieldChoices("effort", { now: "", everyModel: true })
   expect(every.map((choice) => choice.title)).toEqual(["(inherit / none)", "Custom…"])
 })
+
+test.each([false, true])("Warm as subagent offers Inherit, On and Off (Every model: %s)", (everyModel) => {
+  expect(modelFieldChoices("subagent", { now: "off · built-in", everyModel })).toEqual([
+    { title: "Inherit (now off · built-in)", value: "" },
+    { title: "On", value: "on" },
+    { title: "Off", value: "off" },
+  ])
+})

@@ -113,6 +113,7 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     ] as Fact)
     facts.push(["ping every", `${formatDuration(defaults.interval.value)} · ${fromWords(defaults.interval.from)}`])
     facts.push(["while waiting", `${formatWaiting(defaults.waiting.value)} · ${fromWords(defaults.waiting.from)}`])
+    facts.push(["warm as subagent", `${defaults.subagent.value ? "on" : "off"} · ${fromWords(defaults.subagent.from)}`])
     facts.push(["keep-alive", `${defaults.prompt.value} · ${fromWords(defaults.prompt.from)}`])
     if (defaults.effort !== undefined) facts.push(["effort", `${defaults.effort.value} · ${fromWords(defaults.effort.from)}`])
     facts.push(["applies to", defaults.key.providerID === undefined ? "every model" : `${defaults.key.providerID}/${defaults.key.modelID}, unless an agent's own model row sets a field`])
@@ -185,6 +186,8 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
       facts.push(["ping every", `${node.badges.interval} · set at ${displayLevel(node.badges.intervalFrom ?? "project")}`])
     if (node.badges.waiting !== undefined)
       facts.push(["while waiting", `${node.badges.waiting} · set at ${displayLevel(node.badges.waitingFrom ?? "project")}`])
+    if (node.badges.subagent !== undefined)
+      facts.push(["warm as subagent", `${node.badges.subagent} · set at ${displayLevel(node.badges.subagentFrom ?? "project")}`])
     if (node.badges.prompt !== undefined)
       facts.push(["keep-alive", `${node.badges.prompt} · set at ${displayLevel(node.badges.promptFrom ?? "project")}`])
   }
@@ -267,6 +270,13 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
       "Enter a positive whole token count or off. Empty/r restores inheritance. Automatic compaction must be on; the normal context limit still applies.",
     ]
   const rows = ["The agent's own model row sets a field first; whatever it leaves out resolves here."]
+  if (setting?.field === "subagent")
+    return [
+      ...rows,
+      "Warm as subagent resolves through this model, then Every model, then built-in off.",
+      "It warms sessions with a parent using this tab's times and prompt, independently of Warming. The chat's own switch wins; top-level chats and team members are unaffected.",
+      "Enter picks Inherit, On or Off. r restores inheritance.",
+    ]
   if (defaults.key.providerID !== undefined) rows.push("Below this row: Every model, then opencode.json, then the built-in defaults.")
   else rows.push("Below this row: opencode.json and the built-in defaults.")
   if (setting === undefined) rows.push("→ opens its fields; each edits on its own.")

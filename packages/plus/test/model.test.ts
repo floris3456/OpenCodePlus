@@ -747,6 +747,7 @@ test("model field rows name the level that set an inherited value, not the Defau
     ["Warming", "30m · global", false],
     ["Ping every", "4m · global", false],
     ["Warm while waiting", "2h · built-in", false],
+    ["Warm as subagent", "off · built-in", false],
     ["Keep-alive prompt", "keep alive · global", false],
     ["Compact before cold", "off · built-in", false],
     ["Strategy", "Auto · built-in", false],
@@ -767,6 +768,7 @@ test("preset and team member field rows name their own level when set there", ()
     providerID: "acme",
     modelID: "nova",
     warming: "30m",
+    subagent: "on",
     updated: UPDATED,
   }
   const presetRows = expandedTree({
@@ -781,6 +783,11 @@ test("preset and team member field rows name their own level when set there", ()
   const presetWarming = presetRows.find((row) => row.id === "item:preset:crew/:reader:modelfield:warming:acme/nova")
   expect(presetWarming?.badges.value).toBe("30m")
   expect(presetWarming?.actions?.reset).toBe(true)
+  expect(presetRows.find((row) => row.id === "item:preset:crew/:reader:modelfield:subagent:acme/nova")).toMatchObject({
+    label: "Warm as subagent",
+    badges: { value: "on" },
+    actions: { edit: true, reset: true },
+  })
   const presetModel = presetRows.find((row) => row.id === "item:preset:crew/:reader:modelfield:model:acme/nova")
   expect(presetModel?.badges.value).toBe("acme/nova")
 
@@ -791,6 +798,7 @@ test("preset and team member field rows name their own level when set there", ()
     providerID: "acme",
     modelID: "nova",
     warming: "45m",
+    subagent: "off",
     updated: UPDATED,
   }
   const teamRows = expandedTree({
@@ -802,6 +810,11 @@ test("preset and team member field rows name their own level when set there", ()
   const memberWarming = teamRows.find((row) => row.id === "item:global:Basic/:Planner:modelfield:warming:acme/nova")
   expect(memberWarming?.badges.value).toBe("45m")
   expect(memberWarming?.actions?.reset).toBe(true)
+  expect(teamRows.find((row) => row.id === "item:global:Basic/:Planner:modelfield:subagent:acme/nova")).toMatchObject({
+    label: "Warm as subagent",
+    badges: { value: "off" },
+    actions: { edit: true, reset: true },
+  })
 })
 
 // team, so the tool activation writes a flat `global/Planner` record (no team

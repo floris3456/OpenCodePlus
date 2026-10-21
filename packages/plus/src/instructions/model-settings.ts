@@ -51,6 +51,8 @@ export interface ModelSettingsRecord extends ModelCompactionFields {
   readonly interval?: string
   /** Warm while waiting on its own work: "off" or a time such as "2h"; absent inherits. */
   readonly waiting?: string
+  /** Warm a session with a parent: "on" or "off"; absent inherits. */
+  readonly subagent?: string
   /** The keep-alive request's text; absent inherits. */
   readonly prompt?: string
   /** Variant used when an agent's model row names no variant; absent inherits. */
@@ -58,8 +60,8 @@ export interface ModelSettingsRecord extends ModelCompactionFields {
   readonly updated: string
 }
 
-export type ModelSettingsField = "warming" | "interval" | "waiting" | "prompt" | "effort"
-export const MODEL_SETTINGS_FIELDS: readonly ModelSettingsField[] = ["warming", "interval", "waiting", "prompt", "effort"]
+export type ModelSettingsField = "warming" | "interval" | "waiting" | "subagent" | "prompt" | "effort"
+export const MODEL_SETTINGS_FIELDS: readonly ModelSettingsField[] = ["warming", "interval", "waiting", "subagent", "prompt", "effort"]
 
 /** A Defaults › Models row: one model, or every model when both ids are absent. */
 export interface ModelSettingsKey {
@@ -122,6 +124,8 @@ export interface EffectiveWarming {
    * opencode.json nor the host proposes one: below the rows it is the built-in 2h.
    */
   readonly waiting: Effective<number>
+  /** Independent switch for sessions with a parent; built-in off. */
+  readonly subagent: Effective<boolean>
   readonly prompt: Effective<string>
 }
 
@@ -153,6 +157,7 @@ interface Layer {
   readonly duration?: number
   readonly interval?: number
   readonly waiting?: number
+  readonly subagent?: boolean
   readonly prompt?: string
 }
 
@@ -178,6 +183,7 @@ export function effectiveWarming(input: {
   const interval = pick("interval")
   const duration = pick("duration")
   const waitingLayer = layers.find((entry) => entry.waiting !== undefined)
+  const subagent = layers.find((entry) => entry.subagent !== undefined)
   const waiting: Effective<number> =
     waitingLayer?.waiting === undefined
       ? { value: WAITING_DEFAULT_MS, from: "built-in" }
@@ -187,6 +193,7 @@ export function effectiveWarming(input: {
     duration: { ...duration, value: roundWarming(duration.value, interval.value) },
     interval,
     waiting: { ...waiting, value: waiting.value === 0 ? 0 : roundWarming(waiting.value, interval.value) },
+    subagent: { value: subagent?.subagent ?? false, from: subagent?.from ?? "built-in" },
     prompt: pick("prompt"),
   }
 }
@@ -210,10 +217,12 @@ function rowLayers(row: ResolvedModelFields | undefined): Layer[] {
   const warming = row.warming === undefined ? undefined : warmingLayer(row.warming.value, row.warming.level)
   const interval = row.interval === undefined ? undefined : intervalOf(row.interval.value)
   const waiting = row.waiting === undefined ? undefined : waitingOf(row.waiting.value)
+  const subagent = row.subagent === undefined ? undefined : switchOf(row.subagent.value)
   return [
     ...(warming === undefined ? [] : [warming]),
     ...(row.interval === undefined || interval === undefined ? [] : [{ from: row.interval.level, interval }]),
     ...(row.waiting === undefined || waiting === undefined ? [] : [{ from: row.waiting.level, waiting }]),
+    ...(row.subagent === undefined || subagent === undefined ? [] : [{ from: row.subagent.level, subagent }]),
     ...(row.prompt === undefined ? [] : [{ from: row.prompt.level, prompt: row.prompt.value }]),
   ]
 }
@@ -222,12 +231,14 @@ function recordLayer(record: ModelSettingsRecord, from: SettingFrom): Layer {
   const warming = record.warming === undefined ? undefined : warmingLayer(record.warming, from)
   const interval = record.interval === undefined ? undefined : intervalOf(record.interval)
   const waiting = record.waiting === undefined ? undefined : waitingOf(record.waiting)
+  const subagent = record.subagent === undefined ? undefined : switchOf(record.subagent)
   return {
     from,
     ...(warming?.on === undefined ? {} : { on: warming.on }),
     ...(warming?.duration === undefined ? {} : { duration: warming.duration }),
     ...(interval === undefined ? {} : { interval }),
     ...(waiting === undefined ? {} : { waiting }),
+    ...(subagent === undefined ? {} : { subagent }),
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
   }
 }
@@ -387,6 +398,7 @@ export function warmingFieldsOf(input: {
   readonly warming?: string
   readonly interval?: string
   readonly waiting?: string
+  readonly subagent?: string
   readonly prompt?: string
 }): { readonly fields: ModelWarmingFields } | { readonly error: string } {
   const warming = input.warming === undefined ? undefined : warmingField(input.warming)
@@ -395,6 +407,8 @@ export function warmingFieldsOf(input: {
   if (interval !== undefined && typeof interval === "object" && interval !== null) return interval
   const waiting = input.waiting === undefined ? undefined : waitingField(input.waiting)
   if (waiting !== undefined && typeof waiting === "object" && waiting !== null) return waiting
+  const subagent = switchField(input.subagent, "Warm as subagent")
+  if (subagent !== undefined && typeof subagent === "object" && subagent !== null) return subagent
   const prompt = input.prompt === undefined ? undefined : promptField(input.prompt)
   if (prompt !== undefined && typeof prompt === "object" && prompt !== null) return prompt
   return {
@@ -402,6 +416,7 @@ export function warmingFieldsOf(input: {
       ...(warming === undefined ? {} : { warming }),
       ...(interval === undefined ? {} : { interval }),
       ...(waiting === undefined ? {} : { waiting }),
+      ...(subagent === undefined ? {} : { subagent }),
       ...(prompt === undefined ? {} : { prompt }),
     },
   }
@@ -813,6 +828,7 @@ export interface ModelDefaultView {
   readonly duration: Effective<number>
   readonly interval: Effective<number>
   readonly waiting: Effective<number>
+  readonly subagent: Effective<boolean>
   readonly prompt: Effective<string>
   readonly effort?: Effective<string>
   /** The row itself sets at least one field (the rest may still come from below). */
@@ -835,6 +851,7 @@ export function modelDefaultView(input: {
     duration: effective.duration,
     interval: effective.interval,
     waiting: effective.waiting,
+    subagent: effective.subagent,
     prompt: effective.prompt,
     ...(effort === undefined ? {} : { effort }),
     own: input.record !== undefined,
@@ -852,7 +869,8 @@ export function modelDefaultValue(view: ModelDefaultView): string {
   const core = view.on.value ? `warm ${formatDuration(view.duration.value)} · every ${formatDuration(view.interval.value)}` : "warming off"
   const waiting = view.on.value && view.waiting.from !== "built-in" ? ` · waiting ${formatWaiting(view.waiting.value)}` : ""
   const effort = view.effort === undefined ? "" : ` · effort ${view.effort.value}`
-  return `${core}${waiting}${effort}${view.own ? "" : sourceSuffix(view)}`
+  const subagent = view.subagent.from === "built-in" ? "" : ` · subagent ${view.subagent.value ? "on" : "off"}`
+  return `${core}${waiting}${subagent}${effort}${view.own ? "" : sourceSuffix(view)}`
 }
 
 const SOURCE_RANK: Record<SettingFrom, number> = {
@@ -879,6 +897,7 @@ function sourceSuffix(view: ModelDefaultView): string {
       view.duration,
       view.interval,
       ...(view.on.value ? [view.waiting] : []),
+      view.subagent,
       ...(view.effort === undefined ? [] : [view.effort]),
     ].map((field) => field.from),
   )
@@ -1007,6 +1026,7 @@ export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
   warming: "Warming",
   interval: "Ping every",
   waiting: "Warm while waiting",
+  subagent: "Warm as subagent",
   prompt: "Keep-alive prompt",
   effort: "Effort",
   compactWarm: "Compact before cold",
@@ -1025,7 +1045,7 @@ export function isDefaultSwitchField(field: ModelDefaultField): field is "compac
 
 // An agent/member/preset model row opens into the same field rows as a
 // Defaults › Models row, grouped: Model, Effort under the row, the Warming
-// group (Warming, Ping every, Warm while waiting, Keep-alive prompt, Compact before cold and the
+// group (Warming, Ping every, Warm while waiting, Warm as subagent, Keep-alive prompt, Compact before cold and the
 // cold-cache list), the Compaction group (Strategy, token thresholds, Model, Instructions) and the Images group
 // (Convert large image, Shrink large image, When image context is full).
 // The item id carries the field and the candidate, so
@@ -1039,6 +1059,7 @@ export type ModelFieldName =
   | "warming"
   | "interval"
   | "waiting"
+  | "subagent"
   | "prompt"
   | "compactWarm"
   | "coldCompact"
@@ -1054,6 +1075,7 @@ export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
   "warming",
   "interval",
   "waiting",
+  "subagent",
   "prompt",
   "compactWarm",
   "coldCompact",
@@ -1072,6 +1094,7 @@ export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
   warming: "Warming",
   interval: "Ping every",
   waiting: "Warm while waiting",
+  subagent: "Warm as subagent",
   prompt: "Keep-alive prompt",
   compactWarm: "Compact before cold",
   coldCompact: COLD_COMPACT_LABEL,
@@ -1131,6 +1154,7 @@ export function modelSettingEffective(
     return { text: view.on.value ? formatDuration(view.duration.value) : "off", from: view.on.value ? view.duration.from : view.on.from }
   if (field === "interval") return { text: formatDuration(view.interval.value), from: view.interval.from }
   if (field === "waiting") return { text: formatWaiting(view.waiting.value), from: view.waiting.from }
+  if (field === "subagent") return { text: view.subagent.value ? "on" : "off", from: view.subagent.from }
   if (field === "prompt") return { text: view.prompt.value, from: view.prompt.from }
   return view.effort === undefined ? undefined : { text: view.effort.value, from: view.effort.from }
 }
@@ -1251,15 +1275,21 @@ export interface ModelFieldChoice {
 }
 
 /**
- * The dropdown for a Warming, Ping every, Warm while waiting or Effort field
+ * The dropdown for a Warming, Ping every, Warm while waiting, Warm as subagent or Effort field
  * on any model row: Inherit (clears), the fixed values, and Custom… for the
  * prompt. `now` is the value Inherit falls back to; `variants` are the
  * model's own variants.
  */
 export function modelFieldChoices(
-  field: "warming" | "interval" | "waiting" | "effort",
+  field: "warming" | "interval" | "waiting" | "subagent" | "effort",
   input: { readonly now: string; readonly lifetime?: number; readonly variants?: readonly string[]; readonly everyModel: boolean },
 ): ModelFieldChoice[] {
+  if (field === "subagent")
+    return [
+      { title: `Inherit (now ${input.now})`, value: "" },
+      { title: "On", value: "on" },
+      { title: "Off", value: "off" },
+    ]
   if (field === "warming")
     return [
       { title: "Inherit", value: "" },

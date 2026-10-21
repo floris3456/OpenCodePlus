@@ -257,6 +257,8 @@ export interface TreeNodeBadges {
   /** Model rows: warm while waiting ("off", "2h" …) and the level that set it. */
   readonly waiting?: string
   readonly waitingFrom?: Level
+  readonly subagent?: string
+  readonly subagentFrom?: Level
   /** Model rows: the keep-alive text and the level that set it. */
   readonly prompt?: string
   readonly promptFrom?: Level
@@ -976,7 +978,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
     reviewCount: () => 0,
     // Model rows have no Model field; the rest is the same layout as an agent
     // model row: Effort, the Warming group (Warming, Ping every, Warm while
-    // waiting, Keep-alive prompt, Compact before cold and the cold-cache list) and Compaction.
+    // waiting, Warm as subagent, Keep-alive prompt, Compact before cold and the cold-cache list) and Compaction.
     children: () => [
       lazyModelDefaultField(ctx, memo, key, record, "effort", 3),
       modelGroup(memo, {
@@ -988,6 +990,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
           () => lazyModelDefaultField(ctx, memo, key, record, "warming", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "interval", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "waiting", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "subagent", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "prompt", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "compactWarm", 4),
           () => lazyDefaultColdGroup(ctx, memo, key, record, 4),
@@ -2413,6 +2416,7 @@ function lazyModelItem(
         ...(fields.warming === undefined ? {} : { warming: fields.warming.value, warmingFrom: fields.warming.level }),
         ...(fields.interval === undefined ? {} : { interval: fields.interval.value, intervalFrom: fields.interval.level }),
         ...(fields.waiting === undefined ? {} : { waiting: fields.waiting.value, waitingFrom: fields.waiting.level }),
+        ...(fields.subagent === undefined ? {} : { subagent: fields.subagent.value, subagentFrom: fields.subagent.level }),
         ...(fields.prompt === undefined ? {} : { prompt: fields.prompt.value, promptFrom: fields.prompt.level }),
       }
     },
@@ -2459,6 +2463,7 @@ function modelRowChildren(
         () => lazyModelField(memo, ctx, level, owner, candidate, "warming", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "interval", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "waiting", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "subagent", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "prompt", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactWarm", depth + 1, teamRef, catalogue, ownerPath),
         () => coldListGroup(memo, ctx, level, owner, candidate, modelRowId, depth + 1, teamRef, catalogue, ownerPath),
@@ -2871,16 +2876,16 @@ function lazyModelField(
       const text = instructions.value === undefined ? "Empty prompt" : instructions.value.length > 24 ? `${instructions.value.slice(0, 23)}…` : instructions.value
       return { value: own ? text : `${text} · ${compactionSource(instructions.from)}`, own }
     }
-    // Warming / Ping every / Warm while waiting / Keep-alive prompt: the effective value wherever
+    // Warming / Ping every / Warm while waiting / Warm as subagent / Keep-alive prompt: the effective value wherever
     // the agent's chain sets it, not only at this row's level. An inherited
     // value names its own level; the Defaults › Models fallback names the
     // settings surface it came from.
-    const resolved = fields[field as "warming" | "interval" | "waiting" | "prompt"]
+    const resolved = fields[field as "warming" | "interval" | "waiting" | "subagent" | "prompt"]
     if (resolved !== undefined) {
       const own = resolved.level === level
       return { value: own ? resolved.value : `${resolved.value} · ${levelWord(resolved.level)}`, own }
     }
-    const effective = modelSettingEffective(view, field as "warming" | "interval" | "waiting" | "prompt")
+    const effective = modelSettingEffective(view, field as "warming" | "interval" | "waiting" | "subagent" | "prompt")
     if (effective === undefined) return { value: "none", own: false }
     return { value: `${effective.text} · ${defaultsSource(effective.from)}`, own: false }
   }

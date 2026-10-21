@@ -280,6 +280,7 @@ export function snapshotRecordOf(record: StoredRecord): Plus.SnapshotRecord | un
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.waiting === undefined ? {} : { waiting: record.waiting }),
+      ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
       ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
