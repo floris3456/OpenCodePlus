@@ -297,7 +297,7 @@ test("a Basic body states no Brief rule, followup rule or done requirement a row
 
 // How a value must look rides with the tool, so a call is right the first
 // time instead of being learned from a refusal: every field a member fills
-// carries a description, on the field or on its non-null branch.
+// carries a description, on the field or a branch (core flattens allOf).
 test("every field of every team tool input carries a description", () => {
   const inputs = {
     team_delegate: TeamSchema.Brief,
@@ -311,8 +311,8 @@ test("every field of every team tool input carries a description", () => {
     team_list: TeamSchema.ListInput,
     team_check: TeamSchema.CheckInput,
   }
-  type Node = { description?: string; anyOf?: Node[]; properties?: Record<string, Node> }
-  const described = (node: Node) => node.description !== undefined || (node.anyOf ?? []).some((branch) => branch.description !== undefined)
+  type Node = { description?: string; anyOf?: Node[]; allOf?: Node[]; properties?: Record<string, Node> }
+  const described = (node: Node): boolean => node.description !== undefined || [...(node.anyOf ?? []), ...(node.allOf ?? [])].some(described)
   const missing: string[] = []
   for (const [tool, input] of Object.entries(inputs)) {
     const schema = Schema.toJsonSchemaDocument(TeamSchema.nullTolerant(input as Schema.Top)).schema as Node

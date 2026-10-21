@@ -1006,7 +1006,7 @@ test("a landed child is reopened only for a prompt to a live run; otherwise noth
       const landed = await loadRun(root, repo.child.id)
       if (landed === undefined) throw new Error("missing child record")
       // A budget alone changes the budget and leaves the worktree removed.
-      expect(required(await api.followup(followupInput({ run: repo.child.id, requestID: "b-1", prompt: undefined, budget: { tokens: 5 }, reason: "more room" }), callerFor(repo.parent)))).toEqual({ attempt: 1, state: repo.child.state, next: "End your turn now: its settlement wakes you, and so does every other run still working." })
+      expect(required(await api.followup({ run: repo.child.id, requestID: "b-1", budget: { tokens: 5 }, reason: "more room" }, callerFor(repo.parent)))).toEqual({ attempt: 1, state: repo.child.state, next: "End your turn now: its settlement wakes you, and so does every other run still working." })
       expect((await loadRun(root, repo.child.id))?.budget.tokens).toBe(5)
       expect(await loadRun(root, repo.child.id)).toMatchObject({ worktree: "removed", directory: repo.worktree, branch: repo.child.branch })
       // A terminal run is not reopened.
