@@ -136,6 +136,20 @@ describe("ToolOutput", () => {
     ),
   )
 
+  it.live("shows the start of a single line over the byte limit instead of nothing", () =>
+    withStore(
+      (output) =>
+        Effect.gen(function* () {
+          const result = yield* output.truncate({ content: [{ type: "text", text: `[${"x".repeat(20)}]` }] })
+          expect(result.content).toEqual([
+            { type: "text", text: "[xxxxxxxxx" },
+            { type: "text", text: expect.stringMatching(/^\[showing the first 10 bytes of line 1 of 1; full output saved to /) },
+          ])
+        }),
+      { maxLines: 2, maxBytes: 10 },
+    ),
+  )
+
   it.live("uses file modification time when IDs wrap", () =>
     withStore((output, fs, root) =>
       Effect.gen(function* () {

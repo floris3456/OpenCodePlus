@@ -53,6 +53,6 @@ You cannot commit through the shell here: commit with team_checkpoint.
 
 ## Pushing
 <!-- requires: !perm:shell:git-push -->
-You cannot push. Leave the push to whoever holds that permission, and say in
-your report that it is still to do.
+You cannot push. When the work asks for a push, leave it to whoever holds that
+permission and say in your report that it is still to do.
 `

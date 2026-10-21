@@ -75,12 +75,15 @@ create index if not exists wire_row_hash on wire_row(hash);
 export function wireStore(ledger: Ledger) {
   const existing = stores.get(ledger)
   if (existing) return existing
+  // An in-memory ledger keeps its transcripts in memory too, instead of in a
+  // ":memory:.transcripts" folder in the working directory.
+  const memory = ledger.path === ":memory:"
   const directory = `${ledger.path}.transcripts`
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const file = path.join(directory, "wire.db")
+  if (!memory) fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const file = memory ? ":memory:" : path.join(directory, "wire.db")
   const db = new Database(file, { create: true })
   // SQLite gives the WAL and shared-memory files the database file's mode.
-  fs.chmodSync(file, 0o600)
+  if (!memory) fs.chmodSync(file, 0o600)
   db.exec("pragma journal_mode = wal")
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")

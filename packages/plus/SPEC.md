@@ -1981,8 +1981,8 @@ rules) are read by the same handlers: `team_delegate` Limits — Children
 working at once 4, Delegation depth 3, Brief size 6000 characters, Attached
 brief file 8000 characters, Live team runs in total 12, all on (`E_BOUNDS`,
 `E_ROLE`, `E_TOO_LONG`; an off row removes the bound; an attachment over the
-attachment limit is named by path only and does not count toward the brief
-limit); `team_followup` Limits (Followups per child 5, shipped off;
+attachment limit is named by path only, must be committed at the child's base
+(`E_PATHS` otherwise), and does not count toward the brief limit); `team_followup` Limits (Followups per child 5, shipped off;
 `E_ROUNDS`); `team_finish` Requirements for done (Assigned checks pass at HEAD,
 on, `E_DIRTY` before checks on uncommitted work, otherwise `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
 `E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;

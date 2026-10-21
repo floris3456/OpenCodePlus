@@ -90,7 +90,7 @@ export async function captureWire(ledger: Ledger, id: string, body: string, opti
     body,
     ...(options.url ? { url: options.url } : {}),
   })
-  if (exact) return
+  if (exact || ledger.path === ":memory:") return
   const directory = `${ledger.path}.transcripts`
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
   const file = path.join(directory, `${sha256(id)}.json.gz`)

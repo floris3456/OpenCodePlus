@@ -574,8 +574,9 @@ on the third attempt.
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
   budget); and attaches a `briefFile` inline up to the member's "Attached brief
   file" limit (a larger one is named by path so the child reads only what it
-  needs) — the only way an uncommitted file reaches a child, whose worktree
-  starts at the parent's last commit. A `findings` Brief gains a Review section: the exact `team_diff`
+  needs, and must be committed at the child's base, else `E_PATHS`) — the only
+  way an uncommitted file reaches a child, whose worktree starts at the
+  parent's last commit. A `findings` Brief gains a Review section: the exact `team_diff`
   call that shows the change (from the delegating run's base to the
   reviewer's own start) and the delegating run's check results there, since a
   reviewer can neither run checks nor read another run.

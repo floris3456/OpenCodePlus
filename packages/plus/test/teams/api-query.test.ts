@@ -92,8 +92,6 @@ type ListEntry = {
   task: string | null
   parent: string | null
   head: string
-  branch: string
-  directory: string
   worktree: string
   reportStatus: string | null
   lastUsed: string
@@ -365,14 +363,21 @@ test("every emitted field is present and correct for a populated run", async () 
           task: "T12",
           parent: "main-0123456789abcdef",
           head: live,
-          branch: "team/w/populated",
-          directory: repo.dir,
           worktree: "present",
           reportStatus: "done",
           lastUsed: "2026-09-10T12:00:00.000Z",
           runtime: "running",
         },
       ])
+      // A landed run (its worktree removed) lists only with all; a stopped one can resume, so it lists.
+      const landed = baseRun({ id: "w-dddddddddddddddd", directory: "/tmp/wt-team-query-landed", state: "idle", worktree: "removed", parent: stored.id })
+      await saveRun(root, landed)
+      const stoppedRun = baseRun({ id: "w-eeeeeeeeeeeeeeee", directory: "/tmp/wt-team-query-stopped", state: "stopped", parent: stored.id })
+      await saveRun(root, stoppedRun)
+      const defaults = (required(await listHandler({}, callerFor(stored), shippedTable())) as ListEntry[]).map((entry) => entry.run)
+      expect(defaults).not.toContain(landed.id)
+      expect(defaults).toContain(stoppedRun.id)
+      expect((required(await listHandler({ all: true }, callerFor(stored), shippedTable())) as ListEntry[]).map((entry) => entry.run)).toContain(landed.id)
       const missing = baseRun({ id: "w-bbbbbbbbbbbbbbbb", directory: "/tmp/wt-team-query-gone", state: "stopped" })
       await saveRun(root, missing)
       const shown = required(await listHandler({ all: true }, callerFor(missing), shippedTable())) as ListEntry[]

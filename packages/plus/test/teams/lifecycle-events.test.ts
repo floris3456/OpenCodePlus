@@ -205,6 +205,15 @@ test("the empty run a reopened child's move wakes is no turn: it opens and ends 
   })
 })
 
+test("a stopped run whose session still ends a turn stays stopped", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const stopped = baseRun({ id: "w-ffffffffffffffff", state: "stopped", stopRequested: true, sessionID: "ses_stopped_001" })
+    await saveRun(root, stopped)
+    await onSessionEvent(context({ session: recordSession().domain }), root, succeededEvent("ses_stopped_001"))
+    expect((await loadRun(root, stopped.id))?.state).toBe("stopped")
+  })
+})
+
 test("a starting child reaches idle when its first turn ends", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()

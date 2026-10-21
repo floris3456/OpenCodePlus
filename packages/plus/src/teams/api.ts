@@ -22,6 +22,7 @@ import type { PlusState } from "../index.js"
 import { checkFiles, missingCheckFiles } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
+import { DEFAULT_ATTACHMENT_LIMIT } from "./brief.js"
 import { chatEditRefusal, isScopePath, namesProtectedState, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
 import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
@@ -320,6 +321,19 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     attached = { path: briefFile, content }
   }
   const attachmentLimit = bound(table, agent, "delegate", "limits.attachment")
+  // A file over the limit reaches the child only by its path, so only as its
+  // base holds it. Live: a planner attached its new, uncommitted 11k plan, and
+  // the orchestrator found no plan in its worktree and finished blocked.
+  if (attached !== undefined && attached.content.length > (attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT)) {
+    const relative = path.relative(repo.root, path.resolve(parent.directory, attached.path))
+    const atBase = relative.startsWith("..") ? undefined : await gitRaw(repo.root, [...NO_REPOSITORY_PROGRAMS, "show", `${baseSha}:${relative}`])
+    if (atBase !== undefined && (atBase.code !== 0 || atBase.out !== attached.content.trim()))
+      return fail(
+        "E_PATHS",
+        `briefFile ${attached.path} is over the ${attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT}-character attachment limit (${attached.content.length}), so the child gets only its path, and base ${baseSha.slice(0, 12)} does not hold this version: team_checkpoint it, then delegate.`,
+        { files: [attached.path] },
+      )
+  }
 
   const childID = newRunID("w")
   let taskID = brief.task

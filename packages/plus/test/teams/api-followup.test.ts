@@ -845,7 +845,7 @@ test("followup replays conflicts for the same child to resolve, checkpoint, fini
       expect(text).toContain(repo.parentHead)
       expect(text).toContain("[shared.ts]")
       expect(text).toContain("[new.test.ts, new.ts, shared.ts]")
-      expect(text).toContain("team_checkpoint every changed file")
+      expect(text).toContain("commit the whole change in one call, team_checkpoint with files [new.test.ts, new.ts, shared.ts]")
       expect(required(await api.check({ id: "combined" }, callerFor(child)))).toMatchObject({ passed: false })
       await Bun.write(path.join(repo.worktree, "shared.ts"), "export const shared = 3\nexport const child = 2\n")
       const checkpoint = required(await api.checkpoint({ files: ["shared.ts", "new.ts", "new.test.ts"], message: "fix: preserve both changes" }, callerFor(child))) as { head: string }

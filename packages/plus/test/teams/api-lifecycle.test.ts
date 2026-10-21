@@ -162,7 +162,7 @@ test("stop on an idle child stops and records both history rows", async () => {
         run: string
         state: string
       }
-      expect(value).toEqual({ run: child.id, state: "stopped" })
+      expect(value).toMatchObject({ run: child.id, state: "stopped" })
       const stored = await loadRun(root, child.id)
       expect(stored?.state).toBe("stopped")
       expect(stored?.stoppedBy).toBe(parent.id)
@@ -191,8 +191,9 @@ test("stop on a working child sets stopRequested and reports stopping, and is id
     const value = required(await stopHandler(ctx, { run: child.id }, callerFor(parent))) as {
       run: string
       state: string
+      next: string
     }
-    expect(value).toEqual({ run: child.id, state: "stopping" })
+    expect(value).toEqual({ run: child.id, state: "stopping", next: "It stops at its next step and keeps its worktree; its settlement wakes you. Nothing to check." })
     const stored = await loadRun(root, child.id)
     expect(stored?.stopRequested).toBe(true)
     expect(stored?.stopRequestedBy).toBe(parent.id)
@@ -204,7 +205,7 @@ test("stop on a working child sets stopRequested and reports stopping, and is id
       run: string
       state: string
     }
-    expect(second).toEqual({ run: child.id, state: "stopping" })
+    expect(second).toMatchObject({ run: child.id, state: "stopping" })
     expect(sessions.interrupted).toHaveLength(0)
 
     // Idle handler completes it: when the turn ends, onSessionIdle transitions to stopped
@@ -236,7 +237,7 @@ test("stop with force: true on a working child interrupts session once and sets 
       run: string
       state: string
     }
-    expect(value).toEqual({ run: child.id, state: "stopping" })
+    expect(value).toMatchObject({ run: child.id, state: "stopping" })
     const stored = await loadRun(root, child.id)
     expect(stored?.stopRequested).toBe(true)
     expect(stored?.stopRequestedBy).toBe(parent.id)
@@ -260,7 +261,7 @@ test("stop on an already stopped child succeeds as a no-op", async () => {
       run: string
       state: string
     }
-    expect(value).toEqual({ run: child.id, state: "stopped" })
+    expect(value).toMatchObject({ run: child.id, state: "stopped" })
     const stored = await loadRun(root, child.id)
     expect(stored?.state).toBe("stopped")
     expect(stored?.history).toEqual([])
@@ -276,7 +277,7 @@ test("stop on a dead child reconciles to stopped", async () => {
       run: string
       state: string
     }
-    expect(value).toEqual({ run: child.id, state: "stopped" })
+    expect(value).toMatchObject({ run: child.id, state: "stopped" })
     const stored = await loadRun(root, child.id)
     expect(stored?.state).toBe("stopped")
     expect(stored?.history).toEqual([{ at: expect.any(String), from: "dead", to: "stopped", trigger: "reconcile" }])
@@ -292,7 +293,7 @@ test("stop on a ready child sets stopRequested and reports stopping", async () =
       run: string
       state: string
     }
-    expect(value).toEqual({ run: child.id, state: "stopping" })
+    expect(value).toMatchObject({ run: child.id, state: "stopping" })
     const stored = await loadRun(root, child.id)
     expect(stored?.stopRequested).toBe(true)
   })
@@ -333,7 +334,7 @@ test("stop with a reason keeps it on the stopped child and tells nobody when the
     const value = required(
       await stopHandler(context({ session: recordSession().domain }), { run: child.id, reason: REASON }, callerFor(parent)),
     )
-    expect(value).toEqual({ run: child.id, state: "stopped" })
+    expect(value).toMatchObject({ run: child.id, state: "stopped" })
     const stored = await loadRun(root, child.id)
     expect(stored?.state).toBe("stopped")
     expect(stored?.stopReason).toBe(REASON)
@@ -351,7 +352,7 @@ test("stop with a reason on a working child keeps it through the stop after its 
     await saveRun(root, parent)
     await saveRun(root, child)
     const ctx = context({ session: recordSession().domain })
-    expect(required(await stopHandler(ctx, { run: child.id, reason: REASON }, callerFor(parent)))).toEqual({ run: child.id, state: "stopping" })
+    expect(required(await stopHandler(ctx, { run: child.id, reason: REASON }, callerFor(parent)))).toMatchObject({ run: child.id, state: "stopping" })
     const requested = await loadRun(root, child.id)
     expect(requested?.stopReason).toBe(REASON)
     const finished = await onSessionIdle(ctx, root, requested!)
@@ -377,7 +378,7 @@ test("stopRun on an idle run in the namespace stops it without ownership check",
     await saveRun(root, run)
     const sessions = recordSession()
     const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
-    expect(result).toEqual({ run: run.id, state: "stopped" })
+    expect(result).toMatchObject({ run: run.id, state: "stopped" })
     const stored = await loadRun(root, run.id)
     expect(stored?.state).toBe("stopped")
     expect(sessions.interrupted).toHaveLength(1)
@@ -459,7 +460,7 @@ test("stopRun on a dead run reconciles to stopped", async () => {
     await saveRun(root, run)
     const sessions = recordSession()
     const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
-    expect(result).toEqual({ run: run.id, state: "stopped" })
+    expect(result).toMatchObject({ run: run.id, state: "stopped" })
     const stored = await loadRun(root, run.id)
     expect(stored?.state).toBe("stopped")
   })
@@ -479,7 +480,7 @@ test("stopRun on already stopped run returns stopped without modifying history",
     await saveRun(root, run)
     const sessions = recordSession()
     const result = required(await stopRun(context({ session: sessions.domain }), run.id)) as { run: string; state: string }
-    expect(result).toEqual({ run: run.id, state: "stopped" })
+    expect(result).toMatchObject({ run: run.id, state: "stopped" })
     const stored = await loadRun(root, run.id)
     expect(stored?.state).toBe("stopped")
     expect(stored?.history).toHaveLength(0)

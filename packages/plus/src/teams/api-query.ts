@@ -35,7 +35,10 @@ export async function listHandler(args: ListInput, caller: TeamCaller, table?: P
   const visible = await visibleTo(root, await listRuns(root), self, caller.agent, table)
   const showAll = args.all ?? false
   const filtered = visible.filter((record) => {
-    if (!showAll && (record.state === "superseded" || record.state === "reaped")) return false
+    // Finished runs (worktree removed, superseded, reaped) only with all: an
+    // install's whole history ran past the tool output limit. A stopped run
+    // keeps its worktree and can resume, so it lists.
+    if (!showAll && finished(record)) return false
     if (args.role !== undefined && record.role !== args.role) return false
     if (args.state !== undefined && record.state !== args.state) return false
     if (args.parent !== undefined && record.parent !== args.parent) return false
@@ -45,6 +48,11 @@ export async function listHandler(args: ListInput, caller: TeamCaller, table?: P
   const entries = []
   for (const record of sorted) entries.push(await entryOf(root, record))
   return succeeded(entries)
+}
+
+function finished(record: RunRecord): boolean {
+  if (record.state === "working" || record.state === "starting" || record.state === "stopping") return false
+  return record.worktree === "removed" || record.state === "superseded" || record.state === "reaped"
 }
 
 // Runs a member lists: its own and its direct children always, deeper
@@ -71,8 +79,6 @@ async function entryOf(root: string, record: RunRecord) {
     task: record.task,
     parent: record.parent,
     head,
-    branch: record.branch,
-    directory: record.directory,
     worktree: record.worktree ?? "present",
     reportStatus: await latestReportStatus(root, record.id),
     lastUsed: record.lastUsed,
@@ -93,8 +99,6 @@ export async function statusOf(root: string, id: string) {
     task: record.task,
     parent: record.parent,
     head,
-    branch: record.branch,
-    directory: record.directory,
     worktree: record.worktree ?? "present",
     reportStatus: await latestReportStatus(root, record.id),
     lastUsed: record.lastUsed,

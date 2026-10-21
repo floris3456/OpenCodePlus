@@ -65,14 +65,22 @@ export async function stopRun(ctx: Context, runID: string): Promise<TeamApiResul
   return succeeded({ run: run.id, state: updated.state })
 }
 
+// Live, a lead that read a bare "stopping" listed and statused the run to see
+// whether the stop took: the result says what follows.
+function stopResult(run: string, state: string): TeamApiResult {
+  if (state === "stopping")
+    return succeeded({ run, state, next: "It stops at its next step and keeps its worktree; its settlement wakes you. Nothing to check." })
+  return succeeded({ run, state, next: "Stopped; it keeps its worktree. team_followup resumes it." })
+}
+
 export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCaller, table?: PermissionTable): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
   const found = await loadRun(root, args.run)
   if (found === undefined || !(await reachable(root, parent, found, caller.agent, table))) return notChild(parent, args.run)
-  if (found.state === "stopped") return succeeded({ run: found.id, state: "stopped" })
-  if (found.state === "stopping") return succeeded({ run: found.id, state: "stopping" })
+  if (found.state === "stopped") return stopResult(found.id, "stopped")
+  if (found.state === "stopping") return stopResult(found.id, "stopping")
   const child = args.reason === undefined ? found : { ...found, stopReason: args.reason }
   // Stopping a deeper descendant: the run's own parent learns why from its
   // next batch of messages, without being woken for it.
@@ -81,17 +89,17 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
   if (child.state === "idle") {
     await interruptSession(ctx, child.sessionID)
     await stopIdle(ctx, root, child, parent.id)
-    return succeeded({ run: child.id, state: "stopped" })
+    return stopResult(child.id, "stopped")
   }
   if (child.state === "dead") {
     const stopped = transition(child, "stopped", "reconcile")
     await saveRun(root, stopped)
-    return succeeded({ run: child.id, state: "stopped" })
+    return stopResult(child.id, "stopped")
   }
   const updated: RunRecord = { ...child, stopRequested: true, stopRequestedBy: parent.id }
   await saveRun(root, updated)
   if (args.force === true) {
     await interruptSession(ctx, child.sessionID)
   }
-  return succeeded({ run: child.id, state: "stopping" })
+  return stopResult(child.id, "stopping")
 }
