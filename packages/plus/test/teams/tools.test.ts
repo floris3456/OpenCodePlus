@@ -297,7 +297,7 @@ for (const delegated of [true, false]) {
         const report = Schema.decodeUnknownSync(Report)({ status: "done", summary: "Located the implementation and checked its callers." })
         const result = await Effect.runPromise(tool.execute(report, caller))
         expect(result.endTurn).toBe(delegated ? true : undefined)
-        expect(result.output).toMatchObject({ status: "done", summary: report.summary })
+        expect(result.output).toMatchObject({ status: "done", attempt: 1 })
         expect(prompted).toEqual([])
 
         const ended = { type: "session.execution.succeeded", data: { sessionID: run.sessionID } }
