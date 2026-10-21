@@ -325,7 +325,7 @@ export type Deliverable = typeof Deliverable.Type
 export const Interface = Schema.Struct({
   path: Schema.String,
   symbol: Schema.optional(Schema.String),
-  note: Schema.String.check(Schema.isMaxLength(600)).annotate({ description: "Why the child must read it." }),
+  note: Schema.String.check(Schema.isMaxLength(1000)).annotate({ description: "Why the child must read it." }),
 })
 export type Interface = typeof Interface.Type
 
@@ -683,10 +683,7 @@ export type BudgetOverBy = typeof BudgetOverBy.Type
 
 // A child session's context size in the status output is the prompt size of
 // its latest completed step (input + cache read + cache write), or null when
-// it has no completed step. The parent is told once when it first passes
-// CONTEXT_NOTICE_TOKENS. A child near this size is at risk of losing details
-// if compacted mid-task, so it is reported rather than compacted.
-export const CONTEXT_NOTICE_TOKENS = 100_000
+// it has no completed step. Its compaction is its own model's (compactionInput).
 
 export interface BudgetDimension {
   name: "turns" | "tokens" | "wall"
@@ -926,8 +923,8 @@ export type StatusInput = typeof StatusInput.Type
 
 export const DiffInput = Schema.Struct({
   run: RunID.annotate({ description: "Your run or a child's." }),
-  from: Schema.optional(Schema.Union([Head, Schema.Literal("base"), Schema.Literal("parent")])).annotate({
-    description: "\"base\" (default): the run's starting commit. \"parent\": its parent's HEAD. Or a full commit sha.",
+  from: Schema.optional(Schema.Union([Schema.String.check(Schema.isPattern(/^[0-9a-f]{7,40}$/)), Schema.Literal("base"), Schema.Literal("parent")])).annotate({
+    description: "\"base\" (default): the run's starting commit. \"parent\": its parent's HEAD. Or a commit (full or short sha).",
   }),
   paths: Schema.optional(Schema.Array(Schema.String)).annotate({ description: "Only these paths." }),
   maxBytes: Schema.optional(Schema.Number).annotate({ description: "Truncate after this many bytes (default 200000)." }),
