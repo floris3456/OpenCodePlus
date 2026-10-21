@@ -818,7 +818,10 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       { id: "queue", label: "Queued for the next turn (queue)", on: true, value: "queue" },
       { id: "now", label: "Delivered now to an idle child (now)", on: true, value: "now" },
     ], "queue"),
-    parameters([{ id: "budget", label: "Changing a child's budget (budget)", on: true, field: "budget" }]),
+    parameters([
+      { id: "budget", label: "Changing a child's budget (budget)", on: true, field: "budget" },
+      { id: "paths", label: "Widening a child's scope (paths)", on: true, field: "paths" },
+    ]),
     {
       id: "limits",
       label: "Limits",

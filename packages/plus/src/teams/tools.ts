@@ -42,7 +42,7 @@ const DelegateDescription =
   "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run; its settlement wakes you with the report."
 const FinishDescription = "Report your task's outcome to your parent. Once per attempt; a correction arrives as a new message."
 const FollowupDescription =
-  "Send a correction, more work or a budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context. A followup after a stop needs compactWith once the child is cold."
+  "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context. A followup after a stop needs compactWith once the child is cold."
 const IntegrateDescription =
   "Land a done child's commits on your branch: rebased onto your HEAD, verified with your integration checks, then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."

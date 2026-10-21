@@ -845,6 +845,9 @@ export const FollowupInput = Schema.Struct({
   ).annotate({
     description: "The correction or answer; it is the child's next message.",
   }),
+  paths: Schema.optional(Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(40))).annotate({
+    description: "Files or dir/* to add to the child's edit scope, repository-relative, e.g. [\"src/cli.ts\"]. Answers a path need; forbidden paths stay forbidden. May be sent without prompt.",
+  }),
   delivery: Schema.optional(Schema.Literals(["now", "queue"])).annotate({
     description:
       "queue (default): a working child gets it at its next step boundary, without interrupting the step; an idle or warm stopped child at once. now: only for a child that is idle already.",

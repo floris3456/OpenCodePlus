@@ -638,7 +638,7 @@ function nextStep(status: string, committed: boolean): string {
     return committed ? `${weigh}check the change with team_diff and land it with team_integrate.` : `${weigh}use the result; there is nothing to land.`
   }
   if (status === "rejected") return "re-scope: team_stop it and delegate a Brief that fits."
-  return "answer the needs with team_followup, or team_stop it and delegate afresh."
+  return "answer the needs with team_followup (paths for a path need), or team_stop it and delegate afresh."
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;

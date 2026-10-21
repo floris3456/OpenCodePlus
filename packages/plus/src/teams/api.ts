@@ -32,7 +32,7 @@ import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
 import { wildcardMatch } from "../instructions/permission-catalog.js"
-import { rowState, type PermissionTable } from "../instructions/permission-enforce.js"
+import { decide, rowState, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
 import { render } from "./report.js"
@@ -265,8 +265,8 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   const resolved: ResolvedBrief = { ...brief, scope: { paths: [...brief.scope.paths, ...planPaths], forbidden }, checks }
 
   const paths = brief.scope.paths
-  const invalid = [...paths, ...forbidden].find((candidate) => !isScopePath(candidate))
-  if (invalid !== undefined) return fail("E_PATHS", `${PATHS_MESSAGE} Not one: "${invalid}".`, PATHS_ACCEPTED)
+  const scopeError = scopePathsRefusal(table, { ...brief, scope: { paths, forbidden } }, caller)
+  if (scopeError !== undefined) return scopeError
   const refused = briefRefusal(table, brief)
   if (refused !== undefined) return refused
   // A reviewer sees the commit its worktree starts from, by default your
@@ -1152,12 +1152,29 @@ async function resolveBase(repoRoot: string, base: string | undefined, defaultHe
   return verify.out
 }
 
-// What the member a brief names accepts: its own "Briefs it accepts" and
-// "Brief limits" rows (Permissions of team_get_context), read for the target,
-// never for the caller. Undefined when the brief passes them all.
-function briefRefusal(table: PermissionTable | undefined, brief: Brief): TeamApiResult | undefined {
+// Delegation and followup grant paths through the same caller rows and target
+// limits. A followup validates the whole widened scope, but grants only additions.
+export function scopePathsRefusal(
+  table: PermissionTable | undefined,
+  brief: Pick<Brief, "role" | "scope" | "deliverable">,
+  caller: TeamCaller,
+  grants = brief.scope.paths,
+): TeamApiResult | undefined {
   const target = brief.role
   const paths = brief.scope.paths
+  const invalid = [...paths, ...brief.scope.forbidden].find((candidate) => !isScopePath(candidate))
+  if (invalid !== undefined) return fail("E_PATHS", `${PATHS_MESSAGE} Not one: "${invalid}".`, PATHS_ACCEPTED)
+  const permission = decide(table?.toolRows(caller.agent, "team_delegate").filter((row) => row.item.category === "scope") ?? [], {
+    tool: "team_delegate",
+    input: { scope: { paths: grants } },
+    sessionID: caller.sessionID,
+    agent: caller.agent,
+    directory: caller.run.directory,
+    teamMembers: table?.teamMembers ?? new Set<string>(),
+  })
+  if (permission.refuse !== undefined) return fail("E_PERMISSION", permission.refuse)
+  const forbidden = grants.map((candidate) => scopeRefusal(brief.scope, candidate.endsWith("/*") ? candidate.slice(0, -2) : candidate)).find((message) => message !== undefined)
+  if (forbidden !== undefined) return fail("E_SCOPE", forbidden)
   const says = (id: string) => `${target} ${messageOf(table, target, "get_context", id)}`
   if (allows(table, target, "get_context", "accepts.scope-paths") && brief.deliverable.kind === "commit" && paths.length === 0)
     return fail("E_PATHS", `${says("accepts.scope-paths")} (Briefs it accepts → Scope paths for a commit).`, PATHS_ACCEPTED)
@@ -1168,13 +1185,20 @@ function briefRefusal(table: PermissionTable | undefined, brief: Brief): TeamApi
     if (outside.length > 0)
       return fail("E_PATHS", `${says("accepts.plan-files")} [${patterns.join(", ")}]; outside them: [${outside.join(", ")}].`, [...patterns])
   }
+  const maxPaths = Math.min(bound(table, target, "get_context", "limits.paths") ?? 40, 40)
+  if (paths.length > maxPaths)
+    return fail("E_BRIEF", `${target} accepts at most ${maxPaths} scope paths per brief (Brief limits → Paths per brief); this brief has ${paths.length}.`, { paths: maxPaths })
+  return undefined
+}
+
+// The target's remaining Brief requirements do not change with a scope grant.
+function briefRefusal(table: PermissionTable | undefined, brief: Brief): TeamApiResult | undefined {
+  const target = brief.role
+  const says = (id: string) => `${target} ${messageOf(table, target, "get_context", id)}`
   if (allows(table, target, "get_context", "accepts.reason") && (brief.reason === undefined || brief.reason.trim() === ""))
     return fail("E_REASON", `${says("accepts.reason")} (Briefs it accepts → A reason).`, { reason: "3 independent packages, each needs its own workers" })
   if (allows(table, target, "get_context", "accepts.check") && brief.checks.length === 0)
     return fail("E_BRIEF", `${says("accepts.check")} (Briefs it accepts → A check).`, { checks: 1 })
-  const maxPaths = bound(table, target, "get_context", "limits.paths")
-  if (maxPaths !== undefined && paths.length > maxPaths)
-    return fail("E_BRIEF", `${target} accepts at most ${maxPaths} scope paths per brief (Brief limits → Paths per brief); this brief has ${paths.length}.`, { paths: maxPaths })
   const maxChecks = bound(table, target, "get_context", "limits.checks")
   if (maxChecks !== undefined && brief.checks.length > maxChecks)
     return fail("E_BRIEF", `${target} accepts at most ${maxChecks} checks per brief (Brief limits → Checks per brief); this brief has ${brief.checks.length}.`, { checks: maxChecks })

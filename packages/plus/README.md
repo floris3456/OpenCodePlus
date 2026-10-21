@@ -486,6 +486,11 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   so the first successful turn after the resume stays `idle` instead of
   stopping again.
 - `team_followup delivery:"now"` works with no tool call from the child.
+- `team_followup paths:["src/cli.ts"]` answers a child's path need by adding
+  repository-relative files or `dir/*` to its saved edit scope. The caller's
+  grant permissions and the child's accepted paths and limits still apply;
+  forbidden paths stay forbidden. Plus refreshes its Edit scope row and
+  prefixes the prompt with the added paths; `paths` alone sends that note.
 - `team_get_context` on a root run has no `brief` and `briefPath: null`
   rather than failing `E_NO_BRIEF`. A delegated run's Brief is its first
   message, so `brief` (the rendered text) comes back only once a compaction

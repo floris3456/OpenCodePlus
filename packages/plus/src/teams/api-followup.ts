@@ -30,12 +30,12 @@ import {
   type RunBudget,
   type RunRecord,
 } from "./run.js"
-import { FollowupInput, toolError } from "./schema.js"
+import { FollowupInput, toolError, type ResolvedBrief } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { NO_REPOSITORY_PROGRAMS, provision, slug } from "./worktree.js"
-import type { TeamApiResult, TeamCaller } from "./api.js"
+import { scopePathsRefusal, type TeamApiResult, type TeamCaller } from "./api.js"
 
 function succeeded(value: unknown): TeamApiResult {
   return { ok: true, value }
@@ -127,8 +127,17 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   const landed =
     child.parent !== null &&
     (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.childBranch === child.branch && entry.state === "landed")
-  if (args.prompt === undefined && args.budget === undefined && args.rebase !== true)
-    return fail("E_NO_CONTENT", "team_followup requires prompt, budget, or both.", "prompt or budget")
+  if (args.prompt === undefined && args.budget === undefined && args.rebase !== true && !args.paths?.length)
+    return fail("E_NO_CONTENT", "team_followup requires prompt, budget, paths, or rebase.", "prompt, budget, paths, or rebase")
+  const briefPath = path.join(root, "runs", child.id, "brief.json")
+  const brief = args.paths === undefined ? undefined : await readJson<ResolvedBrief>(briefPath)
+  if (args.paths !== undefined && brief === undefined)
+    return fail("E_NO_BRIEF", `Run ${child.id} has no stored brief (runs/${child.id}/brief.json).`, { run: child.id })
+  const widened = brief === undefined ? undefined : { ...brief, scope: { ...brief.scope, paths: [...new Set([...brief.scope.paths, ...args.paths!])] } }
+  if (widened !== undefined) {
+    const refused = scopePathsRefusal(table, { ...widened, role: child.role }, caller, args.paths)
+    if (refused !== undefined) return refused
+  }
   // A landed child whose worktree was removed is reopened below, once nothing
   // refuses; a budget alone does not need its worktree.
   const reopen = landed && child.worktree === "removed"
@@ -176,13 +185,22 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     if ((inflight !== undefined && live.filter((run) => run.parent === parent.id).length >= inflight) || (members !== undefined && live.length >= members))
       return fail("E_BOUNDS", "No capacity to resume this child; end your turn and retry after an active run settles.", "retry after a run settles")
   }
+  if (args.paths !== undefined && args.delivery === "now" && child.state !== "idle" && child.state !== "stopped")
+    return fail("E_BUSY", `Child is working (attempt ${child.attempts.at(-1)?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`, { delivery: "queue" })
 
   // A reopened child already starts at its parent's HEAD, so it needs no rebase.
-  const reopened = reopen && (args.prompt !== undefined || args.rebase === true) ? await reopenChild(root, parent, child) : undefined
+  const reopened = reopen && (args.prompt !== undefined || args.rebase === true || args.paths !== undefined) ? await reopenChild(root, parent, child) : undefined
   const rebased = reopened === undefined && args.rebase === true ? await rebaseChild(root, parent, child) : undefined
   if (rebased !== undefined && !rebased.ok) return rebased.result
   const note = reopened?.note ?? rebased?.note
-  const prompt = note === undefined ? args.prompt : [note, args.prompt].filter((part) => part !== undefined).join("\n\n")
+  const scopeNote = args.paths === undefined ? undefined : `Plus widened your edit scope: you may now also change [${[...new Set(args.paths)].join(", ")}]; forbidden paths still apply.`
+  const prompt = scopeNote === undefined && note === undefined ? args.prompt : [scopeNote, note, args.prompt].filter((part) => part !== undefined).join("\n\n")
+  if (widened !== undefined) {
+    await atomicJson(briefPath, widened)
+    await updateRun(root, child.id, (record) => ({ ...record, paths: [...widened.scope.paths] }))
+    // As at delegation, republish the per-run Edit scope row before prompting.
+    await Effect.runPromise(ctx.agent.reload().pipe(Effect.ignore))
+  }
 
   if (prompt === undefined) {
     const updated = applyBudget(child, args.budget, args.reason, parent.id)
