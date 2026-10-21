@@ -328,29 +328,115 @@ test("create model with the member's team writes the member row, not a flat reco
   expect(stored).not.toHaveProperty("team")
 })
 
-async function labFixture() {
-  const project = await tempProject()
+async function labHost(project: string) {
   const ctx = fullContext({
     directory: project,
     models: [modelInfo("cliproxyapi", "claude-haiku-5-5"), { ...modelInfo("cliproxyapi", "claude-opus-5-5"), variants: [{ id: Model.VariantID.make("high"), settings: {} }] }],
     classifications: { "claude-haiku-5-5": "general", "claude-opus-5-5": "general" },
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
-  const api = createPlusApi(ctx, createState())
+  const state = createState()
+  const api = createPlusApi(ctx, state)
   await registerInstructionTools(ctx, api)
   const tools = await readTools(ctx)
+  return { api, ctx, state, tools }
+}
+
+async function labFixture(presetModel = true) {
+  const { api, ctx, tools } = await labHost(await tempProject())
   const create = need(tools, "instructions_create")
   await runOk(create, { kind: "team", team: "lab", level: "global", preset: "basic" })
   await runOk(need(tools, "instructions_set"), { id: "team:global:lab", state: "on" })
   for (const agent of ["planner", "orchestrator"]) {
     // A preset fallback must not beat the member's own active Global record.
-    await runOk(create, { kind: "model", level: "preset", agent, team: "basic", providerID: "cliproxyapi", modelID: "claude-haiku-5-5" })
+    if (presetModel) await runOk(create, { kind: "model", level: "preset", agent, team: "basic", providerID: "cliproxyapi", modelID: "claude-haiku-5-5" })
     await runOk(create, { kind: "model", level: "global", agent, team: "lab", providerID: "cliproxyapi", modelID: "claude-haiku-5-5" })
     await runOk(create, { kind: "model", level: "global", agent, team: "lab", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high" })
   }
   await runOk(need(tools, "instructions_set"), { id: "item:global:lab/:orchestrator:model:cliproxyapi/claude-opus-5-5@high", active: true })
   return { api, ctx, tools }
 }
+
+test("switching a member model without a preset or host model does not review its own previous selection", async () => {
+  const fixture = await labFixture(false)
+  const member = "item:global:lab/:orchestrator:model:cliproxyapi/"
+  await runOk(need(fixture.tools, "instructions_set"), { id: `${member}claude-haiku-5-5`, active: true })
+  // Start with the saved team/model records and no installed members.
+  const { api, tools, state } = await labHost(fixture.ctx.location.directory)
+  await api.refresh()
+  expect(state.modelBaselines.get("orchestrator")).toEqual({
+    applied: { providerID: "cliproxyapi", modelID: "claude-haiku-5-5" },
+    upstream: undefined,
+  })
+  await api.refresh()
+  await runOk(need(tools, "instructions_set"), { id: `${member}claude-opus-5-5@high`, active: true })
+  const snapshot = (await api.snapshot()).value
+  const active = snapshot.records.filter(isModelRecord).find((record) => record.level === "global" && record.agent === "orchestrator" && record.active)
+  expect(active?.basedOn).toBe("")
+  expect(expandedTree(memoInputOf(snapshot)).find((row) => row.id === `${member}claude-opus-5-5@high`)?.badges.review).not.toBe(true)
+  expect(await runOk(need(tools, "instructions_find"), { team: "lab", agent: "orchestrator", type: "model", is: "review" })).toMatchObject({ total: 0 })
+  // A fresh installation must agree with the stored activation as well.
+  const reopened = await labHost(fixture.ctx.location.directory)
+  await reopened.api.refresh()
+  await reopened.api.refresh()
+  expect(await runOk(need(reopened.tools, "instructions_find"), { team: "lab", agent: "orchestrator", type: "model", is: "review" })).toMatchObject({ total: 0 })
+})
+
+test.each(["member", "agent"] as const)("a %s model only needs review after its inherited Defaults model changes", async (kind) => {
+  const { tools } = await memberOnlyFixture()
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const show = need(tools, "instructions_read")
+  const find = need(tools, "instructions_find")
+  const agent = kind === "member" ? "Planner" : "other"
+  const catalogue = kind === "member" ? "teams" : "agents"
+  const owner = kind === "member" ? { agent, team: "Basic" } : { agent }
+  const row = `item:global:${kind === "member" ? "Basic/:Planner" : agent}:model:acme/nova-3`
+  if (kind === "agent") {
+    await runOk(create, { kind: "agent", id: agent, scope: "global" })
+    await runOk(create, { kind: "model", level: "defaults", catalogue, providerID: "acme", modelID: "nova-2" })
+  }
+  await runOk(create, { kind: "model", level: "global", ...owner, providerID: "acme", modelID: "nova-3" })
+  await runOk(set, { id: row, active: true })
+  expect(await runOk(show, { id: row, view: "record" })).toMatchObject({ record: { active: true, basedOn: "acme/nova-2" } })
+  expect(await runOk(find, { agent, level: "global", type: "model", is: "review" })).toMatchObject({ total: 0 })
+
+  await runOk(create, { kind: "model", level: "defaults", catalogue, providerID: "acme", modelID: "nova-3" })
+  expect(await runOk(find, { agent, level: "global", type: "model", is: "review" })).toMatchObject({ total: 1, rows: [`${row} | active review | set here`] })
+  await runOk(set, { id: row, active: true })
+  expect(await runOk(show, { id: row, view: "record" })).toMatchObject({ record: { active: true, basedOn: "acme/nova-3" } })
+  expect(await runOk(find, { agent, level: "global", type: "model", is: "review" })).toMatchObject({ total: 0 })
+})
+
+test("switching a plain agent model without a host or Defaults model records no upstream", async () => {
+  const { api, tools } = await memberOnlyFixture()
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  await runOk(create, { kind: "agent", id: "other", scope: "global" })
+  for (const modelID of ["nova-2", "nova-3"]) {
+    await runOk(create, { kind: "model", level: "global", agent: "other", providerID: "acme", modelID })
+  }
+  await runOk(set, { id: "item:global:other:model:acme/nova-2", active: true })
+  await runOk(set, { id: "item:global:other:model:acme/nova-3", active: true })
+  await api.refresh()
+  expect(await runOk(need(tools, "instructions_read"), { id: "item:global:other:model:acme/nova-3", view: "record" })).toMatchObject({ record: { active: true, basedOn: "" } })
+  expect(await runOk(need(tools, "instructions_find"), { agent: "other", type: "model", is: "review" })).toMatchObject({ total: 0 })
+})
+
+test("reactivating a legacy member model heals a basedOn that recorded its previous local selection", async () => {
+  const { api, tools } = await labFixture(false)
+  const snapshot = (await api.snapshot()).value
+  const active = snapshot.records.filter(isModelRecord).find((record) => record.level === "global" && record.agent === "orchestrator" && record.active)
+  if (active === undefined) throw new Error("missing active member model")
+  const saved = await api.mutate({ changes: { upsert: [{ ...active, basedOn: "cliproxyapi/claude-haiku-5-5" }], remove: [] } })
+  expect(saved.ok).toBe(true)
+  const find = need(tools, "instructions_find")
+  expect(await runOk(find, { team: "lab", agent: "orchestrator", type: "model", is: "review" })).toMatchObject({ total: 1 })
+  const row = "item:global:lab/:orchestrator:model:cliproxyapi/claude-opus-5-5@high"
+  await runOk(need(tools, "instructions_set"), { id: row, active: true })
+  expect(await runOk(need(tools, "instructions_read"), { id: row, view: "record" })).toMatchObject({ record: { active: true, basedOn: "" } })
+  expect(await runOk(find, { team: "lab", agent: "orchestrator", type: "model", is: "review" })).toMatchObject({ total: 0 })
+})
 
 test("preset team members badge their own active model and agree with the installed runtime", async () => {
   const { api, ctx, tools } = await labFixture()
