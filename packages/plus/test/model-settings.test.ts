@@ -46,6 +46,7 @@ import {
   modelFieldItemId,
   modelSettingItemId,
   modelSettingParentRowId,
+  modelSettingEffective,
   modelSettingRowId,
   modelSettingValue,
   parseModelDefaultItemId,
@@ -165,11 +166,15 @@ test("warm while waiting resolves row, this model, Every model, built-in 2h, rou
   expect(modelSettingValue(modelDefaultView({ every }), "waiting", undefined)).toBe("3h · every model")
 })
 
-test("Warm as subagent validates on/off and resolves agent row, this model, Every model, built-in off", () => {
+test("Warm as subagent validates off/on/a time and resolves agent row, this model, Every model, built-in off", () => {
   expect(warmingFieldsOf({ subagent: " ON " })).toEqual({ fields: { subagent: "on" } })
   expect(warmingFieldsOf({ subagent: "OFF" })).toEqual({ fields: { subagent: "off" } })
   expect(warmingFieldsOf({ subagent: "" })).toEqual({ fields: { subagent: null } })
-  expect(warmingFieldsOf({ subagent: "2h" })).toHaveProperty("error")
+  expect(warmingFieldsOf({ subagent: "90m" })).toEqual({ fields: { subagent: "1h30m" } })
+  for (const bad of ["soon", "30s", "25h"])
+    expect(warmingFieldsOf({ subagent: bad })).toEqual({
+      error: `Warm as subagent must be off, on or a time from 1m to 24h such as 15m or 1h30m, got "${bad}"`,
+    })
   expect(effectiveWarming({ host: { on: true } }).subagent).toEqual({ value: false, from: "built-in" })
   const every = record({ subagent: "on" })
   const model = record({ providerID: "anthropic", modelID: "claude", subagent: "off" })
@@ -178,8 +183,39 @@ test("Warm as subagent validates on/off and resolves agent row, this model, Ever
   for (const level of ["project", "global", "defaults", "preset"] as const)
     expect(effectiveWarming({ row: { subagent: { value: "on", level } }, model, every }).subagent).toEqual({ value: true, from: level })
   expect(effectiveWarming({ model: record({ subagent: "invalid" }), every }).subagent).toEqual({ value: true, from: "every" })
-  expect(modelSettingValue(modelDefaultView({ every }), "subagent", undefined)).toBe("on · every model")
-  expect(modelDefaultValue(modelDefaultView({ every }))).toContain("subagent on")
+  // "on" with no time anywhere warms for the warming time (built-in 30m, rounded to 32m by the 4m ping).
+  expect(modelSettingValue(modelDefaultView({ every }), "subagent", undefined)).toBe("32m · built-in")
+  expect(modelDefaultValue(modelDefaultView({ every }))).toContain("subagent 32m")
+})
+
+test("Warm as subagent's own time wins over the warming time; on keeps the time below it; it rounds to whole pings", () => {
+  const every = record({ warming: "1h", subagent: "15m", interval: "4m" })
+  // 15m with a 4m ping warms 16m: the window ends on a ping.
+  expect(effectiveWarming({ every }).subagentDuration).toEqual({ value: 16 * MINUTE, from: "every" })
+  expect(effectiveWarming({ every }).duration.value).toBe(60 * MINUTE)
+  // "on" on a more specific row keeps the time Every model sets.
+  const model = record({ providerID: "anthropic", modelID: "claude", subagent: "on" })
+  expect(effectiveWarming({ model, every }).subagent).toEqual({ value: true, from: "model" })
+  expect(effectiveWarming({ model, every }).subagentDuration).toEqual({ value: 16 * MINUTE, from: "every" })
+  // An agent row's own time wins over both.
+  expect(effectiveWarming({ row: { subagent: { value: "45m", level: "project" } }, model, every }).subagentDuration).toEqual({
+    value: 48 * MINUTE,
+    from: "project",
+  })
+  // With no time anywhere, "on" is the warming time.
+  expect(effectiveWarming({ every: record({ warming: "1h", subagent: "on", interval: "4m" }) }).subagentDuration).toEqual({ value: 60 * MINUTE, from: "every" })
+  // Off sets no time; a time below it is not used.
+  expect(effectiveWarming({ model: record({ subagent: "off" }), every }).subagent.value).toBe(false)
+  // How the rows read: the time, a row of its own that says only "on", off.
+  const view = modelDefaultView({ key: { providerID: "anthropic", modelID: "claude" }, record: model, every })
+  expect(modelSettingEffective(view, "subagent")).toEqual({ text: "16m", from: "every" })
+  expect(modelSettingValue(view, "subagent", model)).toBe("on · 16m")
+  expect(modelDefaultValue(modelDefaultView({ every }))).toContain("subagent 16m")
+  expect(modelSettingEffective(modelDefaultView({ every: record({ subagent: "off" }) }), "subagent")).toEqual({ text: "off", from: "every" })
+  // Saving rounds the stored time like Warming's.
+  expect(roundedWarmingFor([every], {}, undefined, "subagent")).toBe("16m")
+  expect(roundedWarmingFor([record({ subagent: "16m", interval: "4m" })], {}, undefined, "subagent")).toBeUndefined()
+  expect(roundedWarmingFor([record({ subagent: "on" })], {}, undefined, "subagent")).toBeUndefined()
 })
 
 test("decodeHostWarming reads the scoped config forms and ignores anything else", () => {
@@ -846,10 +882,16 @@ test("Warm as subagent persists through tools, RPC, snapshot and field reset on 
     await runOk(set, { id: row, subagent: " ON " })
     expect(await runOk(show, { id: row })).toMatchObject({ subagent: { value: true, from: "model" } })
     expect((await api.snapshot()).value.modelSettings?.some((entry) => entry.subagent === "on")).toBe(true)
-    expect(await runOk(show, { id: field })).toMatchObject({ field: "subagent", value: { text: "on", from: "model" } })
+    // "on" warms for the warming time: built-in 30m, 32m in whole 4m pings.
+    expect(await runOk(show, { id: field })).toMatchObject({ field: "subagent", value: { text: "32m", from: "built-in" } })
+    expect(await runOk(show, { id: row })).toMatchObject({ subagent: { value: true, from: "model", duration: 32 * MINUTE } })
     await runOk(set, { id: field, text: "off" })
     expect(await runOk(show, { id: field })).toMatchObject({ value: { text: "off", from: "model" } })
-    expect((await runFail(set, { id: row, subagent: "2h" })).message).toContain("must be on or off")
+    // Its own time, rounded up to whole pings when saved.
+    await runOk(set, { id: row, subagent: "10m" })
+    expect(await runOk(show, { id: field })).toMatchObject({ value: { text: "12m", from: "model" } })
+    expect((await api.snapshot()).value.modelSettings?.find((entry) => entry.subagent !== undefined)?.subagent).toBe("12m")
+    expect((await runFail(set, { id: row, subagent: "soon" })).message).toContain("must be off, on or a time")
     await runOk(reset, { id: field })
     expect(await runOk(show, { id: field })).toMatchObject({ value: { text: "off", from: "built-in" } })
   }
@@ -859,6 +901,8 @@ test("Warm as subagent persists through tools, RPC, snapshot and field reset on 
   expect((await api.snapshot()).value.records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ subagent: "on" })
   await runOk(set, { id: "item:project:build:model:anthropic/claude", subagent: "off", interval: "4m" })
   expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ subagent: "off", interval: "4m" })
+  await runOk(set, { id: field, text: "20m" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ subagent: "20m" })
   await runOk(reset, { id: field })
   expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).not.toHaveProperty("subagent")
   const handlers = createHandlers(ctx, createState(), { builtins: [] })

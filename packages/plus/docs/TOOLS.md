@@ -108,9 +108,11 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   (30s–24h, e.g. `4m`, `3m30s`) and the keep-alive text, `waiting` sets warm
   while waiting (how long a chat that waits on its own work stays warm when
   warming is on for it: `off` or 1m–24h, built-in `2h`), and `subagent` sets
-  **Warm as subagent** (`on`/`off`, empty inherits, built-in off). It resolves
+  **Warm as subagent** (`off`, `on`, or its own time 1m–24h such as `15m`,
+  rounded up to whole intervals; empty inherits, built-in off). It resolves
   from the agent model row through Defaults › Models › this model, then Every
-  model. It warms sessions with a parent using the same tab's times and prompt,
+  model; `on` keeps the time below it, else the warming time. It warms sessions
+  with a parent for that time with the same tab's interval and prompt,
   independently of `warming`; the chat's own switch wins. Top-level chats and
   team members are unaffected. On any other row these fields
   they are refused; `resolve` resolves a review row; on a perm row `label`,

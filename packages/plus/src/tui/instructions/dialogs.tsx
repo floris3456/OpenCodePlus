@@ -1694,7 +1694,7 @@ function fieldHelp(field: ModelDefaultField, variants: readonly string[]): strin
   if (field === "waiting")
     return "While a chat waits on its own work (a running command or tool, a subagent, a team run), it stays warm at least this long after its last request, when warming is on for it. off keeps its warming time; a time is 1m to 24h and rounds up to whole pings."
   if (field === "subagent")
-    return "Warm sessions with a parent using this tab's times and keep-alive prompt, independently of Warming. Built-in: off. The chat's own switch wins. Top-level chats and team members are unaffected."
+    return "Warm sessions with a parent, independently of Warming: off, on (the Warming time) or a time from 1m to 24h such as 15m, rounded up to whole pings. They use this tab's ping and keep-alive prompt. Built-in: off. The chat's own switch wins. Top-level chats and team members are unaffected."
   if (field === "prompt") return "The text of the keep-alive request."
   if (field === "compactionInstructions") return "The summary request's instructions; an empty prompt is a value of its own."
   if (field === "compactionInput") return "Early compaction at this estimated input token count. Positive whole number or off; off overrides inherited triggers. Context safety still applies."

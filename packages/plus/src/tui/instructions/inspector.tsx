@@ -113,7 +113,12 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     ] as Fact)
     facts.push(["ping every", `${formatDuration(defaults.interval.value)} · ${fromWords(defaults.interval.from)}`])
     facts.push(["while waiting", `${formatWaiting(defaults.waiting.value)} · ${fromWords(defaults.waiting.from)}`])
-    facts.push(["warm as subagent", `${defaults.subagent.value ? "on" : "off"} · ${fromWords(defaults.subagent.from)}`])
+    facts.push([
+      "warm as subagent",
+      defaults.subagent.value
+        ? `${formatDuration(defaults.subagentDuration.value)} · ${fromWords(defaults.subagentDuration.from)}`
+        : `off · ${fromWords(defaults.subagent.from)}`,
+    ])
     facts.push(["keep-alive", `${defaults.prompt.value} · ${fromWords(defaults.prompt.from)}`])
     if (defaults.effort !== undefined) facts.push(["effort", `${defaults.effort.value} · ${fromWords(defaults.effort.from)}`])
     facts.push(["applies to", defaults.key.providerID === undefined ? "every model" : `${defaults.key.providerID}/${defaults.key.modelID}, unless an agent's own model row sets a field`])
@@ -274,8 +279,8 @@ function modelDefaultsNotes(node: TreeNode, snapshot: Snapshot): string[] {
     return [
       ...rows,
       "Warm as subagent resolves through this model, then Every model, then built-in off.",
-      "It warms sessions with a parent using this tab's times and prompt, independently of Warming. The chat's own switch wins; top-level chats and team members are unaffected.",
-      "Enter picks Inherit, On or Off. r restores inheritance.",
+      "It warms sessions with a parent with this tab's ping and prompt, independently of Warming: for its own time, or with On for the Warming time. The chat's own switch wins; top-level chats and team members are unaffected.",
+      "Enter picks Inherit, Off, On or a time; Custom… types one from 1m to 24h. A time rounds up to whole pings. r restores inheritance.",
     ]
   if (defaults.key.providerID !== undefined) rows.push("Below this row: Every model, then opencode.json, then the built-in defaults.")
   else rows.push("Below this row: opencode.json and the built-in defaults.")

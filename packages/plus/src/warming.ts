@@ -113,21 +113,23 @@ export function decideWarming(input: {
     ...(input.rows.every === undefined ? {} : { every: input.rows.every }),
     base,
   })
+  // A session with a parent warms for Warm as subagent's own time when a row sets one.
   const enabled = input.subagent ? effective.subagent : effective.on
-  const level = plusLevel(enabled, effective.duration, effective.interval, effective.prompt)
+  const duration = input.subagent ? effective.subagentDuration : effective.duration
+  const level = plusLevel(enabled, duration, effective.interval, effective.prompt)
   if (input.chat === "off") return { settings: undefined, source: "chat" }
   // The chat switch turns warming on for this window wherever the rows would
   // leave it off; it still picks up their durations and prompt.
   if (input.chat === "on")
     return {
-      settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
+      settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: duration.value },
       source: "chat",
       waiting: effective.waiting.value,
     }
   const source: WarmingSource = level === undefined ? "config" : "model"
   if (!enabled.value) return { settings: undefined, source, ...(level === undefined ? {} : { level }) }
   return {
-    settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
+    settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: duration.value },
     source,
     ...(level === undefined ? {} : { level }),
     waiting: effective.waiting.value,

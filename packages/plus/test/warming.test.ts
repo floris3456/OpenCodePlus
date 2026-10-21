@@ -149,6 +149,35 @@ test("Warm as subagent is independent of top-level warming and the chat switch w
   expect(decideWarming({ ...child, rows: { every: defaultsRecord({ subagent: "on", warming: "45m", interval: "5m" }) } }).settings?.duration).toBe(45 * MINUTE)
 })
 
+test("Warm as subagent's own time sets a subagent's window, for the chat switch too; a top-level chat keeps the warming time", () => {
+  const rows: WarmingRows = { every: defaultsRecord({ warming: "1h", subagent: "10m", interval: "5m", prompt: "child ping" }) }
+  const child = { configured: undefined, rows, chat: undefined, subagent: true, model: claude }
+  expect(decideWarming(child)).toMatchObject({ settings: { duration: 10 * MINUTE, interval: 5 * MINUTE, prompt: "child ping" }, source: "model", level: "defaults" })
+  expect(decideWarming({ ...child, chat: "on" }).settings?.duration).toBe(10 * MINUTE)
+  expect(decideWarming({ ...child, subagent: false }).settings?.duration).toBe(60 * MINUTE)
+  // An agent row's own time wins; one that says only "on" keeps the 10m below it.
+  expect(decideWarming({ ...child, rows: { ...rows, row: { subagent: { value: "25m", level: "project" } } } })).toMatchObject({
+    settings: { duration: 25 * MINUTE },
+    level: "project",
+  })
+  expect(decideWarming({ ...child, rows: { ...rows, row: { subagent: { value: "on", level: "project" } } } }).settings?.duration).toBe(10 * MINUTE)
+  // A host proposal's time does not replace the subagent's own.
+  expect(decideWarming({ ...child, configured }).settings?.duration).toBe(10 * MINUTE)
+})
+
+test("a subagent hook event warms for Warm as subagent's time, and waiting still lengthens it", async () => {
+  const store = createWarmingStore(await tempFile())
+  const rows = { every: defaultsRecord({ warming: "1h", subagent: "15m", interval: "5m", waiting: "3h" }) }
+  const idle = event({ subagent: true, phase: "warm", settings: undefined })
+  await store.decide(idle, rows)
+  expect(idle.settings?.duration).toBe(15 * MINUTE)
+  const busy = event({ subagent: true, phase: "activity", settings: undefined })
+  store.running(busy.sessionID, true)
+  await store.decide(busy, rows)
+  expect(busy.settings?.duration).toBe(180 * MINUTE)
+  store.dispose()
+})
+
 test("subagent hook events use the model switch at activity, resume and every ping, including waiting time", async () => {
   const store = createWarmingStore(await tempFile())
   const rows = { every: defaultsRecord({ warming: "45m", subagent: "on", interval: "5m", waiting: "3h", prompt: "child ping" }) }

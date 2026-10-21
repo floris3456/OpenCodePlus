@@ -146,7 +146,7 @@ const SetDescription =
   "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
   "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
-  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: on/off, built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
+  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
   "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
 
 const EditDescription =
@@ -2072,7 +2072,11 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           warming: { on: resolved.on.value, from: resolved.on.from, ...(resolved.on.value ? { duration: resolved.duration.value } : {}) },
           interval: { value: resolved.interval.value, from: resolved.interval.from },
           waiting: { value: resolved.waiting.value, from: resolved.waiting.from },
-          subagent: { value: resolved.subagent.value, from: resolved.subagent.from },
+          subagent: {
+            value: resolved.subagent.value,
+            from: resolved.subagent.from,
+            ...(resolved.subagent.value ? { duration: resolved.subagentDuration.value } : {}),
+          },
           prompt: { value: resolved.prompt.value, from: resolved.prompt.from },
           ...(resolved.effort === undefined ? {} : { effort: { value: resolved.effort.value, from: resolved.effort.from } }),
           ...(record === undefined ? {} : { record }),

@@ -51,7 +51,7 @@ export interface ModelSettingsRecord extends ModelCompactionFields {
   readonly interval?: string
   /** Warm while waiting on its own work: "off" or a time such as "2h"; absent inherits. */
   readonly waiting?: string
-  /** Warm a session with a parent: "on" or "off"; absent inherits. */
+  /** Warm a session with a parent: "off", "on" (the warming time) or its own time such as "15m"; absent inherits. */
   readonly subagent?: string
   /** The keep-alive request's text; absent inherits. */
   readonly prompt?: string
@@ -126,6 +126,11 @@ export interface EffectiveWarming {
   readonly waiting: Effective<number>
   /** Independent switch for sessions with a parent; built-in off. */
   readonly subagent: Effective<boolean>
+  /**
+   * How long a session with a parent stays warm, rounded up to whole intervals: the time a
+   * Warm as subagent row sets, else (a row that says only "on") the warming time.
+   */
+  readonly subagentDuration: Effective<number>
   readonly prompt: Effective<string>
 }
 
@@ -158,6 +163,7 @@ interface Layer {
   readonly interval?: number
   readonly waiting?: number
   readonly subagent?: boolean
+  readonly subagentDuration?: number
   readonly prompt?: string
 }
 
@@ -184,6 +190,10 @@ export function effectiveWarming(input: {
   const duration = pick("duration")
   const waitingLayer = layers.find((entry) => entry.waiting !== undefined)
   const subagent = layers.find((entry) => entry.subagent !== undefined)
+  // "on" keeps the time of the level below, as Warming does; with no time anywhere it is the warming time.
+  const subagentTime = layers.find((entry) => entry.subagentDuration !== undefined)
+  const subagentDuration: Effective<number> =
+    subagentTime?.subagentDuration === undefined ? duration : { value: subagentTime.subagentDuration, from: subagentTime.from }
   const waiting: Effective<number> =
     waitingLayer?.waiting === undefined
       ? { value: WAITING_DEFAULT_MS, from: "built-in" }
@@ -194,6 +204,7 @@ export function effectiveWarming(input: {
     interval,
     waiting: { ...waiting, value: waiting.value === 0 ? 0 : roundWarming(waiting.value, interval.value) },
     subagent: { value: subagent?.subagent ?? false, from: subagent?.from ?? "built-in" },
+    subagentDuration: { ...subagentDuration, value: roundWarming(subagentDuration.value, interval.value) },
     prompt: pick("prompt"),
   }
 }
@@ -217,12 +228,12 @@ function rowLayers(row: ResolvedModelFields | undefined): Layer[] {
   const warming = row.warming === undefined ? undefined : warmingLayer(row.warming.value, row.warming.level)
   const interval = row.interval === undefined ? undefined : intervalOf(row.interval.value)
   const waiting = row.waiting === undefined ? undefined : waitingOf(row.waiting.value)
-  const subagent = row.subagent === undefined ? undefined : switchOf(row.subagent.value)
+  const subagent = row.subagent === undefined ? undefined : subagentOf(row.subagent.value)
   return [
     ...(warming === undefined ? [] : [warming]),
     ...(row.interval === undefined || interval === undefined ? [] : [{ from: row.interval.level, interval }]),
     ...(row.waiting === undefined || waiting === undefined ? [] : [{ from: row.waiting.level, waiting }]),
-    ...(row.subagent === undefined || subagent === undefined ? [] : [{ from: row.subagent.level, subagent }]),
+    ...(row.subagent === undefined || subagent === undefined ? [] : [{ from: row.subagent.level, ...subagent }]),
     ...(row.prompt === undefined ? [] : [{ from: row.prompt.level, prompt: row.prompt.value }]),
   ]
 }
@@ -231,14 +242,14 @@ function recordLayer(record: ModelSettingsRecord, from: SettingFrom): Layer {
   const warming = record.warming === undefined ? undefined : warmingLayer(record.warming, from)
   const interval = record.interval === undefined ? undefined : intervalOf(record.interval)
   const waiting = record.waiting === undefined ? undefined : waitingOf(record.waiting)
-  const subagent = record.subagent === undefined ? undefined : switchOf(record.subagent)
+  const subagent = record.subagent === undefined ? undefined : subagentOf(record.subagent)
   return {
     from,
     ...(warming?.on === undefined ? {} : { on: warming.on }),
     ...(warming?.duration === undefined ? {} : { duration: warming.duration }),
     ...(interval === undefined ? {} : { interval }),
     ...(waiting === undefined ? {} : { waiting }),
-    ...(subagent === undefined ? {} : { subagent }),
+    ...subagent,
     ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
   }
 }
@@ -260,6 +271,14 @@ function intervalOf(text: string): number | undefined {
 function waitingOf(text: string): number | undefined {
   const parsed = parseWaiting(text)
   return "error" in parsed ? undefined : parsed.waiting
+}
+
+// Warm as subagent takes Warming's grammar: off, on, or a total time.
+function subagentOf(text: string): { readonly subagent: boolean; readonly subagentDuration?: number } | undefined {
+  const parsed = parseWarming(text)
+  if ("error" in parsed) return undefined
+  if (!parsed.on) return { subagent: false }
+  return { subagent: true, ...(parsed.duration === undefined ? {} : { subagentDuration: parsed.duration }) }
 }
 
 /**
@@ -365,18 +384,20 @@ export function setModelSettingsRecord(
 }
 
 /**
- * A row's own warming time rounded up to a whole number of the interval it
- * resolves to (its own, else the rows below it), in stored form; undefined
- * when the row sets no time or the time is already whole. Saving rounds, so
- * the row reads what warming does.
+ * A row's own warming (or Warm as subagent) time rounded up to a whole number
+ * of the interval it resolves to (its own, else the rows below it), in stored
+ * form; undefined when the row sets no time or the time is already whole.
+ * Saving rounds, so the row reads what warming does.
  */
 export function roundedWarmingFor(
   records: readonly ModelSettingsRecord[],
   key: ModelSettingsKey,
   host?: HostWarming,
+  field: "warming" | "subagent" = "warming",
 ): string | undefined {
   const record = settingsFor(records, key)
-  const parsed = record?.warming === undefined ? undefined : parseWarming(record.warming)
+  const text = record?.[field]
+  const parsed = text === undefined ? undefined : parseWarming(text)
   const duration = parsed === undefined || "error" in parsed || !parsed.on ? undefined : parsed.duration
   if (duration === undefined) return undefined
   const every = isEvery(key) ? undefined : everySettings(records)
@@ -407,7 +428,7 @@ export function warmingFieldsOf(input: {
   if (interval !== undefined && typeof interval === "object" && interval !== null) return interval
   const waiting = input.waiting === undefined ? undefined : waitingField(input.waiting)
   if (waiting !== undefined && typeof waiting === "object" && waiting !== null) return waiting
-  const subagent = switchField(input.subagent, "Warm as subagent")
+  const subagent = input.subagent === undefined ? undefined : subagentField(input.subagent)
   if (subagent !== undefined && typeof subagent === "object" && subagent !== null) return subagent
   const prompt = input.prompt === undefined ? undefined : promptField(input.prompt)
   if (prompt !== undefined && typeof prompt === "object" && prompt !== null) return prompt
@@ -426,6 +447,13 @@ function warmingField(text: string): string | null | { readonly error: string } 
   if (text.trim().length === 0) return null
   const parsed = parseWarming(text)
   if ("error" in parsed) return parsed
+  return formatWarming(parsed)
+}
+
+function subagentField(text: string): string | null | { readonly error: string } {
+  if (text.trim().length === 0) return null
+  const parsed = parseWarming(text)
+  if ("error" in parsed) return { error: `Warm as subagent must be off, on or a time from 1m to 24h such as 15m or 1h30m, got "${text.trim()}"` }
   return formatWarming(parsed)
 }
 
@@ -829,6 +857,7 @@ export interface ModelDefaultView {
   readonly interval: Effective<number>
   readonly waiting: Effective<number>
   readonly subagent: Effective<boolean>
+  readonly subagentDuration: Effective<number>
   readonly prompt: Effective<string>
   readonly effort?: Effective<string>
   /** The row itself sets at least one field (the rest may still come from below). */
@@ -852,6 +881,7 @@ export function modelDefaultView(input: {
     interval: effective.interval,
     waiting: effective.waiting,
     subagent: effective.subagent,
+    subagentDuration: effective.subagentDuration,
     prompt: effective.prompt,
     ...(effort === undefined ? {} : { effort }),
     own: input.record !== undefined,
@@ -869,7 +899,7 @@ export function modelDefaultValue(view: ModelDefaultView): string {
   const core = view.on.value ? `warm ${formatDuration(view.duration.value)} · every ${formatDuration(view.interval.value)}` : "warming off"
   const waiting = view.on.value && view.waiting.from !== "built-in" ? ` · waiting ${formatWaiting(view.waiting.value)}` : ""
   const effort = view.effort === undefined ? "" : ` · effort ${view.effort.value}`
-  const subagent = view.subagent.from === "built-in" ? "" : ` · subagent ${view.subagent.value ? "on" : "off"}`
+  const subagent = view.subagent.from === "built-in" ? "" : ` · subagent ${view.subagent.value ? formatDuration(view.subagentDuration.value) : "off"}`
   return `${core}${waiting}${subagent}${effort}${view.own ? "" : sourceSuffix(view)}`
 }
 
@@ -898,6 +928,7 @@ function sourceSuffix(view: ModelDefaultView): string {
       view.interval,
       ...(view.on.value ? [view.waiting] : []),
       view.subagent,
+      ...(view.subagent.value ? [view.subagentDuration] : []),
       ...(view.effort === undefined ? [] : [view.effort]),
     ].map((field) => field.from),
   )
@@ -1142,6 +1173,7 @@ export function modelSettingValue(view: ModelDefaultView, field: ModelSettingsFi
   if (own?.[field] === undefined) return `${effective.text} · ${sourceWord(effective.from)}`
   // "on" keeps the total time of the level below.
   if (field === "warming" && own.warming === "on") return `on · ${effective.text}`
+  if (field === "subagent" && own.subagent === "on") return `on · ${effective.text}`
   return effective.text
 }
 
@@ -1154,7 +1186,11 @@ export function modelSettingEffective(
     return { text: view.on.value ? formatDuration(view.duration.value) : "off", from: view.on.value ? view.duration.from : view.on.from }
   if (field === "interval") return { text: formatDuration(view.interval.value), from: view.interval.from }
   if (field === "waiting") return { text: formatWaiting(view.waiting.value), from: view.waiting.from }
-  if (field === "subagent") return { text: view.subagent.value ? "on" : "off", from: view.subagent.from }
+  if (field === "subagent")
+    return {
+      text: view.subagent.value ? formatDuration(view.subagentDuration.value) : "off",
+      from: view.subagent.value ? view.subagentDuration.from : view.subagent.from,
+    }
   if (field === "prompt") return { text: view.prompt.value, from: view.prompt.from }
   return view.effort === undefined ? undefined : { text: view.effort.value, from: view.effort.from }
 }
@@ -1264,6 +1300,9 @@ export const WARMING_TIMES: readonly string[] = ["15m", "30m", "45m", "1h", "1h3
 /** Warm while waiting's fixed times; Custom… types any other time from 1m to 24h. */
 export const WAITING_TIMES: readonly string[] = ["1h", "1h30m", "2h", "3h", "4h", "8h"]
 
+/** Warm as subagent's fixed times: a subagent's chat is usually short-lived. Custom… types any other from 1m to 24h. */
+export const SUBAGENT_TIMES: readonly string[] = ["5m", "10m", "15m", "30m", "45m", "1h", "2h"]
+
 /** The dropdown value that opens the one-line prompt; no time or variant is spelled this way. */
 export const CUSTOM_CHOICE = "custom…"
 
@@ -1287,8 +1326,10 @@ export function modelFieldChoices(
   if (field === "subagent")
     return [
       { title: `Inherit (now ${input.now})`, value: "" },
-      { title: "On", value: "on" },
       { title: "Off", value: "off" },
+      { title: "On", value: "on", description: "keeps the Warming time" },
+      ...SUBAGENT_TIMES.map((time) => ({ title: time, value: time })),
+      { title: "Custom…", value: CUSTOM_CHOICE },
     ]
   if (field === "warming")
     return [
