@@ -209,7 +209,9 @@ Brief and handoff files under docs/plans/ and docs/handoffs/.
 ## Shell
 <!-- requires: tool:shell -->
 Use the shell only to build and verify, and to remove a Brief or handoff file
-of yours once its work has landed: rm with one plain path per file.
+of yours once its work has landed: rm with one plain path per file. It writes
+no files: verify with commands that read and run (bun test, bun src/…), and
+compare with earlier work through team_diff.
 
 ## Splitting the work
 With a plan, delegate its tasks: the plan file as the briefFile and the task

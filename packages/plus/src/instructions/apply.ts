@@ -1355,8 +1355,8 @@ function nativePlan(candidate: ToolCandidate): ToolPlan {
 
 function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boolean }): ToolCandidate[] {
   const edited = editedParams(input)
-  const modes = new Set(input.records.filter((record) => record.item.startsWith("toolmode:")).map((record) => record.item))
-  const exposures = new Map(input.items.filter((item) => modes.has(item.id)).map((item) => [item.id, item]))
+  // Every exposure row, not only stored ones: a member preset sets exposure too.
+  const exposures = new Map(input.items.filter((item) => item.id.startsWith("toolmode:")).map((item) => [item.id, item]))
   return input.agents.flatMap((agent) =>
     input.items.flatMap((item) => {
       if (item.kind !== "tool") return []

@@ -13,7 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHandlers, createPlusApi, createState } from "../../src/index.js"
-import { apply } from "../../src/instructions/apply.js"
+import { apply, sessionPlans } from "../../src/instructions/apply.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { itemOf } from "../../src/instructions/snapshot.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "../../src/instructions/team-policy-rows.js"
@@ -24,7 +24,7 @@ import { saveRun } from "../../src/teams/run.js"
 import type { RunRecord } from "../../src/teams/run.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { agentHarness, agentInfo, context, fullContext, toolHarness } from "../harness.js"
-import { change, linked, presetInput, resolvedStates, type TeamMember } from "./preset-table.js"
+import { change, linked, presetInput, presetTable, resolvedStates, type TeamMember } from "./preset-table.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -181,6 +181,22 @@ test("an orchestrator-preset member keeps shell and reads outside its checkout",
   )
   expect(has(permissions, "external_directory", "*", "deny")).toBe(false)
   expect(has(permissions, "read", "*.key", "deny")).toBe(true)
+})
+
+test("members other than the build seat get search direct and no execute; the seat keeps Code Mode", () => {
+  const members = [linked("planner", "planner"), linked("implementer", "implementer"), linked("build-seat", "build-seat")]
+  const options = { members }
+  const plans = sessionPlans(presetInput(options), presetTable(options))
+  const direct = (agent: string) => plans.exposure.filter((entry) => entry.agent === agent && entry.mode === "direct").map((entry) => entry.tool).toSorted()
+  const denied = (agent: string) => plans.denials.filter((entry) => entry.agent === agent).map((entry) => entry.tool).toSorted()
+  expect(direct("planner")).toEqual(["search_exa_code_search", "search_tavily_extract", "search_tavily_search"])
+  expect(denied("planner")).toEqual(["execute"])
+  // Tavily is off for an implementer: direct and off, so it is simply not sent.
+  expect(direct("implementer")).toEqual(["search_exa_code_search", "search_tavily_extract", "search_tavily_search"])
+  expect(denied("implementer")).toEqual(["execute"])
+  expect(plans.native.find((plan) => plan.agent === "implementer" && plan.tool === "search_tavily_search")?.enabled).toBe(false)
+  expect(direct("build-seat")).toEqual([])
+  expect(denied("build-seat")).toEqual([])
 })
 
 test("a project-level record on a preset row overrides the shipped answer", async () => {
