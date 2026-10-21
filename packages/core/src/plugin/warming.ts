@@ -5,6 +5,7 @@ import type { SessionHooks, SessionWarming, SessionWarmingSettings } from "@open
 import { SessionModelObservation } from "../session/model-observation.js"
 import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
+import { FSUtil } from "@opencode/util/fs-util"
 import type { SessionEvent } from "@opencode/schema/session-event"
 import { Cause, Clock, Duration, Effect, Fiber, Option, Schema, Scope, Semaphore, Stream } from "effect"
 import { Config } from "../config.js"
@@ -59,6 +60,7 @@ export const Plugin = define({
     const models = yield* Model.Service
     const providers = yield* Provider.Service
     const hooks = yield* PluginHooks.Service
+    const fs = yield* FSUtil.Service
     // A session's current model can switch between hook events, so resolve the
     // effective warming settings for that model every time instead of caching them.
     const loadSettings = Effect.fn("WarmingPlugin.loadSettings")(function* (model: Model.Ref) {
@@ -155,6 +157,12 @@ export const Plugin = define({
           return yield* loop(sessionID, epoch)
 
         const last = current.last
+        // Resolve placement without loading its Location. A landed worktree can
+        // disappear while this window is still scheduled; generating there would
+        // boot a missing directory on every retry. Real activity can start anew.
+        const session = yield* ctx.session.get({ sessionID }).pipe(Effect.option)
+        if (Option.isNone(session)) return yield* drop(sessionID, current)
+        if (!(yield* fs.isDir(session.value.location.directory))) return yield* drop(sessionID, current)
         // Before the regular ping is due, this one is a retry of a failed ping.
         const retry = current.retryAt !== undefined && decided < last + settings.interval
         current.retryAt = undefined
