@@ -23,7 +23,7 @@ import { checkFiles, missingCheckFiles, pathsNotAt } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
 import { DEFAULT_ATTACHMENT_LIMIT } from "./brief.js"
-import { chatEditRefusal, isScopePath, namesProtectedState, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
+import { chatEditRefusal, isScopePath, namesProtectedState, protectedStateRefusal, runScope, scopeEntry, scopeRefusal } from "./scope.js"
 import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
 import { integrateHandler } from "./api-integrate.js"
@@ -116,7 +116,7 @@ export interface TeamApi {
 const policy = Schema.decodeUnknownSync(Policy)({})
 
 const PATHS_MESSAGE =
-  "scope.paths must be files or dir/* inside the repository, never version-control state."
+  "scope.paths and scope.forbidden must be files or dir/* inside the repository, never version-control state."
 const PATHS_ACCEPTED = ["src/*", "test/*"]
 const PLAN_PATHS = ["docs/plans/*", "docs/handoffs/*"]
 const MESSAGE_ACCEPTED = "fix: apply agent filter in query"
@@ -177,7 +177,7 @@ function toDelegateModelRef(wanted: { readonly providerID: string; readonly mode
   })
 }
 
-async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, caller: TeamCaller): Promise<TeamApiResult> {
+async function delegateHandler(ctx: Context, state: PlusState, input: Brief, caller: TeamCaller): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const stored = await loadRun(root, caller.run.id)
   const parent = stored ?? caller.run
@@ -196,24 +196,24 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // "Delegate from a delegated run" is on.
   if (parent.parent !== null && !allows(table, agent, "delegate", "access.delegated"))
     return fail("E_ROLE", `${agent}: ${messageOf(table, agent, "delegate", "access.delegated")}`, `report blocked with needs=[{kind:"decision"}]`)
-  if (typeof brief.role !== "string" || brief.role.length === 0 || table === undefined || !table.teamMembers.has(brief.role))
-    return fail("E_ROLE", `"${brief.role}" is not a member of an enabled team. ${acceptedLine}`, acceptedRole)
-  if (!mayDelegate(table, agent, brief.role))
-    return fail("E_ROLE", `${agent} may not delegate to "${brief.role}". ${acceptedLine}`, acceptedRole)
-  if (brief.deliverable.kind === "commit" && !table.toolEnabled(brief.role, "team_checkpoint")) {
+  if (typeof input.role !== "string" || input.role.length === 0 || table === undefined || !table.teamMembers.has(input.role))
+    return fail("E_ROLE", `"${input.role}" is not a member of an enabled team. ${acceptedLine}`, acceptedRole)
+  if (!mayDelegate(table, agent, input.role))
+    return fail("E_ROLE", `${agent} may not delegate to "${input.role}". ${acceptedLine}`, acceptedRole)
+  if (input.deliverable.kind === "commit" && !table.toolEnabled(input.role, "team_checkpoint")) {
     const committers = [...table.teamMembers].filter((member) => mayDelegate(table, agent, member) && table.toolEnabled(member, "team_checkpoint")).toSorted()
     return fail(
       "E_ROLE",
-      `${brief.role} cannot commit: its team_checkpoint tool is off. Reachable members that can commit: [${committers.join(", ")}]. Delegate this commit Brief to one of them.`,
+      `${input.role} cannot commit: its team_checkpoint tool is off. Reachable members that can commit: [${committers.join(", ")}]. Delegate this commit Brief to one of them.`,
       { roles: committers },
     )
   }
-  const signature = signatureOf(brief)
-  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(brief.requestID)}.json`)
+  const signature = signatureOf(input)
+  const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(input.requestID)}.json`)
   const replay = await readJson<{ signature?: string; output?: Record<string, unknown>; run?: string }>(requestPath)
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
-      return fail("E_REQUEST_ID", `requestID "${brief.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
+      return fail("E_REQUEST_ID", `requestID "${input.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
     if (replay.output !== undefined) {
       // The stored result, with the run's state now: it may have settled since.
       const current = replay.run === undefined ? undefined : await loadRun(root, replay.run)
@@ -228,7 +228,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       `report blocked with needs=[{kind:"decision"}]`,
     )
 
-  const rawRepo = brief.repo ?? parent.repoKey ?? parent.repo
+  const rawRepo = input.repo ?? parent.repoKey ?? parent.repo
   const repo = await resolveRepo(rawRepo, parent)
   if (repo === undefined) {
     const keys = [...new Set([parent.repoKey, parent.repo].filter((key) => key.length > 0))]
@@ -240,11 +240,11 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   }
 
   const defaultHead = await callerHead(parent.directory, repo.root)
-  const baseSha = await resolveBase(repo.root, brief.base, defaultHead)
+  const baseSha = await resolveBase(repo.root, input.base, defaultHead)
   if (baseSha === undefined)
     return fail(
       "E_BASE",
-      `base "${brief.base}" is not a ref or commit in ${repo.key}. Omit base to use your HEAD (${defaultHead}), or pass a branch/sha. accepted: "main"`,
+      `base "${input.base}" is not a ref or commit in ${repo.key}. Omit base to use your HEAD (${defaultHead}), or pass a branch/sha. accepted: "main"`,
       "main",
     )
 
@@ -252,10 +252,12 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   // name (the main checkout's .opencodeplus/checks.json) or a Bun command.
   let checks: Check[]
   try {
-    checks = resolveChecks(brief.checks, await readProjectChecks(repo.root))
+    checks = resolveChecks(input.checks, await readProjectChecks(repo.root))
   } catch (error) {
     return { ok: false, error: thrownError(error) }
   }
+  // "dir/**" and "dir/" mean "dir/*" (scopeEntry).
+  const brief: Brief = { ...input, scope: { paths: input.scope.paths.map(scopeEntry), forbidden: input.scope.forbidden.map(scopeEntry) } }
   // Forbidding protected state forbids what no run may change anyway (s3-c:
   // ".opencodeplus/*" refused two whole briefs), so it is dropped, not refused.
   const forbidden = brief.scope.forbidden.filter((entry) => !namesProtectedState(entry))
@@ -334,6 +336,17 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
         { files: [attached.path] },
       )
   }
+  // The child starts from a commit, so a file the Brief names that has
+  // uncommitted changes here reaches it only as the briefFile. Live: a build
+  // seat moved long rules into a new file, named it in the prompt without
+  // attaching it, and the implementer found nothing and finished blocked.
+  const unseen = await uncommittedNamed(parent.directory, brief, attached === undefined ? undefined : path.resolve(parent.directory, attached.path))
+  if (unseen.length > 0)
+    return fail(
+      "E_PATHS",
+      `The Brief names [${unseen.join(", ")}], which ${unseen.length === 1 ? "has" : "have"} uncommitted changes in your checkout; the child starts from a commit and will not see them. Attach one file as briefFile, or commit with team_checkpoint, then delegate.`,
+      { files: unseen },
+    )
 
   const childID = newRunID("w")
   let taskID = brief.task
@@ -386,7 +399,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (briefLimit !== undefined && briefChars > briefLimit)
     return fail(
       "E_TOO_LONG",
-      `Brief text is ${briefChars} chars (max ${briefLimit}). Shorten it: keep the outcome, the files, the decisions and the checks; move detail out of the Brief.`,
+      `Brief text is ${briefChars} chars (max ${briefLimit}). Shorten it: keep the outcome, the files, the decisions and the checks; put long detail in a file attached as briefFile.`,
       "a shorter brief",
     )
 
@@ -659,6 +672,19 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)
+}
+
+// Files with uncommitted changes in the caller's checkout that the Brief's
+// text names by their repository path, the attached briefFile aside.
+async function uncommittedNamed(directory: string, brief: Brief, attached: string | undefined): Promise<string[]> {
+  const status = await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
+  if (status.code !== 0) return []
+  const text = [brief.objective, brief.prompt ?? "", ...brief.context.decisions, ...brief.context.interfaces.flatMap((item) => [item.path, item.note])].join("\n")
+  return parsePorcelain(status.out).filter(
+    (file) =>
+      path.resolve(directory, file) !== attached &&
+      new RegExp(`(^|[\\s\`'"(\\[<,])${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[\\s\`'")\\]>,:;.!?])`).test(text),
+  )
 }
 
 async function finishHandler(args: Report, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {

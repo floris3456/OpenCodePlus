@@ -137,15 +137,16 @@ describe("lock", () => {
   })
 
   test("a lock released after 100 ms is acquired by a waiter with a 30 s timeout", async () => {
+    // Order, not wall-clock time: under a loaded suite sleep(20) overslept and
+    // an elapsed-time bound failed although the waiter waited for the release.
+    let released = 0
     const holder = lock(dir, "wt", "released", async () => {
       await sleep(100)
+      released = Date.now()
     })
     await sleep(20)
-    const start = Date.now()
-    const out = await lock(dir, "wt", "released", async () => "got", { timeoutMs: 30000 })
-    const elapsed = Date.now() - start
+    const out = await lock(dir, "wt", "released", async () => (released > 0 ? "got" : "acquired while held"), { timeoutMs: 30000 })
     expect(out).toBe("got")
-    expect(elapsed).toBeGreaterThanOrEqual(60)
     await holder
   })
 

@@ -395,7 +395,7 @@ export const Brief = Schema.Struct({
   repo: Schema.optionalKey(Schema.String).annotate({ description: "Another configured repository; omit for yours." }),
   base: Schema.optionalKey(Schema.String).annotate({ description: "Commit or branch the child starts from; omit for your HEAD." }),
   prompt: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4000))).annotate({
-    description: "Extra instructions appended to the Brief.",
+    description: "Extra instructions appended to the Brief, up to 4000 characters; longer detail goes in a briefFile.",
   }),
   briefFile: Schema.optionalKey(Schema.String).annotate({
     description:

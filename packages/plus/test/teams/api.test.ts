@@ -782,9 +782,10 @@ test("an attachment up to its limit is pasted without counting toward the brief 
         await api.delegate(delegateInput({ requestID: "attach-small-2", briefFile: "notes/small.md", prompt: "p".repeat(4_000), context: { decisions: ["d".repeat(900), "e".repeat(900), "f".repeat(900)] } }), callerFor(parent)),
       )
       expect(tooLong.code).toBe("E_TOO_LONG")
-      // The refusal says to shorten the Brief, never to move text into a file.
+      // The refusal says to shorten the Brief; an attached file does not count
+      // toward the limit, so long detail goes there (the Delegating role text).
       expect(tooLong.message).toContain("Shorten it")
-      expect(tooLong.message).not.toContain("briefFile")
+      expect(tooLong.message).toContain("put long detail in a file attached as briefFile")
       expect(tooLong.accepted).toBe("a shorter brief")
 
       // A file over the attachment limit is named by path only, so the child's
@@ -2008,6 +2009,52 @@ test("delegate marks scope paths the base does not hold as new in the Brief", as
       const delegated = required(await api.delegate(delegateInput({ requestID: "new-1", scope }), callerFor(parent))) as { run: string }
       const brief = await fs.readFile(path.join(root, "runs", delegated.run, "brief.md"), "utf8")
       expect(brief).toContain("May edit: README.md, packages/plus/test/unit.test.ts, src/new.ts (new), test/new.test.ts (new), packages/plus/src/*\n")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// Live b7-s7: a build seat put long rules in a new file, named it in the
+// prompt without attaching it, and the implementer found nothing there.
+test("delegate refuses a Brief naming an uncommitted file unless it is the briefFile", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_unseen" })
+      await saveRun(root, parent)
+      await fs.writeFile(path.join(repo.dir, "nbx-brief.md"), "# rules\n")
+      await fs.writeFile(path.join(repo.dir, "README.md"), "# changed\n")
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const refused = await api.delegate(delegateInput({ requestID: "unseen-1", prompt: "The full rules are in nbx-brief.md; follow them." }), callerFor(parent))
+      expect(refused).toMatchObject({ ok: false, error: { code: "E_PATHS", accepted: { files: ["nbx-brief.md"] } } })
+      expect(refused.ok ? "" : refused.error.message).toContain("The Brief names [nbx-brief.md], which has uncommitted changes in your checkout")
+      // A tracked file with changes is the same: the child sees its committed version.
+      const tracked = await api.delegate(delegateInput({ requestID: "unseen-2", context: { decisions: ["Keep README.md as it is."] } }), callerFor(parent))
+      expect(tracked).toMatchObject({ ok: false, error: { code: "E_PATHS", accepted: { files: ["README.md"] } } })
+      // Attached, it reaches the child; a name inside another word is no mention.
+      await fs.writeFile(path.join(repo.dir, "README.md"), "# team api test\n")
+      required(await api.delegate(delegateInput({ requestID: "unseen-3", prompt: "Follow nbx-brief.md (attached), not old-nbx-brief.mdx.", briefFile: "nbx-brief.md" }), callerFor(parent)))
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// Live b7-s7: a forbidden "docs/**" refused a whole Brief; it means "docs/*".
+test("delegate reads dir/** and dir/ in scope as dir/*", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_globs" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const scope = { paths: ["packages/plus/src/**", "packages/plus/test/"], forbidden: ["docs/**"] }
+      const delegated = required(await api.delegate(delegateInput({ requestID: "globs-1", scope }), callerFor(parent))) as { run: string }
+      const stored = JSON.parse(await fs.readFile(path.join(root, "runs", delegated.run, "brief.json"), "utf8")) as { scope: { paths: string[]; forbidden: string[] } }
+      expect(stored.scope.paths).toContain("packages/plus/src/*")
+      expect(stored.scope.paths).toContain("packages/plus/test/*")
+      expect(stored.scope.forbidden).toEqual(["docs/*"])
     } finally {
       await removeRepo(repo.dir)
     }

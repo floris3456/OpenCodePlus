@@ -35,6 +35,7 @@ import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { NO_REPOSITORY_PROGRAMS, provision, slug } from "./worktree.js"
+import { scopeEntry } from "./scope.js"
 import { scopePathsRefusal, type TeamApiResult, type TeamCaller } from "./api.js"
 
 // Every working child wakes the parent, not only this one: a parent that read
@@ -72,10 +73,11 @@ function signatureOf(input: unknown): string {
 export async function followupHandler(
   ctx: Context,
   state: PlusState,
-  args: FollowupInput,
+  input: FollowupInput,
   caller: TeamCaller,
   table?: PermissionTable,
 ): Promise<TeamApiResult> {
+  const args: FollowupInput = input.paths === undefined ? input : { ...input, paths: input.paths.map(scopeEntry) }
   // Serialize admissions/replays for this parent; the Session prompt is an
   // admission call, not a wait for model execution.
   return lock(teamsDataDir(), "state", `admission-${caller.run.id}`, () => followupLocked(ctx, state, args, caller, table))

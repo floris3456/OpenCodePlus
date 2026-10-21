@@ -10,6 +10,13 @@ export type RunScope = typeof Scope.Type
 
 const PROTECTED_PARTS = [".git", ".cairn", ".beads", ".opencodeplus"]
 
+/** "dir/**" and "dir/" name what "dir/*" does, everything under dir: a forbidden "docs/**" refused a whole Brief. */
+export function scopeEntry(entry: string): string {
+  if (entry.endsWith("/**")) return entry.slice(0, -1)
+  if (entry.length > 1 && entry.endsWith("/") && !entry.endsWith("//")) return `${entry}*`
+  return entry
+}
+
 export function isScopePath(candidate: string): boolean {
   const base = candidate.endsWith("/*") ? candidate.slice(0, -2) : candidate
   return base.length > 0 && !path.isAbsolute(base) && !base.endsWith("/") &&

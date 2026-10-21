@@ -133,7 +133,8 @@ test("paths alone admits the Plus note and a blocked settlement names paths", as
   await using f = await fixture()
   const settled = await loadRun(f.root, f.child.id)
   expect(childSettledText(settled!, settled!.attempts[0]!, f.report!)).toContain("next: answer the needs with team_followup (paths for a path need), or team_stop it and delegate afresh.")
-  expect(required(await f.api.followup(Schema.decodeUnknownSync(FollowupInput)({ run: f.child.id, requestID: "paths-only", paths: ["src/*"] }), f.caller))).toMatchObject({ attempt: 2, state: "admitted" })
+  // "src/**" means "src/*", as in a delegation's scope.
+  expect(required(await f.api.followup(Schema.decodeUnknownSync(FollowupInput)({ run: f.child.id, requestID: "paths-only", paths: ["src/**"] }), f.caller))).toMatchObject({ attempt: 2, state: "admitted" })
   expect(f.prompts).toEqual(["Plus widened your edit scope: you may now also change [src/*]; forbidden paths still apply."])
   expect((await f.edit("src/cli.ts")).effect).toBe("allow")
   expect((await f.edit("src/private/key.ts")).effect).toBe("deny")
