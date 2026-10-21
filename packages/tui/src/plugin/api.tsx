@@ -36,6 +36,7 @@ import { registerSetting } from "../component/dialog-config"
 import { abbreviateHome } from "../util/path-format"
 import { DialogAgent } from "../component/dialog-agent"
 import { promptSendGuards } from "../component/prompt/send-guard"
+import { usageWindows } from "../util/usage-window"
 
 export type Dispose = () => Promise<void>
 
@@ -344,6 +345,19 @@ export function createPluginContext(input: {
         },
         onPick(listener) {
           const unregister = host.local.model.onPick(listener)
+          let cleaned = false
+          const cleanup = () => {
+            if (cleaned) return
+            cleaned = true
+            unregister()
+          }
+          input.owned.push(async () => cleanup())
+          return cleanup
+        },
+      },
+      usage: {
+        window(provider) {
+          const unregister = usageWindows.register(provider)
           let cleaned = false
           const cleanup = () => {
             if (cleaned) return

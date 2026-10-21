@@ -11,6 +11,7 @@ import { createChatRefresh } from "./refresh.js"
 import { createCacheNotices } from "./cache-notices.js"
 import { createThinkingToast } from "./thinking-toast.js"
 import { createAttention } from "./attention.js"
+import { createUsageWindow } from "./usage-window.js"
 
 export default Plugin.define({
   id: "opencode.plus",
@@ -29,6 +30,7 @@ export default Plugin.define({
     const thinkingToast = createThinkingToast(context)
     const notices = createCacheNotices(context, { open: (notice) => monitor.openAt(notice) })
     const attention = createAttention(context)
+    const usageWindow = createUsageWindow(context)
     // The server acts on this one: a message sent into a cold chat is first
     // summarized by the cold-cache models its model has in Instructions.
     const plus = context.client.rpc(Definition)
@@ -136,6 +138,7 @@ export default Plugin.define({
       thinkingToast.dispose()
       notices.dispose()
       attention.dispose()
+      usageWindow.dispose()
       snapshots.dispose()
     }
   },

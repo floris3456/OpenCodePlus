@@ -777,6 +777,8 @@ Every model's **Compaction** group has **Input token threshold** and **Output to
 
 Instructions tools expose `compactionInput` and `compactionOutput` on model rows and Defaults model rows as strings, for example `"120000"`, `"30000"`, or `"off"`; `null` clears an override. Each emitted field row also supports text editing and reset.
 
+With an Input token threshold below the model's window, the prompt footer's and the sidebar's context % measure against it: 100% is where the chat compacts early. The TUI asks the server (`compaction.window`) for the threshold of the last reply's agent and model through the host's `ui.usage.window`, and again after an Instructions change.
+
 These model rows are the only place thresholds are set; there is no per-chat override (thresholds a chat stored before 1.3.13 are no longer read).
 
 - **Input** compares against Core's estimated size of the next prompt, including its existing measured-context estimate, instructions, tools and newer history.

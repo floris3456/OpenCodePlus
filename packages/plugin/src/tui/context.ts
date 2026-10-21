@@ -170,6 +170,15 @@ export interface PromptSendInput {
   readonly delivery: "steer" | "queue"
 }
 
+/** The chat whose context usage is shown, with the agent and model of its last reply. */
+export interface UsageWindowInput {
+  readonly sessionID: string
+  readonly agent: string
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+}
+
 export type PanelPresentation = "panel" | "fullscreen"
 
 /** Client-local state of the selected session panel. The host owns its layout and input scope. */
@@ -610,6 +619,15 @@ export interface UI {
      * holds says why itself (a footer slot, a toast).
      */
     guard(check: (input: PromptSendInput) => boolean): () => void
+  }
+  readonly usage: {
+    /**
+     * Supplies a token count a chat's context usage is measured against instead of its model's
+     * window, such as an early compaction threshold. The prompt footer and the sidebar use the
+     * smallest answer below the model's own window; undefined leaves it. Reactive when the provider
+     * reads Solid state. Returns a function that removes the provider.
+     */
+    window(provider: (input: UsageWindowInput) => number | undefined): () => void
   }
   /** Claims a place in the slot tree; see SlotClaim. */
   readonly slot: (claim: SlotClaim) => () => void

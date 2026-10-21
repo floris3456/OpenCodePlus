@@ -49,6 +49,27 @@ export function compactionRowsOf(
 }
 
 /**
+ * The early input threshold (Compaction › Input token threshold) the agent
+ * and model resolve: its model rows, then Defaults › Models › this model, then
+ * Every model. Undefined when none sets one, or one turns it off.
+ */
+export function inputThresholdOf(
+  state: RowsState,
+  agentID: string,
+  model: { readonly providerID: string; readonly id: string; readonly variant?: string },
+): number | undefined {
+  const modelRow = settingsFor(state.cachedModelSettings, { providerID: model.providerID, modelID: model.id })
+  const everyRow = everySettings(state.cachedModelSettings)
+  const threshold = effectiveCompaction({
+    row: compactionRowsOf(state, agentID, model),
+    ...(modelRow === undefined ? {} : { model: modelRow }),
+    ...(everyRow === undefined ? {} : { every: everyRow }),
+  }).compactionInput.value
+  // "off" resolves to 0, as the trigger reads it.
+  return threshold !== undefined && threshold > 0 ? threshold : undefined
+}
+
+/**
  * The cold-cache list the agent and model resolve, whether or not the global
  * "Compact cold chats first" is on: a team followup to a stopped, cold child
  * uses it; the switch only decides the automatic cold arming.
