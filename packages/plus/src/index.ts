@@ -323,7 +323,7 @@ export default Plugin.define({
             // A new prompt is the only place cold compaction may arm.
             markPromptAdmitted(String(event.sessionID))
           }
-        }).pipe(slowWarning("plus prompt hook", { sessionID: String(event?.sessionID ?? ""), directory: ctx.location.directory })),
+        }).pipe(slowWarning("plus prompt hook", { sessionID: String(event?.sessionID ?? ""), directory: ctx.location.directory }, () => ({ refreshes: stuckRefreshes() }))),
       )
       yield* ctx.session.hook("compaction", (event) => state.sessionPins.markRebuild(String(event.sessionID)))
       yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
@@ -5387,15 +5387,20 @@ async function discoverAll(
   directory: string = ctx.location.directory,
 ): Promise<Discovered> {
   discoverCounter.count++
+  const at = ctx.location.directory
   if (state.agentObserver === undefined) {
+    refreshPhase(at, "discover: agent observer")
     state.agentObserver = await runRegistration(ctx.agent.transform, (editor: AgentEditor) => {
       state.agentUpstream = structuredClone(editor.list())
     })
   }
+  refreshPhase(at, "discover: host catalog and base templates")
   const resolved = await resolveBaseTemplates(ctx, await hostCatalogFor(ctx, state))
+  refreshPhase(at, "discover: teams")
   const teams = await discoverAllTeams(directory, builtins)
   // Read before discovery reads the registry: a change in between shows as a
   // difference later and costs one more (unchanged) publish, never a miss.
+  refreshPhase(at, "discover: tool list")
   const registry = await Effect.runPromise(ctx.tool.list())
   state.discoveredTools = new Set(registry.map((tool) => tool.id))
   // Remember what each connected MCP server registered, for the next start.
@@ -5405,6 +5410,7 @@ async function discoverAll(
     state.knownMcpTools = learned
     await saveKnownMcpTools(learned).catch(() => undefined)
   }
+  refreshPhase(at, "discover: host rows (agents, models, MCP, skills, files)")
   const discovered = await discover({
     ctx,
     records: customizationsOf(loaded.records),
@@ -5421,6 +5427,7 @@ async function discoverAll(
     knownMcpTools: state.knownMcpTools,
     hostModels: await hostModelsFor(ctx, state),
   })
+  refreshPhase(at, "discover: member controls and team rows")
   const memberControls = (await Promise.all(teams.flatMap((team) => team.agents.map(async (member) => {
     // Member installation overlays host agents, so omitted file fields inherit
     // the same pre-Plus values rather than synthetic control defaults.
@@ -5894,6 +5901,8 @@ function publishFresh(
   builtins: readonly BuiltinTeam[] = [],
   force = false,
 ): Effect.Effect<Discovered> {
+  const at = ctx.location.directory
+  refreshPhase(at, "publish: waiting for the location lock")
   return state.semaphore.withPermits(1)(
     Effect.gen(function* () {
       // The project directory this publish applies to. Activation resolves a
@@ -5902,6 +5911,7 @@ function publishFresh(
       // worktree would report and install an empty project.
       const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
       const discovered = yield* Effect.promise(() => discoverAll(ctx, stored, state, builtins, directory))
+      refreshPhase(at, "publish: chain")
       yield* Effect.yieldNow
       // A newer publish already won; this read is stale, so leave the applied
       // registrations and the last emitted revision untouched.
@@ -5947,6 +5957,7 @@ function publishFresh(
       }
       // The per-request base classifier reads the cached catalogue instead
       // of listing the provider catalogue on every publish.
+      refreshPhase(at, "publish: host catalog")
       const catalog = yield* Effect.promise(() => hostCatalogFor(ctx, state))
       // The installed state changed: the snapshot cache key must move so the
       // next read rebuilds instead of answering from the old registrations.
@@ -5982,6 +5993,7 @@ function publishFresh(
 
       // One core batch for the whole install/dispose set: the host rebuilds
       // and reconciles each registry once per publish.
+      refreshPhase(at, "publish: apply batch")
       const partsResult = yield* inPublishBatch(ctx.batch, () =>
         applyPublishParts(ctx, state, {
           applyInput,
@@ -6026,7 +6038,7 @@ function publishFresh(
       if (teamOwnershipChanged) yield* emitTeamsChanged(state)
       return discovered
     }),
-  )
+  ).pipe(Effect.ensuring(Effect.sync(() => refreshPhase(at, undefined))))
 }
 
 // Capture what Plus just installed: read the host back after apply and
@@ -7045,6 +7057,7 @@ export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effe
       state.refreshTimer = undefined
     }
     if (state.activeRefresh !== undefined) {
+      if (!refreshPhases.has(ctx.location.directory)) refreshPhase(ctx.location.directory, "flush: waiting for this location's running refresh")
       await state.activeRefresh.catch(() => {})
       if (!state.pendingRefresh) return
     }
@@ -7064,9 +7077,29 @@ export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effe
   })
 }
 
+// What each Location's refresh is doing now (B18 diagnostics): a slow prompt
+// warning names every phase older than 10 s, so a wedge says where it waits.
+const refreshPhases = new Map<string, { readonly phase: string; readonly since: number }>()
+
+function refreshPhase(directory: string, phase: string | undefined): void {
+  if (phase === undefined) return void refreshPhases.delete(directory)
+  refreshPhases.set(directory, { phase, since: Date.now() })
+}
+
+export function stuckRefreshes(): string {
+  const now = Date.now()
+  return [...refreshPhases]
+    .filter((entry) => now - entry[1].since >= 10_000)
+    .map((entry) => `${entry[0]}: ${entry[1].phase} (${Math.round((now - entry[1].since) / 1000)} s)`)
+    .join("; ")
+}
+
 export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
+  const at = ctx.location.directory
+  refreshPhase(at, "refresh: waiting for the process refresh lock")
   return refreshProcessSemaphore.withPermits(1)(
     Effect.gen(function* () {
+      refreshPhase(at, "refresh: loading the stores")
       const hasHostChange = state.pendingHostChange
       const forced = hasHostChange || state.pendingForce
       state.pendingHostChange = false
@@ -7090,9 +7123,10 @@ export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<v
       ) {
         return
       }
+      refreshPhase(at, "refresh: publish")
       yield* publishFresh(ctx, state, stored)
     }),
-  )
+  ).pipe(Effect.ensuring(Effect.sync(() => refreshPhase(at, undefined))))
 }
 
 function toSnapshot(

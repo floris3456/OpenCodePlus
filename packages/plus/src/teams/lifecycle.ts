@@ -747,13 +747,13 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
 }
 
 /** Logs a warning every 30 s while `effect` runs, and once more when a slow one ends. */
-export function slowWarning(label: string, fields: Record<string, string>) {
+export function slowWarning(label: string, fields: Record<string, string>, detail?: () => Record<string, string>) {
   return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     Effect.gen(function* () {
       const started = Date.now()
       const warn = yield* Effect.forkDetach(
         Effect.sleep(Duration.seconds(30)).pipe(
-          Effect.andThen(Effect.suspend(() => Effect.logWarning(`${label} is slow`, { ...fields, waitedMs: Date.now() - started }))),
+          Effect.andThen(Effect.suspend(() => Effect.logWarning(`${label} is slow`, { ...fields, ...detail?.(), waitedMs: Date.now() - started }))),
           Effect.repeat(Schedule.spaced(Duration.seconds(30))),
         ),
       )
