@@ -1802,6 +1802,45 @@ function registeredSchema(tools: Map<string, Tool.Info & { readonly id: string }
   return input
 }
 
+test("registered team tool wire schemas have plain optional properties without null branches", async () => {
+  const tools = await registeredTools()
+  const inputs = [...tools.keys()].filter((id) => id.startsWith("team_"))
+  expect(inputs).toHaveLength(teamNames.length)
+
+  function check(value: unknown): void {
+    if (Array.isArray(value)) return value.forEach(check)
+    if (!isRecord(value)) return
+    expect(value.type).not.toBe("null")
+    if (Array.isArray(value.type)) expect(value.type).not.toContain("null")
+    // Empty structs emit `not: { type: "null" }`: that forbids null, rather than allowing it.
+    Object.entries(value).filter(([key]) => key !== "not").forEach(([, child]) => check(child))
+  }
+
+  for (const id of inputs) {
+    // Core's inputJsonSchema uses this conversion before normalizing references/allOf.
+    check(Schema.toJsonSchemaDocument(registeredSchema(tools, id), { onExcessProperty: "error" }))
+  }
+
+  const schema = registeredSchema(tools, "team_delegate")
+  const wire = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" }).schema
+  expect(wire).toMatchObject({ properties: { context: { type: "object" } } })
+  expect(wire.required).not.toContain("context")
+  const brief = {
+    requestID: "wire-schema",
+    role: "implementer",
+    objective: "Keep team tool optional fields simple on the wire",
+    deliverable: { kind: "commit" },
+    scope: {},
+  }
+  const decoded = Schema.decodeUnknownSync(schema)({ ...brief, context: null, prompt: null })
+  expect(decoded).toEqual(Schema.decodeUnknownSync(schema)(brief))
+  expect(decoded).toMatchObject({ context: { interfaces: [], decisions: [] }, checks: [], effort: "medium" })
+  expect(decoded).not.toHaveProperty("prompt")
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, objective: null })).toThrow(Schema.SchemaError)
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, context: undefined })).toThrow(Schema.SchemaError)
+  expect(() => Schema.decodeUnknownSync(schema)({ ...brief, prompt: undefined })).toThrow(Schema.SchemaError)
+})
+
 test("C — every field path of every registered team tool treats null as omission, required null still fails", async () => {
   const tools = await registeredTools()
 
