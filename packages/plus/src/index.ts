@@ -10,7 +10,7 @@ import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { DateTime, Duration, Effect, Fiber, Option, Queue, Scope, Schema, Semaphore, Stream } from "effect"
+import { DateTime, Duration, Effect, Option, Queue, Scope, Schema, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -7132,13 +7132,12 @@ export function refreshFromHost(ctx: Context, state: PlusState, limit: Duration.
         return
       }
       refreshPhase(at, "refresh: publish")
-      // Forked, so a stuck publish (a host read that never answers need not be
-      // interruptible) is left behind instead of waited for.
-      const publish = yield* Effect.forkDetach(publishFresh(ctx, state, stored))
-      const published = yield* Fiber.join(publish).pipe(Effect.timeoutOption(limit))
+      // Not forked: a publish left running after its refresh was interrupted
+      // (a plugin reload) stalled that location's next activation. A host read
+      // awaited as a promise gives way to the timeout at once.
+      const published = yield* publishFresh(ctx, state, stored).pipe(Effect.timeoutOption(limit))
       if (Option.isSome(published)) return
       yield* Effect.logWarning("plus refresh gave up", { directory: at, phase: refreshPhases.get(at)?.phase ?? "unknown" })
-      yield* Effect.forkDetach(Fiber.interrupt(publish))
     }),
   ).pipe(Effect.ensuring(Effect.sync(() => refreshPhase(at, undefined))))
 }
