@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit, PubSub, Scope, Stream } from "effect"
+import { Duration, Effect, Exit, PubSub, Scope, Stream } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import plus, {
@@ -17,6 +17,7 @@ import plus, {
 import { notifySharedStoreChanged, resetSharedStoreListeners } from "../src/shared-store-bus.js"
 import { agentHarness, agentInfo, context, fullContext } from "./harness.js"
 import { load, save } from "../src/instructions/store.js"
+import { teamsDataDir } from "../src/instructions/paths.js"
 
 const throwing = {
   error: (type: string, message: string, data?: unknown): never => {
@@ -111,6 +112,41 @@ describe("publish coalescing", () => {
     await Effect.runPromise(refreshFromHost(ctx, state))
 
     expect(discoverCounter.count).toBe(0)
+  })
+
+  test("a refresh skips a folder that is gone, and one that hangs gives the process lock up to the next folder", async () => {
+    resetSharedStoreListeners()
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    // A landed child's worktree, removed after its location loaded.
+    const gone = path.join(teamsDataDir(), "worktrees", "ledger", "implementer", `t1-${Date.now()}`)
+    const stuck = path.join(root, "stuck")
+    const live = path.join(root, "live")
+    for (const dir of [gone, stuck, live]) await fs.mkdir(dir, { recursive: true })
+    const goneCtx = fullContext({ directory: gone, hooks: { current: 0 } })
+    const goneState = createState()
+    await Effect.runPromise(activate(goneCtx, goneState))
+    await fs.rm(gone, { recursive: true })
+    goneState.pendingHostChange = true
+    resetDiscoverCounter()
+    await Effect.runPromise(refreshFromHost(goneCtx, goneState))
+    expect(discoverCounter.count).toBe(0)
+    // A host read that never answers (B18: a removed worktree's location).
+    const base = fullContext({ directory: stuck, hooks: { current: 0 } })
+    const stuckCtx = context({ ...base, tool: { ...base.tool, list: () => Effect.never } })
+    const stuckState = createState()
+    stuckState.pendingHostChange = true
+    const liveCtx = fullContext({ directory: live, hooks: { current: 0 } })
+    const liveState = createState()
+    await Effect.runPromise(activate(liveCtx, liveState))
+    liveState.pendingHostChange = true
+    const started = Date.now()
+    await Promise.all([
+      Effect.runPromise(refreshFromHost(stuckCtx, stuckState, Duration.millis(200))),
+      Effect.runPromise(refreshFromHost(liveCtx, liveState, Duration.millis(200))),
+    ])
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(liveState.projectRevision).toBeDefined()
   })
 
   test("an idle folder defers another folder's write to its next use; a folder in use or running a session does not", async () => {

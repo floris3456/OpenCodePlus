@@ -10,7 +10,7 @@ import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { DateTime, Effect, Queue, Scope, Schema, Semaphore, Stream } from "effect"
+import { DateTime, Duration, Effect, Fiber, Option, Queue, Scope, Schema, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -7094,8 +7094,16 @@ export function stuckRefreshes(): string {
     .join("; ")
 }
 
-export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<void> {
+// Refreshes run one at a time process-wide, and a prompt waits for its
+// location's pending refresh: one refresh that never ends stops every prompt
+// in every location (B18: a landed child's removed worktree, whose host reads
+// never answered). So a team worktree's location whose directory is gone is
+// not refreshed, and a refresh gives the lock up after a minute.
+const REFRESH_LIMIT = Duration.seconds(60)
+
+export function refreshFromHost(ctx: Context, state: PlusState, limit: Duration.Duration = REFRESH_LIMIT): Effect.Effect<void> {
   const at = ctx.location.directory
+  if (at.startsWith(path.join(teamsDataDir(), "worktrees") + path.sep) && !fsSync.existsSync(at)) return Effect.void
   refreshPhase(at, "refresh: waiting for the process refresh lock")
   return refreshProcessSemaphore.withPermits(1)(
     Effect.gen(function* () {
@@ -7124,7 +7132,13 @@ export function refreshFromHost(ctx: Context, state: PlusState): Effect.Effect<v
         return
       }
       refreshPhase(at, "refresh: publish")
-      yield* publishFresh(ctx, state, stored)
+      // Forked, so a stuck publish (a host read that never answers need not be
+      // interruptible) is left behind instead of waited for.
+      const publish = yield* Effect.forkDetach(publishFresh(ctx, state, stored))
+      const published = yield* Fiber.join(publish).pipe(Effect.timeoutOption(limit))
+      if (Option.isSome(published)) return
+      yield* Effect.logWarning("plus refresh gave up", { directory: at, phase: refreshPhases.get(at)?.phase ?? "unknown" })
+      yield* Effect.forkDetach(Fiber.interrupt(publish))
     }),
   ).pipe(Effect.ensuring(Effect.sync(() => refreshPhase(at, undefined))))
 }
