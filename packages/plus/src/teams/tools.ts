@@ -13,7 +13,8 @@ import { gitRaw } from "./git.js"
 import { rowState, unattendedMessage, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
-import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
+import { attemptTransition, bySession, loadRun, newRunID, openChildren, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
+import { peek } from "./inbox.js"
 import { lock } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import {
@@ -702,11 +703,23 @@ function runGatedInner<A>(
         new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
       )
     }
+    const waits = (name === "status" || name === "list") && (yield* Effect.promise(() => onlyWaiting(teamsDataDir(), owned.id)))
     return {
       output: result.value,
-      ...(name === "finish" && owned.parent != null ? { endTurn: true } : {}),
+      ...((name === "finish" && owned.parent != null) || waits ? { endTurn: true } : {}),
     }
   })
+}
+
+// A status or list call while a child is still working and no news waits in
+// the caller's inbox is a wait: it answers and ends the turn, and
+// the next settlement wakes the caller. Leads said "I'm waiting" and called
+// team_status or team_list anyway, a step for nothing (b8, b9-s12).
+async function onlyWaiting(root: string, runID: string): Promise<boolean> {
+  const run = await loadRun(root, runID)
+  if (run === undefined || (await openChildren(root, run.id)).length === 0) return false
+  const delivered = new Set(run.attempts.flatMap((attempt) => attempt.inbox ?? []))
+  return (await peek(root, run.id)).every((item) => delivered.has(item.id))
 }
 
 function requireActor(

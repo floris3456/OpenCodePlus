@@ -90,7 +90,7 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   if (forbidden.length > 0) scope.push(`Must not touch: ${forbidden.join(", ")}`)
   sections.push(`## Scope\n${scope.join("\n")}`)
   if (interfaces.length > 0)
-    sections.push(`## Interfaces to read first\n${interfaces.map((i) => `- ${i.path}${i.symbol ? `#${i.symbol}` : ""} — ${i.note}`).join("\n")}`)
+    sections.push(`## Interfaces to read first\n${interfaces.map((line) => `- ${line}`).join("\n")}`)
   if (decisions.length > 0) sections.push(`## Decisions already made\n${decisions.map((d) => `- ${d}`).join("\n")}`)
   if (checks.length > 0)
     sections.push(`## Checks\n${checks.map((c) => `- ${c.id}: ${c.argv.join(" ")}`).join("\n")}`)

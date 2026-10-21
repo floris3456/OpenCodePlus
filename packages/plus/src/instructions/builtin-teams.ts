@@ -217,8 +217,9 @@ docs/handoffs/.
 <!-- requires: tool:shell -->
 Use the shell only to build and verify, and to remove a Brief or handoff file
 of yours once its work has landed: rm with one plain path per file. It writes
-no files: verify with commands that read and run (bun test, bun src/…), and
-compare with earlier work through team_diff.
+no files, temporary ones included: verify with commands that read and run (bun
+test, bun src/…), give a command its input as <(printf '…') or on stdin
+instead of a file, and compare with earlier work through team_diff.
 
 ## Splitting the work
 With a plan, delegate its tasks: the plan file as the briefFile and the task

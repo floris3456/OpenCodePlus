@@ -388,7 +388,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
     )
   }
 
-  const ifaceChars = brief.interfaces.reduce((n, item) => n + item.path.length + (item.symbol?.length ?? 0) + item.note.length, 0)
+  const ifaceChars = brief.interfaces.reduce((n, item) => n + item.length, 0)
   const decisionChars = brief.decisions.reduce((n, decision) => n + decision.length, 0)
   // The brief limit counts the text the caller wrote; an attached file has
   // its own limit. Counting a pasted file too refused a 4,473-char plan with
@@ -679,7 +679,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
 async function uncommittedNamed(directory: string, brief: Brief, attached: string | undefined): Promise<string[]> {
   const status = await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   if (status.code !== 0) return []
-  const text = [brief.objective, brief.prompt ?? "", ...brief.decisions, ...brief.interfaces.flatMap((item) => [item.path, item.note])].join("\n")
+  const text = [brief.objective, brief.prompt ?? "", ...brief.decisions, ...brief.interfaces].join("\n")
   return parsePorcelain(status.out).filter(
     (file) =>
       path.resolve(directory, file) !== attached &&
