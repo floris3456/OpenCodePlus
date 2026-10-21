@@ -1808,6 +1808,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       if ("error" in parsed) return invalidModelSettings(parsed.error)
       const compact = compactionFieldsOf({
         ...(input.compactWarm === undefined ? {} : { compactWarm: input.compactWarm }),
+        ...(input.coldFirst === undefined ? {} : { coldFirst: input.coldFirst }),
         ...(input.coldCompact === undefined ? {} : { coldCompact: input.coldCompact }),
         ...(input.coldModels === undefined ? {} : { coldModels: input.coldModels }),
         ...(input.compactionStrategy === undefined ? {} : { compactionStrategy: input.compactionStrategy }),
@@ -5185,6 +5186,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+      ...(record.coldFirst === undefined ? {} : { coldFirst: record.coldFirst }),
       ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
       ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
       ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),
@@ -7305,6 +7307,7 @@ function toSnapshot(
             ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
             ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
+            ...(record.coldFirst === undefined ? {} : { coldFirst: record.coldFirst }),
             ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
             ...(record.coldModels === undefined ? {} : { coldModels: [...record.coldModels] }),
             ...(record.compactionStrategy === undefined ? {} : { compactionStrategy: record.compactionStrategy }),

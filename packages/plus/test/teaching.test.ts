@@ -238,12 +238,20 @@ test("a plugin origin does not survive Skill.Info decoding, so the skill matches
 })
 
 test("documented per-model compaction ids are the ones the real parsers produce", async () => {
-  for (const field of ["compactWarm", "coldCompact", "coldModels", "compactionStrategy", "compactionModel", "compactionInstructions"] as const) {
+  for (const field of ["compactWarm", "coldFirst", "coldCompact", "coldModels", "compactionStrategy", "compactionModel", "compactionInstructions"] as const) {
     expect(MODEL_DEFAULT_FIELDS).toContain(field)
     expect(teachingSkillContent).toContain(field)
   }
   expect(MODEL_FIELD_NAMES).toContain("compactionModel")
   expect(MODEL_FIELD_NAMES).toContain("compactionInstructions")
+  expect(MODEL_FIELD_NAMES).toContain("coldFirst")
+  const coldFirst = modelSettingRowId({}, "coldFirst")
+  expect(coldFirst).toBe("item:defaults:/models:modelsetting:coldFirst:*")
+  expect(parseModelSettingItemId(coldFirst.replace("item:defaults:/models:", ""))).toEqual({ key: {}, field: "coldFirst" })
+  expect(parseModelFieldItemId(modelFieldItemId({ providerID: "acme", modelID: "nova" }, "coldFirst"))).toEqual({
+    target: { providerID: "acme", modelID: "nova" },
+    field: "coldFirst",
+  })
 
   const every = modelSettingRowId({}, "compactWarm")
   expect(every).toBe("item:defaults:/models:modelsetting:compactWarm:*")
@@ -273,6 +281,12 @@ test("documented compaction values validate with the real field parser", async (
 
   const on = compactionFieldsOf({ compactWarm: "on" })
   expect("fields" in on && on.fields.compactWarm).toBe("on")
+  // `coldFirst` takes the documented on|off and overrides the Settings switch per model.
+  expect(teachingSkillContent).toContain("`coldFirst` (`on`|`off`)")
+  expect(teachingSkillContent).toContain('the row reads "as in Settings" and the global switch decides')
+  const coldFirst = compactionFieldsOf({ coldFirst: "off" })
+  expect("fields" in coldFirst && coldFirst.fields.coldFirst).toBe("off")
+  expect("error" in compactionFieldsOf({ coldFirst: "sometimes" })).toBe(true)
   const list = compactionFieldsOf({ coldModels: "a/one#high, b/two" })
   expect("fields" in list && list.fields.coldModels).toEqual(["a/one#high", "b/two"])
   const strategy = compactionFieldsOf({ compactionStrategy: "local" })

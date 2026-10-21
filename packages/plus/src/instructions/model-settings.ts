@@ -491,9 +491,16 @@ export interface ModelCompactionFields {
   /** Compact before cold for chats on this model: "on" or "off". */
   readonly compactWarm?: string
   /**
+   * Compact cold chats first for chats on this model: "on" or "off". Where no
+   * row sets it, the global Settings › OpenCodePlus › Compact cold chats first
+   * decides.
+   */
+  readonly coldFirst?: string
+  /**
    * The old per-model cold-compaction switch, "on" or "off": still read from
    * stored rows and cleared by a reset, never consulted or written. The global
-   * Settings › OpenCodePlus › Compact cold chats first replaced it.
+   * Settings › OpenCodePlus › Compact cold chats first and the per-model
+   * `coldFirst` replaced it.
    */
   readonly coldCompact?: string
   /** The models that compact a cold cache, "provider/model[#variant]", in try order. */
@@ -523,6 +530,7 @@ export const MODEL_COMPACTION_FIELDS: readonly ModelCompactionField[] = [
   "compactionInput",
   "compactionOutput",
   "compactWarm",
+  "coldFirst",
   "coldCompact",
   "coldModels",
   "compactionStrategy",
@@ -536,7 +544,7 @@ export type ModelDefaultField = ModelSettingsField | ModelCompactionField
 export const MODEL_DEFAULT_FIELDS: readonly ModelDefaultField[] = [...MODEL_SETTINGS_FIELDS, ...MODEL_COMPACTION_FIELDS]
 
 /** The switch fields a model row toggles with Space (never edited as text). */
-export const MODEL_SWITCH_FIELDS: readonly ModelCompactionField[] = ["compactWarm"]
+export const MODEL_SWITCH_FIELDS: readonly ModelCompactionField[] = ["compactWarm", "coldFirst"]
 
 /** One save's compaction fields in stored form: a value sets, null clears (the level below decides again), absent leaves alone. */
 export type ModelCompactionFieldValues = {
@@ -560,6 +568,7 @@ export function compactionFieldsOf(input: {
   readonly compactionInput?: string | null
   readonly compactionOutput?: string | null
   readonly compactWarm?: string | null
+  readonly coldFirst?: string | null
   readonly coldCompact?: string | null
   readonly coldModels?: string | readonly string[] | null
   readonly compactionStrategy?: string | null
@@ -573,6 +582,7 @@ export function compactionFieldsOf(input: {
     compactionInput: thresholdField(input.compactionInput),
     compactionOutput: thresholdField(input.compactionOutput),
     compactWarm: switchField(input.compactWarm, "Compact before cold"),
+    coldFirst: switchField(input.coldFirst, COLD_FIRST_LABEL),
     coldCompact: retiredColdSwitch(input.coldCompact),
     coldModels: coldModelsField(input.coldModels),
     compactionStrategy: strategyField(input.compactionStrategy),
@@ -618,7 +628,7 @@ function retiredColdSwitch(text: string | null | undefined): null | undefined | 
 }
 
 export const COLD_SWITCH_MOVED =
-  "Cold-chat compaction is switched on or off for every chat in Settings › OpenCodePlus › Compact cold chats first; a model row holds only its cold-cache models (coldModels)"
+  "Cold-chat compaction is switched on or off for every chat in Settings › OpenCodePlus › Compact cold chats first, and per model with the model row's own Compact cold chats first (coldFirst); the cold-cache group holds only the cold-cache models (coldModels)"
 
 function strategyField(text: string | null | undefined): string | null | undefined | { readonly error: string } {
   if (text === undefined || text === null) return text
@@ -728,7 +738,9 @@ export interface EffectiveCompaction {
   readonly compactionInput: CompactionEffective<number | undefined>
   readonly compactionOutput: CompactionEffective<number | undefined>
   readonly compactWarm: CompactionEffective<boolean>
-  /** The cold-cache models in try order; only armed while the global cold-chat switch is on. */
+  /** Compact cold chats first for this model; undefined when no row sets it: the global Settings switch decides. */
+  readonly coldFirst: CompactionEffective<boolean | undefined>
+  /** The cold-cache models in try order; only armed while Compact cold chats first is on for the chat. */
   readonly coldModels: CompactionEffective<readonly string[]>
   readonly strategy: CompactionEffective<CompactionStrategy>
   /** Undefined when no layer names one: the chat's own model. */
@@ -751,6 +763,9 @@ export function compactionFromWords(from: CompactionFrom): string {
  *   token thresholds, compact before cold, cold-cache list: the agent's model row
  *   (down its chain) > Defaults › Models › this model > Every model > built-in
  *   (no early thresholds, off, no models)
+ *
+ *   compact cold chats first: the same layers, then undefined, where the
+ *   global Settings › OpenCodePlus switch decides
  *
  *   strategy, model, instructions: the agent's model row > the agent's
  *   agent-wide rows > Defaults › Models › this model > Every model > the
@@ -788,6 +803,7 @@ export function effectiveCompaction(input: {
     compactionInput: firstSet<number | undefined>(own("compactionInput"), thresholdOf, undefined),
     compactionOutput: firstSet<number | undefined>(own("compactionOutput"), thresholdOf, undefined),
     compactWarm: firstSet(own("compactWarm"), switchOf, false),
+    coldFirst: firstSet<boolean | undefined>(own("coldFirst"), switchOf, undefined),
     coldModels: firstSet(own("coldModels"), (value) => (Array.isArray(value) ? value.filter((entry) => MODEL_REF.test(entry)) : undefined), []),
     strategy: firstSet(shared("strategy", "compactionStrategy"), (value) => COMPACTION_STRATEGIES.find((strategy) => strategy === value), "auto"),
     model: firstSet<string | undefined>(shared("model", "compactionModel"), (value) => (typeof value === "string" && MODEL_REF.test(value) ? value : undefined), undefined),
@@ -1051,6 +1067,9 @@ export function modelSettingParentRowId(rowId: string): string | undefined {
 /** The cold-cache group's own label; its summary is the list. */
 export const COLD_COMPACT_LABEL = "Cold-cache models"
 
+/** The per-model Compact cold chats first switch, named like the global Settings row it overrides. */
+export const COLD_FIRST_LABEL = "Compact cold chats first"
+
 export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
   compactionInput: "Input token threshold",
   compactionOutput: "Output token threshold",
@@ -1061,6 +1080,7 @@ export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
   prompt: "Keep-alive prompt",
   effort: "Effort",
   compactWarm: "Compact before cold",
+  coldFirst: COLD_FIRST_LABEL,
   coldCompact: COLD_COMPACT_LABEL,
   coldModels: "Cold-cache models",
   compactionStrategy: "Strategy",
@@ -1070,15 +1090,15 @@ export const MODEL_SETTING_LABELS: Record<ModelDefaultField, string> = {
 }
 
 /** Whether a Defaults field row is a switch (Space) rather than a text/cycle row. */
-export function isDefaultSwitchField(field: ModelDefaultField): field is "compactWarm" {
-  return field === "compactWarm"
+export function isDefaultSwitchField(field: ModelDefaultField): field is "compactWarm" | "coldFirst" {
+  return field === "compactWarm" || field === "coldFirst"
 }
 
 // An agent/member/preset model row opens into the same field rows as a
 // Defaults › Models row, grouped: Model, Effort under the row, the Warming
-// group (Warming, Ping every, Warm while waiting, Warm as subagent, Keep-alive prompt, Compact before cold and the
-// cold-cache list), the Compaction group (Strategy, token thresholds, Model, Instructions) and the Images group
-// (Convert large image, Shrink large image, When image context is full).
+// group (Warming, Ping every, Warm while waiting, Warm as subagent, Keep-alive prompt, Compact before cold,
+// Compact cold chats first and the cold-cache list), the Compaction group (Strategy, token thresholds, Model,
+// Instructions) and the Images group (Convert large image, Shrink large image, When image context is full).
 // The item id carries the field and the candidate, so
 // `item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`
 // never collides with a `model:` row or a Defaults `modelsetting:` row.
@@ -1093,6 +1113,7 @@ export type ModelFieldName =
   | "subagent"
   | "prompt"
   | "compactWarm"
+  | "coldFirst"
   | "coldCompact"
   | "compactionStrategy"
   | "compactionModel"
@@ -1109,6 +1130,7 @@ export const MODEL_FIELD_NAMES: readonly ModelFieldName[] = [
   "subagent",
   "prompt",
   "compactWarm",
+  "coldFirst",
   "coldCompact",
   "compactionStrategy",
   "compactionModel",
@@ -1128,6 +1150,7 @@ export const MODEL_FIELD_LABELS: Record<ModelFieldName, string> = {
   subagent: "Warm as subagent",
   prompt: "Keep-alive prompt",
   compactWarm: "Compact before cold",
+  coldFirst: COLD_FIRST_LABEL,
   coldCompact: COLD_COMPACT_LABEL,
   compactionStrategy: "Strategy",
   compactionModel: "Model",

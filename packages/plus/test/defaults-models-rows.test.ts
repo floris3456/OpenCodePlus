@@ -65,6 +65,45 @@ test("a store write that changes one model's settings shows on that row in the n
   expect(warmingSummaryOf(after, "deepseek/v4-flash")).toBe("off")
 })
 
+// Every row opened, so each Defaults › Models row's field rows are emitted.
+function openRowsOf(memo: ReturnType<typeof buildTreeMemo>) {
+  return treeOf(memo, new Set(collectSkeleton(skeletonOf(memo)).map((node) => node.id)))
+}
+
+test("every Defaults › Models row has Compact cold chats first after Compact before cold, as in Settings when unset", () => {
+  const rows = openRowsOf(buildTreeMemo(inputWith([])))
+  for (const key of ["*", "anthropic/claude", "deepseek/v4-flash"]) {
+    const at = rows.findIndex((row) => row.id === `item:defaults:/models:modelsetting:compactWarm:${key}`)
+    expect(rows.slice(at, at + 3).map((row) => row.id)).toEqual([
+      `item:defaults:/models:modelsetting:compactWarm:${key}`,
+      `item:defaults:/models:modelsetting:coldFirst:${key}`,
+      `group:defaults:/models:modeldefault:${key}:cold`,
+    ])
+    const coldFirst = rows[at + 1]
+    expect(coldFirst?.label).toBe("Compact cold chats first")
+    expect(coldFirst?.depth).toBe(4)
+    expect(coldFirst?.badges.value).toBe("as in Settings")
+    expect(coldFirst?.badges.modified).toBeUndefined()
+    expect(coldFirst?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })
+  }
+})
+
+test("a Defaults › Models Compact cold chats first shows its own value, or Every model's with the source", () => {
+  const value = (records: ModelSettingsRecord[], key: string) =>
+    openRowsOf(buildTreeMemo(inputWith(records))).find((row) => row.id === `item:defaults:/models:modelsetting:coldFirst:${key}`)
+  const every = record({ coldFirst: "on" })
+  expect(value([every], "*")?.badges).toMatchObject({ value: "on", modified: true })
+  expect(value([every], "*")?.actions?.reset).toBe(true)
+  expect(value([every], "anthropic/claude")?.badges.value).toBe("on · every model")
+  expect(value([every], "anthropic/claude")?.actions?.reset).toBe(false)
+  const claude = record({ providerID: "anthropic", modelID: "claude", coldFirst: "off" })
+  expect(value([every, claude], "anthropic/claude")?.badges).toMatchObject({ value: "off", modified: true })
+  expect(value([every, claude], "deepseek/v4-flash")?.badges.value).toBe("on · every model")
+  // Only this model sets it: the rest still follow the Settings switch.
+  expect(value([claude], "deepseek/v4-flash")?.badges.value).toBe("as in Settings")
+  expect(value([claude], "*")?.badges.value).toBe("as in Settings")
+})
+
 test("a catalogue key with a suffix resolves its group, and a group without tools counts none", () => {
   const memo = buildTreeMemo(inputWith([]))
   expect(toolCountOf(memo, `${MODELS_GROUP_ID}#models`, () => false)).toBeUndefined()

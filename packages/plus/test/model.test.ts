@@ -760,6 +760,7 @@ test("model field rows name the level that set an inherited value, not the Defau
     ["Warm as subagent", "off · built-in", false],
     ["Keep-alive prompt", "keep alive · global", false],
     ["Compact before cold", "off · built-in", false],
+    ["Compact cold chats first", "as in Settings", false],
     ["Strategy", "Auto · built-in", false],
     ["Model", "Inherited model · built-in", false],
     ["Instructions", "Empty prompt · built-in", false],

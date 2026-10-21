@@ -979,7 +979,8 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
     reviewCount: () => 0,
     // Model rows have no Model field; the rest is the same layout as an agent
     // model row: Effort, the Warming group (Warming, Ping every, Warm while
-    // waiting, Warm as subagent, Keep-alive prompt, Compact before cold and the cold-cache list) and Compaction.
+    // waiting, Warm as subagent, Keep-alive prompt, Compact before cold, Compact
+    // cold chats first and the cold-cache list) and Compaction.
     children: () => [
       lazyModelDefaultField(ctx, memo, key, record, "effort", 3),
       modelGroup(memo, {
@@ -994,6 +995,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
           () => lazyModelDefaultField(ctx, memo, key, record, "subagent", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "prompt", 4),
           () => lazyModelDefaultField(ctx, memo, key, record, "compactWarm", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "coldFirst", 4),
           () => lazyDefaultColdGroup(ctx, memo, key, record, 4),
         ],
       }),
@@ -1098,6 +1100,7 @@ function lazyModelDefaultField(
       const compactWarm = defaultsCompaction(ctx, key, record).compactWarm
       return own ? (compactWarm.value ? "on" : "off") : `${compactWarm.value ? "on" : "off"} · ${compactionSource(compactWarm.from)}`
     }
+    if (field === "coldFirst") return coldFirstValue(defaultsCompaction(ctx, key, record).coldFirst, own)
     return modelSettingValue(view(), field as ModelSettingsField, record)
   }
   return {
@@ -2426,8 +2429,8 @@ function lazyModelItem(
     },
     reviewCount: () => 0,
     // The row opens into Model and Effort, then the Warming, Compaction and Images
-    // group rows; Warming holds its fields, Compact before cold and the
-    // cold-cache list, Compaction its strategy, model and instructions, Images
+    // group rows; Warming holds its fields, Compact before cold, Compact cold
+    // chats first and the cold-cache list, Compaction its strategy, model and instructions, Images
     // how new images are stored and what happens when they fill a request.
     children: () => modelRowChildren(memo, ctx, level, owner, candidate, id, depth + 1, teamRef, catalogue, ownerPath),
   }
@@ -2470,6 +2473,7 @@ function modelRowChildren(
         () => lazyModelField(memo, ctx, level, owner, candidate, "subagent", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "prompt", depth + 1, teamRef, catalogue, ownerPath),
         () => lazyModelField(memo, ctx, level, owner, candidate, "compactWarm", depth + 1, teamRef, catalogue, ownerPath),
+        () => lazyModelField(memo, ctx, level, owner, candidate, "coldFirst", depth + 1, teamRef, catalogue, ownerPath),
         () => coldListGroup(memo, ctx, level, owner, candidate, modelRowId, depth + 1, teamRef, catalogue, ownerPath),
       ],
     }),
@@ -2772,6 +2776,15 @@ function compactionSource(from: CompactionFrom): string {
   return defaultsSource(from)
 }
 
+// A Compact cold chats first row: its own on/off, an inherited one with its
+// source, or "as in Settings" when no row sets it. The global Settings switch
+// then decides; the tree never reads it.
+function coldFirstValue(coldFirst: EffectiveCompaction["coldFirst"], own: boolean): string {
+  if (coldFirst.value === undefined) return "as in Settings"
+  const text = coldFirst.value ? "on" : "off"
+  return own ? text : `${text} · ${compactionSource(coldFirst.from)}`
+}
+
 // One field row under an agent/member/preset model row. The effective value
 // and, when inherited, its source; editing writes only this field at this
 // level, resetting clears it so the level below (or Defaults › Models) decides.
@@ -2847,6 +2860,10 @@ function lazyModelField(
       const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "compactWarm")
       return { value: own ? (compactWarm.value ? "on" : "off") : `${compactWarm.value ? "on" : "off"} · ${compactionSource(compactWarm.from)}`, own }
     }
+    if (field === "coldFirst") {
+      const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, "coldFirst")
+      return { value: coldFirstValue(effectiveCompactionFor(memo, ctx, level, owner, candidate, teamRef, catalogue).coldFirst, own), own }
+    }
     if (field === "imageConvert" || field === "imageShrink" || field === "imagesFull") {
       const image = effectiveImagesFor(ctx, level, owner, candidate, teamRef, catalogue)[field]
       const own = ownCompactionField(ctx, level, owner, candidate, teamRef, catalogue, field)
@@ -2894,7 +2911,7 @@ function lazyModelField(
     return { value: `${effective.text} · ${defaultsSource(effective.from)}`, own: false }
   }
   const current = info()
-  const switchField = field === "compactWarm"
+  const switchField = field === "compactWarm" || field === "coldFirst"
   return {
     id: rowIdOf("item", level, owner, itemId, catalogue, ownerPath),
     kind: "item",
@@ -2917,7 +2934,7 @@ function ownCompactionField(
   candidate: { providerID: string; modelID: string; variant?: string },
   teamRef: RowTeam | undefined,
   catalogue: Catalogue | undefined,
-  field: "compactWarm" | "compactionStrategy" | "compactionModel" | "compactionInstructions" | "compactionInput" | "compactionOutput" | ImageField,
+  field: "compactWarm" | "coldFirst" | "compactionStrategy" | "compactionModel" | "compactionInstructions" | "compactionInput" | "compactionOutput" | ImageField,
 ): boolean {
   const target = targetOf(candidate)
   const scope = { level, agent: owner, ...teamFields(teamRef), ...(catalogue === undefined ? {} : { catalogue }) }
