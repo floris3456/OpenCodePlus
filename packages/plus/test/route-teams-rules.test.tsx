@@ -1161,7 +1161,8 @@ test("a on Defaults Teams asks team pattern, member pattern, preset; a on its en
   e2eRoots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
-  const ctx = fullContext({ directory: project })
+  // A native tool, so a member linked to a preset that turns Code Mode off still has tools.
+  const ctx = fullContext({ directory: project, tools: [{ id: "read", description: "Read a file" }] })
   const handlers = createHandlers(ctx, createState(), { builtins: [] })
   const throwing = { error: (type: string, message: string, data?: unknown) => { throw { type, message, data } } }
   const teamAdds: { level: string; team: string; id: string; preset?: PresetRef }[] = []
