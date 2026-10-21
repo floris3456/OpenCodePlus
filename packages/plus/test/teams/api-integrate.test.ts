@@ -1204,6 +1204,30 @@ test("integrating a child that conflicts returns conflict, its files, the rework
       expect(value.next).toContain("[base.txt]")
       // Nothing landed: the parent's HEAD is where it was.
       expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(p1)
+      const history = (await load(root, plan)).tasks["T1"].history
+      // The child resolves on the parent's new base, but the parent moves
+      // again before landing that second attempt.
+      await git(work.dir, ["reset", "--hard", p1])
+      await fs.writeFile(path.join(work.dir, "base.txt"), "parent and child resolved\n")
+      await git(work.dir, ["add", "base.txt"])
+      await git(work.dir, ["commit", "-m", "fix: resolve first conflict"])
+      await saveRun(root, {
+        ...child,
+        base: p1,
+        head: await git(work.dir, ["rev-parse", "HEAD"]),
+        attempts: [...child.attempts, { n: 2, state: "succeeded", startedAt: now, trigger: "followup", endedAt: now }],
+      })
+      await writeReport(root, child.id, 2, "done")
+      await fs.writeFile(path.join(repo.dir, "base.txt"), "parent moved again\n")
+      await git(repo.dir, ["add", "base.txt"])
+      await git(repo.dir, ["commit", "-m", "feat: move parent again"])
+      const p2 = await git(repo.dir, ["rev-parse", "HEAD"])
+      const again = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: p2 }, callerFor(parent), shippedTable()))
+      expect(again).toMatchObject({ state: "conflict", head: null, conflictFiles: ["base.txt"], reworkTask: "T1.rework.2" })
+      const graph = await load(root, plan)
+      expect(graph.tasks["T1"].history).toEqual(history)
+      expect(graph.tasks["T1.rework.2"].paths).toEqual(["base.txt"])
+      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(p2)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

@@ -406,6 +406,17 @@ leaves unstaged conflicts and untracked new files for the same child. Its
 prompt names all touched files; resolve, check, checkpoint them and finish.
 A fresh implementer with the rework task is the fallback if it cannot resume.
 Busy or dirty children still refuse a rebase.
+Repeated conflicts create the next rework sibling even if the task is already
+in `rework`. `team_status` retains `task` but omits the graph's `taskState`,
+which does not track landings.
+
+An assigned check id with its own argv path runs the assigned check, comparing
+normalized relative paths. A different path runs the same-named project check
+with a separate receipt, or refuses with the fixed command and accepted
+`{ id }` when there is no such project check.
+
+Work that still needs files or checks outside scope reports `blocked`, with
+one `path` or `check` need per item; it is not `done_with_concerns`.
 
 A missing assigned test file is accepted when the child's writable scope
 includes it. Outside scope or forbidden is `E_CHECKS`; finish still requires

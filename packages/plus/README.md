@@ -531,6 +531,8 @@ on the third attempt.
   grant permissions and the child's accepted paths and limits still apply;
   forbidden paths stay forbidden. Plus refreshes its Edit scope row and
   prefixes the prompt with the added paths; `paths` alone sends that note.
+  Work still needing an out-of-scope file or check reports `blocked`, with
+  one `path` or `check` need per item, rather than `done_with_concerns`.
 - `team_get_context` on a root run has no `brief` and `briefPath: null`
   rather than failing `E_NO_BRIEF`. A delegated run's Brief is its first
   message, so `brief` (the rendered text) comes back only once a compaction
@@ -576,8 +578,15 @@ on the third attempt.
   queue waits for a clean parent. Conflicts and new check failures go back to
   the same child with `team_followup rebase: true`; a fresh implementer with
   the rework task is the fallback only when the child cannot resume.
+  Another conflict creates the next rework sibling even while the original
+  task remains in rework. `team_status` keeps `task` but omits `taskState`:
+  the task graph does not track landings.
 - `team_get_context` reports the worktree's live `head`, the value
   `checkpoint` and `integrate` compare against.
+- `team_check` with an assigned id and its existing argv path runs that
+  assigned check (relative paths are normalized). Another path runs the
+  same-named project check with a separate receipt; if no such project check
+  exists, the refusal asks for `{ id }` to run the fixed assigned command.
 - A `finish` finding's severity is `error`, `warning` or `note` (a located
   fact, how a scout answers).
 - One sweep tick (`lifecycle.startSweep`, `policy.sweep.tickMs`, default

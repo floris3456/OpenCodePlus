@@ -1446,6 +1446,8 @@ test("status shows the child head and the check receipt", async () => {
       expect(entries[0]?.dirty).toBe(false)
       expect(entries[0]?.checks).toEqual([{ id: "t", passed: true, atHead: true }])
       expect(entries[0]?.report).toBeNull()
+      expect(entries[0]).toHaveProperty("task", record.task)
+      expect(entries[0]).not.toHaveProperty("taskState")
       const defaults = required(await api.status({}, callerFor(parent))) as Array<{ run: string }>
       expect(defaults.map((entry) => entry.run).toSorted()).toEqual([parent.id, record.id].toSorted())
     } finally {
@@ -1537,7 +1539,16 @@ test("check runs a project check the run was not assigned, apart from its assign
       // Beside an assigned check of the same name, its receipts keep apart.
       await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "test-file", argv: ["bun", "test", "t.test.ts"] }])
       expect(required(await api.check({ id: "test-file", path: "u.test.ts" }, callerFor(child)))).toMatchObject({ id: "test-file-own", passed: false })
+      expect(required(await api.check({ id: "test-file", path: "./t.test.ts" }, callerFor(child)))).toMatchObject({ id: "test-file", passed: true })
       expect(required(await api.check({ id: "test-file" }, callerFor(child)))).toMatchObject({ id: "test-file", passed: true })
+      await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "test-file-report", argv: ["bun", "test", "./t.test.ts"] }])
+      expect(required(await api.check({ id: "test-file-report", path: "test/../t.test.ts" }, callerFor(child)))).toMatchObject({ id: "test-file-report", passed: true })
+      expect(rejected(await api.check({ id: "test-file-report", path: "u.test.ts" }, callerFor(child)))).toEqual({
+        code: "E_UNKNOWN_CHECK",
+        message: 'Check "test-file-report" is assigned with a fixed command (bun test ./t.test.ts): call it without path.',
+        accepted: { id: "test-file-report" },
+      })
+      expect(required(await api.check({ id: "test-file-report" }, callerFor(child)))).toMatchObject({ id: "test-file-report", passed: true })
     } finally {
       await removeRepo(repo.dir)
     }

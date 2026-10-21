@@ -438,7 +438,7 @@ export function validateSummary(summary: string, deliverable: Deliverable["kind"
 export const Report = Schema.Struct({
   status: Schema.Literals(["done", "done_with_concerns", "blocked", "needs_context", "rejected"]).annotate({
     description:
-      "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs.",
+      "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs. Work that still needs a file or check outside your scope is not done: blocked, with one need per file (path) or check.",
   }),
   summary: Schema.String.check(Schema.isMaxLength(5000)).annotate({
     description: "What your parent must act on, at most 40 lines; it receives it in full.",

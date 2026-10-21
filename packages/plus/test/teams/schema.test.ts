@@ -99,6 +99,12 @@ test("Brief.prompt of 4001 chars is rejected", () => {
 
 const lines = (n: number): string => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")
 
+test("Report status tells a worker to block on files or checks outside scope", () => {
+  expect(Schema.toJsonSchemaDocument(Report.fields.status).schema.description).toContain(
+    "Work that still needs a file or check outside your scope is not done: blocked, with one need per file (path) or check.",
+  )
+})
+
 function caught(fn: () => unknown): Promise<unknown> {
   return Promise.resolve().then(fn).then(
     () => undefined,

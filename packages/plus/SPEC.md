@@ -1746,6 +1746,19 @@ the conflicts and all touched files and asks it to resolve both sides' intent,
 check, checkpoint every change and finish. A fresh child with the rework task
 is needed only if the original cannot resume.
 
+Repeated conflicts create the next rework sibling without a second transition
+of a task already in `rework`. `team_status` returns `task`, not `taskState`:
+the task graph does not track successful landings.
+
+An assigned `team_check` id with a path already in its argv (normalized
+relative paths) runs the assigned command and records its assigned receipt.
+Another path resolves a same-named project check with its separate `-own`
+receipt; without that project check, the error names the fixed command and
+accepts `{ id }` without a path.
+
+The report status description directs unfinished work needing out-of-scope
+files or checks to `blocked`, with one `path` or `check` need per item.
+
 A check may name a test file missing at the base when the child's writable
 scope includes it, for every member. Outside scope or forbidden is `E_CHECKS`.
 Checkpoint allows that new test, and finish still requires a passing check at
