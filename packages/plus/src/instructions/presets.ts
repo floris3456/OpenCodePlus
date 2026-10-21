@@ -228,6 +228,17 @@ const plannerShell: PresetOverrides = rows(off, [
 
 const tavily = rows(off, ["tool:search_tavily_search", "tool:search_tavily_extract"])
 
+// Outside the build seat, Code Mode would hold only the search server's tools
+// (the namespaces that add many tools are the seat's, seatOnly below): those
+// go direct and execute goes off. Live, members called execute only to probe
+// for tools they lack (a shell, the opencode namespace) or with no-op code.
+const noCodeMode: PresetOverrides = {
+  ...rows(off, ["tool:execute"]),
+  ...Object.fromEntries(
+    ["search_exa_code_search", "search_tavily_search", "search_tavily_extract"].map((tool) => [`toolmode:${tool}`, { text: "direct" }] as const),
+  ),
+}
+
 // Tools a member's role never uses. Each costs tokens on every request and
 // invites a call the role text forbids. `websearch` duplicates the search
 // server's tools; the skills are the build seat's (configuration, releases,
@@ -252,6 +263,7 @@ const worker: PresetOverrides = {
   ...inside,
   ...tavily,
   ...unused,
+  ...noCodeMode,
   ...rows(off, [
     "tool:shell",
     "tool:question",
@@ -276,6 +288,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   planner: {
     ...secrets,
     ...unused,
+    ...noCodeMode,
     ...plannerShell,
     ...rows(off, ["tool:subagent", "skill:pilotty", "perm:edit:allowed.*", "perm:team_delegate:access.delegated"]),
     // It keeps team_checkpoint: a delegated planner commits its plan file,
@@ -299,6 +312,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...orchestratorShell,
     ...unused,
     ...tavily,
+    ...noCodeMode,
     // It changes no source files (implementers do, team_integrate lands them);
     // it writes Brief and handoff files (the plan rows) and the tests that
     // judge its implementers, commits only those, delegated or not, and

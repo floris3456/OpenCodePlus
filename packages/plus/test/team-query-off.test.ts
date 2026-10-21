@@ -336,19 +336,28 @@ test("a non-member agent sees no team tool while an implementer-preset member se
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
   const member = "implementer"
   const teamAgents = [{ id: member, scope: "defaults" as const }, { id: "build", scope: "project" as const }]
-  await apply(
-    ctx,
-    makeInput({
-      items: [...discovered.items, ...teamPolicyItems(policyMembersOf([member]))],
-      agents: [{ id: member, level: "defaults" as Level }, { id: "build", level: "project" as Level }],
-      scopes: fromBuild(teamAgents, discovered.items, [
-        { id: member, level: "defaults", preset: { kind: "member", team: "basic", id: "implementer" } },
-        { id: "build", level: "project" },
-      ]),
-      records: [],
-      teamAgents: [member],
-    }),
-  )
+  const publish = (records: CustomizationRecord[]) =>
+    apply(
+      ctx,
+      makeInput({
+        items: [...discovered.items, ...teamPolicyItems(policyMembersOf([member]))],
+        agents: [{ id: member, level: "defaults" as Level }, { id: "build", level: "project" as Level }],
+        scopes: fromBuild(teamAgents, discovered.items, [
+          { id: member, level: "defaults", preset: { kind: "member", team: "basic", id: "implementer" } },
+          { id: "build", level: "project" },
+        ]),
+        records,
+        teamAgents: [member],
+      }),
+    )
+  // The implementer preset turns Code Mode off: execute is denied.
+  const first = await publish([])
+  expect(agents.state.get(member)?.permissions?.some((rule) => rule.action === "execute" && rule.effect === "deny")).toBe(true)
+  for (const registration of first.registrations) await Effect.runPromise(registration.dispose)
+  // With execute on again, the team tool rows are the catalog's ceiling.
+  await publish([
+    { type: "customization", level: "defaults", agent: member, item: "tool:execute", section: null, state: "on", basedOn: fingerprint("upstream"), updated: UPDATED },
+  ])
 
   const toolLayer = LayerNode.compile(LayerNode.group([CoreTool.node]), {
     replacements: [

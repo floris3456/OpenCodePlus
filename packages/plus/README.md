@@ -231,6 +231,7 @@ What the Basic member presets set (on = permitted):
 | `subagent` tool | off | off | off | off | off | on |
 | read or grep secret files ¹ | off | off | off | off | off | on |
 | Tavily search and extract tools | on | off | off | off | off | on |
+| Code Mode (`execute`; the search tools are sent direct instead) | off | off | off | off | off | on |
 | edit files | plan files only ² | plan files only ² | yes | no | no | yes |
 | delegates to | orchestrator | orchestrator, implementer, reviewer, scout | — | — | — | every other member |
 | asks you before each delegation (Approval) | yes | no | no | no | no | no |

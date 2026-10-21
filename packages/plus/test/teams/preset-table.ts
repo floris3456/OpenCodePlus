@@ -12,6 +12,7 @@ import { catalogItems, categoryOfRow } from "../../src/instructions/permission-c
 import { curatedRules } from "../../src/instructions/tool-permissions.js"
 import { chainContext } from "../../src/instructions/presets.js"
 import { policyMembersOf, teamPolicyItems, type PolicyRun } from "../../src/instructions/team-policy-rows.js"
+import { toolModeItem } from "../../src/instructions/tool-mode.js"
 import { teamTools } from "../../src/teams/policy.js"
 
 export interface TeamMember {
@@ -55,12 +56,20 @@ function rowItem(id: string, kind: Item["kind"], group: Item["group"]): Item {
   return { id, kind, group, title: id, text: id, enabled: true, fingerprint: fingerprint(id) }
 }
 
-export const inventory: readonly Item[] = [
+// Discovery's tool rows: MCP search tools run in Code Mode, every tool but the
+// host's execute entry point has an exposure row.
+const tools: readonly Item[] = [
   ...teamTools.map((name) => toolItem(`team_${name}`, "plus")),
   ...nativeTools.map((name) => toolItem(name, "native")),
-  ...searchTools.map((name) => toolItem(name, "mcp")),
+  ...searchTools.map((name): Item => ({ ...toolItem(name, "mcp"), codemode: true })),
   ...otherTools.map((name) => toolItem(name, "native")),
   ...prefixedTools.map((name) => toolItem(name, "plus")),
+]
+
+export const inventory: readonly Item[] = [
+  ...tools,
+  { ...toolItem("execute", "native"), codemode: false, execute: true },
+  ...tools.map(toolModeItem),
   ...skills.map((name) => rowItem(`skill:${name}`, "skill", "plus")),
   rowItem("system:opencodeplus", "system", "plus"),
 ]
