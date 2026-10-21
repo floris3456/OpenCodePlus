@@ -927,7 +927,7 @@ export const DiffInput = Schema.Struct({
 export type DiffInput = typeof DiffInput.Type
 
 export const ListInput = Schema.Struct({
-  all: Schema.optional(Schema.Boolean).annotate({ description: "Include superseded and reaped runs." }),
+  all: Schema.optional(Schema.Boolean).annotate({ description: "Include finished runs: landed (worktree removed), superseded, reaped." }),
   role: Schema.optional(Schema.String).annotate({ description: "Only this member's runs." }),
   state: Schema.optional(RunState).annotate({ description: "Only runs in this state." }),
   parent: Schema.optional(RunID).annotate({ description: "Only this run's children." }),

@@ -473,7 +473,11 @@ a HEAD that moved refuses (`IntegrateInput`, `CheckpointInput`).
 
 `team_list` is scoped by role: planners see every run in the namespace, and
 every other role sees its own run plus its direct children, sorted by
-`lastUsed` descending (`packages/plus/src/teams/api-query.ts:32`–
+`lastUsed` descending. Finished runs (worktree removed, superseded, reaped)
+list only with `all: true`; each entry is run, role, state, task, parent, head,
+worktree, reportStatus, lastUsed and runtime. `team_stop` results carry a
+`next:` line (a stopping run settles by itself; a stopped one resumes by
+`team_followup`) (`packages/plus/src/teams/api-query.ts:32`–
 `packages/plus/src/teams/api-query.ts:58`). The human Team tab does not use it:
 `team.runs.list` is namespace-wide (§8).
 

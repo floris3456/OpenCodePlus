@@ -815,6 +815,9 @@ test("the Attached brief file row sets the paste limit", async () => {
     try {
       await fs.mkdir(path.join(repo.dir, "notes"), { recursive: true })
       await fs.writeFile(path.join(repo.dir, "notes", "mid.md"), "m".repeat(2_000))
+      // Committed: a file named by path must be in the child's base.
+      await git(repo.dir, ["add", "notes/mid.md"])
+      await git(repo.dir, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "notes"])
       const parent = baseRun({
         id: "main-0123456789abcdef",
         role: "orchestrator",

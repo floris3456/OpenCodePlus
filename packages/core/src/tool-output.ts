@@ -83,10 +83,14 @@ const layer = Layer.effect(
         kept.push(line)
         bytes += size
       }
+      // A first line over the byte limit (one long JSON value) still shows its start
+      // instead of nothing.
+      const cut = kept.length === 0 && lines[0] !== undefined
+      if (cut) kept.push(Buffer.from(lines[0]!, "utf-8").subarray(0, limits.maxBytes).toString("utf-8").replace(/\uFFFD$/, ""))
       const file = path.join(directory, fileName())
       yield* fs.ensureDir(directory).pipe(Effect.orDie)
       yield* fs.writeFileString(file, text).pipe(Effect.orDie)
-      const shown = kept.length > 0 ? `lines 1-${kept.length}` : "0 lines"
+      const shown = cut ? `the first ${limits.maxBytes} bytes of line 1` : `lines 1-${kept.length}`
       const marker = `[showing ${shown} of ${lines.length}; full output saved to ${file}]`
       const bounded: Tool.Content[] = []
       let remaining = kept.join("\n").length

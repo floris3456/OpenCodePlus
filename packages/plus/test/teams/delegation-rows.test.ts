@@ -609,7 +609,7 @@ test("stop reaches a grandchild only while the caller's Deeper descendants row f
 
   expect(rejected(await apiWith(tableWith()).stop({ run: grandchild.id, reason }, callerFor(parent))).code).toBe("E_NOT_CHILD")
   const deeper = tableWith({ agent: parent.role, id: "perm:team_stop:runs.descendants", enabled: true })
-  expect(required(await apiWith(deeper).stop({ run: grandchild.id, reason }, callerFor(parent)))).toEqual({ run: grandchild.id, state: "stopping" })
+  expect(required(await apiWith(deeper).stop({ run: grandchild.id, reason }, callerFor(parent)))).toMatchObject({ run: grandchild.id, state: "stopping" })
   expect((await loadRun(root, grandchild.id))?.stopReason).toBe(reason)
   expect((await peek(root, child.id)).map((item) => [item.kind, item.from, item.text])).toEqual([
     ["notify", grandchild.id, `${parent.id} stops run ${grandchild.id}: ${reason}`],
