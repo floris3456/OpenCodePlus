@@ -193,7 +193,7 @@ export const make = Effect.gen(function* () {
         )
           return Outcome.RecoverFull()
         const retry =
-          llmFailure && llmError && !isContextOverflowFailure(llmFailure)
+          llmFailure && llmError && !recorded.endTurn && !isContextOverflowFailure(llmFailure)
             ? yield* restore(
                 input.retry(
                   llmFailure,
@@ -271,6 +271,7 @@ export const make = Effect.gen(function* () {
           llmError &&
           retry?.retry &&
           record.outputStarted &&
+          !record.endTurn &&
           tools.declines.length === 0 &&
           !tools.interrupted
         )
@@ -284,6 +285,8 @@ export const make = Effect.gen(function* () {
         if (tools.interrupted && tools.failure) return yield* Effect.failCause(tools.failure)
         if (tools.interrupted && Exit.isFailure(joined)) return yield* Effect.failCause(joined.cause)
         if (record.failure) return yield* new StepFailedError({ error: record.failure })
+        // Use the ordinary idle boundary: inbox work still delivers after this step.
+        if (record.endTurn) return Outcome.Completed({ needsContinuation: false })
         const needsContinuation = input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation
         if (record.finish?.finish === "length") return Outcome.OutputLimit({ needsContinuation })
         return Outcome.Completed({ needsContinuation })
