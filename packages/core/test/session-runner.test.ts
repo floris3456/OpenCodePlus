@@ -275,6 +275,14 @@ const permissionFail = {
     }),
 }
 const permission = permissionLayer()
+const finishTask = {
+  name: "finish_task",
+  description: "Report the task and end the turn",
+  input: Schema.Struct({}),
+  output: Schema.String,
+  options: { codemode: false },
+  execute: () => Effect.succeed({ output: "Task reported", endTurn: true }),
+} satisfies ToolInfo
 const transformTools = (registry: Tool.Interface, tools: Readonly<Record<string, ToolInfo>>, options?: Tool.Options) =>
   registry.transform((editor) =>
     Object.entries(tools).forEach(([name, tool]) => editor.add({ ...tool, name, options: options ?? tool.options })),
@@ -4080,6 +4088,211 @@ describe("SessionRunnerLLM", () => {
       "session.step.ended.1",
     ])
   })
+
+  for (const finish of ["tool-calls", "length"] as const) {
+    scenario(`ends the turn after one successful tool step with finish ${finish}`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) => editor.add(finishTask))
+      yield* s.admit("Finish the task")
+      yield* s.llm.push(
+        TestLLM.complete(
+          { reason: { normalized: finish } },
+          LLMEvent.toolCall({ id: "call-finish", name: finishTask.name, input: {} }),
+        ),
+      )
+
+      yield* s.resume
+
+      const execution = yield* SessionExecution.Service
+      expect(yield* execution.isActive(sessionID)).toBe(false)
+      expect(s.requests).toHaveLength(1)
+      expect(yield* s.context).toMatchObject([
+        Expected.user("Finish the task"),
+        Expected.assistant({ finish }, [
+          Expected.completedTool({ id: "call-finish" }, { content: [Expected.text("Task reported")] }),
+        ]),
+      ])
+      expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.step.ended.1")).toHaveLength(1)
+      expect((yield* s.context).some((message) => message.type === "synthetic")).toBe(false)
+    })
+  }
+
+  for (const failure of ["execution", "output-validation"] as const) {
+    scenario(`does not end the turn on a finishing tool's ${failure} error`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) =>
+        editor.add({
+          ...finishTask,
+          execute: () =>
+            failure === "execution"
+              ? Effect.fail(new Tool.Error({ message: "Report refused", metadata: { endTurn: true } }))
+              : Effect.succeed({ output: 123, endTurn: true }),
+        }),
+      )
+      yield* s.admit("Finish the task")
+      yield* s.llm.push(
+        TestLLM.tool("call-finish", finishTask.name, {}),
+        TestLLM.text("Correct the report", "text-correction"),
+      )
+
+      yield* s.resume
+
+      expect(s.requests).toHaveLength(2)
+      expect(requireAssistant(yield* s.context).content).toMatchObject([
+        { type: "tool", id: "call-finish", state: { status: "error" } },
+      ])
+    })
+  }
+
+  scenario("settles parallel calls before a successful tool ends the turn", function* (s) {
+    const registry = yield* Tool.Service
+    yield* registry.transform((editor) => editor.add(finishTask))
+    yield* s.admit("Finish alongside another call")
+    yield* s.llm.push(
+      TestLLM.complete(
+        { reason: { normalized: "tool-calls" } },
+        LLMEvent.toolCall({ id: "call-finish", name: finishTask.name, input: {} }),
+        LLMEvent.toolCall({ id: "call-echo", name: "echo", input: { text: "Still running" } }),
+      ),
+    )
+    const tools = yield* s.blockTools()
+    const finished = yield* s.bus.subscribe(SessionEvent.Tool.Success).pipe(
+      Stream.filter((event) => event.data.sessionID === sessionID && event.data.id === "call-finish"),
+      Stream.runHead,
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* tools.started
+    yield* Fiber.join(finished)
+    expect(requireAssistant(yield* s.context).content).toMatchObject([
+      { type: "tool", id: "call-finish", state: { status: "completed" } },
+      { type: "tool", id: "call-echo", state: { status: "running" } },
+    ])
+    expect(run.pollUnsafe()).toBeUndefined()
+
+    yield* tools.release
+    yield* Fiber.join(run)
+
+    expect(s.requests).toHaveLength(1)
+    expect(requireAssistant(yield* s.context).content).toMatchObject([
+      { type: "tool", id: "call-finish", state: { status: "completed" } },
+      { type: "tool", id: "call-echo", state: { status: "completed", content: [Expected.text("Still running")] } },
+    ])
+    expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.tool.success.2")).toHaveLength(2)
+  })
+
+  for (const delivery of ["queue", "steer"] as const) {
+    scenario(`processes ${delivery} input admitted during an end-turn tool step`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) =>
+        editor.add({
+          ...finishTask,
+          execute: () => s.awaitToolBarrier.pipe(Effect.andThen(finishTask.execute)),
+        }),
+      )
+      yield* s.admit("Finish the task")
+      yield* s.llm.push(TestLLM.tool("call-finish", finishTask.name, {}), TestLLM.text("Handled new input", "text-next"))
+      const tools = yield* s.blockTools()
+      const run = yield* s.resume.pipe(Effect.forkChild)
+      yield* tools.started
+      yield* s.session.prompt({ sessionID, text: "Next task", delivery })
+      expect(s.requests).toHaveLength(1)
+      yield* tools.release
+      yield* Fiber.join(run)
+
+      expect(s.requests).toHaveLength(2)
+      expect(userTexts(s.requests[1])).toEqual(["Finish the task", "Next task"])
+      expect((yield* s.context).map((message) => message.type)).toEqual(["user", "assistant", "user", "assistant"])
+      expect(yield* s.inbox).toEqual([])
+    })
+  }
+
+  scenario("delivers manual compaction and queued input after an end-turn tool", function* (s) {
+    const registry = yield* Tool.Service
+    yield* registry.transform((editor) => editor.add(finishTask))
+    s.currentModel = recoveryModel
+    yield* s.llm.push(
+      TestLLM.tool("call-finish", finishTask.name, {}),
+      [LLMEvent.textDelta({ id: "summary", text: "## Objective\n- Task reported" })],
+      TestLLM.text("Next task handled", "text-after-compaction"),
+    )
+    yield* s.admit("Finish the task")
+    const active = yield* s.resumePaused
+    const compaction = yield* s.session.compact({ sessionID })
+    yield* s.session.prompt({ sessionID, text: "Next task", delivery: "queue", resume: false })
+    yield* active.finish
+
+    expect(s.requests).toHaveLength(3)
+    expect(userTexts(s.requests[2])).toContain("Next task")
+    expect(yield* s.inbox).toEqual([])
+    expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
+      type: "compaction",
+      status: "completed",
+      summary: "## Objective\n- Task reported",
+    })
+  })
+
+  for (const script of [
+    { code: "return await tools.finish_task({})", steps: 1, fails: false },
+    { code: 'await tools.finish_task({}); throw new Error("Script failed")', steps: 2, fails: false },
+    { code: "return await tools.finish_task({})", steps: 2, fails: true },
+  ]) {
+    scenario(`Code Mode end-turn control: ${script.steps} steps, tool failure ${script.fails}`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) =>
+        editor.add({
+          ...finishTask,
+          options: { codemode: true },
+          execute: () => script.fails ? Effect.fail(new Tool.Error({ message: "Report refused" })) : finishTask.execute(),
+        }),
+      )
+      yield* s.admit("Finish through Code Mode")
+      yield* s.llm.push(
+        TestLLM.tool("call-execute", "execute", { code: script.code }),
+        TestLLM.text("Handle script error", "text-error"),
+      )
+
+      yield* s.resume
+
+      expect(s.requests).toHaveLength(script.steps)
+      expect(requireAssistant(yield* s.context).content).toMatchObject([
+        {
+          type: "tool",
+          id: "call-execute",
+          state: {
+            status: "completed",
+            metadata: { toolCalls: [{ tool: "finish_task", status: script.fails ? "error" : "completed" }] },
+          },
+        },
+      ])
+    })
+  }
+
+  for (const incomplete of [false, true]) {
+    scenario(`does not retry after end-turn success (incomplete sibling: ${incomplete})`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) => editor.add(finishTask))
+      yield* s.admit("Finish the task")
+      yield* s.llm.push(
+        Stream.fromIterable([
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.toolCall({ id: "call-finish", name: finishTask.name, input: {} }),
+          ...(incomplete ? [LLMEvent.toolInputStart({ id: "call-incomplete", name: "echo" })] : []),
+        ]).pipe(Stream.concat(Stream.fail(streamDisconnected()))),
+      )
+
+      const result = yield* s.resume.pipe(Effect.exit)
+
+      expect(Exit.isFailure(result)).toBe(true)
+      expect(s.requests).toHaveLength(1)
+      expect(yield* recordedEventTypes(sessionID)).toContain("session.step.failed.1")
+      expect(yield* recordedEventTypes(sessionID)).not.toContain("session.retry.scheduled.1")
+      expect(requireAssistant(yield* s.context).content).toMatchObject([
+        { type: "tool", id: "call-finish", state: { status: "completed" } },
+        ...(incomplete ? [{ type: "tool", id: "call-incomplete", state: { status: "error" } }] : []),
+      ])
+    })
+  }
 
   scenario("reloads a model switch before a tool-driven continuation step", function* (s) {
     yield* s.admit("Echo this")

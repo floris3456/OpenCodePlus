@@ -55,7 +55,7 @@ const INPUT_FAILURES = {
   },
 } satisfies Record<InputFailureReason, SessionError.Error>
 
-/** Immutable fold of the durable facts a step's writer has recorded so far. */
+/** Immutable snapshot of recorded facts and local execution control for this step. */
 export interface StepRecord {
   /** The model produced visible output this attempt, which bars transparent retries and overflow recovery. */
   readonly outputStarted: boolean
@@ -70,6 +70,8 @@ export interface StepRecord {
     readonly tokens: ReturnType<typeof SessionUsage.tokens>
   }
   readonly needsContinuation: boolean
+  /** A successful local tool ended the turn, and all calls have settled. */
+  readonly endTurn: boolean
 }
 
 /** Derives canonical model content from a provider-hosted tool result. */
@@ -109,6 +111,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     called: boolean
     settled: boolean
     providerExecuted: boolean
+    endTurn?: boolean
     progress?: Tool.Metadata
     input?: InputExcerpt
     malformed?: boolean
@@ -623,6 +626,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     tool.settled = true
     const content = result.content
     if (!isReadonlyArrayNonEmpty(content)) return yield* Effect.die(new Error(`Tool execution has no content: ${id}`))
+    tool.endTurn = result.endTurn === true
     yield* bus.publish(SessionEvent.Tool.Success, {
       sessionID: input.sessionID,
       assistantMessageID,
@@ -650,16 +654,20 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     hasProviderError: () => providerFailed,
     hasStarted: () => stepStarted,
     /** Immutable snapshot of everything recorded for this step so far. */
-    record: (): StepRecord => ({
-      outputStarted,
-      providerFailed,
-      failure: stepFailure,
-      finish: stepSettlement,
-      needsContinuation: Iterable.some(
-        tools.values(),
-        (tool) => !tool.providerExecuted && (tool.called || tool.settled),
-      ),
-    }),
+    record: (): StepRecord => {
+      const endTurn =
+        Iterable.some(tools.values(), (tool) => tool.endTurn === true) &&
+        !Iterable.some(tools.values(), (tool) => !tool.settled)
+      return {
+        outputStarted,
+        providerFailed,
+        failure: stepFailure,
+        finish: stepSettlement,
+        endTurn,
+        needsContinuation:
+          !endTurn && Iterable.some(tools.values(), (tool) => !tool.providerExecuted && (tool.called || tool.settled)),
+      }
+    },
     startAssistant,
     streamed,
   }

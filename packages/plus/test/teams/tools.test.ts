@@ -15,14 +15,17 @@ import os from "node:os"
 import path from "node:path"
 import { assertToolPermission } from "../../../core/src/tool/permission-gate.js"
 import { Permission } from "../../../core/src/permission.js"
+import { initRepo } from "../../../core/test/fixture/git.js"
 import { createPlusApi, createState } from "../../src/index.js"
 import { teamsDataDir } from "../../src/instructions/paths.js"
 import { verify } from "../../src/teams/audit.js"
 import { createTeamApi } from "../../src/teams/api.js"
 import { change, linked, presetTable, shippedTable, teamState } from "./preset-table.js"
 import { git } from "../../src/teams/git.js"
+import { peek } from "../../src/teams/inbox.js"
+import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { bySession, loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
-import { Brief } from "../../src/teams/schema.js"
+import { Brief, Report } from "../../src/teams/schema.js"
 import { registerTeamTools } from "../../src/teams/tools.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { context, toolHarness } from "../harness.js"
@@ -255,6 +258,66 @@ test("every team tool registers direct under namespace team with its permission"
     expect(tool.options?.permission).toBe(`team.${name}`)
   }
 })
+
+for (const delegated of [true, false]) {
+  test(`team_finish ${delegated ? "ends a delegated turn and promptly notifies its parent once" : "leaves a main chat's turn open"}`, async () => {
+    await withIsolatedTeamsRoot(async (root) => {
+      const directory = path.join(root, "repo")
+      await fs.mkdir(directory, { recursive: true })
+      await initRepo(directory)
+      const head = await git(directory, ["rev-parse", "HEAD"])
+      const parent = {
+        ...makeRun("main-0123456789abcdef", "orchestrator", "ses_finish_parent"),
+        kind: "main" as const,
+        directory,
+        base: head,
+        head,
+        children: ["w-0123456789abcdef"],
+      }
+      const run: RunRecord = {
+        ...makeRun(delegated ? "w-0123456789abcdef" : "main-abcdef0123456789", "scout", "ses_finish_flag"),
+        kind: delegated ? "w" : "main",
+        parent: delegated ? parent.id : null,
+        directory,
+        base: head,
+        head,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", trigger: "delegate", startedAt: new Date().toISOString() }],
+      }
+      if (delegated) await saveRun(root, parent)
+      await saveRun(root, run)
+      const prompted: Array<{ sessionID: string; text: string }> = []
+      const created = testToolContext({ session: {
+        prompt: (input: { sessionID: string; text: string }) => Effect.sync(() => { prompted.push(input) }),
+      } })
+      const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState()), shippedTable)
+      try {
+        const tool = need(created.tools, "team_finish")
+        const caller = toolContext("ses_finish_flag", "scout")
+        const report = Schema.decodeUnknownSync(Report)({ status: "done", summary: "Located the implementation and checked its callers." })
+        const result = await Effect.runPromise(tool.execute(report, caller))
+        expect(result.endTurn).toBe(delegated ? true : undefined)
+        expect(result.output).toMatchObject({ status: "done", summary: report.summary })
+        expect(prompted).toEqual([])
+
+        const ended = { type: "session.execution.succeeded", data: { sessionID: run.sessionID } }
+        await onSessionEvent(created.ctx, root, ended)
+        await onSessionEvent(created.ctx, root, ended)
+        expect(prompted).toHaveLength(delegated ? 1 : 0)
+        if (delegated) {
+          expect(prompted[0]).toMatchObject({ sessionID: parent.sessionID })
+          expect(prompted[0]?.text).toContain(report.summary)
+          expect(prompted[0]?.text).toContain("settled: done")
+          expect((await loadRun(root, run.id))?.attempts[0]?.notified).toBe(true)
+          expect(await peek(root, parent.id)).toEqual([])
+        }
+        expect(await runMessage(tool, report, caller)).toContain("E_FINISH_TWICE")
+      } finally {
+        await Effect.runPromise(registration.dispose)
+      }
+    })
+  })
+}
 
 test("the team namespace advertises nothing it cannot do", async () => {
   const tools = await registeredTools()

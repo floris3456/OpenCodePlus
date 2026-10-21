@@ -89,6 +89,7 @@ export const create = (
         const callIndex = yield* Ref.make(0)
         const files = yield* Ref.make<Array<CollectedFiles>>([])
         const calls = yield* Ref.make<Array<ExecuteCall>>([])
+        const endTurn = yield* Ref.make(false)
         const lock = Semaphore.makeUnsafe(1)
         const record = (update: (items: Array<ExecuteCall>) => Array<ExecuteCall>) =>
           lock.withPermit(
@@ -100,6 +101,7 @@ export const create = (
             Effect.gen(function* () {
               const index = yield* Ref.getAndUpdate(callIndex, (index) => index + 1)
               const executed = yield* executeTool(name, tool, input, context)
+              if (executed.endTurn) yield* Ref.set(endTurn, true)
               const content =
                 typeof executed.content === "string"
                   ? [{ type: "text" as const, text: executed.content }]
@@ -141,6 +143,8 @@ export const create = (
           output: value,
           content,
           metadata,
+          // A failed script still needs a model response, even if an earlier call succeeded.
+          ...(result.ok && (yield* Ref.get(endTurn)) ? { endTurn: true } : {}),
         }
       }),
   } satisfies Info

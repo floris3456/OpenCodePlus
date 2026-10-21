@@ -87,6 +87,14 @@ export interface Result<Output extends ValueSchema<any> | undefined = ValueSchem
   readonly output?: OutputValue<Output>
   readonly content?: string | ReadonlyArray<Content>
   readonly metadata?: Metadata
+  /**
+   * End the assistant turn after this step's calls settle successfully or fail.
+   * Only a successful execution can request this; errors never do. This suppresses
+   * tool and output-limit continuations, not pending inbox delivery or failures.
+   * Code Mode propagates successful inner requests only if its script succeeds.
+   * Execution control only: not model content, metadata, or a durable event field.
+   */
+  readonly endTurn?: boolean
 }
 
 export type Info<
