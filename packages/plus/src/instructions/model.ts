@@ -1103,6 +1103,15 @@ export interface Resolved {
   readonly requires?: { readonly ids: readonly string[]; readonly from: From | "text"; readonly here: boolean }
 }
 
+/**
+ * A Role/persona some level set to an empty text over an agent with a system
+ * text of its own (its config or agent file): apply clears that text, so the
+ * request sends the base prompt.
+ */
+export function clearsRole(item: Pick<Item, "text">, resolved: Pick<Resolved, "text" | "textFrom">): boolean {
+  return resolved.text.trim().length === 0 && resolved.textFrom.kind !== "upstream" && item.text.trim().length > 0
+}
+
 export interface ThreeWay {
   readonly original: string
   readonly mine: string
@@ -1501,10 +1510,25 @@ const emptyItemRecordsEntry: ItemRecordsEntry = {
   sections: new Map(),
 }
 
+// An absent field and an empty one differ: an emptied text is an edit, `requires: []` means always.
 function recordDigest(r: CustomizationRecord): string {
-  const team = r.team ? `${r.team.level}/${r.team.team}` : ""
-  const req = r.requires ? r.requires.join(",") : ""
-  return `${r.level}:${r.agent ?? ""}:${r.section ?? ""}:${team}:${r.catalogue ?? ""}:${r.text ?? ""}:${r.state ?? ""}:${r.pin ?? ""}:${req}:${r.basedOn}:${r.basedOnText ?? ""}:${r.acknowledged ?? ""}:${r.basedOnState ?? ""}:${r.basedOnPin ?? ""}:${r.updated}`
+  return JSON.stringify([
+    r.level,
+    r.agent,
+    r.section,
+    r.team === undefined ? null : `${r.team.level}/${r.team.team}`,
+    r.catalogue ?? null,
+    r.text ?? null,
+    r.state ?? null,
+    r.pin ?? null,
+    r.requires ?? null,
+    r.basedOn,
+    r.basedOnText ?? null,
+    r.acknowledged ?? null,
+    r.basedOnState ?? null,
+    r.basedOnPin ?? null,
+    r.updated,
+  ])
 }
 
 const itemRecordsCache = new WeakMap<readonly CustomizationRecord[], Map<string, ItemRecordsEntry>>()

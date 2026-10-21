@@ -8,6 +8,7 @@ import {
   applies,
   canReset,
   catalogueOf,
+  clearsRole,
   entrySpecificity,
   formatDuration,
   hasModelActiveAt,
@@ -3192,8 +3193,10 @@ function lazySystem(
       // Role/persona is off or empty (the shared row has no body of its own).
       const replaced = () => {
         if (role === undefined) return false
-        if (owner !== null && role.text.trim().length > 0) return true
         const resolved = wholeOf(memo, level, owner, role, catalogue, teamRef)
+        // A level that empties it clears the agent's own body too (apply's clearsRole).
+        if (resolved.enabled && clearsRole(role, resolved)) return false
+        if (owner !== null && role.text.trim().length > 0) return true
         return resolved.enabled && resolved.assembled.trim().length > 0
       }
       const row = (item: Item) =>

@@ -20,6 +20,7 @@ import {
   applies,
   catalogPath,
   chainContentKey,
+  clearsRole,
   scopesContentKey,
   fingerprint,
   itemRecordsIndex,
@@ -897,7 +898,12 @@ function roleCandidates(input: ApplyInput): RoleCandidate[] {
       const resolved = resolvedFor(item, agent, input, gate)
       const text = resolved.assembled
       // A disabled role never clears the agent system text.
-      if (!resolved.enabled || text.trim().length === 0) return []
+      if (!resolved.enabled) return []
+      // A level that empties Role/persona clears the agent's own system text (its config or
+      // agent file), so the request sends the base prompt, as the System list says. Sections
+      // left out by their conditions only empty the assembled text: those keep the agent's text.
+      if (clearsRole(item, resolved)) return [{ agent: agent.id, text: "", noop: isNoop(item, resolved) }]
+      if (text.trim().length === 0) return []
       return [{ agent: agent.id, text, noop: isNoop(item, resolved) }]
     })
   })

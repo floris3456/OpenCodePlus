@@ -76,6 +76,16 @@ function input(overrides?: Partial<ChainInput>): ChainInput {
   }
 }
 
+test("an emptied text and a record without text resolve apart, in either order through the cache", () => {
+  const emptied = makeRecord({ text: "", basedOnText: "default text" })
+  const { text: _text, basedOnText: _based, ...plain } = emptied
+  expect(resolve(input({ records: [emptied] })).text).toBe("")
+  expect(resolve(input({ records: [plain] })).text).toBe("default text")
+  const later = makeRecord({ updated: "2026-01-02T00:00:00.000Z" })
+  expect(resolve(input({ records: [later] })).text).toBe("default text")
+  expect(resolve(input({ records: [{ ...later, text: "" }] })).text).toBe("")
+})
+
 test("unmodified nodes resolve upstream", () => {
   const resolved = resolve(input())
   expect(resolved.text).toBe("default text")

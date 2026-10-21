@@ -20,6 +20,7 @@ import {
   permDetail,
   provenanceLine,
   renderRanges,
+  replacedText,
   resolvedText,
   scrubInfo,
   sectionExcluded,
@@ -165,6 +166,21 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
   if (settings !== undefined) facts.push(["settings", `${settings.label} · enter or → goes there`])
   const provenance = opencode ? undefined : provenanceLine(node, snapshot, memo)
   if (provenance !== undefined) facts.push(["source", BASELINE.test(provenance) ? "default (nothing overrides it)" : provenance.replace(/^(state and text|value|enabled): /, "")])
+  // What a replaced text hides stays findable: the agent's own system text most of all.
+  const replaced = opencode ? undefined : replacedText(node, snapshot, memo)
+  if (replaced !== undefined) {
+    const what =
+      node.address?.item === "system:role"
+        ? `the agent's own system text${replaced.agentFile === undefined ? " from its config" : ` in ${replaced.agentFile}`}`
+        : "its upstream text"
+    const compare =
+      replaced.textFrom.kind !== "level"
+        ? ""
+        : replaced.textFrom.level === node.address?.level
+          ? " · c compares"
+          : ` · c at ${displayLevel(replaced.textFrom.level)} compares`
+    facts.push(["replaces", `${what} (${replaced.text.length} characters, not sent)${compare}`])
+  }
   const link = linkLine(node, snapshot)
   if (link !== undefined) facts.push(["preset", link.replace(/^Created from preset: /, ""), node.owner?.linkMissing === true ? "warning" : undefined])
   for (const line of matchLines(node, snapshot)) {
