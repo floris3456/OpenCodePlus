@@ -125,6 +125,55 @@ test("the per-chat switch beats the model rows, which beat the host configuratio
   expect(decideWarming({ configured: undefined, rows: { row: twoHours }, chat: "on" }).settings?.duration).toBe(120 * MINUTE)
 })
 
+test("Warm as subagent is independent of top-level warming and the chat switch wins both ways", () => {
+  const rows: WarmingRows = { model: defaultsRecord({ warming: "off", subagent: "on", interval: "5m", waiting: "3h", prompt: "child ping" }) }
+  const child = { configured: undefined, rows, chat: undefined, subagent: true, model: claude }
+  expect(decideWarming(child)).toEqual({
+    settings: { prompt: "child ping", interval: 5 * MINUTE, duration: 30 * MINUTE },
+    waiting: 180 * MINUTE,
+    source: "model",
+    level: "defaults",
+  })
+  expect(decideWarming({ ...child, subagent: false }).settings).toBeUndefined()
+  expect(decideWarming({ ...child, chat: "off" })).toEqual({ settings: undefined, source: "chat" })
+  const off = { ...child, rows: { every: defaultsRecord({ warming: "1h", subagent: "off", interval: "5m" }) } }
+  expect(decideWarming(off).settings).toBeUndefined()
+  expect(decideWarming({ ...off, chat: "on" })).toMatchObject({
+    settings: { duration: 60 * MINUTE, interval: 5 * MINUTE },
+    source: "chat",
+  })
+  expect(decideWarming({ ...off, subagent: false }).settings?.duration).toBe(60 * MINUTE)
+  // Built-in on for a top-level Claude never opts its subagents in, even with a proposal.
+  expect(decideWarming({ ...child, configured, rows: {} }).settings).toBeUndefined()
+  expect(decideWarming({ ...child, rows: {} }).settings).toBeUndefined()
+  expect(decideWarming({ ...child, rows: { every: defaultsRecord({ subagent: "on", warming: "45m", interval: "5m" }) } }).settings?.duration).toBe(45 * MINUTE)
+})
+
+test("subagent hook events use the model switch at activity, resume and every ping, including waiting time", async () => {
+  const store = createWarmingStore(await tempFile())
+  const rows = { every: defaultsRecord({ warming: "45m", subagent: "on", interval: "5m", waiting: "3h", prompt: "child ping" }) }
+  for (const phase of ["activity", "resume", "warm"] as const) {
+    const input = event({ subagent: true, phase, settings: undefined })
+    store.running(input.sessionID, true)
+    await store.decide(input, rows)
+    expect(input.settings).toEqual({ prompt: "child ping", interval: 5 * MINUTE, duration: 180 * MINUTE })
+    store.running(input.sessionID, false)
+    const idle = event({ subagent: true, phase: "warm", settings: undefined })
+    await store.decide(idle, rows)
+    expect(idle.settings?.duration).toBe(45 * MINUTE)
+  }
+  const off = event({ subagent: true, phase: "warm", settings: undefined })
+  await store.decide(off, { every: defaultsRecord({ warming: "on", subagent: "off" }) })
+  expect(off.settings).toBeUndefined()
+  await store.setChat(off.sessionID, "on")
+  await store.decide(off, rows)
+  expect(off.settings?.prompt).toBe("child ping")
+  await store.setChat(off.sessionID, "off")
+  await store.decide(off, rows)
+  expect(off.settings).toBeUndefined()
+  store.dispose()
+})
+
 test("without a proposal a row or the chat switch turns warming on with the model's own times; nothing else does", () => {
   const gpt = { providerID: "cliproxyapi", modelID: "gpt-6-astra" }
   const claude = { providerID: "cliproxyapi", modelID: "claude-opus-5-5" }

@@ -97,6 +97,8 @@ export function decideWarming(input: {
   readonly configured: SessionWarmingSettings | undefined
   readonly rows: WarmingRows
   readonly chat: ChatSwitch | undefined
+  /** A session with a parent uses Warm as subagent as its independent model switch. */
+  readonly subagent?: boolean
   /** The chat's model: a row or the chat switch that turns warming on takes its own times. */
   readonly model?: ModelSettingsKey
 }): WarmingDecision {
@@ -111,7 +113,8 @@ export function decideWarming(input: {
     ...(input.rows.every === undefined ? {} : { every: input.rows.every }),
     base,
   })
-  const level = plusLevel(effective.on, effective.duration, effective.interval, effective.prompt)
+  const enabled = input.subagent ? effective.subagent : effective.on
+  const level = plusLevel(enabled, effective.duration, effective.interval, effective.prompt)
   if (input.chat === "off") return { settings: undefined, source: "chat" }
   // The chat switch turns warming on for this window wherever the rows would
   // leave it off; it still picks up their durations and prompt.
@@ -122,7 +125,7 @@ export function decideWarming(input: {
       waiting: effective.waiting.value,
     }
   const source: WarmingSource = level === undefined ? "config" : "model"
-  if (!effective.on.value) return { settings: undefined, source, ...(level === undefined ? {} : { level }) }
+  if (!enabled.value) return { settings: undefined, source, ...(level === undefined ? {} : { level }) }
   return {
     settings: { prompt: effective.prompt.value, interval: effective.interval.value, duration: effective.duration.value },
     source,
@@ -505,7 +508,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
           ? event.settings
           : { ...event.settings, duration: own }
       const model = { providerID: event.model.providerID, modelID: event.model.id }
-      const decided = decideWarming({ configured, rows, chat, model })
+      const decided = decideWarming({ configured, rows, chat, model, subagent: event.subagent })
       // A real request starts while its chat runs: the events' busy set answers.
       // Before a keep-alive, or when a window resumes, the host is asked what runs now.
       const waits =

@@ -645,7 +645,7 @@ describe("WarmingPlugin", () => {
     }),
   )
 
-  it.effect("never warms subagents", () =>
+  it.effect("never warms subagents without a plugin decision", () =>
     Effect.gen(function* () {
       const config = yield* makeConfig([
         document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } }),
@@ -886,6 +886,73 @@ describe("WarmingPlugin", () => {
       const sessions = yield* makeSessions()
       return { calls, seen, sessions }
     })
+
+    it.effect("offers subagents no settings when a hook leaves the decision alone", () =>
+      Effect.gen(function* () {
+        const test = yield* setup(() => {})
+        yield* trigger(test.sessions.child, ref("alpha", "m1"))
+        yield* advance(3)
+        expect(test.calls).toEqual([])
+        expect(test.seen).toHaveLength(1)
+        expect(test.seen[0]).toMatchObject({ subagent: true, phase: "activity", settings: undefined })
+      }),
+    )
+
+    it.effect("schedules and pings subagents only while their hook opts in", () =>
+      Effect.gen(function* () {
+        const state = { on: true }
+        const test = yield* setup((event) => {
+          if (event.subagent && state.on) event.settings = { prompt: "child ping", interval: 1_000, duration: 60_000 }
+        })
+        yield* trigger(test.sessions.child, ref("alpha", "m1"))
+        yield* advance(3)
+        expect(test.calls.length).toBeGreaterThan(0)
+        expect(test.calls.every((call) => call.sessionID === test.sessions.child && call.prompt === "child ping")).toBe(true)
+        expect(test.seen.some((event) => event.phase === "warm" && event.subagent === true)).toBe(true)
+        expect(test.seen.some((event) => event.phase === "warmed" && event.subagent === true)).toBe(true)
+        const count = test.calls.length
+        state.on = false
+        yield* advance(3)
+        expect(test.calls).toHaveLength(count)
+      }),
+    )
+
+    it.effect("resumes subagent windows only with a fresh hook decision", () =>
+      Effect.gen(function* () {
+        const config = yield* makeConfig([document({ warming: { prompt: "global", interval: "1 second", duration: "1 hour" } })])
+        yield* addProvider({ id: "alpha", models: [{ id: "m1" }] })
+        const hooks = yield* PluginHooks.Service
+        const state = { on: true }
+        const seen: Array<SessionHooks["warming"]> = []
+        yield* hooks.register("session", "warming", (event) => Effect.sync(() => {
+          seen.push({ ...event })
+          if (event.subagent && state.on) event.settings = { prompt: "child ping", interval: 1_000, duration: 60_000 }
+        }))
+        const first = yield* run([], config.service)
+        const sessions = yield* makeSessions()
+        yield* trigger(sessions.child, ref("alpha", "m1"))
+        yield* advance(2)
+        yield* first.stop
+        const resumed: WarmCall[] = []
+        const second = yield* run(resumed, config.service)
+        yield* advance(2)
+        expect(resumed.length).toBeGreaterThan(0)
+        expect(seen.filter((event) => event.phase === "resume")).toEqual([
+          expect.objectContaining({ subagent: true, settings: undefined, sessionID: sessions.child }),
+        ])
+        yield* second.stop
+        state.on = false
+        const stopped: WarmCall[] = []
+        const third = yield* run(stopped, config.service)
+        yield* advance(2)
+        expect(stopped).toEqual([])
+        yield* third.stop
+        state.on = true
+        yield* run(stopped, config.service)
+        yield* advance(2)
+        expect(stopped).toEqual([])
+      }),
+    )
 
     it.effect("sends no warming request when the hook disables it on activity", () =>
       Effect.gen(function* () {

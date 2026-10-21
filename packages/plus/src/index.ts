@@ -1800,6 +1800,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.warming === undefined || input.warming === null ? {} : { warming: input.warming }),
         ...(input.interval === undefined || input.interval === null ? {} : { interval: input.interval }),
         ...(input.waiting === undefined || input.waiting === null ? {} : { waiting: input.waiting }),
+        ...(input.subagent === undefined || input.subagent === null ? {} : { subagent: input.subagent }),
         ...(input.prompt === undefined || input.prompt === null ? {} : { prompt: input.prompt }),
       })
       if ("error" in parsed) return invalidModelSettings(parsed.error)
@@ -1817,12 +1818,13 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         ...(input.compactionOutput === undefined ? {} : { compactionOutput: input.compactionOutput }),
       })
       if ("error" in compact) return invalidModelSettings(compact.error)
-      const cleared = (value: string | null | undefined, field: "warming" | "interval" | "waiting" | "prompt") =>
+      const cleared = (value: string | null | undefined, field: "warming" | "interval" | "waiting" | "subagent" | "prompt") =>
         value === undefined ? undefined : value === null ? null : (parsed.fields[field] ?? null)
       const fields = {
         warming: cleared(input.warming, "warming"),
         interval: cleared(input.interval, "interval"),
         waiting: cleared(input.waiting, "waiting"),
+        subagent: cleared(input.subagent, "subagent"),
         prompt: cleared(input.prompt, "prompt"),
         ...(input.effort === undefined
           ? {}
@@ -5160,6 +5162,7 @@ function toRecord(record: Plus.SnapshotRecord): StoredRecord {
       ...(record.warming === undefined ? {} : { warming: record.warming }),
       ...(record.interval === undefined ? {} : { interval: record.interval }),
       ...(record.waiting === undefined ? {} : { waiting: record.waiting }),
+      ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
       ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
       ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
       ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),
@@ -7270,6 +7273,7 @@ function toSnapshot(
             ...(record.warming === undefined ? {} : { warming: record.warming }),
             ...(record.interval === undefined ? {} : { interval: record.interval }),
             ...(record.waiting === undefined ? {} : { waiting: record.waiting }),
+            ...(record.subagent === undefined ? {} : { subagent: record.subagent }),
             ...(record.prompt === undefined ? {} : { prompt: record.prompt }),
             ...(record.compactWarm === undefined ? {} : { compactWarm: record.compactWarm }),
             ...(record.coldCompact === undefined ? {} : { coldCompact: record.coldCompact }),

@@ -47,7 +47,7 @@ snapshot revision is stale (`packages/plus/src/tools.ts:612`).
 | --- | --- | --- |
 | `instructions_find` | `agent`, `team`, `level`, `type`, `name`, `in`, `state`, `text`, `is` (`review`/`changed`/`hidden`/`orphaned`), `where`, `fields[]`, `sort`, `limit` (default 40), `offset` | `{ total, columns, rows }`, one `id \| badges \| from` line per thing (`FindDescription` in `packages/plus/src/tools.ts`) |
 | `instructions_read` | `id`, `view` = `resolved` (default), `upstream`, `mine`, `diff`, `record`, `sections`, `assembled` | Row view (`packages/plus/src/tools.ts:141`, `packages/plus/src/tools.ts:265`) |
-| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming`, `interval`, `waiting`, `prompt`, `effort` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
+| `instructions_set` | `id`, `text`, `state` `on`/`off`, `mode` `primary`/`subagent`/`all`, `pin`, `active`, `resolve` `keep`/`take`/`edit`, `label`, `patterns`, `keywords`, `message`, `warming`, `interval`, `waiting`, `subagent`, `prompt`, `effort` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:156`, `packages/plus/src/tools.ts:294`) |
 | `instructions_edit` | `id`, `oldString`, `newString`, `replaceAll` | `{ id, status, replacements }`; saves like `set({ id, text })` under `set`'s permission rows |
 | `instructions_reset` | `id` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:169`, `packages/plus/src/tools.ts:317`) |
 | `instructions_split` | `id`, `boundaries[]`, or `add { name, text }` | `{ id, status, revision, globalRevision }` (`packages/plus/src/tools.ts:173`, `packages/plus/src/tools.ts:344`) |
@@ -107,7 +107,12 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   `1h30m`; empty inherits; TUI `w`), `interval`/`prompt` set the ping interval
   (30s–24h, e.g. `4m`, `3m30s`) and the keep-alive text, `waiting` sets warm
   while waiting (how long a chat that waits on its own work stays warm when
-  warming is on for it: `off` or 1m–24h, built-in `2h`), and on any other row
+  warming is on for it: `off` or 1m–24h, built-in `2h`), and `subagent` sets
+  **Warm as subagent** (`on`/`off`, empty inherits, built-in off). It resolves
+  from the agent model row through Defaults › Models › this model, then Every
+  model. It warms sessions with a parent using the same tab's times and prompt,
+  independently of `warming`; the chat's own switch wins. Top-level chats and
+  team members are unaffected. On any other row these fields
   they are refused; `resolve` resolves a review row; on a perm row `label`,
   `patterns`, `keywords` and `message` update the rule, and a message-only edit
   derives label and patterns from the rule it edits
@@ -116,7 +121,7 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
   A bare `id` toggles (`packages/plus/src/tools.ts:600`).
 - A **Defaults › Models** row (`item:defaults:/models:modeldefault:*` for
   Every model, `…:<provider>/<model>` per model; `model-settings.ts`) takes
-  `warming`, `interval`, `waiting`, `prompt` and `effort` (strings set, empty clears) and
+  `warming`, `interval`, `waiting`, `subagent`, `prompt` and `effort` (strings set, empty clears) and
   `state on|off` as the warming switch; it writes through `modelSettings.set`,
   not the inventory mutate. `reset` and `delete` (with `confirm: true`) clear
   every field, removing the row (`packages/plus/src/tools.ts` `setModelDefaults`,

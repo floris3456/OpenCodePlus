@@ -487,7 +487,7 @@ test("an agent's model row expands into its field rows", () => {
   expect(isExpandableRow(row!, true, new Set())).toBe(true)
   const fields = nodes.filter((node) => node.id.startsWith("item:project:Implementer:modelfield:"))
   expect(fields.map((node) => node.label)).toEqual([
-    "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Keep-alive prompt",
+    "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Warm as subagent", "Keep-alive prompt",
     "Compact before cold", "Strategy", "Model", "Instructions",
   ])
   expect(fields.every((node) => isExpandableRow(node, false, new Set([node.id])) === false)).toBe(true)

@@ -1027,6 +1027,8 @@ export interface ModelRecord {
   readonly interval?: string
   /** How long a chat stays warm while it waits on its own work, such as "2h"; "off" keeps its warming time; absent inherits. */
   readonly waiting?: string
+  /** Warm a session with a parent: "on" or "off"; absent inherits. */
+  readonly subagent?: string
   /** The keep-alive request's text; absent inherits. */
   readonly prompt?: string
   /**
@@ -2627,8 +2629,8 @@ export function parsePrompt(text: string): { readonly prompt: string } | { reado
 }
 
 /** The warming fields a model row carries. */
-export type ModelWarmingField = "warming" | "interval" | "waiting" | "prompt"
-export const MODEL_WARMING_FIELDS: readonly ModelWarmingField[] = ["warming", "interval", "waiting", "prompt"]
+export type ModelWarmingField = "warming" | "interval" | "waiting" | "subagent" | "prompt"
+export const MODEL_WARMING_FIELDS: readonly ModelWarmingField[] = ["warming", "interval", "waiting", "subagent", "prompt"]
 
 /**
  * One save's warming fields in stored form: a string sets the field, `null`

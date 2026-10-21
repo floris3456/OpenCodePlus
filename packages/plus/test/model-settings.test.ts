@@ -165,6 +165,23 @@ test("warm while waiting resolves row, this model, Every model, built-in 2h, rou
   expect(modelSettingValue(modelDefaultView({ every }), "waiting", undefined)).toBe("3h · every model")
 })
 
+test("Warm as subagent validates on/off and resolves agent row, this model, Every model, built-in off", () => {
+  expect(warmingFieldsOf({ subagent: " ON " })).toEqual({ fields: { subagent: "on" } })
+  expect(warmingFieldsOf({ subagent: "OFF" })).toEqual({ fields: { subagent: "off" } })
+  expect(warmingFieldsOf({ subagent: "" })).toEqual({ fields: { subagent: null } })
+  expect(warmingFieldsOf({ subagent: "2h" })).toHaveProperty("error")
+  expect(effectiveWarming({ host: { on: true } }).subagent).toEqual({ value: false, from: "built-in" })
+  const every = record({ subagent: "on" })
+  const model = record({ providerID: "anthropic", modelID: "claude", subagent: "off" })
+  expect(effectiveWarming({ every }).subagent).toEqual({ value: true, from: "every" })
+  expect(effectiveWarming({ model, every }).subagent).toEqual({ value: false, from: "model" })
+  for (const level of ["project", "global", "defaults", "preset"] as const)
+    expect(effectiveWarming({ row: { subagent: { value: "on", level } }, model, every }).subagent).toEqual({ value: true, from: level })
+  expect(effectiveWarming({ model: record({ subagent: "invalid" }), every }).subagent).toEqual({ value: true, from: "every" })
+  expect(modelSettingValue(modelDefaultView({ every }), "subagent", undefined)).toBe("on · every model")
+  expect(modelDefaultValue(modelDefaultView({ every }))).toContain("subagent on")
+})
+
 test("decodeHostWarming reads the scoped config forms and ignores anything else", () => {
   expect(decodeHostWarming(false)).toEqual({ on: false })
   expect(decodeHostWarming(true)).toEqual({ on: true })
@@ -809,6 +826,48 @@ test("warm while waiting sets, shows and clears through the instructions tools o
   expect(after).toMatchObject({ interval: "4m" })
 })
 
+test("Warm as subagent persists through tools, RPC, snapshot and field reset on Defaults and agent model rows", async () => {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("build", "Build.", modelRef("anthropic", "claude"))],
+    models: [modelWith("anthropic", "claude")],
+    classifications: { "": "general", claude: "general" },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const show = need(tools, "instructions_read")
+  const reset = need(tools, "instructions_reset")
+  for (const key of ["*", "anthropic/claude"]) {
+    const row = `item:defaults:/models:modeldefault:${key}`
+    const field = `item:defaults:/models:modelsetting:subagent:${key}`
+    await runOk(set, { id: row, subagent: " ON " })
+    expect(await runOk(show, { id: row })).toMatchObject({ subagent: { value: true, from: "model" } })
+    expect((await api.snapshot()).value.modelSettings?.some((entry) => entry.subagent === "on")).toBe(true)
+    expect(await runOk(show, { id: field })).toMatchObject({ field: "subagent", value: { text: "on", from: "model" } })
+    await runOk(set, { id: field, text: "off" })
+    expect(await runOk(show, { id: field })).toMatchObject({ value: { text: "off", from: "model" } })
+    expect((await runFail(set, { id: row, subagent: "2h" })).message).toContain("must be on or off")
+    await runOk(reset, { id: field })
+    expect(await runOk(show, { id: field })).toMatchObject({ value: { text: "off", from: "built-in" } })
+  }
+  const field = "item:project:build:modelfield:subagent:anthropic/claude"
+  await runOk(set, { id: field, text: "on" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ subagent: "on" })
+  expect((await api.snapshot()).value.records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ subagent: "on" })
+  await runOk(set, { id: "item:project:build:model:anthropic/claude", subagent: "off", interval: "4m" })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).toMatchObject({ subagent: "off", interval: "4m" })
+  await runOk(reset, { id: field })
+  expect((await load(project)).records.find((entry) => entry.type === "model" && entry.agent === "build")).not.toHaveProperty("subagent")
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  const written = await Effect.runPromise(handlers["modelSettings.set"]({ subagent: "on" }, thrownContext()))
+  expect(written.record).toMatchObject({ subagent: "on" })
+  await Effect.runPromise(handlers["modelSettings.set"]({ subagent: null }, thrownContext()))
+  expect((await api.snapshot()).value.modelSettings).toEqual([])
+})
+
 test("an agent's model row opens into field rows and one field edits and resets through the tool", async () => {
   const project = await tempProject()
   const buildPath = path.join(project, ".opencode", "agent", "build.md")
@@ -827,7 +886,7 @@ test("an agent's model row opens into field rows and one field edits and resets 
   const fields = rows.filter((row) => row.id.startsWith("item:project:build:modelfield:"))
   // Compaction holds the early token thresholds: the only place they are set.
   expect(fields.map((row) => row.label)).toEqual([
-    "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Keep-alive prompt",
+    "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Warm as subagent", "Keep-alive prompt",
     "Compact before cold", "Strategy", "Input token threshold", "Output token threshold", "Model", "Instructions",
     "Convert large image", "Shrink large image", "When image context is full",
   ])

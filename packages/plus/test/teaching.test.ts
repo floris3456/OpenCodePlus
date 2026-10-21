@@ -110,7 +110,7 @@ test("the skill content covers the tool surface", async () => {
     "find({ agent?, team?, level?, type?, name?, in?, state?, text?, is?, where?, fields?, sort?, limit?, offset? })",
     'read({ id, view? })',
     "edit({ id, oldString, newString, replaceAll? })",
-    "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, prompt?, effort? })",
+    "set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, subagent?, prompt?, effort? })",
     "reset({ id })",
     "split({ id, boundaries?, add? })",
     "create({ kind, ...fields })",

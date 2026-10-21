@@ -209,7 +209,7 @@ export function createInstructionsDialogs(
       await state.editModelSettings(node, { compactionModel: model })
       return
     }
-    if (field === "warming" || field === "interval" || field === "waiting" || field === "effort") {
+    if (field === "warming" || field === "interval" || field === "waiting" || field === "subagent" || field === "effort") {
       const nowText = now === undefined ? "" : `${now.text} · ${sourceWord(now.from)}`
       const picked = await pickModelField(
         title,
@@ -242,7 +242,7 @@ export function createInstructionsDialogs(
     await state.editModelSettings(node, { [field]: text.length === 0 ? null : text } as never)
   }
 
-  // Warming, Ping every, Warm while waiting and Effort open one dropdown on every model row. Inherit
+  // Warming, Ping every, Warm while waiting, Warm as subagent and Effort open one dropdown on every model row. Inherit
   // (an empty value) clears the field; Custom… asks for the text, as the field
   // always did. Resolves to the text to store ("" clears), or undefined on cancel.
   async function pickModelField(
@@ -331,7 +331,7 @@ export function createInstructionsDialogs(
       (current.hostModels ?? []).find((entry) => entry.providerID === parsed.target.providerID && entry.modelID === parsed.target.modelID)?.variants ?? []
     const now = node.badges.value ?? ""
     const target = `${parsed.target.providerID}/${parsed.target.modelID}`
-    if (field === "warming" || field === "interval" || field === "waiting" || field === "effort") {
+    if (field === "warming" || field === "interval" || field === "waiting" || field === "subagent" || field === "effort") {
       const picked = await pickModelField(
         `${MODEL_FIELD_LABELS[field]} · ${target}`,
         now === "" ? "" : `Now: ${now}`,
@@ -1693,6 +1693,8 @@ function fieldHelp(field: ModelDefaultField, variants: readonly string[]): strin
     return "Time between keep-alive requests while the cache is warm (30s to 24h, e.g. 4m or 3m30s). Keep it under the provider's cache lifetime: 5m for a default Anthropic cache, 30m for GPT."
   if (field === "waiting")
     return "While a chat waits on its own work (a running command or tool, a subagent, a team run), it stays warm at least this long after its last request, when warming is on for it. off keeps its warming time; a time is 1m to 24h and rounds up to whole pings."
+  if (field === "subagent")
+    return "Warm sessions with a parent using this tab's times and keep-alive prompt, independently of Warming. Built-in: off. The chat's own switch wins. Top-level chats and team members are unaffected."
   if (field === "prompt") return "The text of the keep-alive request."
   if (field === "compactionInstructions") return "The summary request's instructions; an empty prompt is a value of its own."
   if (field === "compactionInput") return "Early compaction at this estimated input token count. Positive whole number or off; off overrides inherited triggers. Context safety still applies."
