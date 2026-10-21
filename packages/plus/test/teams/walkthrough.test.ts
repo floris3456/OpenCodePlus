@@ -580,7 +580,7 @@ test("continued root admits after notification and saves its first report withou
       const caller = toolContext("ses_continued_root", "orchestrator")
       const boot = await runOk<{ run: string }>(need(fixture.tools, "team_get_context"), {}, caller)
       await onSessionEvent(fixture.ctx, root, { type: "session.execution.succeeded", data: { sessionID: caller.sessionID } })
-      const child = baseRun({ id: "w-notification", parent: boot.run, state: "working", sessionID: "ses_notification_child", attempts: [{ n: 1, state: "streaming", trigger: "delegate", startedAt: new Date().toISOString() }] })
+      const child = baseRun({ id: "w-notification", parent: boot.run, state: "working", sessionID: "ses_notification_child", attempts: [{ n: 1, state: "streaming", trigger: "delegate", startedAt: new Date().toISOString(), finishNudged: true }] })
       await saveRun(root, child)
       await onSessionEvent(fixture.ctx, root, { type: "session.execution.succeeded", data: { sessionID: child.sessionID } })
       await onSessionEvent(fixture.ctx, root, { type: "session.execution.started", data: { sessionID: caller.sessionID } })
@@ -658,7 +658,7 @@ test("[20f] a followup to a working child reaches it at its next step, without w
         base: repo.head,
         head: repo.head,
         state: "working",
-        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate", finishNudged: true }],
         parent: parentRun.id,
         sessionID: "ses_walkthrough_followup_child",
       })

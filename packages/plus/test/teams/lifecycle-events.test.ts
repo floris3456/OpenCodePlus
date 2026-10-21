@@ -168,6 +168,135 @@ test("a turn that ends without finish leaves the run idle and the attempt no_rep
   })
 })
 
+test("finish nudge: a delegated child's first empty turn prompts once and keeps its attempt open without telling its parent", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = workingChild("main-nudge", null, "ses_nudge_parent")
+    const child = workingChild("w-nudge", parent.id, "ses_nudge_child")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const before = await loadRun(root, parent.id)
+    const sessions = recordSession()
+    await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_nudge_child"))
+
+    const stored = await loadRun(root, child.id)
+    expect(stored?.state).toBe("working")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(stored?.attempts[0]).toMatchObject({ ...child.attempts[0], finishNudged: true })
+    expect(stored?.attempts[0]?.endedAt).toBeUndefined()
+    expect(stored?.attempts[0]?.notified).toBeUndefined()
+    const text = "Your turn ended without team_finish, so your parent has heard nothing. Report now with team_finish: done when the Brief's work is committed, otherwise done_with_concerns or blocked, saying what is left."
+    expect(sessions.prompted).toEqual([{ sessionID: "ses_nudge_child", text }])
+    expect(stored?.attempts[0]?.inbox).toHaveLength(1)
+    const processed = path.join(root, "runs", child.id, "inbox", "processed")
+    const items = await fs.readdir(processed)
+    expect(items).toHaveLength(1)
+    expect(await Bun.file(path.join(processed, items[0]!)).json()).toMatchObject({ kind: "system", from: "plus", text })
+    expect(await peek(root, child.id)).toEqual([])
+    expect(await peek(root, parent.id)).toEqual([])
+    expect(await loadRun(root, parent.id)).toEqual(before)
+  })
+})
+
+test("finish nudge: a second empty turn settles no_report and tells the parent exactly once", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = workingChild("main-nudge", null, "ses_nudge_parent")
+    const child = workingChild("w-nudge", parent.id, "ses_nudge_child")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, succeededEvent("ses_nudge_child"))
+    expect(await peek(root, parent.id)).toEqual([])
+    await onSessionEvent(ctx, root, startedEvent("ses_nudge_child"))
+    await onSessionEvent(ctx, root, succeededEvent("ses_nudge_child"))
+
+    const stored = await loadRun(root, child.id)
+    expect(stored?.state).toBe("idle")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(stored?.attempts[0]).toMatchObject({ n: 1, state: "no_report", finishNudged: true, notified: true })
+    expect(stored?.attempts[0]?.endedAt).toBeDefined()
+    expect(sessions.prompted).toHaveLength(1)
+    const items = await peek(root, parent.id)
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ kind: "child.settled", from: child.id })
+    expect(items[0]?.text).toContain("settled: no_report")
+    expect(items[0]?.text).toContain("No report: attempt 1 ended no_report without team_finish.")
+    await onSessionEvent(ctx, root, succeededEvent("ses_nudge_child"))
+    expect(await peek(root, parent.id)).toEqual(items)
+    expect(sessions.prompted).toHaveLength(1)
+    expect(await peek(root, child.id)).toEqual([])
+  })
+})
+
+test("finish nudge: team_finish after the reminder reports done in the same attempt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo("finish-nudge")
+    try {
+      const parent = workingChild("main-nudge", null, "ses_nudge_parent")
+      const child = {
+        ...workingChild("w-nudge", parent.id, "ses_nudge_child"),
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+      }
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      const sessions = recordSession()
+      const ctx = context({ session: sessions.domain })
+      await onSessionEvent(ctx, root, succeededEvent("ses_nudge_child"))
+      await onSessionEvent(ctx, root, startedEvent("ses_nudge_child"))
+      const api = createTeamApi(ctx, teamState())
+      expect(await api.finish({ status: "done", summary: "Verified the initial commit and completed the requested review.", concerns: [], needs: [], findings: [], deferred: [] }, callerFor(child))).toMatchObject({
+        ok: true, value: { run: child.id, attempt: 1, status: "done" },
+      })
+      expect(await Bun.file(path.join(root, "runs", child.id, "report-1.json")).json()).toMatchObject({ attempt: 1, status: "done" })
+      await onSessionEvent(ctx, root, succeededEvent("ses_nudge_child"))
+      const stored = await loadRun(root, child.id)
+      expect(stored?.state).toBe("idle")
+      expect(stored?.attempts).toHaveLength(1)
+      expect(stored?.attempts[0]).toMatchObject({ n: 1, state: "succeeded", finishNudged: true, notified: true })
+      expect(stored?.attempts[0]?.endedAt).toBeDefined()
+      expect(sessions.prompted).toHaveLength(1)
+      const items = await peek(root, parent.id)
+      expect(items).toHaveLength(1)
+      expect(items[0]?.text).toContain("settled: done — attempt 1 succeeded")
+      expect(items[0]?.text).not.toContain("No report:")
+    } finally {
+      await fs.rm(repo.dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test.each(["root", "stopping"] as const)("finish nudge: %s runs settle immediately while a delegated sibling gets a reminder", async (kind) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = workingChild("main-nudge", null, "ses_nudge_parent")
+    const delegated = workingChild("w-nudge", parent.id, "ses_nudge_child")
+    const exempt = {
+      ...workingChild("w-exempt", kind === "root" ? null : parent.id, "ses_nudge_exempt"),
+      ...(kind === "stopping" ? { stopRequested: true } : {}),
+    }
+    await saveRun(root, parent)
+    await saveRun(root, delegated)
+    await saveRun(root, exempt)
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    await onSessionEvent(ctx, root, succeededEvent("ses_nudge_exempt"))
+    const stored = await loadRun(root, exempt.id)
+    expect(stored?.state).toBe(kind === "root" ? "idle" : "stopped")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(stored?.attempts[0]?.state).toBe("no_report")
+    expect(stored?.attempts[0]?.endedAt).toBeDefined()
+    expect(stored?.attempts[0]?.finishNudged).toBeUndefined()
+    expect(sessions.prompted).toEqual([])
+    expect(await peek(root, exempt.id)).toEqual([])
+    // Contrast the exclusion with an otherwise equivalent delegated run.
+    await onSessionEvent(ctx, root, succeededEvent("ses_nudge_child"))
+    expect(sessions.prompted).toHaveLength(1)
+    expect(sessions.prompted[0]?.sessionID).toBe("ses_nudge_child")
+    expect((await loadRun(root, delegated.id))?.attempts[0]).toMatchObject({ state: "streaming", finishNudged: true })
+  })
+})
+
 test("the empty run a reopened child's move wakes is no turn: it opens and ends no attempt, and the follow-up's own run settles", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const reopenedAt = Date.parse("2026-10-20T16:25:51.000Z")
@@ -192,7 +321,7 @@ test("the empty run a reopened child's move wakes is no turn: it opens and ends 
     const followup: RunRecord = {
       ...child,
       state: "working",
-      attempts: [...child.attempts, { n: 2, state: "admitted", startedAt: at(100), trigger: "followup" }],
+      attempts: [...child.attempts, { n: 2, state: "admitted", startedAt: at(100), trigger: "followup", finishNudged: true }],
     }
     await saveRun(root, followup)
     await onSessionEvent(ctx, root, timed(succeededEvent("ses_child_reopen"), 25))
@@ -313,7 +442,7 @@ test("news from a held run's child waits in its inbox instead of prompting it", 
     const parent = heldRun("main-9999999999999993", "ses_held_003", { role: "Simple-Build", kind: "main", children: ["w-9999999999999994"] })
     const child = workingChild("w-9999999999999994", parent.id, "ses_held_004")
     await saveRun(root, parent)
-    await saveRun(root, child)
+    await saveRun(root, { ...child, attempts: child.attempts.map((attempt) => ({ ...attempt, finishNudged: true })) })
     const sessions = recordSession()
     await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_held_004"))
     expect(sessions.prompted).toHaveLength(0)
@@ -497,6 +626,7 @@ test("a followup already delivered to an idle child is not prompted twice", asyn
     )
     expect(queued.ok).toBe(true)
     expect(sessions.prompted).toHaveLength(1)
+    await updateRun(root, child.id, (run) => ({ ...run, attempts: run.attempts.map((attempt) => attempt.n === 2 ? { ...attempt, finishNudged: true } : attempt) }))
     await onSessionEvent(ctx, root, succeededEvent("ses_child_010"))
     const moved = await loadRun(root, child.id)
     expect(sessions.prompted).toHaveLength(1)
@@ -521,7 +651,7 @@ test("a settled child puts exactly one child.settled item in a working parent's 
     })
     const child = workingChild("w-5555555555555555", parent.id, "ses_child_011")
     await saveRun(root, parent)
-    await saveRun(root, child)
+    await saveRun(root, { ...child, attempts: child.attempts.map((attempt) => ({ ...attempt, finishNudged: true })) })
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
     await onSessionEvent(ctx, root, succeededEvent("ses_child_011"))
@@ -642,7 +772,7 @@ test("an idle parent is prompted with the settlement immediately", async () => {
     })
     const child = workingChild("w-7777777777777777", parent.id, "ses_child_013")
     await saveRun(root, parent)
-    await saveRun(root, child)
+    await saveRun(root, { ...child, attempts: child.attempts.map((attempt) => ({ ...attempt, finishNudged: true })) })
     const sessions = recordSession()
     await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_child_013"))
     expect(sessions.prompted).toHaveLength(1)
@@ -829,6 +959,7 @@ test("a resumed stopped run consumes the stop intent its stop already satisfied"
     })
     expect((await loadRun(root, child.id))?.stopRequested).toBeUndefined()
 
+    await updateRun(root, child.id, (run) => ({ ...run, attempts: run.attempts.map((attempt) => attempt.n === 2 ? { ...attempt, finishNudged: true } : attempt) }))
     const settled = await onSessionEvent(ctx, root, succeededEvent("ses_intent_001"))
     expect(settled?.state).toBe("idle")
     const stored = await loadRun(root, child.id)
@@ -1068,10 +1199,10 @@ test("a delegated run that ends its turn while a child is open waits: attempt op
   })
 })
 
-test("the child's settlement wakes the waiting run in the same attempt; its next empty turn ends it", async () => {
+test("the child's settlement wakes the waiting run in the same attempt; its next empty turn nudges it before ending", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const runs = family()
-    await saveFamily(root, runs)
+    await saveFamily(root, { ...runs, kid: { ...runs.kid, attempts: runs.kid.attempts.map((attempt) => ({ ...attempt, finishNudged: true })) } })
     const sessions = recordSession()
     const ctx = context({ session: sessions.domain })
     await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
@@ -1087,8 +1218,17 @@ test("the child's settlement wakes the waiting run in the same attempt; its next
     expect(sessions.prompted[0]?.text).toContain(`[team] ${runs.kid.id}`)
     expect(sessions.prompted[0]?.text).toContain("settled: no_report")
     expect(toldMain(sessions)).toEqual([])
-    // Control: with no open child and no pending child news, a turn that ends
-    // without a report ends the attempt, and the grandparent is told once.
+    // With no open child or pending news, the coordinator gets its one nudge.
+    await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
+    const nudged = await loadRun(root, runs.orch.id)
+    expect(nudged?.attempts).toHaveLength(1)
+    expect(nudged?.attempts[0]).toMatchObject({ state: "streaming", finishNudged: true })
+    expect(nudged?.attempts[0]?.endedAt).toBeUndefined()
+    expect(sessions.prompted).toHaveLength(2)
+    expect(sessions.prompted[1]?.sessionID).toBe("ses_orch_wait")
+    expect(sessions.prompted[1]?.text).toContain("Your turn ended without team_finish")
+    expect(toldMain(sessions)).toEqual([])
+    // Only a second empty turn ends the attempt and tells the grandparent.
     await onSessionEvent(ctx, root, succeededEvent("ses_orch_wait"))
     const ended = await loadRun(root, runs.orch.id)
     expect(ended?.state).toBe("idle")
