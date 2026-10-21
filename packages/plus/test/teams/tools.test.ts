@@ -258,9 +258,9 @@ test("every team tool registers direct under namespace team with its permission"
   }
 })
 
-// Live b9-s12: a lead said it was waiting, then called team_status for a
-// child still working. Such a call answers and ends the turn.
-test("team_status and team_list end the turn while a child works and no news waits; otherwise they do not", async () => {
+// Live b9-s12, b13-s13: a lead said it was waiting, then called team_status for a
+// child still working. Such a call gets a short answer and ends the turn.
+test("team_status and team_list answer briefly and end the turn while a child works and no news waits; otherwise they do not", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const directory = path.join(root, "repo")
     await fs.mkdir(directory, { recursive: true })
@@ -275,8 +275,15 @@ test("team_status and team_list end the turn while a child works and no news wai
     try {
       const caller = toolContext("ses_wait_parent", "orchestrator")
       const call = async (name: string) => (await Effect.runPromise(need(created.tools, name).execute({}, caller))).endTurn
-      expect(await call("team_status")).toBe(true)
-      expect(await call("team_list")).toBe(true)
+      for (const name of ["team_status", "team_list"])
+        expect(await Effect.runPromise(need(created.tools, name).execute({}, caller))).toEqual({
+          output: { waiting: [child.id], next: "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report." },
+          endTurn: true,
+        })
+      // A call that names runs gets what it asked for, and is still a wait.
+      const named = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))
+      expect(named.endTurn).toBe(true)
+      expect((named.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[child.id, "working"]])
       await put(root, parent.id, { kind: "child.settled", from: child.id, text: "[team] settled" })
       expect(await call("team_list")).toBeUndefined()
       await take(root, parent.id, (await peek(root, parent.id)).map((item) => item.id))

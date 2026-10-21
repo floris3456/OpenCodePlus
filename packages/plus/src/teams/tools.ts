@@ -704,23 +704,31 @@ function runGatedInner<A>(
         new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
       )
     }
-    const waits = (name === "status" || name === "list") && (yield* Effect.promise(() => onlyWaiting(teamsDataDir(), owned.id)))
+    const waiting = name === "status" || name === "list" ? yield* Effect.promise(() => waitingOn(teamsDataDir(), owned.id)) : []
+    if (waiting.length > 0 && Object.keys(input as object).length === 0) return { output: { waiting, next: WAITING }, endTurn: true }
     return {
       output: result.value,
-      ...((name === "finish" && owned.parent != null) || waits ? { endTurn: true } : {}),
+      ...((name === "finish" && owned.parent != null) || waiting.length > 0 ? { endTurn: true } : {}),
     }
   })
 }
 
+const WAITING = "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report."
+
 // A status or list call while a child is still working and no news waits in
-// the caller's inbox is a wait: it answers and ends the turn, and
-// the next settlement wakes the caller. Leads said "I'm waiting" and called
-// team_status or team_list anyway, a step for nothing (b8, b9-s12).
-async function onlyWaiting(root: string, runID: string): Promise<boolean> {
+// the caller's inbox is a wait: it ends the turn, and the next settlement
+// wakes the caller. Leads said "I'm waiting" and called team_status or
+// team_list anyway: a step for nothing (b8, b9-s12). Asked with no filter it
+// gets this short answer instead of every run's status, which the context
+// would carry for nothing (b13-s13); a call that names runs or filters gets
+// what it asked for.
+async function waitingOn(root: string, runID: string): Promise<string[]> {
   const run = await loadRun(root, runID)
-  if (run === undefined || (await openChildren(root, run.id)).length === 0) return false
+  if (run === undefined) return []
+  const open = await openChildren(root, run.id)
+  if (open.length === 0) return []
   const delivered = new Set(run.attempts.flatMap((attempt) => attempt.inbox ?? []))
-  return (await peek(root, run.id)).every((item) => delivered.has(item.id))
+  return (await peek(root, run.id)).every((item) => delivered.has(item.id)) ? open : []
 }
 
 function requireActor(
