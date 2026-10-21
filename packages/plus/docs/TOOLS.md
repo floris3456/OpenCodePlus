@@ -388,6 +388,10 @@ already-landed children's checks and the parent's Brief checks. Commands with
 the same argv/cwd run once. The child's checks must pass; other failures block
 only if they pass at the parent's HEAD. Pre-existing failures are returned as
 `stillRed` with a note, and passing receipts carry to the landed HEAD.
+`team_check` records the measured tree even before a checkpoint; `team_finish`
+and `team_integrate` reuse passing same-definition proof when the committed tree
+matches, returning `reused: true` and the original check time (integration lists
+these in `reusedChecks`). Clean-worktree requirements and mutation rejection still apply.
 
 A conflict's `next` asks for `team_followup` with `rebase: true`: Plus keeps
 the old tip reachable, replays the whole change onto the parent's HEAD, and

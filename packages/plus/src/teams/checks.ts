@@ -1,7 +1,7 @@
-import { mkdir, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { Effect } from "effect"
 import { append } from "./audit.js"
 import { atomicJson, lock, readJson } from "./store.js"
@@ -34,13 +34,16 @@ export interface Receipt {
   outputPath: string
   code?: string
   message?: string
-  // Tree measured at check time plus whether the tree was dirty. A receipt
-  // proves the committed HEAD only when dirty === false with a recorded
-  // tree; dirty-tree (or pre-flag) receipts never satisfy "green at HEAD".
+  // Legacy HEAD provenance. measuredTree additionally proves the content of
+  // tracked and untracked, non-ignored files, even before it is committed.
   tree?: string
+  measuredTree?: string
   dirty?: boolean
   porcelain?: string[]
   policyDigest?: string
+  reused?: boolean
+  reusedAt?: number
+  reusedFrom?: { head: string; at: number; dirty?: boolean }
 }
 
 export function computePolicyDigest(check: {
@@ -74,6 +77,10 @@ export interface CheckResult {
   receipt: string
   code?: string
   message?: string
+  at: number
+  measuredTree?: string
+  dirty?: boolean
+  reused: boolean
 }
 
 /** Keep the last `maxBytes` bytes of a UTF-8 string. */
@@ -182,6 +189,8 @@ function mutationMessage(
   headAfter: string,
   statusBefore: string,
   statusAfter: string,
+  treeBefore: string,
+  treeAfter: string | undefined,
 ): string {
   const parts: string[] = []
   if (headBefore !== headAfter) parts.push(`HEAD ${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}`)
@@ -195,6 +204,7 @@ function mutationMessage(
         ")",
     )
   }
+  if (treeAfter !== undefined && treeBefore !== treeAfter) parts.push(`tree ${treeBefore} → ${treeAfter}`)
   if (parts.length === 0) parts.push("no visible change (race?)")
   return `Check "${id}" mutated the worktree: ${parts.join("; ")}.`
 }
@@ -279,6 +289,23 @@ function resolveWorktreeKey(worktree: string): Promise<string> {
   )
 }
 
+/** Snapshot without changing the real index; a clean checkout needs no index work. */
+export async function measuredTree(worktree: string, porcelain: string, headTree: string): Promise<string> {
+  if (porcelain === "") return headTree
+  const index = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--path-format=absolute", "--git-path", "index"])
+  const temp = await mkdtemp(join(dirname(index), "plus-check-"))
+  const env = { GIT_INDEX_FILE: join(temp, "index") }
+  try {
+    const exists = await Bun.file(index).exists()
+    if (exists) await copyFile(index, env.GIT_INDEX_FILE)
+    if (!exists) await git(worktree, [...NO_REPOSITORY_PROGRAMS, "read-tree", "HEAD"], env)
+    await git(worktree, [...NO_REPOSITORY_PROGRAMS, "add", "-A"], env)
+    return await git(worktree, [...NO_REPOSITORY_PROGRAMS, "write-tree"], env)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+}
+
 export async function execute(root: string, opts: ExecuteOptions): Promise<ExecuteResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   const key = await resolveWorktreeKey(opts.worktree)
@@ -300,13 +327,8 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
           : await provisionWithSetup(root, opts.runID, opts.worktree, project.setup, env, timeoutMs)
       const headBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       const statusBefore = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
-      // Provenance for the measured tree: the committed HEAD tree plus
-      // whether the tree was dirty. Dirty status is captured up front (the
-      // tree the check actually measured); the mutation gate below still
-      // fails checks that dirty the tree themselves. Recording porcelain is
-      // cheaper than a temporary-index write-tree and sufficient to refuse
-      // the receipt as HEAD proof later.
       const tree = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"])
+      const measured = await measuredTree(opts.worktree, statusBefore, tree)
       const dirty = parsePorcelain(statusBefore).length > 0
       const cwd = opts.check.cwd ? join(opts.worktree, opts.check.cwd) : opts.worktree
       // A worktree whose dependencies could not be installed never runs the check:
@@ -329,10 +351,13 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
 
       const headAfter = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       const statusAfter = await git(opts.worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
-      if (headAfter !== headBefore || statusAfter !== statusBefore) {
+      const measuredAfter = headAfter === headBefore && statusAfter === statusBefore
+        ? await measuredTree(opts.worktree, statusAfter, tree)
+        : undefined
+      if (headAfter !== headBefore || statusAfter !== statusBefore || measuredAfter !== measured) {
         // Post-condition failure overrides even a zero exit code.
         code = "E_CHECK_MUTATED"
-        message = mutationMessage(opts.check.id, headBefore, headAfter, statusBefore, statusAfter)
+        message = mutationMessage(opts.check.id, headBefore, headAfter, statusBefore, statusAfter, measured, measuredAfter)
       } else if (provisioned.mutated !== undefined) {
         // Installing changed the committed tree (for example a rewritten manifest): the
         // check then measured a tree the commit does not hold.
@@ -360,8 +385,10 @@ export async function execute(root: string, opts: ExecuteOptions): Promise<Execu
         durationMs,
         outputPath: paths.log,
         tree,
+        measuredTree: measured,
         dirty,
         policyDigest,
+        reused: false,
       }
       if (dirty) {
         receipt.porcelain = statusBefore
@@ -406,15 +433,13 @@ export async function lastReceipt(root: string, runID: string, id: string, head?
     if (!e.startsWith(prefix) || !e.endsWith(".json")) continue
     const r = await readJson<Receipt>(join(root, "runs", runID, "receipts", e))
     if (!r || r.id !== id) continue
-    if (!best || r.at > best.at) best = r
+    if (!best || (r.reusedAt ?? r.at) > (best.reusedAt ?? best.at)) best = r
   }
   return best
 }
 
-// A receipt counts as proof for its HEAD only when it was recorded with a
-// clean tree at that HEAD. Dirty-tree receipts are never "present at HEAD",
-// and old receipts without the flag fail closed (treated as not clean) so
-// they can never satisfy finish's "checks green at HEAD" gate.
+// Direct HEAD proof must be clean. Matching measured-tree proof is first
+// materialized by reuseReceipt; old receipts without a dirty flag fail closed.
 export function isCleanReceipt(receipt: Receipt): boolean {
   if (receipt.dirty !== false) return false
   if (typeof receipt.tree !== "string" || receipt.tree.length === 0) return false
@@ -532,10 +557,60 @@ export async function receiptsAt(root: string, runID: string, head: string): Pro
   return out
 }
 
-/** Assigned checks with no passing receipt at `head`. */
-export async function stale(root: string, assigned: Check[], runID: string, head: string): Promise<Check[]> {
+/** Passing proof for this definition and tree; legacy proof remains HEAD-bound. */
+export async function passingReceipt(root: string, runIDs: string[], check: Check, facts: SourceFacts): Promise<Receipt | undefined> {
+  const digest = computePolicyDigest(check)
+  const matches: Receipt[] = []
+  for (const runID of new Set(runIDs)) {
+    const entries = await listReceiptFiles(root, runID) ?? []
+    for (const entry of entries) {
+      if (!entry.startsWith(`${check.id}-`) || !entry.endsWith(".json")) continue
+      const receipt = await readJson<Receipt>(join(root, "runs", runID, "receipts", entry))
+      if (!receipt?.passed || receipt.code === "E_CHECK_MUTATED") continue
+      if (receipt.measuredTree === undefined) {
+        if (verifyReceipt(receipt, check, facts).ok) matches.push(receipt)
+        continue
+      }
+      if (receipt.measuredTree !== facts.tree || receipt.policyDigest !== digest || computePolicyDigest(receipt) !== digest) continue
+      matches.push(receipt)
+    }
+  }
+  return matches.toSorted((a, b) => b.at - a.at)[0]
+}
+
+/** Bind earlier tree proof to a clean commit, preserving the original run's time and log. */
+export async function reuseReceipt(root: string, runID: string, receipt: Receipt, facts: SourceFacts): Promise<Receipt> {
+  const paths = receiptPaths(root, runID, receipt.id, facts.head)
+  const reused: Receipt = {
+    ...receipt,
+    head: facts.head,
+    tree: facts.tree,
+    dirty: false,
+    porcelain: undefined,
+    outputPath: paths.log,
+    reused: true,
+    reusedAt: Date.now(),
+    reusedFrom: receipt.reusedFrom ?? { head: receipt.head, at: receipt.at, dirty: receipt.dirty },
+  }
+  await mkdir(dirname(paths.json), { recursive: true })
+  if (receipt.outputPath !== paths.log) await copyFile(receipt.outputPath, paths.log)
+  await atomicJson(paths.json, reused)
+  return reused
+}
+
+/** Assigned checks without proof; a supplied clean HEAD tree enables reuse. */
+export async function stale(root: string, assigned: Check[], runID: string, head: string, tree?: string): Promise<Check[]> {
   const out: Check[] = []
   for (const c of assigned) {
+    if (tree !== undefined) {
+      const receipt = await passingReceipt(root, [runID], c, { head, tree })
+      if (receipt !== undefined) {
+        await reuseReceipt(root, runID, receipt, { head, tree })
+        continue
+      }
+      out.push(c)
+      continue
+    }
     const r = await readJson<Receipt>(receiptPaths(root, runID, c.id, head).json)
     if (!r || r.head !== head || !isCleanReceipt(r) || r.passed !== true) {
       out.push(c)
@@ -574,6 +649,10 @@ export async function run(
     durationMs: res.durationMs,
     output: res.output,
     receipt: res.outputPath,
+    at: res.at,
+    measuredTree: res.measuredTree,
+    dirty: res.dirty,
+    reused: false,
   }
   if (res.code !== undefined) {
     out.code = res.code

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { execute, lastReceipt, receiptsAt, run, stale } from "../../src/teams/checks.js"
+import { execute, lastReceipt, passingReceipt, receiptsAt, run, stale } from "../../src/teams/checks.js"
 import { verify } from "../../src/teams/audit.js"
 import { git } from "../../src/teams/git.js"
 
@@ -239,14 +239,15 @@ describe("check executor receipts", () => {
   })
 
   test("same-worktree checks serialize through the wt lock", async () => {
-    await writeFile(join(repoA, "marks.log"), "")
+    const marks = join(scratch, "marks.log")
+    await writeFile(marks, "")
     const mk = (id: string) => ({ id, argv: ["bun", "run", "mark.ts"] })
     await writeFile(
       join(repoA, "mark.ts"),
       `import { appendFileSync } from "node:fs";\n` +
-        `appendFileSync("marks.log", \`start \${Date.now()}\\n\`);\n` +
+        `appendFileSync(${JSON.stringify(marks)}, \`start \${Date.now()}\\n\`);\n` +
         `await new Promise((r) => setTimeout(r, 200));\n` +
-        `appendFileSync("marks.log", \`end \${Date.now()}\\n\`);\n`,
+        `appendFileSync(${JSON.stringify(marks)}, \`end \${Date.now()}\\n\`);\n`,
     )
     const runID = "w-aaaaaaaaaaaaaaaa"
     const results = await Promise.all([
@@ -254,12 +255,83 @@ describe("check executor receipts", () => {
       execute(stateDir, { runID, check: mk("seq-b"), worktree: repoA }),
     ])
     for (const r of results) expect(r.passed).toBe(true)
-    const lines = (await readFile(join(repoA, "marks.log"), "utf8")).trim().split("\n")
+    const lines = (await readFile(marks, "utf8")).trim().split("\n")
     expect(lines.length).toBe(4)
     const kinds = lines.map((l) => l.split(" ")[0])
     expect(kinds).toEqual(["start", "end", "start", "end"])
-    await rm(join(repoA, "marks.log"), { force: true })
+    await rm(marks, { force: true })
     await rm(join(repoA, "mark.ts"), { force: true })
+  })
+
+  test.each([false, true])("measured tree includes staged, unstaged, deleted and untracked files without changing the index (linked: %s)", async (linked) => {
+    const source = join(scratch, `snapshot-${linked}`)
+    await initRepo(source)
+    await writeFile(join(source, ".gitignore"), "ignored.txt\n")
+    await writeFile(join(source, "deleted.txt"), "delete me\n")
+    await git(source, ["add", "-A"])
+    await git(source, ["commit", "-m", "test: snapshot base"])
+    const dir = linked ? join(scratch, "snapshot-linked") : source
+    if (linked) await git(source, ["worktree", "add", "--detach", dir, "HEAD"])
+    await writeFile(join(dir, "README.md"), "staged\n")
+    await git(dir, ["add", "README.md"])
+    await writeFile(join(dir, "README.md"), "unstaged\n")
+    await writeFile(join(dir, "new.txt"), "untracked\n")
+    await writeFile(join(dir, "ignored.txt"), "ignored\n")
+    await rm(join(dir, "deleted.txt"))
+    const status = await git(dir, ["status", "--porcelain", "-uall"])
+    const indexPath = await git(dir, ["rev-parse", "--path-format=absolute", "--git-path", "index"])
+    const index = await readFile(indexPath)
+    const check = { id: "snapshot", argv: ["bun", "-e", "console.log('checked')"] }
+    const runID = `snapshot-${linked}`
+    const result = await execute(stateDir, { runID, check, worktree: dir })
+    expect(result.passed).toBe(true)
+    expect(result.dirty).toBe(true)
+    expect(result.measuredTree).not.toBe(result.tree)
+    expect(await readFile(indexPath)).toEqual(index)
+    expect(await git(dir, ["status", "--porcelain", "-uall"])).toBe(status)
+    await git(dir, ["add", "-A"])
+    await git(dir, ["commit", "-m", "test: checked content"])
+    const head = await git(dir, ["rev-parse", "HEAD"])
+    const tree = await git(dir, ["rev-parse", "HEAD^{tree}"])
+    expect(result.measuredTree).toBe(tree)
+    expect(await stale(stateDir, [check], runID, head, tree)).toEqual([])
+    expect(await lastReceipt(stateDir, runID, check.id, head)).toMatchObject({ reused: true, at: result.at, dirty: false, measuredTree: tree, reusedFrom: { head: result.head, at: result.at, dirty: true } })
+    for (const changed of [{ ...check, argv: ["bun", "-e", "process.exit(1)"] }, { ...check, cwd: "subdir" }]) {
+      expect(await passingReceipt(stateDir, [runID], changed, { head, tree })).toBeUndefined()
+    }
+  })
+
+  test.each(["README.md", "untracked.txt"])("a check changing already-dirty %s fails even when porcelain is unchanged", async (file) => {
+    const dir = join(scratch, `mutation-${file}`)
+    await initRepo(dir)
+    await writeFile(join(dir, file), "before\n")
+    const status = await git(dir, ["status", "--porcelain", "-uall"])
+    const result = await execute(stateDir, {
+      runID: `mutation-${file}`,
+      check: { id: "mutate", argv: ["bun", "-e", `await Bun.write(${JSON.stringify(file)}, 'after\\n')`] },
+      worktree: dir,
+    })
+    expect(await git(dir, ["status", "--porcelain", "-uall"])).toBe(status)
+    expect(result).toMatchObject({ passed: false, code: "E_CHECK_MUTATED" })
+    expect(result.message).toContain("tree ")
+  })
+
+  test("legacy clean receipts remain valid only at their HEAD, and policy mismatches never reuse", async () => {
+    const dir = join(scratch, "legacy")
+    await initRepo(dir)
+    const check = { id: "legacy", argv: ["bun", "-e", "console.log('legacy')"] }
+    const receipt = await execute(stateDir, { runID: "legacy", check, worktree: dir })
+    const file = join(stateDir, "runs", "legacy", "receipts", `legacy-${receipt.head.slice(0, 7)}.json`)
+    const facts = { head: receipt.head, tree: receipt.tree! }
+    await writeFile(file, JSON.stringify({ ...receipt, policyDigest: "wrong" }))
+    expect(await passingReceipt(stateDir, ["legacy"], check, facts)).toBeUndefined()
+    delete receipt.measuredTree
+    delete receipt.policyDigest
+    await writeFile(file, JSON.stringify(receipt))
+    expect(await stale(stateDir, [check], "legacy", facts.head, facts.tree)).toEqual([])
+    await git(dir, ["commit", "--allow-empty", "-m", "test: different head same tree"])
+    const head = await git(dir, ["rev-parse", "HEAD"])
+    expect(await stale(stateDir, [check], "legacy", head, facts.tree)).toEqual([check])
   })
 
   test("running a check writes receipt.written naming check and head, chain verifies", async () => {

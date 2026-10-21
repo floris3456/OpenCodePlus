@@ -687,9 +687,10 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   const porcelain = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
 
-  // Compound behaviour: assigned checks with no receipt at HEAD run now,
+  // Compound behaviour: reuse same-tree proof only for a clean worktree;
+  // assigned checks with no matching receipt run now,
   // through the same executor as team_check, before any gate judges them.
-  const missing = await stale(root, assigned, stored.id, head)
+  const missing = await stale(root, assigned, stored.id, head, dirtyFiles.length === 0 ? tree : undefined)
   for (const checkDef of missing) await execute(root, { runID: stored.id, check: checkDef, worktree })
 
   if (done && allows(table, stored.role, "finish", "requirements.checks")) {
@@ -739,7 +740,7 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
       )
   }
   const reportChecks = (await receiptsAt(root, stored.id, head))
-    .map((receipt) => ({ id: receipt.id, passed: receipt.passed, head: receipt.head, at: receipt.at }))
+    .map((receipt) => ({ id: receipt.id, passed: receipt.passed, head: receipt.head, at: receipt.at, ...(receipt.reused ? { reused: true, reusedFrom: receipt.reusedFrom } : {}) }))
     .toSorted((a, b) => a.id.localeCompare(b.id))
   const now = new Date().toISOString()
   const reportPath = path.join(root, "runs", stored.id, `report-${n}.md`)

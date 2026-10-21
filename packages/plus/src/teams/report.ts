@@ -10,6 +10,7 @@ export interface ReportCheck {
   passed: boolean
   head?: string
   at?: number | string
+  reused?: boolean
 }
 
 export interface ReportInput {
@@ -71,7 +72,7 @@ export function render(report: RenderReport, filled?: RenderFilled): string {
   const head7 = head ? short7(head) : "unknown"
   const sortedChecks = [...checks].sort((a, b) => a.id.localeCompare(b.id))
   const checksBody =
-    sortedChecks.length === 0 ? "- none" : sortedChecks.map((c) => `- ${c.id}: ${c.passed ? "pass" : "FAIL"}`).join("\n")
+    sortedChecks.length === 0 ? "- none" : sortedChecks.map((c) => `- ${c.id}: ${c.passed ? "pass" : "FAIL"}${c.reused ? ` (reused same-tree check from ${c.at})` : ""}`).join("\n")
   sections.push(`## Checks at ${head7}\n${checksBody}`)
 
   const budgetHistory = f.budgetHistory ?? report.budgetHistory ?? []

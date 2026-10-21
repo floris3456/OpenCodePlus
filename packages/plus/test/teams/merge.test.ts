@@ -129,6 +129,29 @@ afterAll(async () => {
 })
 
 describe("merge queue", () => {
+  test.each([false, true])("landing also reuses matching proof in the parent's receipts (legacy: %s)", async (legacy) => {
+    const name = `parent-proof-${legacy}`
+    const parentRun = `${name}-parent`
+    const childRun = `${name}-child`
+    const parent = await makeParent(name)
+    const child = await makeChild(name, parent.head, { "child.txt": "checked content\n" }, "feat: child content")
+    const counter = join(scratch, `${name}.log`)
+    const check = { id: "count", argv: ["bun", "-e", `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(counter)}, 'run\\n')`] }
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [check])
+    const receipt = await execute(stateDir, { runID: parentRun, check, worktree: child.dir })
+    expect(receipt.passed).toBe(true)
+    if (legacy) {
+      delete receipt.measuredTree
+      await atomicJson(join(stateDir, "runs", parentRun, "receipts", `count-${child.head.slice(0, 7)}.json`), receipt)
+    }
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, [check, { ...check, id: "alias" }]))
+    expect(result.processed[0]).toMatchObject({ state: "landed", reusedChecks: [{ id: check.id, reused: true, at: receipt.at }] })
+    expect(await Bun.file(counter).text()).toBe("run\n")
+    expect(await stale(stateDir, [check, { ...check, id: "alias" }], parentRun, child.head)).toEqual([])
+    expect(await lastReceipt(stateDir, parentRun, "alias", child.head)).toMatchObject({ passed: true, reused: true, at: receipt.at })
+  })
+
   test("a child's own check passing at its tip but red in combination always blocks", async () => {
     const parent = await makeParent("own-check")
     const childRun = "own-check-child"
@@ -178,9 +201,12 @@ describe("merge queue", () => {
     const child = await makeChild("aliases", baseline, { "other.test.ts": 'import { test, expect } from "bun:test"\ntest("other", () => expect(2).toBe(2))\n' }, "test: other")
     const checks = [{ id: "unit", argv: ["bun", "test", "gate.test.ts"] }, { id: "alias", argv: ["bun", "test", "gate.test.ts"] }]
     await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [{ id: "same-command", argv: checks[0].argv }, { id: "unit", argv: ["bun", "test", "other.test.ts"] }])
+    const checked = await execute(stateDir, { runID: childRun, check: { id: "same-command", argv: checks[0].argv }, worktree: child.dir })
+    expect(checked.passed).toBe(true)
     await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
     const result = await drain(stateDir, parentRun, ctxFor(parent.dir, checks))
     expect(result.processed[0].state).toBe("landed")
+    expect(result.processed[0].reusedChecks).toEqual([{ id: "unit", reused: true, at: checked.at }])
     const head = await headOf(parent.dir)
     expect(await stale(stateDir, checks, parentRun, head)).toEqual([])
     expect(await lastReceipt(stateDir, parentRun, "unit", head)).toMatchObject({ argv: checks[0].argv, dirty: false })
