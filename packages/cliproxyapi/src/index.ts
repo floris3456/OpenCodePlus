@@ -24,6 +24,7 @@ import { migratingStorage } from "./legacy.js"
 
 export { applyCatalogue, applyRelayToExistingModels, applyRelayToModels } from "./catalog.js"
 export { onQuotaFact, type QuotaFact } from "./facts.js"
+export { pacerCache, type PacerCache, type PacerCacheQuery } from "./pacer-cache.js"
 export { provideLegacyQuotaStorage, legacyRead, migratingStorage } from "./legacy.js"
 
 export const ID = "opencode.plus.cliproxyapi"

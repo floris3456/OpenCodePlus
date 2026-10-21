@@ -30,7 +30,8 @@ import {
 } from "../src/index.js"
 import { modelDefaultView, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { createWarmingStore, decideWarming, WARMING_DEFAULTS, warmingStore, type ChatCompactionDefaults, type WarmingRows } from "../src/warming.js"
-import { formatRemaining, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
+import { formatRemaining, holdsSend, nextChatSwitch, warmingLabel } from "../src/tui/warming.js"
+import { ledgerAt } from "../src/monitor/ledger.js"
 import { Effect, Stream } from "effect"
 import { context } from "./harness.js"
 import { saveRun, type RunRecord } from "../src/teams/run.js"
@@ -1055,9 +1056,10 @@ test("warming switched off mid-window compacts at the next keep-alive moment, an
   expect(on.coldAt).toBeUndefined()
   expect(clock.pending()).toEqual([1_000_000 + 30 * MINUTE])
 
-  // After a keep-alive, the next one is one interval after it; "default" restores the end too.
+  // After a keep-alive that went through, the next one is one interval after it; "default" restores the end too.
   clock.now = 1_000_000 + 2 * MINUTE
   await store.decide(event({ phase: "warm", now: clock.now }), {}, compact)
+  store.warmed("ses_warm", clock.now + 1_000, undefined)
   clock.now = 1_000_000 + 3 * MINUTE
   expect(await store.setChat("ses_warm", "off")).toMatchObject({ compactAt: 1_000_000 + 4 * MINUTE, coldAt: 1_000_000 + 4 * MINUTE })
   expect((await store.setChat("ses_warm", "default")).compactAt).toBe(1_000_000 + 30 * MINUTE)
@@ -1074,6 +1076,7 @@ test("warming switched off mid-window compacts at the next keep-alive moment, an
   await store.decide(event({ sessionID: end, since: start, now: start }), {}, compact)
   clock.now = start + 29 * MINUTE
   await store.decide(event({ sessionID: end, phase: "warm", since: start, now: clock.now }), {}, compact)
+  store.warmed(end, clock.now + 1_000, undefined)
   expect(await store.setChat(end, "off")).toMatchObject({ compactAt: start + 30 * MINUTE, coldAt: start + 30 * MINUTE })
   store.dispose()
 })
@@ -1084,6 +1087,7 @@ test("with compact before cold off, a chat switched off mid-window reports when 
   await store.decide(event({}), {}, async () => {})
   clock.now = 1_000_000 + 2 * MINUTE
   await store.decide(event({ phase: "warm", now: clock.now }), {}, async () => {})
+  store.warmed("ses_warm", clock.now + 1_000, undefined)
   clock.now = 1_000_000 + 3 * MINUTE
   const off = await store.setChat("ses_warm", "off")
   expect(off).toMatchObject({ chat: "off", compact: false, active: false, coldAt: 1_000_000 + 4 * MINUTE })
@@ -1405,4 +1409,102 @@ test("the warming hook clears settings for a session whose run record is stopped
     if (prior === undefined) delete process.env.XDG_DATA_HOME
     else process.env.XDG_DATA_HOME = prior
   }
+})
+
+test("a keep-alive counts once it went through: its send time becomes the last warm, a failure is kept until one does", async () => {
+  const store = createWarmingStore(await tempFile())
+  await store.decide(event({}), {})
+  const sent = 1_000_000 + 2 * MINUTE
+  await store.decide(event({ phase: "warm", now: sent }), {})
+  // Decided, not yet answered: nothing counts.
+  expect((await store.status("ses_warm", sent + 500)).lastWarm).toBeUndefined()
+  expect(store.warmed("ses_warm", sent + 2_000, "Unable to connect")).toBe(true)
+  expect(await store.status("ses_warm", sent + 2_000)).toMatchObject({ active: true, pingFailed: { at: sent + 2_000, error: "Unable to connect" } })
+  expect((await store.status("ses_warm", sent + 2_000)).lastWarm).toBeUndefined()
+  // Its retry goes through: the failure clears, and the cache was read when the retry went out.
+  const retry = sent + 30_000
+  await store.decide(event({ phase: "warm", now: retry }), {})
+  expect(store.warmed("ses_warm", retry + 1_500, undefined)).toBe(true)
+  const back = await store.status("ses_warm", retry + 1_500)
+  expect(back.lastWarm).toBe(retry)
+  expect(back.pingFailed).toBeUndefined()
+  // A failure ends with the next real request too.
+  store.warmed("ses_warm", retry + 5 * MINUTE, "Unable to connect")
+  await store.decide(event({ since: retry + 6 * MINUTE, now: retry + 6 * MINUTE }), {})
+  expect((await store.status("ses_warm", retry + 6 * MINUTE)).pingFailed).toBeUndefined()
+})
+
+test("a cache that went cold inside its window ends the window there and cancels compact before cold", async () => {
+  const clock = fakeClock(1_000_000)
+  const store = createWarmingStore(await tempFile(), clock.options)
+  await store.setCompact("ses_warm", "on")
+  await store.decide(event({}), {}, async () => {})
+  expect(clock.pending()).toEqual([1_000_000 + 30 * MINUTE])
+  clock.now = 1_000_000 + 9 * MINUTE
+  expect(store.cool("ses_warm", 1_000_000 + 5 * MINUTE)).toBe(true)
+  expect(await store.status("ses_warm")).toMatchObject({ active: false, expires: 1_000_000 + 5 * MINUTE })
+  expect((await store.status("ses_warm")).compactAt).toBeUndefined()
+  expect(clock.pending()).toEqual([])
+  // Once ended, nothing more to cut.
+  expect(store.cool("ses_warm", 1_000_000 + 6 * MINUTE)).toBe(false)
+  store.dispose()
+})
+
+test("the warming hook stops keep-alives once the chat's cache went cold, by the Monitor's answered requests", async () => {
+  const state = {
+    warmingCheckedAt: Date.now(),
+    cachedAgents: [],
+    cachedModels: [],
+    cachedModelSettings: [],
+    cachedScopes: scopes,
+  } as unknown as PlusState
+  const ledger = ledgerAt()
+  const now = Date.now()
+  const sessionID = Session.ID.make("ses_hook_offline")
+  const since = now - 9 * MINUTE
+  const activity = event({ sessionID, since, now: since, settings: { ...configured } })
+  await Effect.runPromise(decideWarmingFor(context(), state, activity))
+  // The step answered (Claude, a 5-minute cache); every keep-alive since failed.
+  ledger.session({ id: sessionID, directory: "/workspace" }, since)
+  ledger.requestStarted({ id: "req_hook_step", sessionID, kind: "step", provider: "anthropic", model: "claude", started: since })
+  ledger.requestEnded("req_hook_step", { ended: since + 10_000, status: "completed" })
+  ledger.requestStarted({ id: "req_hook_ping", sessionID, kind: "ping", provider: "anthropic", model: "claude", started: since + 2 * MINUTE })
+  ledger.requestEnded("req_hook_ping", { ended: since + 2 * MINUTE + 300, status: "error", error: "Unable to connect" })
+  await Effect.runPromise(decideWarmingFor(context(), state, event({ sessionID, phase: "warmed", since, now: since + 2 * MINUTE + 300, error: "Unable to connect", settings: undefined })))
+
+  // The next keep-alive: the cache went cold five minutes after the step, so warming stops there.
+  const ping = event({ sessionID, phase: "warm", since, now, settings: { ...configured } })
+  await Effect.runPromise(decideWarmingFor(context(), state, ping))
+  expect(ping.settings).toBeUndefined()
+  expect(await warmingStore.status(sessionID, now)).toMatchObject({ active: false, expires: since + 5 * MINUTE, pingFailed: { error: "Unable to connect" } })
+  warmingStore.stop(sessionID)
+})
+
+test("the footer warns while keep-alives fail and says the cache is cold once they let it go cold", () => {
+  const base = { sessionID: "ses_warm", chat: "default" as const, now: 0 }
+  const failing = {
+    ...base,
+    active: true,
+    since: 0,
+    expires: 30 * MINUTE,
+    interval: 4 * MINUTE,
+    pingFailed: { at: 4 * MINUTE, error: "Unable to connect" },
+    warmUntil: 5 * MINUTE,
+  }
+  expect(warmingLabel(failing, 4.5 * MINUTE)).toEqual({ text: "keep-alive failed · warm 0:30 left", tone: "warning", holds: false })
+  // The countdown reaches it before the server reads again: cold, and a send waits for a second submit.
+  const offline = warmingLabel(failing, 5 * MINUTE)
+  expect(offline).toEqual({ text: "cache cold · keep-alive failed", tone: "warning" })
+  expect(holdsSend(offline)).toBe(true)
+  // The server's own cut reads the same; with cold-cache models it says which compacts first.
+  const cut = { ...failing, active: false, expires: 5 * MINUTE }
+  expect(warmingLabel(cut, 6 * MINUTE)).toEqual({ text: "cache cold · keep-alive failed", tone: "warning" })
+  expect(warmingLabel({ ...cut, coldModels: ["proxy/cheap"] }, 6 * MINUTE)).toEqual({ text: "cache cold · compacts with proxy/cheap first", tone: "warning" })
+  // Compact before cold scheduled at the window's end no longer counts down once the cache is cold.
+  expect(warmingLabel({ ...failing, compact: true, compactAt: 30 * MINUTE }, 4.5 * MINUTE)?.text).toBe("keep-alive failed · warm 0:30 left")
+  expect(warmingLabel({ ...failing, compact: true, compactAt: 30 * MINUTE }, 6 * MINUTE)?.text).toBe("cache cold · keep-alive failed")
+  // A window whose steps failed (no keep-alive failure) is simply cold.
+  const { pingFailed: _none, ...steps } = failing
+  expect(warmingLabel(steps, 4 * MINUTE)).toEqual({ text: "cache warm · 26:00 left", tone: "muted" })
+  expect(warmingLabel(steps, 6 * MINUTE)).toEqual({ text: "cache cold", tone: "warning" })
 })

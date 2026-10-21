@@ -25,21 +25,35 @@ export function formatRemaining(ms: number): string {
  * The footer for a status at local time `now` (already corrected for server
  * clock skew); undefined shows nothing. Once a window has run out the footer
  * stays and warns that the cache is cold, until the next reply opens a new one;
- * a send then waits for a second submit. Warming switched off
+ * a send then waits for a second submit. A keep-alive that did not go through
+ * shows as a warning counting down to when the cache goes cold, and the window
+ * ends there unless a later one goes through. Warming switched off
  * mid-window counts down to the keep-alive where it stops; a chat that never
  * warmed counts down to when its cache goes cold. Either way the footer then
  * says the cache is cold, without holding a send (`holds: false`): warming
  * is off for it.
  */
 export function warmingLabel(
-  status: Plus.WarmingStatus | undefined,
+  given: Plus.WarmingStatus | undefined,
   now: number,
 ): { text: string; tone: "muted" | "warning"; holds?: false } | undefined {
-  if (status === undefined) return undefined
-  if (status.compacted) return { text: "compacted", tone: "muted" }
+  if (given === undefined) return undefined
+  if (given.compacted) return { text: "compacted", tone: "muted" }
+  const status = cutAtCold(given, now)
 
   const coldFirst = status.coldModels?.[0]
-  const coldArms = (cold: string) => (coldFirst === undefined ? cold : `cache cold · compacts with ${coldFirst} first`)
+  const coldArms = (cold: string) =>
+    coldFirst !== undefined
+      ? `cache cold · compacts with ${coldFirst} first`
+      : status.pingFailed === undefined
+        ? cold
+        : "cache cold · keep-alive failed"
+
+  // A keep-alive did not go through: the cache stays warm only as long as the last one that did.
+  if (status.active && status.pingFailed !== undefined && status.warmUntil !== undefined) {
+    const left = Math.min(status.warmUntil, status.expires ?? status.warmUntil) - now
+    return { text: `keep-alive failed · warm ${formatRemaining(left)} left`, tone: "warning", holds: false }
+  }
 
   if (status.compact) {
     const deadline = status.compactAt ?? (status.active && status.expires !== undefined ? status.expires : undefined)
@@ -70,6 +84,14 @@ export function warmingLabel(
   if (status.chat === "on") return { text: "cache warming on · starts after the next reply", tone: "muted" }
   if (status.coldAt !== undefined) return unwarmed(status.coldAt)
   return undefined
+}
+
+// The server ends a window at the moment its cache went cold (keep-alives that
+// did not go through); between its reads the countdown reaching that moment does.
+function cutAtCold(status: Plus.WarmingStatus, now: number): Plus.WarmingStatus {
+  if (!status.active || status.warmUntil === undefined || status.warmUntil > now) return status
+  const { compactAt: _cancelled, ...cut } = status
+  return { ...cut, active: false, expires: status.warmUntil }
 }
 
 /** Whether the footer holds a send for a second submit: a cold cache warming did not keep. */

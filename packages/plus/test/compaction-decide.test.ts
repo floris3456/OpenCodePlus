@@ -8,14 +8,8 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { Effect } from "effect"
-import {
-  coldStateOf,
-  consumePromptAdmitted,
-  decideCompaction,
-  isCold,
-  markPromptAdmitted,
-  type ColdCompactionState,
-} from "../src/compaction/decide.js"
+import type { PacerCache, PacerCacheQuery } from "@opencodeplus/cliproxyapi/server"
+import { coldStateOf, decideCompaction, isCold, type ColdCompactionState } from "../src/compaction/decide.js"
 import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
@@ -50,11 +44,11 @@ const settings = (overrides: Partial<ModelSettingsRecord>): ModelSettingsRecord 
   ...overrides,
 })
 
+// Cold since its cold moment, one millisecond ago.
 const cold = (overrides: Partial<ColdCompactionState> = {}): ColdCompactionState => ({
-  running: false,
-  ready: true,
-  active: false,
   compacted: false,
+  coldAt: 0,
+  now: 1,
   ...overrides,
 })
 
@@ -138,7 +132,7 @@ test("cold arming fires on a cold fresh step with #1, #2… and optional", () =>
   expect(event.metadata).toEqual({ "plus.cold": { models: ["proxy/one#high", "proxy/two", "proxy/three"] } })
 })
 
-test("cold arming does not fire when the chat is warm, running, unknown-lifetime, compacted, not consulted, or empty", () => {
+test("cold arming does not fire when the chat is warm, its cold moment is unknown, it was just compacted, cold is not consulted, or its list is empty", () => {
   const fires = (state: ColdCompactionState | undefined) => {
     const event = decision()
     decideCompaction(event, {
@@ -147,18 +141,13 @@ test("cold arming does not fire when the chat is warm, running, unknown-lifetime
     })
     return event.compact === true
   }
-  // warm: the window still runs.
-  expect(fires(cold({ active: true }))).toBe(false)
-  // warm: a window-less chat within its cache lifetime.
-  expect(fires(cold({ ready: false, idleMs: 100, lifetime: 1_000 }))).toBe(false)
-  // running.
-  expect(fires(cold({ running: true }))).toBe(false)
-  // no window and an unknown lifetime is never cold.
-  expect(fires(cold({ ready: false, idleMs: 10_000_000 }))).toBe(false)
-  // compacted since its last request.
+  // warm: its cold moment has not come.
+  expect(fires(cold({ coldAt: 1_000, now: 100 }))).toBe(false)
+  // unknown: nothing says when it goes cold (or a window keeps it warm).
+  expect(fires({ compacted: false, now: 10_000_000 })).toBe(false)
+  // compacted since its last request, or a step retried after its summary.
   expect(fires(cold({ compacted: true }))).toBe(false)
-  // cold is not consulted: a later step of the turn, a chat that has not been
-  // prompted, or the global Compact cold chats first is off.
+  // cold is not consulted: Compact cold chats first is off for the chat's model.
   expect(fires(undefined)).toBe(false)
   // the retired per-model switch, still stored as off, no longer gates it.
   {
@@ -172,17 +161,26 @@ test("cold arming does not fire when the chat is warm, running, unknown-lifetime
     decideCompaction(event, { every: settings({}), cold: cold() })
     expect(event.compact).toBeUndefined()
   }
-  // a window-less chat past its cache lifetime is cold.
-  expect(fires(cold({ ready: false, idleMs: 2_000, lifetime: 1_000 }))).toBe(true)
+  // past its cold moment it is cold.
+  expect(fires(cold({ coldAt: 1_000, now: 2_000 }))).toBe(true)
 })
 
-test("isCold treats a running, warm, compacted or unknown-lifetime chat as not cold", () => {
+test("isCold: cold from its cold moment on; never when just compacted or when the moment is unknown", () => {
   expect(isCold(cold())).toBe(true)
-  expect(isCold(cold({ active: true }))).toBe(false)
-  expect(isCold(cold({ running: true }))).toBe(false)
+  expect(isCold(cold({ coldAt: 5, now: 5 }))).toBe(true)
+  expect(isCold(cold({ coldAt: 6, now: 5 }))).toBe(false)
   expect(isCold(cold({ compacted: true }))).toBe(false)
-  expect(isCold(cold({ ready: false, idleMs: 5 }))).toBe(false)
-  expect(isCold(cold({ ready: false, idleMs: 5, lifetime: 1 }))).toBe(true)
+  expect(isCold({ compacted: false, now: 5 })).toBe(false)
+})
+
+test("the cold state reads the footer's status: a running window is warm, an ended one cold from its end", () => {
+  const boundary = { fresh: false, portable: true }
+  expect(coldStateOf({ status: { active: true, expires: 10 }, boundary, now: 20 })).toEqual({ compacted: false, now: 20 })
+  expect(coldStateOf({ status: { active: false, expires: 10 }, boundary, now: 20 })).toEqual({ compacted: false, coldAt: 10, now: 20 })
+  // A chat warming does not keep warm (switched off mid-window, or never on): its cold moment.
+  expect(coldStateOf({ status: { active: false, expires: 30, coldAt: 12 }, boundary, now: 20 })).toMatchObject({ coldAt: 12 })
+  // Core's boundary is the checkpoint its summary wrote: nothing new to summarize.
+  expect(coldStateOf({ status: { active: false, expires: 10 }, boundary: { ...boundary, checkpoint: "msg_summary" }, now: 20 }).compacted).toBe(true)
 })
 
 test("the team compactWith arming takes priority over per-model settings and cold arming", () => {
@@ -203,7 +201,7 @@ test("the team compactWith arming takes priority over per-model settings and col
 
 test("an armed list of three: #1 writes, #2 and #3 fall back, and no optional (a manual compaction reports failure)", () => {
   const event = decision()
-  decideCompaction(event, { armed: ["proxy/one#high", "proxy/two", "proxy/three"], cold: cold({ active: true }) })
+  decideCompaction(event, { armed: ["proxy/one#high", "proxy/two", "proxy/three"], cold: cold({ coldAt: 10, now: 1 }) })
   expect(event.compact).toBe(true)
   expect(event.portable).toBe(true)
   expect(event.compactionModel).toEqual(Model.Ref.parse("proxy/one#high"))
@@ -438,20 +436,17 @@ test("Images › When image context is full reaches core's decision from the cha
   expect(other.images).toBe("error")
 })
 
-test("with Compact cold chats first off, a cold fresh prompt does not arm, and the mark is still consumed", async () => {
+test("with Compact cold chats first off, a cold chat does not arm", async () => {
   const sessionID = "ses_wire_off"
-  markPromptAdmitted(sessionID)
   const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
   await Effect.runPromise(
-    decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, fakeLedger(requestRow(Date.now() - 70 * 60_000), oneHourFingerprint())),
+    decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, fakeLedger(requestRow(Date.now() - 70 * 60_000, { sessionID }), oneHourFingerprint()), noPacer),
   )
   expect(event.compact).toBeUndefined()
-  expect(consumePromptAdmitted(sessionID)).toBe(false)
 })
 
-test("cold arming fires for a chat with earlier output once a prompt was admitted and it is cold", () => withColdSwitch(async () => {
+test("cold arming fires before a step once the chat's cache lifetime passed, not before", () => withColdSwitch(async () => {
   const sessionID = "ses_wire"
-  markPromptAdmitted(sessionID)
   const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
   // 10 minutes idle, but this model's cache is 1h: still warm.
   const stillWarm = { ...event }
@@ -461,14 +456,12 @@ test("cold arming fires for a chat with earlier output once a prompt was admitte
       coldState(["proxy/one", "proxy/two"]),
       stillWarm,
       fakeLedger(requestRow(Date.now() - 10 * 60_000), oneHourFingerprint()),
+      noPacer,
     ),
   )
   expect(stillWarm.compact).toBeUndefined()
-  // The mark was consumed even though nothing armed: a later step must not consult cold.
-  expect(consumePromptAdmitted(sessionID)).toBe(false)
 
-  // A new prompt, now 70 minutes idle: the 1h cache is cold and it arms.
-  markPromptAdmitted(sessionID)
+  // Now 70 minutes idle: the 1h cache is cold and it arms.
   const coldEvent = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
   await Effect.runPromise(
     decideCompactionFor(
@@ -476,6 +469,7 @@ test("cold arming fires for a chat with earlier output once a prompt was admitte
       coldState(["proxy/one", "proxy/two"]),
       coldEvent,
       fakeLedger(requestRow(Date.now() - 70 * 60_000), oneHourFingerprint()),
+      noPacer,
     ),
   )
   expect(coldEvent.compact).toBe(true)
@@ -513,10 +507,9 @@ test("a chat warming does not keep warm is cold once its cache lifetime passed, 
       )
     const prompt = async (sessionID: string, at: number, fingerprint: RequestFingerprintData) => {
       const ledger = fakeLedger(requestRow(at, { sessionID }), fingerprint)
-      markPromptAdmitted(sessionID)
       const event = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
-      await Effect.runPromise(decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, ledger))
-      return { compact: event.compact, coldAt: (await warmingStatusFor(sessionID, Date.now(), ledger)).coldAt }
+      await Effect.runPromise(decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, ledger, noPacer))
+      return { compact: event.compact, coldAt: (await warmingStatusFor(sessionID, Date.now(), ledger, noPacer)).coldAt }
     }
     const now = Date.now()
 
@@ -533,29 +526,131 @@ test("a chat warming does not keep warm is cold once its cache lifetime passed, 
     expect(await prompt("ses_unwarmed_hour", now - 10 * 60_000, oneHourFingerprint())).toEqual({ compact: undefined, coldAt: now + 50 * 60_000 })
   }))
 
-test("the second auto decision without a new prompt does not consult cold and does not arm", () => withColdSwitch(async () => {
+test("a running agent's later step is consulted too; once its summary is the checkpoint it does not compact again", () => withColdSwitch(async () => {
   const sessionID = "ses_wire2"
-  markPromptAdmitted(sessionID)
   const ctx = wiringContext()
   const state = coldState(["proxy/one"])
-  const ledger = fakeLedger(requestRow(Date.now() - 70 * 60_000), oneHourFingerprint())
-  const first = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
-  await Effect.runPromise(decideCompactionFor(ctx, state, first, ledger))
-  expect(first.compact).toBe(true)
+  // The agent waited 70 minutes on a tool: its 1h cache went cold mid-turn.
+  const ledger = fakeLedger(requestRow(Date.now() - 70 * 60_000, { sessionID }), oneHourFingerprint())
+  const later = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model"), boundary: { fresh: false, portable: true } })
+  await Effect.runPromise(decideCompactionFor(ctx, state, later, ledger, noPacer))
+  expect(later.compact).toBe(true)
+  expect(later.compactionModel).toEqual(Model.Ref.parse("proxy/one"))
 
-  // A second auto decision in the same turn: no new prompt, so no cold arming.
-  const second = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model") })
-  await Effect.runPromise(decideCompactionFor(ctx, state, second, ledger))
-  expect(second.compact).toBeUndefined()
+  // Its summary completed, and the step is decided again (a retry): nothing new to summarize.
+  const retried = decision({
+    sessionID: Session.ID.make(sessionID),
+    model: Model.Ref.parse("proxy/chat-model"),
+    boundary: { fresh: false, portable: true, checkpoint: "msg_summary" },
+  })
+  await Effect.runPromise(decideCompactionFor(ctx, state, retried, ledger, noPacer))
+  expect(retried.compact).toBeUndefined()
 }))
 
-test("a 1h-TTL fingerprint is cold only past an hour, not after ten minutes", () => {
-  const status = { active: false }
-  const cold10 = coldStateOf({ status, now: 10 * 60_000, last: requestRow(0), fingerprint: oneHourFingerprint() })
-  expect(cold10.lifetime).toBe(3_600_000)
-  expect(isCold(cold10)).toBe(false)
-  const cold70 = coldStateOf({ status, now: 70 * 60_000, last: requestRow(0), fingerprint: oneHourFingerprint() })
-  expect(isCold(cold70)).toBe(true)
-  // Without a fingerprint the lifetime is unknown: never cold.
-  expect(isCold(coldStateOf({ status, now: 70 * 60_000, last: requestRow(0) }))).toBe(false)
+test("a 1h-TTL fingerprint is cold only past an hour, not after ten minutes; without a known lifetime never", async () => {
+  const sessionID = "ses_ttl"
+  const now = Date.now()
+  const coldAfter = async (minutes: number, fingerprint?: RequestFingerprintData) =>
+    isCold(
+      coldStateOf({
+        status: await warmingStatusFor(sessionID, now, fakeLedger(requestRow(now - minutes * 60_000, { sessionID }), fingerprint), noPacer),
+        boundary: { fresh: false, portable: true },
+        now,
+      }),
+    )
+  expect(await coldAfter(10, oneHourFingerprint())).toBe(false)
+  expect(await coldAfter(70, oneHourFingerprint())).toBe(true)
+  // No fingerprint and a model whose cache lifetime is unknown: never cold.
+  expect(await coldAfter(70)).toBe(false)
+})
+
+const noPacer = async (): Promise<PacerCache | undefined> => undefined
+
+const MINUTE = 60_000
+
+const rowsLedger = (rows: RequestRow[], fingerprints: Record<string, RequestFingerprintData>) => ({
+  getRequests: () => rows,
+  getFingerprint: (requestID: string) => fingerprints[requestID],
+})
+
+test("failed requests do not keep a cache warm: an agent whose steps fail is cold once its last answer's lifetime passed", () =>
+  withColdSwitch(async () => {
+    const sessionID = "ses_failed_steps"
+    const now = Date.now()
+    const answered = requestRow(now - 8 * MINUTE, { id: "req_ok", sessionID, ended: now - 8 * MINUTE + 20_000 })
+    const failing = [
+      requestRow(now - 2 * MINUTE, { id: "req_err1", sessionID, status: "error" }),
+      requestRow(now - MINUTE, { id: "req_err2", sessionID, status: "error" }),
+    ]
+    const ledger = rowsLedger([answered, ...failing], { req_ok: fiveMinuteFingerprint(), req_err2: fiveMinuteFingerprint() })
+    expect((await warmingStatusFor(sessionID, now, ledger, noPacer)).warmUntil).toBe(now - 3 * MINUTE)
+    const retry = decision({ sessionID: Session.ID.make(sessionID), model: Model.Ref.parse("proxy/chat-model"), boundary: { fresh: false, portable: true } })
+    await Effect.runPromise(decideCompactionFor(wiringContext(), coldState(["proxy/one"]), retry, ledger, noPacer))
+    expect(retry.compact).toBe(true)
+
+    // A failed request the provider still counted cache tokens for did touch the cache.
+    const counted = rowsLedger([answered, failing[0]!, { ...failing[1]!, cacheReadTokens: 900 }], { req_ok: fiveMinuteFingerprint(), req_err2: fiveMinuteFingerprint() })
+    expect((await warmingStatusFor(sessionID, now, counted, noPacer)).warmUntil).toBe(now + 4 * MINUTE)
+  }))
+
+test("keep-alives that do not go through end the window where its cache went cold; the agent's next step compacts first", () =>
+  withColdSwitch(async () => {
+    const sessionID = Session.ID.make("ses_offline")
+    const now = Date.now()
+    const start = now - 9 * MINUTE
+    const settings = { prompt: "ok", interval: 4 * MINUTE, duration: 30 * MINUTE }
+    const warming = {
+      sessionID,
+      agent: Agent.ID.make("build"),
+      model: Model.Ref.parse("proxy/chat-model"),
+      phase: "activity" as const,
+      kind: "primary" as const,
+      since: start,
+      now: start,
+      settings,
+    }
+    await warmingStore.decide(warming, {})
+    // The keep-alive at four minutes did not go through.
+    await warmingStore.decide({ ...warming, phase: "warm", now: start + 4 * MINUTE, settings: { ...settings } }, {})
+    expect(warmingStore.warmed(sessionID, start + 4 * MINUTE + 500, "Unable to connect")).toBe(true)
+    const ledger = fakeLedger(requestRow(start, { sessionID, ended: start + 10_000 }), fiveMinuteFingerprint())
+
+    // Half a minute later the cache is still warm, for half a minute.
+    const failing = await warmingStatusFor(sessionID, start + 4.5 * MINUTE, ledger, noPacer)
+    expect(failing).toMatchObject({ active: true, warmUntil: start + 5 * MINUTE, warmBy: "monitor", pingFailed: { at: start + 4 * MINUTE + 500, error: "Unable to connect" } })
+    // Past that the window reads as ended there.
+    const offline = await warmingStatusFor(sessionID, now, ledger, noPacer)
+    expect(offline).toMatchObject({ active: false, expires: start + 5 * MINUTE, warmUntil: start + 5 * MINUTE })
+    const step = decision({ sessionID, model: Model.Ref.parse("proxy/chat-model"), boundary: { fresh: false, portable: true } })
+    await Effect.runPromise(decideCompactionFor(wiringContext(), coldState(["proxy/one"]), step, ledger, noPacer))
+    expect(step.compact).toBe(true)
+
+    // Warming stops there: the store's window ends at the cold moment.
+    expect(warmingStore.cool(sessionID, start + 5 * MINUTE)).toBe(true)
+    expect(await warmingStore.status(sessionID, now)).toMatchObject({ active: false, expires: start + 5 * MINUTE })
+    warmingStore.stop(sessionID)
+  }))
+
+test("Pacer's confirmed reading decides once it can know the chat's latest request; before that, or a guess, leaves it to the Monitor", async () => {
+  const sessionID = "ses_pacer"
+  const now = Date.now()
+  const asked: PacerCacheQuery[] = []
+  const pacer = (evidence: PacerCache["evidence"], until: number) => async (query: PacerCacheQuery): Promise<PacerCache> => {
+    asked.push(query)
+    return { warm: until > now, evidence, until, at: now }
+  }
+  // The last step ended three minutes ago on a 5-minute cache: by the Monitor, warm for 1:40 more.
+  const ledger = fakeLedger(requestRow(now - 3 * MINUTE - 20_000, { sessionID, ended: now - 3 * MINUTE }), fiveMinuteFingerprint())
+  // Pacer saw CPA send a 1-hour TTL.
+  expect(await warmingStatusFor(sessionID, now, ledger, pacer("confirmed", now + 57 * MINUTE))).toMatchObject({ warmUntil: now + 57 * MINUTE, warmBy: "pacer" })
+  expect(asked[0]).toMatchObject({ sessionID, providerID: "proxy", modelID: "chat-model", after: now - 2 * MINUTE })
+  // Its cold verdict counts too.
+  expect(await warmingStatusFor(sessionID, now, ledger, pacer("confirmed", now - 1))).toMatchObject({ warmUntil: now - 1, warmBy: "pacer" })
+  // An assumed reading is Pacer's guess.
+  expect(await warmingStatusFor(sessionID, now, ledger, pacer("assumed", now - 1))).toMatchObject({ warmUntil: now + 100_000, warmBy: "monitor" })
+  // Within a minute of the latest answer Pacer cannot know it yet, and is not asked.
+  asked.length = 0
+  const recent = fakeLedger(requestRow(now - 30_000, { sessionID, ended: now - 20_000 }), fiveMinuteFingerprint())
+  expect(await warmingStatusFor(sessionID, now, recent, pacer("confirmed", now - 1))).toMatchObject({ warmUntil: now + 4.5 * MINUTE, warmBy: "monitor" })
+  expect(asked).toEqual([])
 })

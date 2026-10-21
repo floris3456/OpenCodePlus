@@ -1492,7 +1492,19 @@ export const WarmingStatus = Schema.Struct({
   since: Schema.optionalKey(Schema.Number),
   expires: Schema.optionalKey(Schema.Number),
   interval: Schema.optionalKey(Schema.Number),
+  /** When the last keep-alive that went through was sent. */
   lastWarm: Schema.optionalKey(Schema.Number),
+  /** The latest keep-alive that did not go through, while none did since. */
+  pingFailed: Schema.optionalKey(Schema.Struct({ at: Schema.Number, error: Schema.optionalKey(Schema.String) })),
+  /** The start of the chat's latest real request the server saw. */
+  lastRequest: Schema.optionalKey(Schema.Number),
+  /**
+   * When the cache goes cold by what reached the provider: the latest request or keep-alive that got an
+   * answer plus its cache lifetime, or Pacer's reading. A window whose cache went cold before its end
+   * reads as ended there (`active` false, `expires` that moment).
+   */
+  warmUntil: Schema.optionalKey(Schema.Number),
+  warmBy: Schema.optionalKey(Schema.Literals(["monitor", "pacer"])),
   now: Schema.Number,
 }).annotate({ identifier: "Plus.WarmingStatus" })
 

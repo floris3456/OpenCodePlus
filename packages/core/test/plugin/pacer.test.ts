@@ -9,6 +9,7 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Agent } from "@opencode/schema/agent"
 import { Provider } from "@opencode/core/provider"
 import Pacer from "@opencodeplus/cliproxyapi/pacer"
+import { pacerCache } from "@opencodeplus/cliproxyapi/server"
 import { UsageDefinition } from "../../../cliproxyapi/src/quota/usage"
 import { Definition } from "../../../cliproxyapi/src/quota/rpc"
 import { Bus } from "@opencode/core/bus"
@@ -42,6 +43,16 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
               cursor: reading.cursor,
               ...(url.searchParams.get("auth") !== "api-key"
                 ? {
+                    now_ms: Date.now(),
+                    cache: {
+                      v: 1,
+                      provider: "claude",
+                      model: "claude-sonnet-4-6",
+                      auth: "claude",
+                      warm: true,
+                      evidence: "confirmed",
+                      until_ms: Date.now() + 240_000,
+                    },
                     next_use: {
                       v: 1,
                       at_ms: Date.now(),
@@ -252,6 +263,13 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         expect(paths.length).toBe(requestsBeforeQuota + 1)
         yield* host.rpc(UsageDefinition).read({ sessionID, providerID: "cliproxyapi", modelID: ref.id, all: false })
         expect(paths.length).toBe(requestsBeforeQuota + 1)
+        // Pacer's view of the chat's cache comes from that same read, for Plus's cold check.
+        const cache = yield* Effect.promise(() => pacerCache({ sessionID, providerID: "cliproxyapi", modelID: ref.id }))
+        expect(cache).toMatchObject({ warm: true, evidence: "confirmed" })
+        expect(cache!.until! - Date.now()).toBeGreaterThan(200_000)
+        expect(paths.length).toBe(requestsBeforeQuota + 1)
+        // A model Pacer does not coordinate has no answer.
+        expect(yield* Effect.promise(() => pacerCache({ sessionID, providerID: "cliproxyapi", modelID: "deepseek-flash" }))).toBeUndefined()
         yield* hooks.trigger("session", "http.response", {
           sessionID,
           agent,

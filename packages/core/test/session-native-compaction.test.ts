@@ -495,7 +495,7 @@ for (const origin of ["threshold", "overflow", "cold", "armed", "handoff"] as co
       yield* fixture.hooks.register("session", "compaction.decide", (event) => Effect.sync(() => {
         if (origin === "cold") decideCompaction(event, {
           every: { type: "modelSettings", level: "defaults", updated: "fixture", coldCompact: "on", coldModels: ["openai/gpt-5.4-mini"] },
-          cold: { running: false, ready: true, active: false, compacted: false },
+          cold: { compacted: false, coldAt: 0, now: 1 },
         })
         if (origin === "armed") decideCompaction(event, { armed: ["openai/gpt-5.4-mini"] })
         if (origin === "handoff") {

@@ -31,8 +31,10 @@ export default Plugin.define({
     const notices = createCacheNotices(context, { open: (notice) => monitor.openAt(notice) })
     const attention = createAttention(context)
     const usageWindow = createUsageWindow(context)
-    // The server acts on this one: a message sent into a cold chat is first
-    // summarized by the cold-cache models its model has in Instructions.
+    // The server acts on this one: before a step into a cold cache (a new
+    // message, or a running agent whose cache went cold while it waited or
+    // because its keep-alives failed) the chat is first summarized by the
+    // cold-cache models its model has in Instructions.
     const plus = context.client.rpc(Definition)
     const [coldCompact, setColdCompact] = createSignal<boolean>()
     void plus["settings.get"](undefined).then((settings) => setColdCompact(settings.coldCompact), () => {})

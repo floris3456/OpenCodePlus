@@ -33,6 +33,14 @@ import {
 // Warming switched off mid-window, core stops at its next keep-alive moment,
 // one interval after the last request or keep-alive.
 //
+// A keep-alive keeps the cache warm only when it goes through: without a
+// connection core keeps sending them, so a window alone says nothing. Each
+// keep-alive's outcome is recorded here (warmed); `warmingStatusFor` knows
+// from the Monitor (and Pacer, when it answers) until when the cache really is
+// warm, and once that moment passed inside a window the window is cut there
+// (cool): warming stops, since the next keep-alive that went through would
+// write the whole prompt into the cache again.
+//
 // The switch has three states: the chat's own on/off override, or "default"
 // (no entry) which follows the model's effective `compactWarm`. Existing
 // `compact.json` arrays (entries meant on) still read as on.
@@ -181,7 +189,19 @@ export interface WarmingStatus {
   readonly since?: number
   readonly expires?: number
   readonly interval?: number
+  /** When the last keep-alive that went through was sent. */
   readonly lastWarm?: number
+  /** The latest keep-alive that failed (no connection, an error reply), while none went through since. */
+  readonly pingFailed?: { readonly at: number; readonly error?: string }
+  /** The start of the chat's latest real request this store saw. */
+  readonly lastRequest?: number
+  /**
+   * When the cache goes cold by what reached the provider: the chat's latest request or keep-alive that
+   * got an answer plus its cache lifetime, or Pacer's own reading. Set by `warmingStatusFor`.
+   */
+  readonly warmUntil?: number
+  /** Who knows `warmUntil`: the Monitor's requests, or Pacer on the server. */
+  readonly warmBy?: "monitor" | "pacer"
   /** Server clock when this status was read. */
   readonly now: number
 }
@@ -210,6 +230,18 @@ export interface WarmingStore {
    * chat when compact before cold fires. Returns true when the visible status changed.
    */
   decide(event: SessionWarming, rows: WarmingRows, compact?: Compact): Promise<boolean>
+  /**
+   * A keep-alive's outcome (core's `warmed`): one that went through becomes the window's last warm and
+   * clears an earlier failure; a failed one is kept until one goes through. Returns true when the
+   * visible status changed.
+   */
+  warmed(sessionID: string, at: number, error: string | undefined): boolean
+  /**
+   * The cache went cold at `at` before the window's end (its keep-alives failed): the window ends there,
+   * so the chat reads as cold, and compact before cold is cancelled, since its summary would no longer
+   * read a warm cache. Real activity starts a new window. Returns true when the window was cut.
+   */
+  cool(sessionID: string, at: number): boolean
   status(sessionID: string, now?: number): Promise<WarmingStatus>
   setChat(sessionID: string, chat: ChatSwitch | "default"): Promise<WarmingStatus>
   /**
@@ -304,6 +336,10 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
   const compactors = new Map<string, Compact>()
   const busy = new Set<string>()
   const parents = new Map<string, string>()
+  // A keep-alive is decided (`warm`) right before core sends it; whether it went
+  // through is known only at its outcome (`warmed`).
+  const sending = new Map<string, number>()
+  const failed = new Map<string, { readonly at: number; readonly error?: string }>
   // Core proposes at each warming request the settings this store returned last
   // time, so a waiting chat's longer window would come back as its own: each
   // chat's duration as configured at its last request stands in for it.
@@ -480,6 +516,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       ...(entry?.level === undefined ? {} : { level: entry.level }),
       ...(window === undefined ? {} : { since: window.since, expires: window.expires, interval: window.interval }),
       ...(window?.lastWarm === undefined ? {} : { lastWarm: window.lastWarm }),
+      ...(failed.has(sessionID) && !compacted ? { pingFailed: failed.get(sessionID) } : {}),
+      ...(lastReal.has(sessionID) ? { lastRequest: lastReal.get(sessionID) } : {}),
       now,
     }
   }
@@ -495,6 +533,9 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         inMemoryCompaction.set(event.sessionID, event.now)
       } else if (activity) {
         lastReal.set(event.sessionID, event.now)
+        // A real request starts a new window: an earlier keep-alive's failure belongs to the old one.
+        failed.delete(event.sessionID)
+        sending.delete(event.sessionID)
       }
 
       const compacted = isCompactionActivity || (await isCompacted(event.sessionID, event.since))
@@ -534,11 +575,10 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
               since: event.since,
               expires: event.since + settings.duration,
               interval: settings.interval,
-              ...(event.phase === "warm"
-                ? { lastWarm: event.now }
-                : before?.window?.lastWarm === undefined || before.window.since !== event.since
-                  ? {}
-                  : { lastWarm: before.window.lastWarm }),
+              // A keep-alive counts once it went through (warmed()).
+              ...(before?.window?.lastWarm === undefined || before.window.since !== event.since
+                ? {}
+                : { lastWarm: before.window.lastWarm }),
             }
       const next: Tracked = {
         ...(window === undefined ? {} : { window }),
@@ -548,6 +588,7 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       }
       tracked.set(event.sessionID, next)
       if (compact !== undefined) compactors.set(event.sessionID, compact)
+      if (event.phase === "warm" && settings !== undefined) sending.set(event.sessionID, event.now)
 
       // A compaction never schedules another: the context it leaves is already small.
       if (compacted) {
@@ -571,6 +612,28 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
         (window === undefined && beforeCold !== coldAt.get(event.sessionID))
       )
     },
+    warmed(sessionID, at, error) {
+      const sent = sending.get(sessionID) ?? at
+      sending.delete(sessionID)
+      const previous = failed.get(sessionID)
+      if (error !== undefined) {
+        failed.set(sessionID, { at, error })
+        return previous === undefined
+      }
+      failed.delete(sessionID)
+      const entry = tracked.get(sessionID)
+      // The cache was read when the request went out, not when its answer arrived.
+      if (entry?.window !== undefined) tracked.set(sessionID, { ...entry, window: { ...entry.window, lastWarm: sent } })
+      return previous !== undefined
+    },
+    cool(sessionID, at) {
+      const entry = tracked.get(sessionID)
+      const window = entry?.window
+      if (entry === undefined || window === undefined || window.expires <= at) return false
+      tracked.set(sessionID, { ...entry, window: { ...window, expires: Math.max(window.since, at) } })
+      unschedule(sessionID)
+      return true
+    },
     async status(sessionID, at = now()) {
       return statusOf(sessionID, (await load()).get(sessionID), at)
     },
@@ -582,6 +645,8 @@ export function createWarmingStore(file: string = warmingChatsPath(), options: W
       configuredDuration.delete(sessionID)
       compactors.delete(sessionID)
       busy.delete(sessionID)
+      sending.delete(sessionID)
+      failed.delete(sessionID)
       return changed
     },
     async setChat(sessionID, chat) {

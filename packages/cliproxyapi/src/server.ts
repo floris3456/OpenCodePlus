@@ -10,7 +10,8 @@ import { portableMessages } from "./quota/portable.js"
 import { Definition } from "./quota/rpc.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { pacerSnapshot } from "./quota/pacer-snapshot.js"
-import { createNextUse } from "./quota/next-use.js"
+import { cacheOf, createChatView, nextUseOf } from "./quota/next-use.js"
+import { providePacerCache } from "./pacer-cache.js"
 import { normalizeLegacyReasoning } from "./model-compatibility.js"
 
 export const ID = "opencode-pacer"
@@ -148,10 +149,17 @@ export default Plugin.define({
         await controller.activity(session, type === "session.execution.started")
       }
     })().catch(() => {})
-    // Percentages/catalogue are cached. The separate read-only routing preview
-    // uses Plus's existing capability and is coalesced across visible clients.
+    // Percentages/catalogue are cached. The separate read-only chat view (the
+    // routing preview and the cache's warmth) uses Plus's existing capability
+    // and is coalesced across visible clients and the cache check.
     const meter = new Meter()
-    const nextUse = createNextUse({ read: (key) => ctx.storage.get(key), fetch, now: Date.now })
+    const chatView = createChatView({ read: (key) => ctx.storage.get(key), fetch, now: Date.now })
+    const disposeCache = providePacerCache(async (query) => {
+      await refresh()
+      // Only the chats Pacer coordinates carry a capability (see `coordinated`).
+      if (!controller.enabled(query.providerID) || !query.modelID.toLowerCase().startsWith("claude-")) return undefined
+      return cacheOf(await chatView(state.routes[query.providerID], query, query.after), query.modelID)
+    })
     await ctx.rpc.register(UsageDefinition, {
       enabled: async () => {
         await refresh()
@@ -175,12 +183,13 @@ export default Plugin.define({
             ? (state.providers.get(input.modelID) ?? [])
             : []
         const snapshot = pacerSnapshot(meter, input, Date.now(), providers)
-        const next = await nextUse(state.routes[input.providerID], input)
+        const next = nextUseOf(await chatView(state.routes[input.providerID], input), input.modelID, Date.now())
         return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }
       },
     })
     return () => {
       events.abort()
+      disposeCache()
       return stop?.()
     }
   },

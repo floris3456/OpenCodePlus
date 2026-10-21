@@ -1,4 +1,4 @@
-import { provideLegacyQuotaStorage, onQuotaFact } from "@opencodeplus/cliproxyapi/server"
+import { pacerCache, provideLegacyQuotaStorage, onQuotaFact } from "@opencodeplus/cliproxyapi/server"
 import { Plugin } from "@opencode/plugin/effect"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -43,6 +43,7 @@ import { memoInputOf } from "./instructions/snapshot.js"
 import { ownRule, ruleAt } from "./instructions/rules.js"
 import { pickModelRow, switchModelActivation, type ModelPick } from "./instructions/ops.js"
 import {
+  cacheLifetimeOf,
   compactionFieldsOf,
   effectiveCompaction,
   effectiveImages,
@@ -92,14 +93,14 @@ import { consumeColdCompaction } from "./teams/cold-compaction.js"
 import { warmingStore, type ChatCompactionDefaults, type WarmingRows, type WarmingStatus } from "./warming.js"
 import { cacheLifetime } from "./monitor/cache.js"
 import { monitorCache, monitorDismiss, monitorFact, monitorMark, monitorNotices, monitorPrompt, monitorQuery, monitorSessions, monitorStep, watchMonitor } from "./monitor/plugin.js"
-import { ledgerAt, type Ledger } from "./monitor/ledger.js"
-import { coldStateOf, consumePromptAdmitted, decideCompaction, markPromptAdmitted, type ColdCompactionState } from "./compaction/decide.js"
+import { ledgerAt, type Ledger, type RequestRow } from "./monitor/ledger.js"
+import { coldStateOf, decideCompaction } from "./compaction/decide.js"
 import { plusSettings } from "./plus-settings.js"
 import { agentAttention, mergeAttention, type AttentionRow } from "./attention-settings.js"
 import { attentionStore } from "./attention.js"
 import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
-import { compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
+import { coldListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionWarming } from "@opencode/plugin/effect/session"
@@ -320,11 +321,7 @@ export default Plugin.define({
           if (event && event.sessionID)
             yield* Effect.forkDetach(refreshFolderForNewChat(ctx, state, String(event.sessionID)))
           yield* useLocation(ctx, state)
-          if (event && event.sessionID) {
-            yield* handlePromptBoundary(ctx, state, String(event.sessionID))
-            // A new prompt is the only place cold compaction may arm.
-            markPromptAdmitted(String(event.sessionID))
-          }
+          if (event && event.sessionID) yield* handlePromptBoundary(ctx, state, String(event.sessionID))
         }).pipe(slowWarning("plus prompt hook", { sessionID: String(event?.sessionID ?? ""), directory: ctx.location.directory }, () => ({ refreshes: stuckRefreshes() }))),
       )
       yield* ctx.session.hook("compaction", (event) => state.sessionPins.markRebuild(String(event.sessionID)))
@@ -4006,7 +4003,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
 // resolved down the agent's chain like its active model), then the host
 // configuration core proposed. A failure leaves core's proposal in place.
 export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming): Effect.Effect<void> {
-  if (event.phase === "warmed") return Effect.void
+  // A keep-alive's outcome: whether it went through decides how long the cache stays warm.
+  if (event.phase === "warmed")
+    return Effect.suspend(() =>
+      warmingStore.warmed(event.sessionID, event.now, event.error) ? emitWarmingChanged(state, event.sessionID) : Effect.void,
+    )
   return Effect.promise(async () => {
     const run = await bySession(teamsDataDir(), event.sessionID)
     if (run !== undefined) {
@@ -4040,9 +4041,23 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
       event.settings = undefined
       return false
     }
+    // Once the cache went cold (keep-alives or steps that did not go through),
+    // warming stops: the next keep-alive that went through would write the
+    // whole prompt into the cache again. Real activity starts a new window.
+    if (event.phase === "warm") {
+      const warm = await warmingStatusFor(event.sessionID, event.now)
+      if (warm.warmUntil !== undefined && warm.warmUntil <= event.now && warm.compacted !== true) {
+        event.settings = undefined
+        return warmingStore.cool(event.sessionID, warm.warmUntil)
+      }
+    }
     return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model), (sessionID) =>
       Effect.runPromise(
         Effect.gen(function* () {
+          // Compact before cold fires at the window's end; a cache that went cold
+          // earlier would make its summary pay for the whole prompt.
+          const status = yield* Effect.promise(() => warmingStatusFor(sessionID, Date.now()))
+          if (status.warmUntil !== undefined && status.warmUntil <= Date.now()) return
           yield* Effect.logInfo("plus compacting before the cache goes cold", { sessionID })
           yield* emitWarmingChanged(state, sessionID)
           yield* ctx.session.compact({ sessionID: Session.ID.make(sessionID) })
@@ -4116,13 +4131,14 @@ export async function sessionCompactDefaults(
 }
 
 // Plus's `compaction.decide`: the per-model settings for (agent, chat model),
-// cold-cache arming at the first step of a new prompt, the CPA account-switch
+// cold-cache arming before any step whose cache is cold, the CPA account-switch
 // replacement, and the team `compactWith` arming that wins over all of them.
 export function decideCompactionFor(
   ctx: Context,
   state: PlusState,
   event: SessionCompactionDecision,
   ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+  pacer: typeof pacerCache = pacerCache,
 ): Effect.Effect<void> {
   return Effect.promise(async () => {
     const settings = await plusSettings.read()
@@ -4138,12 +4154,14 @@ export function decideCompactionFor(
       decideCompaction(event, { armed })
       return
     }
-    // Cold is consulted only at the first auto decision after a prompt, and
-    // only while the global switch is on: the mark is consumed whatever the
-    // outcome, so later steps of the same turn never consult it. A manual or
-    // overflow decision leaves it for the next auto step.
-    const fresh = event.reason === "auto" && consumePromptAdmitted(event.sessionID)
-    const cold = fresh && settings.coldCompact ? await coldFor(ctx, event, ledger) : undefined
+    // Cold is consulted before every step (core's `auto` decisions, retries
+    // included), not only a new message's first: a running agent's cache goes
+    // cold too, while it waits on a long tool call or a subagent, or when its
+    // keep-alives or steps do not go through. Only when the switch is on for
+    // the chat's model and its model has a cold-cache list to compact with.
+    const consulted =
+      event.reason === "auto" && settings.coldCompact && coldListOf(state, event.agent, event.model).length > 0
+    const cold = consulted ? await coldFor(event, ledger, pacer) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     decideCompaction(event, {
       rows: compactionRowsOf(state, event.agent, event.model),
@@ -4194,49 +4212,95 @@ async function compactionDefaultsOf(ctx: Context, agentID: Agent.ID): Promise<Co
   }
 }
 
-// The chat's window and its last request with that request's fingerprint; the
-// decision module owns the cold test itself. The status is the one the footer
-// shows, so a chat compacts first exactly when the footer says it is cold.
+// The decision module owns the cold test itself. The status is the one the
+// footer shows, so a chat compacts first exactly when the footer says it is cold.
 async function coldFor(
-  ctx: Context,
   event: SessionCompactionDecision,
   ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
-): Promise<ColdCompactionState> {
+  pacer: typeof pacerCache,
+) {
   const now = Date.now()
-  const last = lastRealRequest(ledger, event.sessionID)
-  const fingerprint = last === undefined ? undefined : ledger.getFingerprint(last.id)
-  return coldStateOf({
-    status: await warmingStatusFor(event.sessionID, now, ledger),
-    now,
-    ...(last === undefined ? {} : { last }),
-    ...(fingerprint === undefined ? {} : { fingerprint }),
-  })
+  return coldStateOf({ status: await warmingStatusFor(event.sessionID, now, ledger, pacer), boundary: event.boundary, now })
 }
 
 /**
- * A chat's warming status as the footer and cold compaction read it. A chat
- * that warming does not keep warm goes cold one cache lifetime after its last
- * request, when the monitor knows that request's lifetime (5 minutes, or the 1
- * hour it asked for); the store's own moment, one keep-alive interval after the
- * request, stands in otherwise, and is the floor: until a new request reaches
- * the monitor, its last row is the one before.
+ * A chat's warming status as the footer and cold compaction read it, with
+ * when its cache really goes cold (`warmUntil`, see warmUntilOf): a window
+ * whose cache went cold before its end (its keep-alives, or its steps, did not
+ * go through) reads as ended there; a chat warming does not keep warm is cold
+ * from that moment. A window that ends as planned keeps its own end: its last
+ * keep-alive was one interval before it.
  */
 export async function warmingStatusFor(
   sessionID: string,
   now: number,
   ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+  pacer: typeof pacerCache = pacerCache,
 ): Promise<WarmingStatus> {
   const status = await warmingStore.status(sessionID, now)
-  if (status.compacted === true || status.expires !== undefined || status.coldAt === undefined) return status
-  const last = lastRealRequest(ledger, sessionID)
-  const lifetime = last === undefined ? undefined : cacheLifetime(last, ledger.getFingerprint(last.id))
-  if (last === undefined || lifetime === undefined) return status
-  return { ...status, coldAt: Math.max(status.coldAt, last.started + lifetime) }
+  if (status.compacted === true) return status
+  const warm = await warmUntilOf(sessionID, status, now, ledger, pacer)
+  if (warm === undefined) return status
+  const known: WarmingStatus = { ...status, warmUntil: warm.until, warmBy: warm.by }
+  if (status.active && status.expires !== undefined) {
+    if (warm.until > now) return known
+    // Its summary would no longer read a warm cache: no compact before cold.
+    const { compactAt: _cancelled, ...cut } = known
+    return { ...cut, active: false, expires: Math.max(status.since ?? warm.until, warm.until) }
+  }
+  return status.coldAt === undefined ? known : { ...known, coldAt: warm.until }
 }
 
-// The chat's last request that read or wrote its own prompt cache.
-function lastRealRequest(ledger: Pick<Ledger, "getRequests">, sessionID: string) {
-  return ledger.getRequests(sessionID).filter((row) => row.kind !== "generate" && row.kind !== "title" && row.kind !== "ping").at(-1)
+// A request touched the chat's cache on the provider when it got an answer (or
+// is getting one): a step, keep-alive or other generation on the chat's prefix.
+// A failed one did not, unless the provider still counted cache tokens for it.
+const touchedCache = (row: RequestRow) =>
+  !row.isTitle &&
+  row.kind !== "title" &&
+  row.kind !== "compaction" &&
+  (row.status !== "error" || row.cacheReadTokens + row.cacheWriteTokens > 0)
+
+// A request the store saw start but the Monitor has not recorded yet is under way, for a while.
+const PENDING_MS = 120_000
+
+// Pacer learns a request's cache use from its usage, after the answer: its
+// reading counts from a minute after the chat's latest request ended.
+const PACER_SETTLE_MS = 60_000
+
+/**
+ * When the chat's cache goes cold by what reached the provider: the start of
+ * its latest request that touched the cache (Monitor) plus that request's cache
+ * lifetime (its fingerprint's TTL, else the model's known lifetime). Pacer, when
+ * it answers for the chat's model with evidence the provider confirmed (cache
+ * reads or writes on the chat's account, with the TTL CPA really sent), decides
+ * instead, once it can know that latest request. Undefined when nothing is known.
+ */
+async function warmUntilOf(
+  sessionID: string,
+  status: WarmingStatus,
+  now: number,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
+  pacer: typeof pacerCache,
+): Promise<{ readonly until: number; readonly by: "monitor" | "pacer" } | undefined> {
+  const rows = ledger.getRequests(sessionID)
+  const touch = rows.findLast(touchedCache)
+  const requested = status.lastRequest
+  const pending =
+    requested !== undefined && now - requested < PENDING_MS && !rows.some((row) => row.started >= requested - 1_000)
+      ? requested
+      : undefined
+  const touchedAt = Math.max(touch?.started ?? -Infinity, pending ?? -Infinity)
+  if (touch === undefined || !Number.isFinite(touchedAt)) return undefined
+  const lifetime =
+    cacheLifetime(touch, ledger.getFingerprint(touch.id)) ??
+    (touch.provider === undefined || touch.model === undefined ? undefined : cacheLifetimeOf({ providerID: touch.provider, modelID: touch.model }))
+  const settled = pending !== undefined || touch.ended === undefined ? Infinity : touch.ended + PACER_SETTLE_MS
+  const answer =
+    settled <= now && touch.provider !== undefined && touch.model !== undefined
+      ? await pacer({ sessionID, providerID: touch.provider, modelID: touch.model, after: settled })
+      : undefined
+  if (answer?.evidence === "confirmed" && answer.until !== undefined) return { until: answer.until, by: "pacer" }
+  return lifetime === undefined ? undefined : { until: touchedAt + lifetime, by: "monitor" }
 }
 
 interface LoadedStores {

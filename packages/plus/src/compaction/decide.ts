@@ -1,7 +1,5 @@
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
 import { Model } from "@opencode/schema/model"
-import { cacheLifetime } from "../monitor/cache.js"
-import type { RequestFingerprintData, RequestRow } from "../monitor/ledger.js"
 import type { WarmingStatus } from "../warming.js"
 import { decideCompactionTriggers } from "./triggers.js"
 import {
@@ -18,11 +16,14 @@ import {
 //   1. the per-model settings Plus owns (strategy, summary model and system
 //      text), resolved agent model row → agent-wide `compaction:*` rows →
 //      Defaults › Models › this model → Every model;
-//   2. cold-cache arming: at the first step of a new prompt in a cold chat,
-//      while the global "Compact cold chats first" setting is on and the
-//      chat's model resolves a non-empty cold-cache list, arm a portable
-//      summary written by #1 with #2… as fallbacks and `optional` so the step
-//      continues uncompacted when every model fails;
+//   2. cold-cache arming: before any step of a chat whose cache is cold (a
+//      new message after a long pause, or a running agent whose cache went
+//      cold while it waited on a tool or a subagent, or whose keep-alives did
+//      not go through), while "Compact cold chats first" is on for the chat's
+//      model and that model resolves a non-empty cold-cache list, arm a
+//      portable summary written by #1 with #2… as fallbacks and `optional` so
+//      the step continues uncompacted when every model fails. The agent then
+//      carries on from the summary;
 //   3. the CPA account-switch case: CPA has already armed a summary with its
 //      own models and marked the decision `metadata["quota.switch"]`; when the
 //      chat model's cold list is not empty, its models replace CPA's.
@@ -38,43 +39,16 @@ import {
 // models, whatever the per-model strategy says. Every other compaction keeps
 // the chat's strategy, so `auto` and `remote` compact natively when they can.
 
-// "First step of a new prompt": core's decision boundary cannot say it (its
-// `fresh` is only a brand-new epoch, which is never cold), so Plus's own
-// `prompt` hook marks each admitted prompt here and the first `reason: "auto"`
-// decision consumes the mark — whatever its outcome — so later steps of the
-// same turn never consult cold.
-const MAX_PROMPTS = 500
-const prompted = new Set<string>()
-
-/** A user prompt was admitted to this chat; its next auto decision may arm cold. */
-export function markPromptAdmitted(sessionID: string): void {
-  prompted.delete(sessionID)
-  prompted.add(sessionID)
-  for (const oldest of prompted) {
-    if (prompted.size <= MAX_PROMPTS) break
-    prompted.delete(oldest)
-  }
-}
-
-/** True exactly once per admitted prompt: the first `reason: "auto"` decision consumes it. */
-export function consumePromptAdmitted(sessionID: string): boolean {
-  return prompted.delete(sessionID)
-}
-
 /** The per-chat cold-cache inputs at the decision. */
 export interface ColdCompactionState {
-  /** The chat is mid-turn: a running chat is never cold. Always false at a fresh prompt. */
-  readonly running: boolean
-  /** Plus knows when this chat's cache goes cold: its warming window, or its cold moment. */
-  readonly ready: boolean
-  /** That moment has not come (the chat is warm). */
-  readonly active: boolean
-  /** A compaction completed since the chat's last real request: skip. */
+  /**
+   * Nothing to summarize: a compaction completed since the chat's last real request, or core's
+   * boundary is a checkpoint no primary output followed yet (a step retried after its cold summary).
+   */
   readonly compacted: boolean
-  /** Epoch ms since the chat's last request; absent when unknown. */
-  readonly idleMs?: number
-  /** The Monitor's cache lifetime for this model; absent (unknown) is never cold. */
-  readonly lifetime?: number
+  /** When the chat's cache goes or went cold; absent while a window keeps it warm, or when unknown. */
+  readonly coldAt?: number
+  readonly now: number
 }
 
 export interface CompactionDecisionContext {
@@ -90,7 +64,7 @@ export interface CompactionDecisionContext {
   readonly agents?: CompactionDefaults
   /** The models armed for this chat's next compaction (#1 writes, #2… fall back), when some were armed. */
   readonly armed?: readonly string[]
-  /** Absent when cold compacting is not consulted: a later step, or the global setting is off. */
+  /** Absent when cold compacting is not consulted: Compact cold chats first is off for the chat's model. */
   readonly cold?: ColdCompactionState
 }
 
@@ -151,41 +125,29 @@ function armModels(event: SessionCompactionDecision, models: readonly string[]):
   delete event.compactionFallback
 }
 
-/** A running, kept-warm or just-compacted chat is not cold; an unknown lifetime never is. */
+/** Cold once its cold moment passed; a just-compacted chat, or one whose moment is unknown, never is. */
 export function isCold(cold: ColdCompactionState): boolean {
-  if (cold.running || cold.compacted) return false
-  if (cold.ready) return !cold.active
-  if (cold.lifetime === undefined || cold.idleMs === undefined) return false
-  return cold.idleMs > cold.lifetime
-}
-
-/** What cold arming reads: the chat's window, its last request and that request's fingerprint. */
-export interface ColdInputs {
-  readonly status: Pick<WarmingStatus, "active" | "compacted" | "expires" | "coldAt">
-  readonly last?: RequestRow
-  readonly fingerprint?: RequestFingerprintData
-  readonly now: number
+  return !cold.compacted && cold.coldAt !== undefined && cold.now >= cold.coldAt
 }
 
 /**
- * The cold-cache state at the first step of a new prompt, from the status the
- * footer shows: a chat warming keeps warm is cold once its window ended, one it
- * does not once its cold moment passed. Without either (no request since Plus
- * started), the last request row's own fingerprint carries its cache TTL, so a
- * 1h cache is not mistaken for the 5-minute default; a missing row or
- * fingerprint means unknown, and an unknown lifetime is never cold.
+ * The cold-cache state before a step, from the status the footer shows
+ * (`warmingStatusFor`): a running window keeps the chat warm (a window whose
+ * keep-alives failed was already cut where its cache went cold), a window that
+ * ended is cold from its end, and a chat warming does not keep warm is cold
+ * from its cold moment. Without either (no request since Plus started), when
+ * its latest request's cache lifetime ends. Otherwise nothing is known, and an
+ * unknown chat is never cold.
  */
-export function coldStateOf(input: ColdInputs): ColdCompactionState {
-  const lifetime = input.last === undefined ? undefined : cacheLifetime(input.last, input.fingerprint)
-  const coldAt = input.status.coldAt
+export function coldStateOf(input: {
+  readonly status: Pick<WarmingStatus, "active" | "compacted" | "expires" | "coldAt" | "warmUntil">
+  readonly boundary: SessionCompactionDecision["boundary"]
+  readonly now: number
+}): ColdCompactionState {
+  const coldAt = input.status.active ? undefined : (input.status.coldAt ?? input.status.expires ?? input.status.warmUntil)
   return {
-    // This step's own execution is what runs the decision, so a fresh prompt
-    // is not "running" here; the prompt mark keeps later steps out.
-    running: false,
-    ready: input.status.expires !== undefined || coldAt !== undefined,
-    active: input.status.active || (coldAt !== undefined && input.now < coldAt),
-    compacted: input.status.compacted === true,
-    ...(input.last === undefined ? {} : { idleMs: input.now - input.last.started }),
-    ...(lifetime === undefined ? {} : { lifetime }),
+    compacted: input.status.compacted === true || input.boundary.checkpoint !== undefined,
+    ...(coldAt === undefined ? {} : { coldAt }),
+    now: input.now,
   }
 }
