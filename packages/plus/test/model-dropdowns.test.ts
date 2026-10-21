@@ -55,10 +55,12 @@ test("Effort offers the model's variants, and Every model adds Custom… since i
   expect(every.map((choice) => choice.title)).toEqual(["(inherit / none)", "Custom…"])
 })
 
-test.each([false, true])("Warm as subagent offers Inherit, On and Off (Every model: %s)", (everyModel) => {
+test.each([false, true])("Warm as subagent offers Inherit, Off, On, its times and Custom… (Every model: %s)", (everyModel) => {
   expect(modelFieldChoices("subagent", { now: "off · built-in", everyModel })).toEqual([
     { title: "Inherit (now off · built-in)", value: "" },
-    { title: "On", value: "on" },
     { title: "Off", value: "off" },
+    { title: "On", value: "on", description: "keeps the Warming time" },
+    ...["5m", "10m", "15m", "30m", "45m", "1h", "2h"].map((time) => ({ title: time, value: time })),
+    { title: "Custom…", value: CUSTOM_CHOICE },
   ])
 })

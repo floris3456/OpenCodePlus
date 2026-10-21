@@ -1844,7 +1844,16 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const before = settingsFor(modelSettingsOf(current.records), key)
         const merged = setModelSettingsRecord(modelSettingsOf(current.records), key, fields, updated)
         const rounded = roundedWarmingFor(merged, key, host)
-        const next = rounded === undefined ? merged : setModelSettingsRecord(merged, key, { warming: rounded }, updated)
+        const subagent = roundedWarmingFor(merged, key, host, "subagent")
+        const next =
+          rounded === undefined && subagent === undefined
+            ? merged
+            : setModelSettingsRecord(
+                merged,
+                key,
+                { ...(rounded === undefined ? {} : { warming: rounded }), ...(subagent === undefined ? {} : { subagent }) },
+                updated,
+              )
         const record = settingsFor(next, key)
         const saved = await save(directory, {
           expectedProjectRevision: current.projectRevision,
