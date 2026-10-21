@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setSystemTime, test } from "bun:test"
 import Notifications from "../../../../src/feature-plugins/system/notifications"
 import type { OpenCodeEvent, PermissionAsked } from "@opencode/client"
 import type { AttentionNotifyOptions, Context, Route, ToastOptions } from "@opencode/plugin/tui/context"
@@ -6,7 +6,10 @@ import type { AttentionNotifyOptions, Context, Route, ToastOptions } from "@open
 type Session = { id: string; title: string; parentID?: string }
 
 // Without Plus on the server these notifications are the TUI's; with Plus they are its `attention` event's.
-async function setup(route: Route = { type: "session", sessionID: "session" }, plus = false) {
+// `plus` answers each Plus check in turn (the last one repeats): a Plus server can be unavailable while it loads.
+async function setup(route: Route = { type: "session", sessionID: "session" }, plus: boolean | boolean[] = false) {
+  const answers = Array.isArray(plus) ? [...plus] : [plus]
+  const checks = { count: 0 }
   const notifications: AttentionNotifyOptions[] = []
   const toasts: ToastOptions[] = []
   const handlers = new Map<OpenCodeEvent["type"], ((event: OpenCodeEvent) => void)[]>()
@@ -25,8 +28,13 @@ async function setup(route: Route = { type: "session", sessionID: "session" }, p
   await Notifications.setup({
     client: {
       rpc: () => ({
-        "settings.get": () =>
-          plus ? Promise.resolve({}) : Promise.reject({ type: "rpc.unavailable", message: "RPC is unavailable: opencode.plus" }),
+        "settings.get": () => {
+          const present = answers.length > 1 ? answers.shift() : answers[0]
+          checks.count++
+          return present
+            ? Promise.resolve({})
+            : Promise.reject({ type: "rpc.unavailable", message: "RPC is unavailable: opencode.plus" })
+        },
       }),
     },
     ui: {
@@ -68,6 +76,7 @@ async function setup(route: Route = { type: "session", sessionID: "session" }, p
   return {
     notifications,
     toasts,
+    checks,
     emit(event: OpenCodeEvent) {
       for (const handler of handlers.get(event.type) ?? []) handler(event)
     },
@@ -115,6 +124,20 @@ function executionSucceeded(id: string, sessionID = "session"): OpenCodeEvent {
     type: "session.execution.succeeded",
     durable: durable(sessionID),
     data: { sessionID },
+  }
+}
+
+function executionInterrupted(
+  id: string,
+  reason: "user" | "shutdown" | "superseded" | "inactivity",
+  sessionID = "session",
+): OpenCodeEvent {
+  return {
+    id,
+    created: 0,
+    type: "session.execution.interrupted",
+    durable: durable(sessionID),
+    data: { sessionID, reason },
   }
 }
 
@@ -298,6 +321,55 @@ describe("internal notifications TUI plugin", () => {
         sound: { name: "subagent_done", when: "always" },
       },
     ])
+  })
+
+  test("a stop the user made never notifies; other interrupts still say the session is done", async () => {
+    const harness = await setup()
+    harness.emit(executionStarted("event-1"))
+    harness.emit(executionInterrupted("event-2", "user"))
+    harness.emit(executionStarted("event-3", "subagent"))
+    harness.emit(executionInterrupted("event-4", "user", "subagent"))
+    expect(harness.notifications).toEqual([])
+    harness.emit(executionStarted("event-5"))
+    harness.emit(executionInterrupted("event-6", "inactivity"))
+    expect(harness.notifications.map((notification) => notification.message)).toEqual(["Session done"])
+  })
+
+  test("a Plus server still loading at startup is asked again before a later notification", async () => {
+    setSystemTime(new Date("2026-10-21T12:00:00Z"))
+    try {
+      const harness = await setup(undefined, [false, true])
+      // Within RECHECK_MS of the answer the TUI cannot tell a loading Plus from none.
+      harness.emit({ id: "event-1", created: 0, type: "permission.asked", data: permission("permission-1") })
+      expect(harness.notifications).toEqual([permissionNotification])
+      setSystemTime(new Date("2026-10-21T12:00:31Z"))
+      harness.emit({ id: "event-2", created: 0, type: "permission.asked", data: permission("permission-2") })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(harness.checks.count).toBe(2)
+      expect(harness.notifications).toEqual([permissionNotification])
+      // Plus answered: it decides from now on, without asking again.
+      harness.emit({ id: "event-3", created: 0, type: "permission.asked", data: permission("permission-3") })
+      expect(harness.checks.count).toBe(2)
+      expect(harness.notifications).toEqual([permissionNotification])
+    } finally {
+      setSystemTime()
+    }
+  })
+
+  test("a server without Plus is asked again after RECHECK_MS and still notifies", async () => {
+    setSystemTime(new Date("2026-10-21T12:00:00Z"))
+    try {
+      const harness = await setup()
+      setSystemTime(new Date("2026-10-21T12:00:31Z"))
+      harness.emit({ id: "event-1", created: 0, type: "permission.asked", data: permission("permission-1") })
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(harness.checks.count).toBe(2)
+      expect(harness.notifications).toEqual([permissionNotification])
+    } finally {
+      setSystemTime()
+    }
   })
 
   test("notifies session errors once and suppresses the following idle done notification", async () => {
