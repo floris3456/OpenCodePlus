@@ -3,6 +3,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createSignal, Show } from "solid-js"
 import { unifiedDiff } from "../../instructions/diff-lines.js"
+import { MarkdownText } from "./markdown.js"
 import { KeyHints } from "./row.js"
 
 export interface EditorPaneProps {
@@ -34,6 +35,7 @@ export function EditorPane(props: EditorPaneProps) {
   let area: Editor | undefined
 
   const dirty = () => draft() !== props.initial
+  const wide = () => dimensions().width >= 100
 
   createEffect(() => {
     if (preview() || !props.active()) return
@@ -123,21 +125,41 @@ export function EditorPane(props: EditorPaneProps) {
           </scrollbox>
         }
       >
-        <box flexGrow={1} minHeight={0} paddingTop={1}>
-          <textarea
+        {/* The draft renders as markdown beside it (below it when narrow), following every keystroke. */}
+        <box flexGrow={1} minHeight={0} paddingTop={1} flexDirection={wide() ? "row" : "column"} gap={1}>
+          <box flexGrow={1} flexBasis={0} minHeight={0} minWidth={0}>
+            <textarea
+              flexGrow={1}
+              initialValue={draft()}
+              textColor={theme().text.formfield.base}
+              focusedTextColor={theme().text.formfield.focused}
+              cursorColor={theme().text.formfield.focused}
+              ref={(next) => {
+                area = next
+              }}
+              onContentChange={() => {
+                if (area === undefined || area.isDestroyed) return
+                setDraft(area.plainText)
+              }}
+            />
+          </box>
+          <box
             flexGrow={1}
-            initialValue={draft()}
-            textColor={theme().text.formfield.base}
-            focusedTextColor={theme().text.formfield.focused}
-            cursorColor={theme().text.formfield.focused}
-            ref={(next) => {
-              area = next
-            }}
-            onContentChange={() => {
-              if (area === undefined || area.isDestroyed) return
-              setDraft(area.plainText)
-            }}
-          />
+            flexBasis={0}
+            minHeight={0}
+            minWidth={0}
+            flexDirection="column"
+            border={wide() ? ["left"] : ["top"]}
+            borderColor={theme().border.base}
+            paddingLeft={wide() ? 1 : 0}
+          >
+            <text flexShrink={0} fg={theme().text.muted}>
+              rendered
+            </text>
+            <scrollbox flexGrow={1} minHeight={0} verticalScrollbarOptions={{ visible: false }}>
+              <MarkdownText context={props.context} content={draft()} live />
+            </scrollbox>
+          </box>
         </box>
       </Show>
       <KeyHints
