@@ -375,7 +375,7 @@ implementer/reviewer/scout combinations checked in the API
 | `team_checkpoint` | native | `CheckpointInput` (`packages/plus/src/teams/schema.ts:631`) | Commit intended files after checking HEAD |
 | `team_stop` | native | `StopInput` (`packages/plus/src/teams/schema.ts:650`) | Stop an owned child, optionally with a reason kept on the run |
 | `team_status` | native | `StatusInput` (`packages/plus/src/teams/schema.ts:655`) | Self plus direct children status; `waitingOn` names the open children a waiting run waits on (there is no `team_wait`: a settling child wakes its parent) |
-| `team_diff` | native | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff |
+| `team_diff` | native | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff; omit `run` for your own run |
 | `team_list` | native | `ListInput` (`packages/plus/src/teams/schema.ts:690`) | Runs visible to this caller |
 | `team_get_context` | native | `GetContextInput` (`packages/plus/src/teams/schema.ts:698`) | Scope, checks, HEAD, siblings (the parent's other open runs), inbox and budget; the Brief text again only once a compaction took it out of the chat |
 | `team_check` | native | `CheckInput` (`packages/plus/src/teams/schema.ts:701`) | Run one assigned check, or any project check (only assigned ones judge `finish`) |
@@ -405,6 +405,17 @@ includes it. Outside scope or forbidden is `E_CHECKS`; finish still requires
 the check to pass. A settlement after the parent's own stop says nothing is
 needed and followup resumes the child with its context.
 
+Delegation and followup bounds exclude `kind: "main"` user chats. The total
+counts slot-holding team members across the install; in-flight counts the
+caller's active children. Each `E_BOUNDS` names the limit, its number and the
+counted run ids. A commit Brief to a member whose `team_checkpoint` tool is off
+refuses with `E_ROLE`, naming reachable members with that tool on.
+
+For `done` and `done_with_concerns`, assigned checks with “Assigned checks pass
+at HEAD” on require committed work: dirty tracked or untracked files cause
+`E_DIRTY` before checks run. The refusal names the files to checkpoint or revert;
+the existing Plus project file exception is retained.
+
 Validation ceilings: run ids match `^(main|w)-[0-9a-f]{16}$`
 (`packages/plus/src/teams/schema.ts:18`); heads are 40 hex chars
 (`packages/plus/src/teams/schema.ts:15`); task ids match
@@ -414,7 +425,7 @@ Brief `scope.paths` max 40, `forbidden` max 20, `interfaces` max 20,
 (`packages/plus/src/teams/schema.ts:141`–`packages/plus/src/teams/schema.ts:156`).
 Checks are at most 12, with distinct ids and explicit `bun test FILE` or
 `bun run SCRIPT` argv (`packages/plus/src/teams/schema.ts:95`–
-`packages/plus/src/teams/schema.ts:113`). A report summary is at most 25 lines (40 for a report, findings or plan deliverable)
+`packages/plus/src/teams/schema.ts:113`). A report summary is at most 40 lines for every deliverable
 (`packages/plus/src/teams/schema.ts:173`) and 5000 characters
 (`packages/plus/src/teams/schema.ts:186`); `needs`, `concerns`, `deferred` max
 10 and `findings` max 50 (`packages/plus/src/teams/schema.ts:187`–
@@ -450,8 +461,8 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_TRANSITION` | An illegal run/attempt transition | `packages/plus/src/teams/run.ts:210`, `packages/plus/src/teams/run.ts:342` |
 | `E_LOCKED` | State root locked by another writer | `packages/plus/src/teams/store.ts:114` |
 | `E_CHECKS` | Check validation (count, ids, argv form) | `packages/plus/src/teams/schema.ts:97` |
-| `E_SUMMARY` | Report summary over 25 lines | `packages/plus/src/teams/schema.ts:177` |
-| `E_BOUNDS` | In-flight bounds exceeded | `packages/plus/src/teams/api.ts:274` |
+| `E_SUMMARY` | Report summary over 40 lines | `packages/plus/src/teams/schema.ts:177` |
+| `E_BOUNDS` | In-flight or total member bound reached; names the limit and counted runs | `packages/plus/src/teams/api.ts`, `packages/plus/src/teams/api-followup.ts` |
 | `E_PATHS` | Scope path outside the task worktree | `packages/plus/src/teams/api.ts:235`, `packages/plus/src/teams/api.ts:337` |
 | `E_REPO` | Unknown repo for delegate | `packages/plus/src/teams/api.ts:212` |
 | `E_BASE` | Unknown base ref | `packages/plus/src/teams/api.ts:222`, `packages/plus/src/teams/worktree.ts:81` |

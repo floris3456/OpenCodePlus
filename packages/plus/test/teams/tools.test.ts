@@ -839,7 +839,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         `E_CHECKS: Check id "Bad_ID!" must be short kebab-case (a-z, 0-9, -).\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}`,
       )
 
-      // 4. E_SUMMARY: Summary with 26 lines in finish
+      // 4. E_SUMMARY: Summary with 41 lines in finish
       const implRun = {
         ...makeRun("w-impl000000000001", "implementer", "ses_impl_summary"),
         directory: repoDir,
@@ -853,12 +853,12 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         need(tools, "team_finish"),
         {
           status: "done",
-          summary: Array.from({ length: 26 }, (_, i) => `line ${i + 1}`).join("\n"),
+          summary: Array.from({ length: 41 }, (_, i) => `line ${i + 1}`).join("\n"),
         },
         implCtx,
       )
       expect(summaryMsg).toBe(
-        `E_SUMMARY: summary is 26 lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤25 lines"`,
+        `E_SUMMARY: summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤40 lines"`,
       )
 
     } finally {

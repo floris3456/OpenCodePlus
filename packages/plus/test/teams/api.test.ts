@@ -1081,6 +1081,32 @@ test("finish done with a green check records the report and commits", async () =
   })
 }, 30000)
 
+test.each(["done", "done_with_concerns"] as const)("finish %s refuses an untracked green test before running assigned checks", async (status) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await finishChild(root, repo, PASSING_TEST)
+      const counter = path.join(root, "executions.log")
+      await Bun.write(path.join(repo.dir, "new.test.ts"), `import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(counter)}, "run\\n")\n${PASSING_TEST}`)
+      await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "new", argv: ["bun", "test", "new.test.ts"] }])
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      expect(required(await api.check({ id: "new" }, callerFor(child)))).toMatchObject({ passed: true, dirty: true })
+      const receipt = await lastReceipt(root, child.id, "new")
+      const error = rejected(await api.finish(finishInput({ status, summary: "Code committed; test passes in the worktree." }), callerFor(child)))
+      expect(error).toEqual({
+        code: "E_DIRTY",
+        message: "Worktree has uncommitted changes in [new.test.ts]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.",
+        accepted: { files: ["new.test.ts"] },
+      })
+      expect(await Bun.file(counter).text()).toBe("run\n")
+      expect(await lastReceipt(root, child.id, "new")).toEqual(receipt)
+      expect(await Bun.file(path.join(root, "runs", child.id, "report-1.json")).exists()).toBe(false)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
 test("finish done with a red check fails E_CHECKS_RED", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
@@ -1530,7 +1556,7 @@ test("finish done with an unstaged modification names the full path in E_DIRTY",
       const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
-        "Worktree has uncommitted changes in [src/greeting.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
+        "Worktree has uncommitted changes in [src/greeting.ts]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.",
       )
     } finally {
       await removeRepo(repo.dir)
@@ -1550,7 +1576,7 @@ test("finish done with an untracked file names the full path in E_DIRTY", async 
       const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
-        "Worktree has uncommitted changes in [src/untracked.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
+        "Worktree has uncommitted changes in [src/untracked.ts]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.",
       )
     } finally {
       await removeRepo(repo.dir)
@@ -1570,7 +1596,7 @@ test("finish done with a spaced path names the full path in E_DIRTY", async () =
       const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
-        "Worktree has uncommitted changes in [src/with space.ts]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.",
+        "Worktree has uncommitted changes in [src/with space.ts]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.",
       )
     } finally {
       await removeRepo(repo.dir)

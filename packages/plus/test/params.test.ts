@@ -351,7 +351,7 @@ test("a running chat hears that a tool's parameters changed, and sees them at it
       instructions: [],
       scrubByAgent: new Map(),
       needsNarrowing: false,
-      permissions: { rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
+      permissions: { toolEnabled: () => false, rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
       customByAgent: new Set(),
     })
   const tool: ToolPlan = { agent: "alpha", tool: "reader", enabled: true, text: "Read a file" }

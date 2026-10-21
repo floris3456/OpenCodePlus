@@ -154,14 +154,15 @@ async function seatRun() {
 }
 
 // Delegates `brief` to alice with her row `item` on, then off: on must refuse
-// with `code` and the row's words, off must start the run.
+// with `code` and the row's words, off must start the run. Commit Briefs also
+// require the target's checkpoint tool independently of these requirement rows.
 async function targetRow(item: string, input: Brief, code: string, words: string, text?: string) {
   const parent = await seatRun()
-  const refusal = rejected(await apiWith(tableWith([item, "on", text])).delegate({ ...input, requestID: `${item}-on` }, callerFor(parent)))
+  const refusal = rejected(await apiWith(tableWith(["tool:team_checkpoint", "on"], [item, "on", text])).delegate({ ...input, requestID: `${item}-on` }, callerFor(parent)))
   expect([item, refusal.code]).toEqual([item, code])
   expect(refusal.message).toContain(words)
   expect(refusal.message.startsWith(`${alice.id} `)).toBe(true)
-  const started = required(await apiWith(tableWith([item, "off"])).delegate({ ...input, requestID: `${item}-off` }, callerFor(parent))) as { run: string }
+  const started = required(await apiWith(tableWith(["tool:team_checkpoint", "on"], [item, "off"])).delegate({ ...input, requestID: `${item}-off` }, callerFor(parent))) as { run: string }
   expect((await loadRun(root, started.run))?.role).toBe(alice.id)
 }
 
@@ -186,7 +187,7 @@ test("Paths per brief: on (5) refuses a sixth scope path, off accepts it; the nu
   await targetRow("perm:team_get_context:limits.paths", six, "E_BRIEF", "accepts at most 5 scope paths per brief (Brief limits → Paths per brief); this brief has 6")
   const parent = await loadRun(root, "main-0123456789abcdef")
   if (parent === undefined) throw new Error("no seat run")
-  const seven = tableWith(["perm:team_get_context:limits.paths", "on", "7"])
+  const seven = tableWith(["tool:team_checkpoint", "on"], ["perm:team_get_context:limits.paths", "on", "7"])
   expect(required(await apiWith(seven).delegate({ ...six, requestID: "paths-7" }, callerFor(parent)))).toMatchObject({ state: "starting" })
 }, 30000)
 

@@ -71,7 +71,7 @@ describe("chat.refresh", () => {
       instructions: [],
       scrubByAgent: new Map(),
       needsNarrowing: false,
-      permissions: { rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
+      permissions: { toolEnabled: () => false, rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
       customByAgent: new Set(),
     })
     const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }

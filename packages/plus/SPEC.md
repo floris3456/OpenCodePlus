@@ -1741,7 +1741,12 @@ is needed only if the original cannot resume.
 A check may name a test file missing at the base when the child's writable
 scope includes it, for every member. Outside scope or forbidden is `E_CHECKS`.
 Checkpoint allows that new test, and finish still requires a passing check at
-HEAD. A no-report settlement after the parent's own stop says nothing is
+HEAD. When “Assigned checks pass at HEAD” is on and there are assigned checks,
+`done` and `done_with_concerns` refuse tracked or untracked uncommitted files
+with `E_DIRTY` before executing checks. The existing untracked Plus project
+file exception still applies. The refusal lists the files and asks for
+`team_checkpoint` or a revert, because the checks prove committed work only.
+A no-report settlement after the parent's own stop says nothing is
 needed and followup resumes the child with its context; other no-report advice
 stays unchanged.
 
@@ -1753,7 +1758,7 @@ Waiting on children below), `review`, `shutdown_request`, `resume`, `prepare`,
 the `search` MCP server and narrowed per role by a policy row (below).
 
 `diff` is a read-only `git diff` of a run the caller can see — its own run or
-one of its children. `from` is `base` (the default), `parent` (the parent
+one of its children. Omit `run` for the caller's own run. `from` is `base` (the default), `parent` (the parent
 run's HEAD) or a 40-hex commit; `paths` narrows the patch. Output is
 `{ run, from, head, bytes, truncated, patch }`, truncated to `maxBytes`
 (default 200000) with `truncated: true`. A run that is neither the caller's
@@ -1945,7 +1950,7 @@ brief file 8000 characters, Live team runs in total 12, all on (`E_BOUNDS`,
 attachment limit is named by path only and does not count toward the brief
 limit); `team_followup` Limits (Followups per child 5, shipped off;
 `E_ROUNDS`); `team_finish` Requirements for done (Assigned checks pass at HEAD,
-on, `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
+on, `E_DIRTY` before checks on uncommitted work, otherwise `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
 `E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
 `E_NOT_DONE`) and Branches it lands on (Protected branches `main`, `master`,
 `v2`, `release*`, shipped on; off refuses landing while the
@@ -2058,11 +2063,17 @@ accepted: ["packages/plus/src/*","packages/plus/test/*"]
 `finish` handlers through `validateChecks` / `validateSummary`, not by schema
 filters, and both carry `accepted`.
 
+Report summaries allow 40 lines for every deliverable, including commits.
+A `commit` Brief is refused with `E_ROLE` if the target member's resolved
+`tool:team_checkpoint` row is off. The refusal names the target and lists
+reachable members whose checkpoint tool is on (`accepted: { roles: [...] }`),
+including members of other teams when the caller may delegate to them.
+
 Error codes carrying `accepted` today:
 - `E_PATHS`: valid scope paths array (`["packages/plus/src/*","packages/plus/test/*"]`); for a target whose Plan files only row is on, `<target> accepts plan files only: every scope path must match one of its patterns [<patterns>]; outside them: [<paths>].` with the row's patterns
 - `E_ROLE`: the first member open to the caller (`{"role":"<member>"}`), present only when one is. The message ends in what is open — `You may delegate to: <members>.` or `No member is open to you for delegation.` — after `<agent> may not delegate.`, `"<role>" is not a member of an enabled team.` or `<agent> may not delegate to "<role>".`. A delegated run whose Delegate from a delegated run row is off gets `<agent>: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead` with `"report blocked with needs=[{kind:\"decision\"}]"`. The depth bound keeps `Depth limit <n> reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.` with `"report blocked with needs=[{kind:\"decision\"}]"`.
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
-- `E_SUMMARY`: summary length guidance (`"a summary of ≤15 lines"`)
+- `E_SUMMARY`: summary length guidance (`"a summary of ≤40 lines"`)
 - `E_BRIEF`: the target's A check (`{"checks":1}`), Paths per brief (`{"paths":<n>}`) or Checks per brief (`{"checks":<n>}`) row refuses the brief: `<target> needs at least one check (Briefs it accepts → A check).`, `<target> accepts at most <n> scope paths per brief (Brief limits → Paths per brief); this brief has <m>.`, `<target> accepts at most <n> checks per brief (Brief limits → Checks per brief); this brief has <m>.`
 - `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
@@ -2070,7 +2081,7 @@ Error codes carrying `accepted` today:
 - `E_BASE`: valid base ref (`"main"`)
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
-- `E_BOUNDS`: `"end your turn and delegate after a child settles"` for both bounds: `In-flight limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` and `Live team runs limit <n> reached (<runs>). End your turn; a settling child wakes you, then delegate.` (the old texts pointed at a policy file that is never loaded: `api.ts` decodes `Policy` from `{}`). `<n>` is the caller's Children working at once / Live team runs in total row. In-flight and member limits count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null; runs superseded because session creation failed never count.
+- `E_BOUNDS`: delegation and followup both name `In-flight limit <n> reached (<runs>).` or `Live team runs limit <n> reached (<runs>).`, then ask the caller to end its turn and retry after a run settles. `<n>` is the caller's Children working at once / Live team runs in total row. Both count only slot-holding team member runs, excluding `kind: "main"` user chats and idle runs with terminal attempts; a session id and a live `starting|working|idle|blocked_input` state are required. The total remains install-wide across projects. Delegation's accepted guidance is `"end your turn and delegate after a child settles"`; followup's is `"retry after a run settles"`.
 - `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
 - `E_ROUNDS`: `"team_stop and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off

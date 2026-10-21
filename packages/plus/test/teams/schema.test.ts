@@ -106,15 +106,17 @@ function caught(fn: () => unknown): Promise<unknown> {
   )
 }
 
-test("validateSummary rejects summary with 26 lines with E_SUMMARY", async () => {
-  const thrown = await caught(() => validateSummary(lines(26), "commit"))
+test("validateSummary accepts 40 commit lines and rejects 41 with E_SUMMARY", async () => {
+  expect(() => validateSummary(lines(27), "commit")).not.toThrow()
+  expect(() => validateSummary(lines(40), "commit")).not.toThrow()
+  const thrown = await caught(() => validateSummary(lines(41), "commit"))
   expect(thrown).toMatchObject({
     code: "E_SUMMARY",
-    message: "summary is 26 lines (max 25). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
-    accepted: "a summary of ≤25 lines",
+    message: "summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
+    accepted: "a summary of ≤40 lines",
   })
-  expect(() => validateSummary(lines(25), undefined)).not.toThrow()
-  // An answer is the deliverable itself: it may run longer, its locations in findings.
+  expect(() => validateSummary(lines(40), undefined)).not.toThrow()
+  // Answers share the same limit, with their locations in findings.
   expect(() => validateSummary(lines(40), "report")).not.toThrow()
   expect(await caught(() => validateSummary(lines(41), "findings"))).toMatchObject({
     code: "E_SUMMARY",
