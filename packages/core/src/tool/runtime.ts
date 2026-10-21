@@ -67,12 +67,13 @@ const decodeInput = (tool: Tool.Info<any, any>, value: unknown) =>
     const result = yield* validateInput(tool.input, value)
     if (!result.issues) return result.value
     if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-      const entries = Object.entries(value).map(([key, field]): [string, unknown] => {
+      const original = Object.entries(value)
+      const entries = original.map(([key, field]): [string, unknown] => {
         if (typeof field !== "string" || !/^[{[]/.test(field.trim())) return [key, field]
         const parsed = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(field)
         return [key, Option.isSome(parsed) && typeof parsed.value === "object" && parsed.value !== null ? parsed.value : field]
       })
-      if (entries.some(([key, field]) => field !== Reflect.get(value, key))) {
+      if (entries.some(([, field], index) => field !== original[index][1])) {
         const retried = yield* validateInput(tool.input, Object.fromEntries(entries))
         if (!retried.issues) return retried.value
       }
