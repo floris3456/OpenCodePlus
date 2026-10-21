@@ -211,6 +211,16 @@ async function withReadyChild(fn: (fixture: {
   })
 }
 
+test("a user chat has no assigned checks, even with an old integration list on disk", async () => {
+  await withReadyChild(async ({ root, parent, child, head }) => {
+    await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [{ id: "old-list", argv: ["bun", "test", "missing.test.ts"] }])
+    const landed = required(await integrateHandler(ctxFor(), { run: child.id }, callerFor(parent), shippedTable())) as { stillRed?: string[] }
+    expect(landed).toMatchObject({ state: "landed", head })
+    expect(landed.stillRed).toBeUndefined()
+    expect(await Bun.file(path.join(root, "runs", parent.id, "receipts", `old-list-${head.slice(0, 7)}.json`)).exists()).toBe(false)
+  })
+})
+
 test("a saved done report cannot land before the actual Session drains; waiting is bounded", async () => {
   await withReadyChild(async ({ root, repo, parent, child }) => {
     const calls: string[] = []
@@ -1026,7 +1036,10 @@ test("rework attribution on red checks belongs to older child's task and plan ru
       await writeReport(root, oldChild.id, 1, "done")
       await writeReport(root, newChild.id, 1, "done")
 
-      await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [
+      await atomicJson(path.join(root, "runs", oldChild.id, "checks.json"), [
+        { id: "gate-check", argv: ["bun", "test", "gate.test.ts"] },
+      ])
+      await atomicJson(path.join(root, "runs", newChild.id, "checks.json"), [
         { id: "gate-check", argv: ["bun", "test", "gate.test.ts"] },
       ])
 
@@ -1123,7 +1136,8 @@ test("integrating a child that conflicts returns conflict, its files, the rework
       expect(value.head).toBeNull()
       expect(value.conflictFiles).toEqual(["base.txt"])
       expect(value.reworkTask).toBe("T1.rework.1")
-      expect(value.next).toContain('Delegate a fresh implementer with task "T1.rework.1"')
+      expect(value.next).toContain('delegate a fresh implementer with task "T1.rework.1"')
+      expect(value.next).toContain("team_followup with rebase: true")
       expect(value.next).toContain("[base.txt]")
       // Nothing landed: the parent's HEAD is where it was.
       expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(p1)
@@ -1135,9 +1149,9 @@ test("integrating a child that conflicts returns conflict, its files, the rework
 
 // A red landing says what to do with the same child: a followup that moves
 // its commits onto the parent's HEAD keeps its context, where a fresh
-// implementer starts over. When the checks fail at the parent's HEAD as well,
-// it says so: the child may not be the cause.
-test("a red landing points at a rebase followup, and says when the checks fail at the parent's HEAD too", async () => {
+// implementer starts over. Checks that fail at the parent's HEAD as well are
+// reported without blocking the landing.
+test("new failures refuse with a rebase followup; pre-existing failures land with a stillRed note", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -1180,7 +1194,7 @@ test("a red landing points at a rebase followup, and says when the checks fail a
         { id: "T2", title: "Task T2", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["other.ts"], checks: [] },
       ])
       await saveRun(root, parent)
-      await atomicJson(path.join(root, "runs", parent.id, "checks.json"), [{ id: "gate", argv: ["bun", "test", "gate.test.ts"] }])
+      await atomicJson(path.join(root, "runs", parent.id, "brief.json"), { checks: [{ id: "gate", argv: ["bun", "test", "gate.test.ts"] }] })
       // The child breaks the gate that passes at the parent's HEAD.
       const breaking = childOf("w-6666666666666666", await makeChild(repo.scratch, repo.dir, "breaks", green, { "gate.test.ts": failing }, "feat: break gate"))
       await saveRun(root, breaking)
@@ -1196,12 +1210,11 @@ test("a red landing points at a rebase followup, and says when the checks fail a
       const other = childOf("w-7777777777777777", await makeChild(repo.scratch, repo.dir, "other", red, { "other.ts": "export const other = 1\n" }, "feat: other"))
       await saveRun(root, { ...other, base: red })
       await writeReport(root, other.id, 1, "done")
-      const theirs = required(await integrateHandler(ctxFor(), { run: other.id }, callerFor(parent), shippedTable())) as { state: string; next: string; redAtParent?: boolean }
-      expect(theirs.state).toBe("red")
-      expect(theirs.redAtParent).toBe(true)
-      expect(theirs.next).toContain("and at your own HEAD too, without this child")
-      expect(theirs.next).toContain("team_set_checks")
-      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(red)
+      const theirs = required(await integrateHandler(ctxFor(), { run: other.id }, callerFor(parent), shippedTable())) as { state: string; note: string; stillRed: string[]; head: string }
+      expect(theirs.state).toBe("landed")
+      expect(theirs.stillRed).toEqual(["gate"])
+      expect(theirs.note).toContain("already fail at the parent's HEAD")
+      expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(theirs.head)
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

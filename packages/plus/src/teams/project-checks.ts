@@ -268,16 +268,14 @@ export function checksNote(project: ProjectChecks | undefined): string {
  */
 export function describeProjectChecks(tools: Record<string, { input: unknown }>, project: ProjectChecks | undefined): void {
   const note = checksNote(project)
-  for (const name of ["team_delegate", "team_set_checks"]) {
-    const definition = tools[name]
-    if (definition === undefined) continue
-    const schema = structuredClone(definition.input) as JsonNode
-    const field = schema.properties?.checks
-    if (field === undefined) continue
-    const target = field.description !== undefined ? field : field.anyOf?.find((branch) => branch.description !== undefined) ?? field
-    target.description = target.description === undefined ? note : `${target.description} ${note}`
-    definition.input = schema
-  }
+  const definition = tools.team_delegate
+  if (definition === undefined) return
+  const schema = structuredClone(definition.input) as JsonNode
+  const field = schema.properties?.checks
+  if (field === undefined) return
+  const target = field.description !== undefined ? field : field.anyOf?.find((branch) => branch.description !== undefined) ?? field
+  target.description = target.description === undefined ? note : `${target.description} ${note}`
+  definition.input = schema
 }
 
 // ── suggestions ─────────────────────────────────────────────────────────────

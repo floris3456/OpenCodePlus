@@ -220,24 +220,25 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
 // Moves a child's commits onto its parent's HEAD in the child's own worktree,
 // so a correction builds on work that landed since it started (a worker has
 // no git of its own). Its base moves with them: diffs and finish count only
-// its own commits. A conflict moves nothing.
+// its own commits. Conflicts become ordinary unstaged work for the same child.
 async function rebaseChild(
   root: string,
   parent: RunRecord,
   child: RunRecord,
 ): Promise<{ readonly ok: true; readonly note: string } | { readonly ok: false; readonly result: TeamApiResult }> {
-  if (child.state === "working" || child.state === "starting")
+  if (child.state !== "idle" && child.state !== "stopped")
     return { ok: false, result: fail("E_BUSY", `Run ${child.id} is ${child.state}; rebase it once it settles (its settlement wakes you).`, { rebase: true }) }
   const head = await git(parent.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
-  const dirty = parsePorcelain(await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "--untracked-files=no"]))
-  if (dirty.length > 0)
-    return {
-      ok: false,
-      result: fail("E_DIRTY", `Run ${child.id} has uncommitted changes in [${dirty.join(", ")}]: only a clean worktree is rebased. Ask it to team_checkpoint first.`, dirty),
-    }
   const key = await realpath(child.directory).catch(() => child.directory)
   return lock(root, "wt", key, () =>
     lock(root, "repo", child.repoKey, async () => {
+      const dirty = parsePorcelain(await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"]))
+      if (dirty.length > 0)
+        return {
+          ok: false as const,
+          result: fail("E_DIRTY", `Run ${child.id} has uncommitted changes in [${dirty.join(", ")}]: only a clean worktree is rebased. Ask it to team_checkpoint first.`, dirty),
+        }
+      const oldHead = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       const moved = await gitRaw(child.directory, [
         ...NO_REPOSITORY_PROGRAMS,
         "-c",
@@ -248,17 +249,28 @@ async function rebaseChild(
         head,
       ])
       if (moved.code !== 0) {
-        const conflicts = (await gitRaw(child.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--diff-filter=U"])).out
-          .split("\n")
-          .filter((file) => file !== "")
-        await gitRaw(child.directory, [...NO_REPOSITORY_PROGRAMS, "rebase", "--abort"])
+        const conflicted = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--diff-filter=U", "-z"])
+        await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rebase", "--abort"])
+        if (conflicted === "") return { ok: false as const, result: fail("E_GIT", moved.err || moved.out) }
+        // Keep every original commit reachable even after the branch is reset.
+        const backup = `refs/opencodeplus/replay/${child.id}/${oldHead}`
+        await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "update-ref", backup, oldHead])
+        const touched = (await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--no-renames", "-z", child.base, oldHead])).split("\0").filter(Boolean)
+        await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "reset", "--hard", head])
+        const replay = await gitRaw(child.directory, [...NO_REPOSITORY_PROGRAMS, "-c", "merge.conflictStyle=merge", "merge", "--squash", "--no-commit", oldHead])
+        const conflicts = (await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--diff-filter=U", "-z"])).split("\0").filter(Boolean)
+        if (replay.code !== 0 && conflicts.length === 0) {
+          await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "reset", "--hard", oldHead])
+          return { ok: false as const, result: fail("E_GIT", replay.err || replay.out) }
+        }
+        // No merge/rebase operation remains. New files become untracked and all
+        // other changes unstaged, so team_checkpoint owns the entire next commit.
+        await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "reset", "--mixed", head])
+        const files = [...new Set([...touched, ...parsePorcelain(await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"]))])]
+        await updateRun(root, child.id, (record) => ({ ...record, base: head, head }))
         return {
-          ok: false as const,
-          result: fail(
-            "E_CONFLICT",
-            `Run ${child.id}'s commits conflict with your HEAD in [${conflicts.join(", ")}]; nothing moved. Delegate a fresh implementer on your HEAD with this child's team_diff as a briefFile, then team_stop this child.`,
-            conflicts,
-          ),
+          ok: true as const,
+          note: `Plus replayed your whole change onto your parent's current HEAD ${head}. Your base and HEAD are now that commit; your old commits remain at ${backup}. Conflicts (text files have conflict markers): [${conflicts.join(", ")}]. Every file your change touches: [${files.join(", ")}]. Resolve the markers keeping both sides' intent, run your checks, team_checkpoint every changed file (including new files), then finish.`,
         }
       }
       const tip = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])

@@ -82,7 +82,6 @@ const teamToolIds = [
   "followup",
   "integrate",
   "checkpoint",
-  "set_checks",
   "stop",
   "status",
   "diff",

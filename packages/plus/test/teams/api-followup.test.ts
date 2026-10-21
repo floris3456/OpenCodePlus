@@ -14,9 +14,9 @@ import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek } from "../../src/teams/inbox.js"
 import { onSessionEvent } from "../../src/teams/lifecycle.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
-import { FollowupInput } from "../../src/teams/schema.js"
+import { FollowupInput, Report } from "../../src/teams/schema.js"
 import { atomicJson } from "../../src/teams/store.js"
-import { git } from "../../src/teams/git.js"
+import { git, gitRaw } from "../../src/teams/git.js"
 import { consumeColdCompaction } from "../../src/teams/cold-compaction.js"
 import { warmingStore } from "../../src/warming.js"
 
@@ -813,26 +813,79 @@ test("followup with rebase moves an idle child's commits onto its parent's HEAD 
   })
 }, 30000)
 
-test("followup with rebase refuses a conflict, a dirty worktree and a working child, and moves nothing", async () => {
+test("followup replays conflicts for the same child to resolve, checkpoint, finish and land", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const original = await rebaseFixture({ "shared.ts": "export const shared = 2\n" }, { "shared.ts": "export const shared = 3\n" })
+    await Bun.write(path.join(original.worktree, "new.ts"), "export const added = 1\n")
+    await Bun.write(path.join(original.worktree, "new.test.ts"), 'import { test, expect } from "bun:test"\nimport { shared } from "./shared"\nimport { added } from "./new"\ntest("combined", () => expect(shared + added).toBeGreaterThan(0))\n')
+    await git(original.worktree, ["add", "new.ts", "new.test.ts"])
+    await git(original.worktree, ["commit", "-m", "test: cover added export"])
+    const repo = { ...original, childHead: await git(original.worktree, ["rev-parse", "HEAD"]) }
+    try {
+      const { parent, child } = await rebaseRuns(root, repo)
+      const briefPath = path.join(root, "runs", child.id, "brief.json")
+      await atomicJson(briefPath, { ...await Bun.file(briefPath).json(), scope: { paths: ["shared.ts", "new.ts", "new.test.ts"], forbidden: [] } })
+      await atomicJson(path.join(root, "runs", child.id, "checks.json"), [{ id: "combined", argv: ["bun", "test", "new.test.ts"] }])
+      const session = recordSession()
+      const api = createTeamApi(context({ session: session.domain }), teamState())
+      expect(required(await api.followup(followupInput({ rebase: true }), callerFor(parent)))).toMatchObject({ state: "admitted", attempt: 2 })
+      expect(await git(repo.worktree, ["rev-parse", "HEAD"])).toBe(repo.parentHead)
+      expect(await git(repo.worktree, ["rev-parse", `refs/opencodeplus/replay/${child.id}/${repo.childHead}`])).toBe(repo.childHead)
+      expect(await loadRun(root, child.id)).toMatchObject({ base: repo.parentHead, head: repo.parentHead })
+      const marked = await Bun.file(path.join(repo.worktree, "shared.ts")).text()
+      expect(marked).toContain("<<<<<<< HEAD")
+      expect(marked).toContain("=======")
+      expect(marked).toContain("export const shared = 2")
+      expect(marked).toContain("export const shared = 3")
+      expect(await git(repo.worktree, ["status", "--porcelain"])).toBe("M shared.ts\n?? new.test.ts\n?? new.ts")
+      expect(await git(repo.worktree, ["diff", "--cached", "--name-only"])).toBe("")
+      expect((await gitRaw(repo.worktree, ["rev-parse", "--verify", "MERGE_HEAD"])).code).not.toBe(0)
+      const text = String(session.prompted.at(-1)?.text)
+      expect(text).toContain(repo.parentHead)
+      expect(text).toContain("[shared.ts]")
+      expect(text).toContain("[new.test.ts, new.ts, shared.ts]")
+      expect(text).toContain("team_checkpoint every changed file")
+      expect(required(await api.check({ id: "combined" }, callerFor(child)))).toMatchObject({ passed: false })
+      await Bun.write(path.join(repo.worktree, "shared.ts"), "export const shared = 3\nexport const child = 2\n")
+      const checkpoint = required(await api.checkpoint({ files: ["shared.ts", "new.ts", "new.test.ts"], message: "fix: preserve both changes" }, callerFor(child))) as { head: string }
+      expect(await git(repo.worktree, ["rev-parse", "HEAD^"])).toBe(repo.parentHead)
+      expect(await git(repo.worktree, ["status", "--porcelain"])).toBe("")
+      const diff = required(await api.diff({ run: child.id, from: "base" }, callerFor(parent))) as { from: string; patch: string }
+      expect(diff.from).toBe(repo.parentHead)
+      expect(diff.patch).not.toContain("+export const shared = 3")
+      expect(diff.patch).toContain("+export const child = 2")
+      const finish = required(await api.finish(Schema.decodeUnknownSync(Report)({ status: "done", summary: "Resolved the conflict keeping both changes." }), callerFor(child))) as { commits: unknown[]; checks: { id: string; passed: boolean }[] }
+      expect(finish.commits).toHaveLength(1)
+      expect(finish.checks).toMatchObject([{ id: "combined", passed: true }])
+      expect(required(await api.integrate({ run: child.id }, callerFor(parent)))).toMatchObject({ state: "landed", head: checkpoint.head })
+      expect(await Bun.file(path.join(repo.main, "new.ts")).text()).toBe("export const added = 1\n")
+      expect(await Bun.file(path.join(repo.main, "shared.ts")).text()).toContain("export const child = 2")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("followup with rebase refuses a dirty worktree and a working child, and moves nothing", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await rebaseFixture({ "shared.ts": "export const shared = 2\n" }, { "shared.ts": "export const shared = 3\n" })
     try {
       const { parent, child } = await rebaseRuns(root, repo)
       const session = recordSession()
       const api = createTeamApi(context({ session: session.domain }), teamState())
-      const conflict = rejected(await api.followup(followupInput({ requestID: "r-conflict", rebase: true }), callerFor(parent)))
-      expect(conflict.code).toBe("E_CONFLICT")
-      expect(conflict.message).toContain("conflict with your HEAD in [shared.ts]; nothing moved")
-      expect(await git(repo.worktree, ["rev-parse", "HEAD"])).toBe(repo.childHead)
-      expect(await git(repo.worktree, ["status", "--porcelain"])).toBe("")
-      expect(await loadRun(root, child.id)).toMatchObject({ base: repo.base, head: repo.childHead })
       await fs.writeFile(path.join(repo.worktree, "shared.ts"), "export const shared = 4\n")
       const dirty = rejected(await api.followup(followupInput({ requestID: "r-dirty", rebase: true }), callerFor(parent)))
       expect(dirty.code).toBe("E_DIRTY")
       expect(dirty.message).toContain("[shared.ts]")
+      expect(await git(repo.worktree, ["rev-parse", "HEAD"])).toBe(repo.childHead)
+      expect(await loadRun(root, child.id)).toMatchObject({ base: repo.base, head: repo.childHead })
       await git(repo.worktree, ["checkout", "--", "shared.ts"])
+      await Bun.write(path.join(repo.worktree, "untracked.ts"), "keep me\n")
+      expect(rejected(await api.followup(followupInput({ requestID: "r-untracked", rebase: true }), callerFor(parent))).code).toBe("E_DIRTY")
       await saveRun(root, { ...child, state: "working" })
       expect(rejected(await api.followup(followupInput({ requestID: "r-busy", rebase: true }), callerFor(parent))).code).toBe("E_BUSY")
+      await saveRun(root, { ...child, state: "blocked_input" })
+      expect(rejected(await api.followup(followupInput({ requestID: "r-blocked", rebase: true }), callerFor(parent))).code).toBe("E_BUSY")
       expect(session.prompted).toEqual([])
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })

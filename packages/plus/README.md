@@ -245,7 +245,7 @@ What the Basic member presets set (on = permitted):
 passwords, and session databases.
 ² edit → Files it may change: `docs/plans/` and `docs/handoffs/`.
 
-Team tools are tool rows: a planner lacks `set_checks` and `check` (it keeps
+Team tools are tool rows: a planner lacks `check` (it keeps
 `checkpoint` to commit its plan file when delegated, and `integrate` to land in
 your checkout what the orchestrator it delegated to reports done); an
 orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
@@ -264,8 +264,8 @@ its `Runs` rows on.
 text can depend on rows, on the first line under its heading:
 
 ```markdown
-## Integration checks
-<!-- requires: tool:team_set_checks -->
+## Reporting
+<!-- requires: tool:team_finish -->
 ```
 
 Each id is a row's item id (`tool:…`, `skill:…`, `mcp:…`, `perm:<tool>:<rule>`);
@@ -294,8 +294,8 @@ commits, no push). Turning such a row on for an agent adds its section;
 off removes it; the row is planned for an agent only when a section applies.
 A tool or skill row's inspector (and `read`) lists its sections. The Basic
 role texts carry markers on sections that depend on one tool (Delegating on
-`team_delegate`, Reporting on `team_finish`, the orchestrator's Integration
-checks, the implementer's Checks and Commits, the planner's Questions, the
+`team_delegate`, Reporting on `team_finish`, the implementer's Checks and
+Commits, the planner's Questions, the
 build seat's Subagents), and a test keeps every Basic role free of uncovered
 mentions under its preset.
 
@@ -319,8 +319,8 @@ the path must be repository-relative, no globs, no leading `-`). The run stores
 and runs the resolved command. `bun test FILE` / `bun run SCRIPT` as `argv`
 keep working for Bun projects. Anything else is refused with `E_CHECKS`
 naming the project's checks. Every request a team member makes lists the
-project's checks on the `checks` field of `team_delegate` and
-`team_set_checks` (and `team_get_context` reports them as `projectChecks`), so
+project's checks on the `checks` field of `team_delegate`
+(and `team_get_context` reports them as `projectChecks`), so
 the first call names a real check. `setup` prepares each fresh worktree once,
 before its first check, in place of the built-in Bun install.
 
@@ -348,7 +348,7 @@ home, so nothing is said twice or contradicts itself:
 
 - *Role/persona* (`builtin-teams.ts`): who does what and when, never what a
   row decides. The body is markdown in three parts — `# Team member` (every
-  member), `# Delegating` (members who delegate: Briefs, Integration checks)
+  member), `# Delegating` (members who delegate: Briefs)
   and `# <Role>` — each split into `##` sections, so the Instructions tree
   shows one section row per part that a level can turn off or rewrite alone.
 - *Tool descriptions*: what a tool does and when to call it; the first line
@@ -434,10 +434,29 @@ member of an enabled team gets a `team.*` wildcard deny, so it sees no
 (the host's own `build` agent, that is; a team member whose id ends in
 `-build` is a build seat with every team tool).
 
+## Integration checks
+
+Each landing automatically runs the union of the landing child's assigned
+checks, checks of children already landed into that parent, and the parent's
+own Brief checks (a user chat has none). Identical commands with the same
+working directory run once. Landed children come from the merge queue;
+there is no check list for the lead to maintain.
+
+The landing child's checks must pass on the rebased tip. Other failing checks
+run again at the parent's HEAD: new failures block; failures there too are
+reported as `stillRed` and do not block. Passing receipts remain available at
+the new HEAD for the parent's finish.
+
+A Brief may assign a test file the child will create when it is inside
+`scope.paths` and not forbidden. A missing file outside scope is `E_CHECKS`.
+Finish still requires the assigned check to pass at the committed HEAD.
+Stored instruction overrides for removed tools stay orphaned and do not
+affect the current tool inventory or publication.
+
 ## Team runs
 
-Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds twelve tools that all work —
-`delegate`, `finish`, `followup`, `integrate`, `checkpoint`, `set_checks`,
+Team tools live in `src/teams` and are registered for every Plus instance. The namespace holds eleven tools that all work —
+`delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
 `stop`, `status`, `get_context`, `diff`, `list` and `check`. There is no `wait`: a parent ends its turn and each child's
 settlement wakes it (below). Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
 read-only `git diff` of your own run or one of your children (further only
@@ -502,8 +521,14 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
 - `team_followup` with `rebase: true` first moves a child's commits onto the
   caller's HEAD in the child's own worktree (a worker has no git), so it can
   build on work that landed since it started; its `base` moves with them. A
-  working child (`E_BUSY`), uncommitted changes (`E_DIRTY`) or a conflict
-  (`E_CONFLICT`, naming the files) refuse and move nothing.
+  working child (`E_BUSY`) or uncommitted changes (`E_DIRTY`) refuse. On a
+  conflict, Plus keeps the old tip at `refs/opencodeplus/replay/<run>/<tip>`,
+  resets to the parent's HEAD and replays the whole change with
+  `git merge --squash --no-commit <tip>`, then `git reset --mixed <parent>`.
+  Conflicts remain as ordinary unstaged files, new files are untracked, and
+  no merge/rebase operation remains. The run's base/head become the parent's
+  HEAD. Its prompt names the conflict files and all touched files: resolve,
+  check, checkpoint every changed file, then finish in the same chat.
 - A settled child puts one `child.settled` item in its parent's inbox: the
   run, the attempt and the status, then the whole report (summary, commits,
   checks, uncommitted files, needs, concerns, deferred, findings) and one
@@ -511,7 +536,9 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
   answer needs, re-scope a rejection, inspect a run that ended without a
   report). The parent needs no call to read the report file. It is sent once
   (`notified` on the attempt). An idle parent is prompted with it now; a
-  working parent gets it through its own idle handoff.
+  working parent gets it through its own idle handoff. When that parent itself
+  stopped the child, the no-report settlement says nothing is needed and
+  `team_followup` resumes it with its context.
 - The Brief a child receives (`brief.ts`) has no empty sections; says what
   done means for its deliverable; marks a read-only task as such; states the
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
@@ -525,10 +552,9 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
 - `team_integrate` that does not land returns the real state: `conflict`
   (with `conflictFiles`) or `red` (with `redChecks`), the `reworkTask` id a
   fresh child's Brief claims in `task`, and a `next` line; `paused` when the
-  queue waits for a clean parent. A red landing's `next` offers a
-  `rebase: true` followup to the same child first; when the red checks fail at
-  the caller's own HEAD too (`redAtParent`), it says the child may not be the
-  cause and to set integration checks that pass there.
+  queue waits for a clean parent. Conflicts and new check failures go back to
+  the same child with `team_followup rebase: true`; a fresh implementer with
+  the rework task is the fallback only when the child cannot resume.
 - `team_get_context` reports the worktree's live `head`, the value
   `checkpoint` and `integrate` compare against.
 - A `finish` finding's severity is `error`, `warning` or `note` (a located

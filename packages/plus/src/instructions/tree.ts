@@ -3864,7 +3864,7 @@ function permissionParameter(item: Item, tool: string, params: readonly Item[]):
     read: "path", edit: "path", write: "path", patch: "patchText", shell: "command",
     glob: "pattern", grep: "pattern", webfetch: "url", websearch: "query", skill: "name", subagent: "agent",
     team_delegate: "role", team_followup: "run", team_integrate: "run", team_finish: "status",
-    team_checkpoint: "files", team_set_checks: "checks", team_stop: "run", team_status: "run",
+    team_checkpoint: "files", team_stop: "run", team_status: "run",
     team_diff: "run", team_list: "all", team_check: "id",
     instructions_find: "where", instructions_read: "id", instructions_log: "where",
   }

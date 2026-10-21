@@ -113,7 +113,7 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
       return fail("E_BRANCH", `${protectedRow.item.message ?? "landing on this branch is not allowed here"} (branch "${branch}").`, "a task branch")
   }
   const repoRoot = top.out
-  const checks = (await readJson<Check[]>(path.join(root, "runs", parent.id, "checks.json"))) ?? []
+  const checks = (await readJson<{ checks: Check[] }>(path.join(root, "runs", parent.id, "brief.json")))?.checks ?? []
   const mergeCtx: MergeContext = {
     repoRoot,
     repoKey: parent.repoKey,
@@ -168,12 +168,8 @@ function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
   const fresh = `a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then team_stop this child`
   const next =
     entry.state === "conflict"
-      ? `Not landed: the child's commits conflict with your HEAD in [${(entry.conflictFiles ?? []).join(", ")}]. Delegate ${fresh}.`
-      : `Not landed: your integration checks [${red}] fail on the child's commits rebased onto your HEAD${
-          entry.redAtParent === true
-            ? ", and at your own HEAD too, without this child. If they fail there the same way (tests of work not landed yet), the child is not the cause: set integration checks that pass at your HEAD with team_set_checks and integrate it again. Otherwise send"
-            : ". Send"
-        } the child a team_followup with rebase: true and what fails (it keeps its context), or delegate ${fresh}.`
+      ? `Not landed: the child's commits conflict with your HEAD in [${(entry.conflictFiles ?? []).join(", ")}]. Send it team_followup with rebase: true: it resolves the conflict in its own worktree and keeps its context. Only if it cannot resume, delegate ${fresh}.`
+      : `Not landed: checks [${red}] fail on the combined change (the child's own checks or new failures against your HEAD). Send the child a team_followup with rebase: true and what fails (it keeps its context), or delegate ${fresh}.`
   return {
     entry: entry.id,
     state: entry.state,
@@ -181,6 +177,7 @@ function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
     ...(entry.conflictFiles === undefined ? {} : { conflictFiles: entry.conflictFiles }),
     ...(entry.redChecks === undefined ? {} : { redChecks: entry.redChecks }),
     ...(entry.redAtParent === true ? { redAtParent: true } : {}),
+    ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed }),
     ...(task === undefined ? {} : { reworkTask: task }),
     next,
     cleanup,
@@ -222,6 +219,7 @@ function landedValue(entry: MergeEntry, cleanup: Cleanup[]) {
     head: entry.landedHead ?? entry.childHead,
     worktree: removal?.worktree,
     reason: removal?.reason,
+    ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed, note: `Checks [${entry.stillRed.join(", ")}] already fail at the parent's HEAD; they did not block this landing.` }),
     cleanup,
   }
 }

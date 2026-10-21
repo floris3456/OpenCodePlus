@@ -108,14 +108,7 @@ A delegated member knows only its Brief: put the outcome, the files to touch
 and the decisions you made in it, and pass long context as a briefFile. Never
 paste history into a Brief or followup. Read only what you need to write the
 Brief: a long file the member must study goes in context.interfaces, and it
-reads it itself.
-
-## Integration checks
-<!-- requires: tool:team_set_checks -->
-Before your first landing, record the integration checks with team_set_checks:
-the plan's or the project's focused checks, keeping any your Brief assigned.
-They must pass at your HEAD: leave out tests you committed for work that has
-not landed yet, and add them once it has.`
+reads it itself.`
 
 // A section that depends on one tool says so on its first line
 // (`<!-- requires: tool:… -->`, requires.ts): turning that tool off for a member
@@ -252,7 +245,9 @@ not done. For a commit, check the spec first (does the diff do what the Brief
 asked), then quality, with team_diff; then land it with team_integrate, and if
 that does not land, follow its next: line. Answer blocked or needs_context with
 one team_followup; when it needs work that has landed since it started, add
-rebase: true, which moves its commits onto your HEAD. More work for a child
+rebase: true. Send a landing conflict back the same way: the child resolves it
+in its own worktree and keeps its context. Delegate a fresh implementer with
+the rework task only if that child cannot resume. More work for a child
 whose work has landed goes to it with team_followup too: Plus gives it a new
 worktree at your HEAD, and it keeps its context. On the third fix round for one task, stop the child with
 team_stop and delegate a fresh implementer; after five rounds, finish blocked

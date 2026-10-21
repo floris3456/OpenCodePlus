@@ -25,7 +25,6 @@ import {
   RunID,
   RunState,
   RunStates,
-  SetChecksInput,
   StatusInput,
   StopInput,
   TaskID,
@@ -131,7 +130,6 @@ test("teams/schema exports every tool input schema as the single source", () => 
     ReviewInput,
     IntegrateInput,
     CheckpointInput,
-    SetChecksInput,
     StopInput,
     StatusInput,
     DiffInput,
@@ -143,7 +141,7 @@ test("teams/schema exports every tool input schema as the single source", () => 
     TavilySearchInput,
     TavilyExtractInput,
   ]
-  expect(toolSchemas).toHaveLength(17)
+  expect(toolSchemas).toHaveLength(16)
   for (const s of toolSchemas) {
     expect(Schema.isSchema(s)).toBe(true)
   }

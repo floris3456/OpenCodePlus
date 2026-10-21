@@ -25,7 +25,6 @@ import { requireWorktree } from "./availability.js"
 import { chatEditRefusal, isScopePath, namesProtectedState, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
 import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
-import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
 import { stopHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
@@ -63,7 +62,6 @@ import {
   ModelIdentity,
   Policy,
   Report,
-  SetChecksInput,
   StatusInput,
   StopInput,
   budgetExhaustion,
@@ -104,7 +102,6 @@ export interface TeamApi {
   readonly followup: (input: FollowupInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly integrate: (input: IntegrateInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly checkpoint: (input: CheckpointInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly set_checks: (input: SetChecksInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly stop: (input: StopInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly status: (input: StatusInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly diff: (input: DiffInput, caller: TeamCaller) => Promise<TeamApiResult>
@@ -162,7 +159,6 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     followup: (input, caller) => guarded(() => followupHandler(ctx, state, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
-    set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
     status: (input, caller) => guarded(() => statusHandler(ctx, input, caller, state.permissions)),
     diff: (input, caller) => guarded(() => diffHandler(input, caller, state.permissions)),
@@ -371,23 +367,17 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       "a shorter brief",
     )
 
-  // A check must be able to run before the child creates anything: every
-  // `bun test FILE` a brief names is resolved against the child's base commit.
-  // A file the base does not hold refuses the delegation, so a run is never
-  // created for a check that cannot pass. The parent commits the file first or
-  // names one that already exists. A member that writes the tests judging its
-  // work (its Requirements for a commit leave check files open; a Basic
-  // orchestrator) may be given one it is to write, inside its scope.paths.
-  const writesItsTests = !allows(table, brief.role, "checkpoint", "requirements.check-files")
+  // A missing check file is writable only when the Brief includes it in scope.
+  // This is also the checkpoint check-files row's explicit scope exception.
   const missingChecks = (await missingCheckFiles(repo.root, baseSha, checks)).filter(
-    (missing) => !(writesItsTests && scopeRefusal({ paths: [...paths], forbidden: [...forbidden] }, missing.file) === undefined),
+    (missing) => scopeRefusal({ paths: [...paths], forbidden: [...forbidden] }, missing.file) !== undefined,
   )
   if (missingChecks.length > 0) {
     const first = missingChecks[0]!
     return fail(
       "E_CHECKS",
-      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold. A check must test a file the base commit already has: write and commit that test first (team_checkpoint), or give a check the base already runs (an existing test file, or the project's whole-suite check) and leave the new test to the child.`,
-      "an existing test file",
+      `Check "${first.id}" runs bun test ${first.file}, which base ${baseSha.slice(0, 12)} does not hold and the child's scope does not allow it to write. Include the file in scope.paths without forbidding it, or use a test file the base already has.`,
+      "an existing test file or a writable file in scope.paths",
     )
   }
 
@@ -817,6 +807,11 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, tabl
   const locked = allows(table, record.role, "checkpoint", "requirements.check-files")
     ? await checkFiles(record.directory, record.base, await readChecks(root, record.id))
     : new Set<string>()
+  // A test assigned for this run to create has no existing assertion to
+  // protect. Its admission already required writable scope, including dir/*.
+  if (locked.size > 0) {
+    for (const missing of await missingCheckFiles(record.directory, record.base, await readChecks(root, record.id))) locked.delete(missing.file)
+  }
   const lockRefusal = (file: string): string | undefined =>
     locked.has(file) && !(scope?.paths.includes(file) ?? false)
       ? `"${file}" is a file your checks run, so it is not yours to change (Requirements for a commit). If it is wrong, commit everything else, then finish blocked with needs=[{kind:"path",detail:"${file}: why it must change"}].`

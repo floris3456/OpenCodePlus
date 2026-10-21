@@ -82,7 +82,7 @@ function resolvedFor(agentId: string): { role: string; items: Record<string, { s
 // Rows of tools retired after the snapshot was taken: team_wait went when a
 // delegated run waiting on open children started keeping its attempt open, and
 // team_supersede when team_stop took its reason.
-const retiredTools = ["team_wait", "team_supersede"]
+const retiredTools = ["team_wait", "team_supersede", "team_set_checks"]
 const retired = (id: string): boolean =>
   retiredTools.some((tool) => id === `tool:${tool}` || id.startsWith(`perm:${tool}:`)) || retiredRows.includes(id)
 

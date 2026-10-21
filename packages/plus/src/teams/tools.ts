@@ -25,7 +25,6 @@ import {
   IntegrateInput,
   ListInput,
   Report,
-  SetChecksInput,
   StatusInput,
   StopInput,
   nullTolerant,
@@ -44,9 +43,8 @@ const FinishDescription = "Report your task's outcome; in a delegated run, end y
 const FollowupDescription =
   "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context. A followup after a stop needs compactWith once the child is cold."
 const IntegrateDescription =
-  "Land a done child's commits on your branch: rebased onto your HEAD, verified with your integration checks, then fast-forwarded."
+  "Land a done child's commits on your branch after rebasing and automatic checks. Verifies its assigned checks, landed children's checks and your Brief's checks; only its own failures or new breakages block landing."
 const CheckpointDescription = "Commit chosen files in your own worktree."
-const SetChecksDescription = "Set your run's integration checks: they become its assigned checks and verify each landing."
 const StopDescription =
   "Stop a child run you no longer need: now, or after its turn while it works (force ends it now). A followup after a stop needs compactWith once the child is cold."
 const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size."
@@ -433,15 +431,6 @@ export async function registerTeamTools(
       options: teamOptions("checkpoint"),
       origin,
       execute: (input, context) => runGated("checkpoint", input, context, ctx, state, (args, caller) => api.checkpoint(args, caller)),
-    })
-    add({
-      name: "set_checks",
-      description: SetChecksDescription,
-      input: SetChecksInput,
-      output: Schema.Unknown,
-      options: teamOptions("set_checks"),
-      origin,
-      execute: (input, context) => runGated("set_checks", input, context, ctx, state, (args, caller) => api.set_checks(args, caller)),
     })
     add({
       name: "stop",

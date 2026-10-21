@@ -1706,11 +1706,40 @@ In a chat, `/team` opens the upstream `session.panel` contribution named `plus.t
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
 The `team` namespace advertises only tools that work. It holds exactly
-twelve: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`,
-`set_checks` and `stop` (native, `codemode: false`), and
+eleven: `delegate`, `finish`, `followup`, `integrate`, `checkpoint`
+and `stop` (native, `codemode: false`), and
 `status`, `get_context`, `diff`, `list` and `check` (Code Mode). Every
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
+
+Landings derive their checks automatically (`teams/merge.ts`): the landing
+child's assigned checks, those of every child already landed in the parent's
+merge queue, and the parent's own Brief checks (none for a user chat).
+Commands deduplicate by argv and cwd, retaining child ownership. A child's
+own failure at the rebased tip refuses the landing. Other red checks run at
+the parent's HEAD too: only a new failure refuses; pre-existing failures
+appear in `stillRed` with a note on the landed result. Passing parent checks,
+including aliases of a deduplicated command, keep receipts at the landed HEAD.
+No separate integration-check list is stored. Unknown instruction-row records
+remain orphaned; they neither recreate a removed tool nor block publication.
+
+On a landing conflict, `next` sends the same child `team_followup` with
+`rebase: true`. A clean, idle child first attempts an ordinary rebase. If it
+conflicts, Plus aborts it, keeps the old tip at
+`refs/opencodeplus/replay/<run>/<tip>`, resets to the parent's HEAD, runs
+`git merge --squash --no-commit <tip>` and then `git reset --mixed <parent>`.
+Its base/head become the parent's HEAD; files retain conflict markers and
+new files become untracked, without a pending Git operation. The prompt names
+the conflicts and all touched files and asks it to resolve both sides' intent,
+check, checkpoint every change and finish. A fresh child with the rework task
+is needed only if the original cannot resume.
+
+A check may name a test file missing at the base when the child's writable
+scope includes it, for every member. Outside scope or forbidden is `E_CHECKS`.
+Checkpoint allows that new test, and finish still requires a passing check at
+HEAD. A no-report settlement after the parent's own stop says nothing is
+needed and followup resumes the child with its context; other no-report advice
+stays unchanged.
 
 Ten names are **not** in the namespace, not in any team tool row and not named
 by any built-in prompt: `wait` (a settling child wakes its parent; see
@@ -1806,7 +1835,7 @@ refused, a requirement demands nothing, a bound is absent.
 What the Basic member presets set (every other row is the catalogue's shipped value):
 
 - **planner** — secrets off (read and grep); `tool:shell`, `tool:subagent` off;
-  `team_set_checks`, `team_check` off (it keeps `team_checkpoint` to commit its
+  `team_check` off (it keeps `team_checkpoint` to commit its
   plan file when delegated, and `team_integrate` to land in the user's checkout
   what the orchestrator it delegated to reports done, already verified there);
   Runs on for status, list; Approval on for team_delegate; Access
@@ -1820,7 +1849,7 @@ What the Basic member presets set (every other row is the catalogue's shipped va
 - **implementer** — secrets off; outside-checkout rows off (read and edit
   Where, `where.external`, glob/grep roots); `tool:shell`, `tool:question`,
   `tool:subagent`, both Tavily tools off; Start a team run and Delegate from a
-  delegated run off; `team_delegate`, `followup`, `integrate`, `set_checks`,
+  delegated run off; `team_delegate`, `followup`, `integrate`,
   `stop`, `status`, `list` off; Worktree committed before done and
   Scope paths for a commit on. Its shell's Commands list ships closed with the
   pilotty row open (Every other command off, `commands.pilotty` on), moot while
@@ -1860,7 +1889,7 @@ One home per kind of guidance, so no line repeats or contradicts another:
   and when, never what a row decides. Markdown in three parts, each split into
   `##` sections the Instructions tree derives as separate rows: `# Team member`
   (Runs and messages, Working, Reporting — not for the build seat, which is
-  never delegated to —, Safety), `# Delegating` (Briefs, Integration checks;
+  never delegated to —, Safety), `# Delegating` (Briefs;
   only for members that delegate) and `# <Role>`. A section that depends on
   one tool carries a `<!-- requires: … -->` line (`instructions/requires.ts`).
 - **What a row decides** (`permission-enforce.ts` `narrowTools`, per request):
@@ -2021,7 +2050,7 @@ E_PATHS: muse-implementer needs scope.paths (files or dir/* it may edit) for a c
 accepted: ["packages/plus/src/*","packages/plus/test/*"]
 ```
 
-`E_CHECKS` and `E_SUMMARY` are raised by the `delegate` / `set_checks` /
+`E_CHECKS` and `E_SUMMARY` are raised by the `delegate` /
 `finish` handlers through `validateChecks` / `validateSummary`, not by schema
 filters, and both carry `accepted`.
 
@@ -2773,7 +2802,6 @@ the shipped limits):
 | `team_integrate` | Outcomes it lands (team) · Branches it lands on (team: protected branches) · Approval |
 | `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
 | `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |
-| `team_set_checks` | Check commands (input `checks[].argv`) · Approval |
 | `team_stop` | Approval |
 | `team_status` | — |
 | `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |

@@ -13,7 +13,7 @@ import {
   writeProjectChecks,
   type ProjectChecks,
 } from "../../src/teams/project-checks.js"
-import { Brief, SetChecksInput, nullTolerant } from "../../src/teams/schema.js"
+import { Brief, nullTolerant } from "../../src/teams/schema.js"
 import { Schema } from "effect"
 
 // Checks run unattended, so what runs must be a command a person put in the
@@ -196,15 +196,13 @@ test("a project's setup prepares a fresh worktree once, before its first check",
   expect(await fs.readFile(second.outputPath, "utf8")).not.toContain("setup-ran")
 })
 
-test("delegators read the project's checks on the checks field of team_delegate and team_set_checks", () => {
+test("delegators read the project's checks on the checks field of team_delegate", () => {
   const tools = {
     team_delegate: { input: Schema.toJsonSchemaDocument(nullTolerant(Brief as Schema.Top)).schema as unknown },
-    team_set_checks: { input: Schema.toJsonSchemaDocument(nullTolerant(SetChecksInput as Schema.Top)).schema as unknown },
   }
   describeProjectChecks(tools, project)
   const note = "Project checks: unit (all tests); pytest-file (one file) — needs path; lint."
   expect(JSON.stringify(tools.team_delegate.input)).toContain(note)
-  expect(JSON.stringify(tools.team_set_checks.input)).toContain(note)
   const bare = { team_delegate: { input: Schema.toJsonSchemaDocument(nullTolerant(Brief as Schema.Top)).schema as unknown } }
   describeProjectChecks(bare, undefined)
   expect(JSON.stringify(bare.team_delegate.input)).toContain("This project names no checks")
