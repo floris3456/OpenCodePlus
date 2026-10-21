@@ -6156,7 +6156,10 @@ export function captureBaselines(
     return
   }
   const modelNext = new Map<string, ModelBaseline>()
-  const effective = dedupeAgents(discovered.agents)
+  // Newly installed members are absent from the pre-publish host discovery.
+  // Capture them too, or their first installed model becomes false upstream
+  // on the next read (and gets recorded as an activation's basedOn).
+  const effective = dedupeAgents([...discovered.agents, ...(teamAgents ?? [])])
   for (const agent of effective) {
     const runtime = runtimeScope({ id: agent.id, level: scopeLevel(agent.scope) }, scopes)
     const upstream = discovered.modelUpstream.get(agent.id)
