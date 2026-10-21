@@ -46,7 +46,7 @@ import {
   effectiveCompaction,
   effectiveImages,
   everySettings,
-  MODEL_SETTINGS_FIELDS,
+  MODEL_DEFAULT_FIELDS,
   roundedWarmingFor,
   setModelSettingsRecord,
   settingsFor,
@@ -1836,6 +1836,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           : (await hostModelsFor(ctx, state)).find((entry) => entry.providerID === key.providerID && entry.modelID === key.modelID)?.warming
       const write = async () => {
         const current = await load(directory)
+        const before = settingsFor(modelSettingsOf(current.records), key)
         const merged = setModelSettingsRecord(modelSettingsOf(current.records), key, fields, updated)
         const rounded = roundedWarmingFor(merged, key, host)
         const next = rounded === undefined ? merged : setModelSettingsRecord(merged, key, { warming: rounded }, updated)
@@ -1846,23 +1847,24 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           records: [...current.records.filter((entry) => entry.type !== "modelSettings"), ...next],
         })
         if (!saved.ok) return { ok: false as const }
-        return { ok: true as const, changed: saved.changed.global, record, revision: saved.projectRevision, globalRevision: saved.globalRevision }
+        return { ok: true as const, changed: saved.changed.global, before, record, revision: saved.projectRevision, globalRevision: saved.globalRevision }
       }
       let saved = await write()
       if (!saved.ok) saved = await write()
       if (!saved.ok) return invalidModelSettings("the store changed concurrently; retry")
       const label = key.providerID === undefined ? "Every model" : `${key.providerID}/${key.modelID}`
       if (saved.changed) {
-        const described = MODEL_SETTINGS_FIELDS.flatMap((field) => {
+        const described = MODEL_DEFAULT_FIELDS.flatMap((field) => {
           const value = saved.record?.[field]
-          return value === undefined ? [] : [`${field} ${value}`]
+          if (JSON.stringify(saved.before?.[field]) === JSON.stringify(value)) return []
+          return [`${field} ${value === undefined ? "cleared" : typeof value === "string" ? value : JSON.stringify(value)}`]
         }).join(", ")
         await append(globalLogPath(), {
           ts: updated,
           actor: normalizeActor(input.actor),
           op: "modelSettings.set",
           target: key.providerID === undefined ? "modeldefault:every" : `modeldefault:${key.providerID}/${key.modelID}`,
-          summary: saved.record === undefined ? `modelSettings.clear ${label}` : `modelSettings.set ${label} (${described})`,
+          summary: `modelSettings.${saved.record === undefined ? "clear" : "set"} ${label} (${described})`,
           revision: saved.globalRevision,
         })
       }

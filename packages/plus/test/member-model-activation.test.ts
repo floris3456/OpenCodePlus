@@ -19,6 +19,7 @@
 // record.
 import { afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
+import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
@@ -53,6 +54,7 @@ async function tempProject(): Promise<string> {
   const root = await fs.mkdtemp(path.join(parent, "plus-member-model-"))
   roots.push(root)
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  process.env.XDG_DATA_HOME = path.join(root, "share")
   return path.join(root, "project")
 }
 
@@ -324,4 +326,70 @@ test("create model with the member's team writes the member row, not a flat reco
   )
   expect(stored).toMatchObject({ level: "global", agent: "Planner" })
   expect(stored).not.toHaveProperty("team")
+})
+
+async function labFixture() {
+  const project = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    models: [modelInfo("cliproxyapi", "claude-haiku-5-5"), { ...modelInfo("cliproxyapi", "claude-opus-5-5"), variants: [{ id: Model.VariantID.make("high"), settings: {} }] }],
+    classifications: { "claude-haiku-5-5": "general", "claude-opus-5-5": "general" },
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  await runOk(create, { kind: "team", team: "lab", level: "global", preset: "basic" })
+  await runOk(need(tools, "instructions_set"), { id: "team:global:lab", state: "on" })
+  for (const agent of ["planner", "orchestrator"]) {
+    // A preset fallback must not beat the member's own active Global record.
+    await runOk(create, { kind: "model", level: "preset", agent, team: "basic", providerID: "cliproxyapi", modelID: "claude-haiku-5-5" })
+    await runOk(create, { kind: "model", level: "global", agent, team: "lab", providerID: "cliproxyapi", modelID: "claude-haiku-5-5" })
+    await runOk(create, { kind: "model", level: "global", agent, team: "lab", providerID: "cliproxyapi", modelID: "claude-opus-5-5", variant: "high" })
+  }
+  await runOk(need(tools, "instructions_set"), { id: "item:global:lab/:orchestrator:model:cliproxyapi/claude-opus-5-5@high", active: true })
+  return { api, ctx, tools }
+}
+
+test("preset team members badge their own active model and agree with the installed runtime", async () => {
+  const { api, ctx, tools } = await labFixture()
+  const snapshot = (await api.snapshot()).value
+  const rows = expandedTree(memoInputOf(snapshot))
+  const runtime = await Effect.runPromise(ctx.agent.list())
+  for (const agent of ["planner", "orchestrator"]) {
+    const prefix = `item:global:lab/:${agent}:model:cliproxyapi/`
+    // Discovery can list a Plus member at Defaults after it is installed;
+    // its member row still runs at the team's Global tier.
+    expect(snapshot.agents.find((entry) => entry.id === agent)?.scope).toBe("defaults")
+    expect(runtime.data.find((entry) => entry.id === agent)?.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-opus-5-5", variant: "high" })
+    const models = snapshot.records.filter(isModelRecord).filter((entry) => entry.agent === agent && entry.level === "global")
+    expect(models).toHaveLength(2)
+    expect(models.every((entry) => entry.team === undefined)).toBe(true)
+    expect(models.find((entry) => entry.modelID === "claude-haiku-5-5")?.active).toBeUndefined()
+    expect(models.find((entry) => entry.modelID === "claude-opus-5-5")).toMatchObject({ variant: "high", active: true })
+    expect(models.find((entry) => entry.modelID === "claude-opus-5-5")?.basedOn).toBe(agent === "orchestrator" ? "cliproxyapi/claude-haiku-5-5" : undefined)
+    expect(rows.find((row) => row.id === `${prefix}claude-opus-5-5@high`)?.badges.active).toBe(true)
+    expect(rows.find((row) => row.id === `${prefix}claude-haiku-5-5`)?.badges.active).toBeUndefined()
+    const found = await runOk(need(tools, "instructions_find"), { agent, type: "model" })
+    expect(found).toMatchObject({ rows: expect.arrayContaining([`${prefix}claude-opus-5-5@high | active | set here`]) })
+    const group = await runOk(need(tools, "instructions_read"), { id: `group:global:lab/:${agent}:models` })
+    expect(group).toMatchObject({ rows: [
+      `${prefix}claude-haiku-5-5 | - | set here`,
+      `${prefix}claude-opus-5-5@high | active | set here`,
+    ] })
+  }
+})
+
+test("find team model rows includes ordinary members addressed through memberOf", async () => {
+  const { tools } = await labFixture()
+  const found = await runOk(need(tools, "instructions_find"), { team: "lab", type: "model" })
+  expect(found).toMatchObject({ total: 4, rows: expect.arrayContaining(
+    ["planner", "orchestrator"].flatMap((agent) => [
+      `item:global:lab/:${agent}:model:cliproxyapi/claude-haiku-5-5 | - | set here`,
+      `item:global:lab/:${agent}:model:cliproxyapi/claude-opus-5-5@high | active | set here`,
+    ]),
+  ) })
+  expect(await runOk(need(tools, "instructions_find"), { team: "basic", type: "model", level: "global" })).toMatchObject({ total: 0, rows: [] })
+  expect(await runOk(need(tools, "instructions_find"), { team: "lab", agent: "planner", type: "model" })).toMatchObject({ total: 2 })
 })

@@ -2319,12 +2319,15 @@ function lazyModelsState(
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   }
+  // Ordinary members carry memberOf, not team. Their runtime level is the
+  // team's tier even when discovery lists the same agent at Defaults.
+  const team = view.memberOf ?? view.team
   const runtime = modelRuntimeScope({
     scopes: ctx.scopes,
     level,
     owner,
     ...(agent?.scope === undefined ? {} : { agentScope: agent.scope }),
-    ...(teamFields(teamRef).team === undefined ? {} : { team: teamFields(teamRef).team! }),
+    ...(team === undefined ? {} : { team }),
   })
   return {
     candidates: modelCandidates(view),

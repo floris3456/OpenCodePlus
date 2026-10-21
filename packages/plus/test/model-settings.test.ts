@@ -426,6 +426,40 @@ test("the RPC writes the row into the global store and the snapshot carries it",
   })
 })
 
+test("model settings log describes changed fields, including compaction and clears", async () => {
+  const project = await tempProject()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  const key = { providerID: "cliproxyapi", modelID: "claude-opus-5-5" }
+  const summary = async () => {
+    const logged = await api.log({})
+    if (!logged.ok) throw new Error("log failed")
+    return logged.value.entries.filter((entry) => entry.op === "modelSettings.set").map((entry) => entry.summary)
+  }
+  expect((await api.setModelSettings({ ...key, warming: "on", interval: "4m" })).ok).toBe(true)
+  expect((await api.setModelSettings({ ...key, compactionInput: "400000", interval: "4m" })).ok).toBe(true)
+  expect((await summary())[0]).toBe("modelSettings.set cliproxyapi/claude-opus-5-5 (compactionInput 400000)")
+  const before = await summary()
+  expect((await api.setModelSettings({ ...key, compactionInput: "400000" })).ok).toBe(true)
+  expect(await summary()).toEqual(before)
+  expect((await api.setModelSettings({ ...key, compactionInput: null, effort: "high" })).ok).toBe(true)
+  expect((await summary())[0]).toBe("modelSettings.set cliproxyapi/claude-opus-5-5 (effort high, compactionInput cleared)")
+  expect((await api.setModelSettings({ ...key, warming: null, interval: null, effort: null })).ok).toBe(true)
+  expect((await summary())[0]).toBe("modelSettings.clear cliproxyapi/claude-opus-5-5 (warming cleared, interval cleared, effort cleared)")
+})
+
+test("model settings log includes rounded changes and compares model lists by value", async () => {
+  const project = await tempProject()
+  const api = createPlusApi(fullContext({ directory: project }), createState())
+  expect((await api.setModelSettings({ warming: "30m", interval: "4m", coldModels: ["acme/summary"] })).ok).toBe(true)
+  expect((await api.setModelSettings({ interval: "5m", coldModels: ["acme/summary"], imagesFull: "leave-out" })).ok).toBe(true)
+  const logged = await api.log({})
+  if (!logged.ok) throw new Error("log failed")
+  expect(logged.value.entries.filter((entry) => entry.op === "modelSettings.set").map((entry) => entry.summary)).toEqual([
+    "modelSettings.set Every model (warming 35m, interval 5m, imagesFull leave-out)",
+    'modelSettings.set Every model (warming 32m, interval 4m, coldModels ["acme/summary"])',
+  ])
+})
+
 test("a mutate carries the Defaults › Models rows over and cannot drop them", async () => {
   const project = await tempProject()
   const ctx = fullContext({
