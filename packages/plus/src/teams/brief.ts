@@ -106,7 +106,7 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
       sections.push(
         `## Attached: ${attached.path}\n(${attached.content.length} chars, over the ${limit}-character attachment limit: read the file itself, only what you need.)`,
       )
-    else sections.push(`## Attached: ${attached.path}\n${attached.content}`)
+    else sections.push(`## Attached: ${attached.path} (its whole text, below; nothing to read)\n${attached.content}`)
   }
   return sections.join("\n\n") + "\n"
 }

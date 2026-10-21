@@ -240,7 +240,11 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   }
 
   const defaultHead = await callerHead(parent.directory, repo.root)
-  const baseSha = await resolveBase(repo.root, input.base, defaultHead)
+  // A review delegated while exactly one child reported done and has not
+  // landed reviews that child: its head is the base (b8-s12, b10-s12: E_UNLANDED
+  // until the lead set it). With several, the lead names one.
+  const unlandedForReview = input.deliverable.kind === "findings" && input.base === undefined ? await unlandedDone(root, parent, repo.root, defaultHead) : []
+  const baseSha = await resolveBase(repo.root, input.base ?? (unlandedForReview.length === 1 ? unlandedForReview[0]!.head : undefined), defaultHead)
   if (baseSha === undefined)
     return fail(
       "E_BASE",

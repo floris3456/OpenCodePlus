@@ -2154,37 +2154,49 @@ test("delegate drops forbidden entries naming protected state and names an inval
   })
 }, 30000)
 
-test("delegate names a missing briefFile, and refuses a review while a done child has not landed", async () => {
+test("delegate names a missing briefFile; a review of one unlanded done child takes its head, of several is refused", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
-      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_review", children: ["w-abcdabcdabcdabcd"] })
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_review", children: ["w-abcdabcdabcdabcd", "w-efefefefefefefef"] })
       await saveRun(root, parent)
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const missing = rejected(await api.delegate(delegateInput({ requestID: "brief-missing", briefFile: "docs/plans/later.md" }), callerFor(parent)))
       expect(missing.code).toBe("E_PATHS")
       expect(missing.message).toContain("briefFile docs/plans/later.md does not exist or cannot be read: write it first")
-      // A done child whose commits are still in its own worktree.
-      const child = baseRun({ id: "w-abcdabcdabcdabcd", parent: parent.id, directory: repo.dir, state: "idle" })
-      await saveRun(root, child)
-      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: repo.head, subject: "feat: change" }] })
-      const review = () =>
-        api.delegate(
-          delegateInput({ requestID: `review-${Math.random()}`, role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
-          callerFor(parent),
-        )
-      const unlanded = rejected(await review())
-      expect(unlanded.code).toBe("E_UNLANDED")
-      expect(unlanded.message).toContain("[w-abcdabcdabcdabcd] reported done but have not landed")
-      expect(unlanded.message).toContain("review one before it lands with base: its commit")
-      // s12-c: a review started from the child's commit sees it before it lands.
+      // A done child whose commit is still in its own worktree.
       await git(repo.dir, ["checkout", "-q", "-b", "child-work"])
       await fs.writeFile(path.join(repo.dir, "change.txt"), "x\n")
       await git(repo.dir, ["add", "change.txt"])
       await git(repo.dir, ["commit", "-q", "-m", "feat: change"])
       const childHead = await git(repo.dir, ["rev-parse", "HEAD"])
       await git(repo.dir, ["checkout", "-q", "-"])
-      await saveRun(root, { ...child, head: childHead })
+      const child = baseRun({ id: "w-abcdabcdabcdabcd", parent: parent.id, directory: repo.dir, state: "idle", head: childHead })
+      await saveRun(root, child)
+      await atomicJson(path.join(root, "runs", child.id, "report-1.json"), { run: child.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: childHead, subject: "feat: change" }] })
+      const review = () =>
+        api.delegate(
+          delegateInput({ requestID: `review-${Math.random()}`, role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
+          callerFor(parent),
+        )
+      // b8-s12, b10-s12: the one child that reported done and has not landed is what a review sees.
+      expect(required(await review())).toMatchObject({ base: childHead })
+      // A landing of an earlier worktree of the child (before a followup reopened it) is not this one's.
+      const landing = (id: string, childBranch: string) =>
+        atomicJson(path.join(root, "runs", parent.id, "merge", `${id}.json`), {
+          id, parentRun: parent.id, childRun: child.id, childBranch, childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
+        })
+      await landing("entry-0", "team/implementer/earlier-20261019-1200")
+      expect(required(await review())).toMatchObject({ base: childHead })
+      // Two of them: the lead names one, or lands them first.
+      const other = baseRun({ id: "w-efefefefefefefef", parent: parent.id, directory: repo.dir, state: "idle", head: childHead, branch: "team/other" })
+      await saveRun(root, other)
+      await atomicJson(path.join(root, "runs", other.id, "report-1.json"), { run: other.id, attempt: 1, status: "done", summary: "done", commits: [{ sha: childHead, subject: "feat: change" }] })
+      const unlanded = rejected(await review())
+      expect(unlanded.code).toBe("E_UNLANDED")
+      expect(unlanded.message).toContain("reported done but have not landed")
+      expect(unlanded.message).toContain("review one before it lands with base: its commit")
+      // An explicit base still reviews that commit.
       const early = required(
         await api.delegate(
           delegateInput({ requestID: "review-early", role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [], base: childHead }),
@@ -2192,16 +2204,12 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
         ),
       ) as { base: string }
       expect(early.base).toBe(childHead)
-      // A landing of an earlier worktree of the child (before a followup reopened it) is not this one's.
-      const landing = (id: string, childBranch: string) =>
-        atomicJson(path.join(root, "runs", parent.id, "merge", `${id}.json`), {
-          id, parentRun: parent.id, childRun: child.id, childBranch, childHead: repo.head, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
-        })
-      await landing("entry-0", "team/implementer/earlier-20261019-1200")
-      expect(rejected(await review()).code).toBe("E_UNLANDED")
-      // Once it landed, the review is delegated.
+      // Once both landed, the review starts from the parent's HEAD.
       await landing("entry-1", child.branch)
-      expect(required(await review())).toMatchObject({ state: "starting" })
+      await atomicJson(path.join(root, "runs", parent.id, "merge", "entry-2.json"), {
+        id: "entry-2", parentRun: parent.id, childRun: other.id, childBranch: other.branch, childHead, expectedParentHead: repo.head, state: "landed", at: "2026-10-20T00:00:00.000Z", updatedAt: "2026-10-20T00:00:00.000Z",
+      })
+      expect(required(await review())).toMatchObject({ state: "starting", base: repo.head })
     } finally {
       await removeRepo(repo.dir)
     }
