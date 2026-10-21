@@ -173,43 +173,49 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput(), callerFor(parent))) as {
         run: string
-        session: string
-        directory: string
+        requestID: string
         branch: string
         base: string
-        briefPath: string
-        task: string
+        task: string | null
         state: string
+        next: string
       }
-      expect(value.state).toBe("starting")
-      expect(value.base).toBe(repo.head)
-      expect((await fs.stat(value.directory)).isDirectory()).toBe(true)
+      const persisted = await loadRun(root, value.run)
+      if (persisted === undefined || persisted.sessionID === null) throw new Error("missing child run or session")
+      expect(value).toEqual({
+        run: persisted.id,
+        requestID: "req-1",
+        task: persisted.task,
+        state: "starting",
+        branch: persisted.branch,
+        base: repo.head,
+        next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report.",
+      })
+      expect((await fs.stat(persisted.directory)).isDirectory()).toBe(true)
       expect(sessions.created).toHaveLength(1)
       const create = sessions.created[0] as { agent: string; location: { directory: string }; title: string }
       expect(create.agent).toBe("implementer")
-      expect(create.location.directory).toBe(value.directory)
+      expect(create.location.directory).toBe(persisted.directory)
       // Titled from the Brief, so no model request goes to a title.
       expect(create.title).toStartWith("implementer: Fix the agent filter in the query module")
-      const persisted = await loadRun(root, value.run)
-      expect(persisted?.sessionID).toBe(value.session)
+      expect(persisted.sessionID).toBe("ses_child_1")
       expect(persisted?.paths).toEqual(["packages/plus/src/*"])
       expect(persisted?.parent).toBe(parent.id)
-      expect(await Bun.file(value.briefPath).exists()).toBe(true)
-      const brief = await Bun.file(value.briefPath).text()
+      const brief = await Bun.file(path.join(root, "runs", value.run, "brief.md")).text()
       expect(brief).toContain("Fix the agent filter in the query module")
       expect(sessions.prompted).toHaveLength(1)
-      expect(sessions.prompted[0]?.sessionID).toBe(value.session)
+      expect(sessions.prompted[0]?.sessionID).toBe(persisted.sessionID)
       expect(sessions.prompted[0]?.text).toContain("Fix the agent filter in the query module")
       // The child worktree carries no copied project config: it is activated
       // through the parent directory recorded on its run (item 13).
-      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
-      expect(await git(value.directory, ["status", "--porcelain"])).toBe("")
+      expect(await Bun.file(path.join(persisted.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      expect(await git(persisted.directory, ["status", "--porcelain"])).toBe("")
       expect(persisted?.projectDirectory).toBe(repo.dir)
-      await onSessionEvent(context({ session: sessions.domain }), root, { type: "session.execution.succeeded", data: { sessionID: value.session } })
+      await onSessionEvent(context({ session: sessions.domain }), root, { type: "session.execution.succeeded", data: { sessionID: persisted.sessionID } })
       const replay = required(await api.delegate(delegateInput(), callerFor(parent)))
-      expect(replay).toMatchObject({ run: value.run, session: value.session, replayed: true, state: "idle", receipt: { state: "starting" }, current: { state: "idle", attempt: 1 } })
+      expect(replay).toEqual(value)
       expect(sessions.created).toHaveLength(1)
-      expect(sessions.prompted.filter((prompt) => prompt.sessionID === value.session)).toHaveLength(1)
+      expect(sessions.prompted.filter((prompt) => prompt.sessionID === persisted.sessionID)).toHaveLength(1)
       expect(rejected(await api.delegate(delegateInput({ objective: "A different objective must not replace the admitted payload." }), callerFor(parent))).code).toBe("E_REQUEST_ID")
     } finally {
       await removeRepo(repo.dir)
@@ -241,29 +247,27 @@ test("delegate activates the child through the parent project, with no copy", as
       const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "project-1" }), callerFor(parent))) as {
         run: string
-        session: string
-        directory: string
       }
+      const child = await loadRun(root, value.run)
+      if (child === undefined) throw new Error("missing child run")
       // The child carries no project config at all...
-      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      expect(await Bun.file(path.join(child.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
       // ...and the activation seam resolves the parent's project through the
       // run record the delegate wrote, so Plus activates in the child worktree
       // with the parent's protectedAgents, not a copy and not a stray ancestor.
-      const child = await loadRun(root, value.run)
       expect(child?.projectDirectory).toBe(repo.dir)
-      const activation = await activationDirectory(value.directory)
+      const activation = await activationDirectory(child.directory)
       expect(activation).toBe(repo.dir)
       expect(await read(activation)).toEqual({ version: 1, protectedAgents: ["implementer"] })
       // Item 13 evidence: no copy in the child, activation through the record.
       console.log(
-        `[T5 item 13] child ${value.directory}\n  child/.opencodeplus/project.json exists: false\n` +
+        `[T5 item 13] child ${child.directory}\n  child/.opencodeplus/project.json exists: false\n` +
           `  run.projectDirectory: ${String(child?.projectDirectory)}\n` +
           `  activationDirectory(child): ${activation}\n` +
           `  project.read(activation): ${JSON.stringify(await read(activation))}`,
       )
       // The recorded directory is the worktree the child's session opened in.
-      expect(child?.directory).toBe(value.directory)
-      expect((sessions.created[0] as { location: { directory: string } }).location.directory).toBe(value.directory)
+      expect((sessions.created[0] as { location: { directory: string } }).location.directory).toBe(child.directory)
     } finally {
       await removeRepo(repo.dir)
     }
@@ -322,12 +326,13 @@ test("the first delegate registers the child run before the host opens its sessi
       const api = createTeamApi(context({ session: domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "gc-race-1" }), callerFor(parent))) as {
         run: string
-        directory: string
       }
+      const child = await loadRun(root, value.run)
+      if (child === undefined) throw new Error("missing child run")
 
       // The host's realPath boundary: the directory it resolves exists, and it
       // still exists after the sweep that ran during session creation.
-      expect(await fs.realpath(value.directory)).toBe(value.directory)
+      expect(await fs.realpath(child.directory)).toBe(child.directory)
       expect(during.resolveError).toBeUndefined()
       expect(during.afterSweepError).toBeUndefined()
       expect(during.orphansRemoved).toEqual([])
@@ -391,13 +396,15 @@ test("activation in a child worktree installs the parent project's agents and to
       const sessions = recordSession()
       const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "activation-1" }), callerFor(parent))) as {
-        directory: string
+        run: string
       }
+      const child = await loadRun(root, value.run)
+      if (child === undefined) throw new Error("missing child run")
 
       // A plugin instance whose Location is the child worktree: the harness
       // records the session-creation seam but nothing about activation.
       // The entrypoint registers the cache warming session hook.
-      const ctx = fullContext({ directory: value.directory, hooks: { current: 0 } })
+      const ctx = fullContext({ directory: child.directory, hooks: { current: 0 } })
       const pluginCtx = {
         ...ctx,
         rpc: Object.assign(
@@ -434,7 +441,7 @@ test("activation in a child worktree installs the parent project's agents and to
         expect(listed.data.map((agent) => String(agent.id))).toContain("alpha")
         console.log(
           `[T5 item 13] child plugin activation through the real entrypoint\n` +
-            `  location: ${value.directory}\n` +
+            `  location: ${child.directory}\n` +
             `  team tools installed: ${toolIds.filter((id) => id.startsWith("team_")).length}\n` +
             `  instructions tools installed: ${toolIds.filter((id) => id.startsWith("instructions_")).length}\n` +
             `  team member agents installed: ${listed.data.map((agent) => String(agent.id)).filter((id) => id === "alpha").join(", ")}`,
@@ -474,12 +481,14 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       const sessions = recordSession()
       const api = createTeamApi(context({ session: sessions.domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "api-inherit-1" }), callerFor(parent))) as {
-        directory: string
+        run: string
       }
+      const child = await loadRun(root, value.run)
+      if (child === undefined) throw new Error("missing child run")
 
       // The child worktree carries no config, and no ancestor of it is enabled.
-      expect(await Bun.file(path.join(value.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
-      const ctx = fullContext({ directory: value.directory })
+      expect(await Bun.file(path.join(child.directory, ".opencodeplus", "project.json")).exists()).toBe(false)
+      const ctx = fullContext({ directory: child.directory })
       const state = createState()
       const handlers = createHandlers(ctx, state, { builtins: [] })
       const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -495,7 +504,7 @@ test("project guards, snapshot and mutate resolve a child worktree through its r
       expect(mutated.ok).toBe(true)
       console.log(
         `[T5 item 13] child API resolves the inherited project\n` +
-          `  location: ${value.directory}\n` +
+          `  location: ${child.directory}\n` +
           `  protectedAgents: ${JSON.stringify(snapshot.protectedAgents)}\n` +
           `  snapshot revisions: project=${snapshot.revision} global=${snapshot.globalRevision}\n` +
           `  mutate ok: ${mutated.ok}`,
@@ -671,9 +680,9 @@ test("delegate attaches a relative briefFile from the caller's checkout", async 
       await saveRun(root, parent)
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "brief-rel-1", briefFile: "notes/brief.md" }), callerFor(parent))) as {
-        briefPath: string
+        run: string
       }
-      const brief = await fs.readFile(value.briefPath, "utf8")
+      const brief = await fs.readFile(path.join(root, "runs", value.run, "brief.md"), "utf8")
       expect(brief).toContain("recognisable relative brief line")
     } finally {
       await removeRepo(repo.dir)
@@ -765,8 +774,8 @@ test("an attachment up to its limit is pasted without counting toward the brief 
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const pasted = required(
         await api.delegate(delegateInput({ requestID: "attach-small-1", briefFile: "notes/small.md" }), callerFor(parent)),
-      ) as { briefPath: string }
-      expect(await fs.readFile(pasted.briefPath, "utf8")).toContain("s".repeat(7_500))
+      ) as { run: string }
+      expect(await fs.readFile(path.join(root, "runs", pasted.run, "brief.md"), "utf8")).toContain("s".repeat(7_500))
 
       // The caller's own text is what the brief limit refuses.
       const tooLong = rejected(
@@ -782,8 +791,8 @@ test("an attachment up to its limit is pasted without counting toward the brief 
       await fs.writeFile(path.join(repo.dir, "notes", "big.md"), "b".repeat(9_000))
       const value = required(
         await api.delegate(delegateInput({ requestID: "attach-big-1", briefFile: "notes/big.md" }), callerFor(parent)),
-      ) as { briefPath: string }
-      const brief = await fs.readFile(value.briefPath, "utf8")
+      ) as { run: string }
+      const brief = await fs.readFile(path.join(root, "runs", value.run, "brief.md"), "utf8")
       expect(brief).toContain("## Attached: notes/big.md")
       expect(brief).toContain("over the 8000-character attachment limit: read the file itself")
       expect(brief).not.toContain("b".repeat(100))
@@ -819,8 +828,8 @@ test("the Attached brief file row sets the paste limit", async () => {
       const api = createTeamApi(context({ session: recordSession().domain }), teamState(table))
       const value = required(
         await api.delegate(delegateInput({ requestID: "attach-row-1", briefFile: "notes/mid.md" }), callerFor(parent)),
-      ) as { briefPath: string }
-      const brief = await fs.readFile(value.briefPath, "utf8")
+      ) as { run: string }
+      const brief = await fs.readFile(path.join(root, "runs", value.run, "brief.md"), "utf8")
       expect(brief).toContain("over the 1000-character attachment limit: read the file itself")
       expect(brief).not.toContain("m".repeat(100))
     } finally {
@@ -1770,24 +1779,26 @@ test("delegate switches the child to the role pin before prompting", async () =>
       const api = createTeamApi(context({ session: sessions.domain }), state)
       const value = required(await api.delegate(delegateInput({ requestID: "pin-switch-1" }), callerFor(parent))) as {
         run: string
-        session: string
+        model: string
       }
+      const child = await loadRun(root, value.run)
+      expect(value.model).toBe("cliproxyapi/muse-spark-1.3-contributor@high")
       expect(sessions.switched).toHaveLength(1)
-      expect(sessions.switched[0]?.sessionID).toBe(value.session)
+      expect(sessions.switched[0]?.sessionID).toBe(child?.sessionID)
       const model = sessions.switched[0]?.model as { providerID: unknown; id: unknown; variant?: unknown }
       expect(model.providerID).toBe("cliproxyapi")
       expect(model.id).toBe("muse-spark-1.3-contributor")
       expect(model.variant).toBe("high")
       expect(sessions.order).toEqual(["switchModel", "prompt"])
       expect(sessions.prompted).toHaveLength(1)
-      expect(sessions.prompted[0]?.sessionID).toBe(value.session)
+      expect(sessions.prompted[0]?.sessionID).toBe(child?.sessionID)
     } finally {
       await removeRepo(repo.dir)
     }
   })
 }, 30000)
 
-test("delegate without a role pin never switches but still prompts", async () => {
+test.each([undefined, "high"])("delegate without a role pin reports the host's resolved model (%s)", async (variant) => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -1801,14 +1812,19 @@ test("delegate without a role pin never switches but still prompts", async () =>
       })
       await saveRun(root, parent)
       const sessions = recordSession()
-      const api = createTeamApi(context({ session: sessions.domain }), teamState())
+      const domain = {
+        ...sessions.domain,
+        get: () => Effect.succeed({ model: { providerID: "host", id: "resolved-model", variant } }),
+      } as unknown as SessionDomain
+      const api = createTeamApi(context({ session: domain }), teamState())
       const value = required(await api.delegate(delegateInput({ requestID: "pin-missing-1" }), callerFor(parent))) as {
         run: string
-        session: string
+        model: string
       }
+      expect(value.model).toBe(`host/resolved-model${variant === undefined ? "" : `@${variant}`}`)
       expect(sessions.switched).toHaveLength(0)
       expect(sessions.prompted).toHaveLength(1)
-      expect(sessions.prompted[0]?.sessionID).toBe(value.session)
+      expect(sessions.prompted[0]?.sessionID).toBe((await loadRun(root, value.run))?.sessionID)
       expect(typeof value.run).toBe("string")
     } finally {
       await removeRepo(repo.dir)
@@ -1951,8 +1967,8 @@ test("a review brief names the change since the delegating run started and that 
           delegateInput({ requestID: "review-1", role: "reviewer", deliverable: { kind: "findings" }, scope: { paths: [] }, checks: [] }),
           callerFor(parent),
         ),
-      ) as { run: string; briefPath: string }
-      const brief = await fs.readFile(delegated.briefPath, "utf8")
+      ) as { run: string }
+      const brief = await fs.readFile(path.join(root, "runs", delegated.run, "brief.md"), "utf8")
       expect(brief).toContain(`See the change with team_diff {run: "${delegated.run}", from: "${repo.head}"}; when the objective names one task's commits`)
       expect(brief).toContain(`Checks at ${landed.slice(0, 12)}: unit pass, lint not run.`)
       expect(brief).toContain("May edit: nothing (read-only task)")
@@ -1962,8 +1978,8 @@ test("a review brief names the change since the delegating run started and that 
       const diff = required(await api.diff({ run: reviewer.id, from: repo.head }, callerFor(reviewer))) as { patch: string }
       expect(diff.patch).toContain("+landed work")
       // A non-review Brief carries no Review section.
-      const implementer = required(await api.delegate(delegateInput({ requestID: "impl-1" }), callerFor(parent))) as { briefPath: string }
-      expect(await fs.readFile(implementer.briefPath, "utf8")).not.toContain("## Review")
+      const implementer = required(await api.delegate(delegateInput({ requestID: "impl-1" }), callerFor(parent))) as { run: string }
+      expect(await fs.readFile(path.join(root, "runs", implementer.run, "brief.md"), "utf8")).not.toContain("## Review")
     } finally {
       await removeRepo(repo.dir)
     }
@@ -2005,10 +2021,9 @@ test("delegate resolves a project check to the project's command and refuses a m
       const api = createTeamApi(context({ session: recordSession().domain }), teamState())
       const delegated = required(await api.delegate(delegateInput({ requestID: "checks-1", checks: [{ id: "unit" }] }), callerFor(parent))) as {
         run: string
-        briefPath: string
       }
       expect(await atomicRead(path.join(root, "runs", delegated.run, "checks.json"))).toEqual([{ id: "unit", argv: ["pytest", "tests"] }])
-      expect(await fs.readFile(delegated.briefPath, "utf8")).toContain("- unit: pytest tests")
+      expect(await fs.readFile(path.join(root, "runs", delegated.run, "brief.md"), "utf8")).toContain("- unit: pytest tests")
       const refused = await api.delegate(delegateInput({ requestID: "checks-2", checks: [{ id: "x", argv: ["sh", "-c", "id"] }] }), callerFor(parent))
       if (refused.ok) throw new Error("expected a refusal")
       expect((refused.error as { code: string }).code).toBe("E_CHECKS")

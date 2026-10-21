@@ -213,10 +213,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
       return fail("E_REQUEST_ID", `requestID "${brief.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
-    if (replay.output !== undefined) {
-      const current = replay.run === undefined ? undefined : await loadRun(root, replay.run)
-      return succeeded({ ...replay.output, state: current?.state ?? null, replayed: true, receipt: replay.output, current: current === undefined ? null : { state: current.state, attempt: current.attempts.at(-1)?.n ?? 0, worktree: current.worktree } })
-    }
+    if (replay.output !== undefined) return succeeded(replay.output)
   }
   const maxDepth = bound(table, agent, "delegate", "limits.depth")
   if (maxDepth !== undefined && (await depthOf(root, parent)) >= maxDepth)
@@ -632,19 +629,13 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const output = {
     run: childID,
-    session: String(child.id),
+    requestID: brief.requestID,
     task: taskID,
     state: "starting",
-    directory: created.dir,
     branch: created.branch,
     base: baseSha,
-    briefPath: path.join(runDir, "brief.md"),
-    budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
-    requestedModel,
-    loadedModel,
-    resolvedModel,
-    instructionsHash,
-    configDigest,
+    ...(resolvedModel === null ? {} : { model: `${resolvedModel.providerID}/${resolvedModel.modelID}${resolvedModel.variant === undefined ? "" : `@${resolvedModel.variant}`}` }),
+    next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report.",
   }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)

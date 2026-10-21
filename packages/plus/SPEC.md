@@ -1712,6 +1712,19 @@ and `stop` (native, `codemode: false`), and
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
+Delegate returns `{ run, requestID, task, state, branch, base, model?, next }`,
+with the resolved model as `provider/model[@variant]` when known and
+`next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report."`.
+Followup returns `{ attempt, state, next }`, with
+`next: "End your turn: its settlement wakes you."` for admitted, queued and
+budget-only calls. Identical request IDs return the stored output unchanged.
+Session/worktree paths, Brief paths, budgets, model provenance and hashes stay
+in durable run data rather than these admission responses.
+
+Core retries failed input validation once after parsing top-level string fields
+that contain JSON objects or arrays. Originally valid input is untouched; an
+invalid retry preserves the original input and issues in the error.
+
 Landings derive their checks automatically (`teams/merge.ts`): the landing
 child's assigned checks, those of every child already landed in the parent's
 merge queue, and the parent's own Brief checks (none for a user chat).

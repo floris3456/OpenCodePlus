@@ -383,6 +383,14 @@ implementer/reviewer/scout combinations checked in the API
 Registration: `packages/plus/src/teams/tools.ts`, `registerTeamTools`.
 Every tool's permission action is `team.<name>`.
 
+`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, next }`.
+The model is the resolved `provider/model[@variant]` when known; `next` says
+"Delegate any other runs in this same step, then end your turn: each settlement
+wakes you with its report." `team_followup` returns `{ attempt, state, next }`,
+with "End your turn: its settlement wakes you." Identical request IDs replay
+the stored result unchanged. Session/worktree details and model provenance
+remain in saved run records.
+
 `team_integrate` automatically checks the rebased tip with the child's checks,
 already-landed children's checks and the parent's Brief checks. Commands with
 the same argv/cwd run once. The child's checks must pass; other failures block
@@ -433,6 +441,10 @@ For `done` and `done_with_concerns`, assigned checks with “Assigned checks pas
 at HEAD” on require committed work: dirty tracked or untracked files cause
 `E_DIRTY` before checks run. The refusal names the files to checkpoint or revert;
 the existing Plus project file exception is retained.
+
+Core retries invalid tool input once with top-level JSON-text objects or arrays
+parsed. Valid string fields stay strings; a failed retry returns the original
+validation issues and arguments.
 
 Validation ceilings: run ids match `^(main|w)-[0-9a-f]{16}$`
 (`packages/plus/src/teams/schema.ts:18`); heads are 40 hex chars

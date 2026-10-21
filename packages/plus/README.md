@@ -393,8 +393,15 @@ a compatibility alias for attempts, and the existing `turns` budget likewise
 counts attempts. `tokensUsed` is the public Session's cumulative total (input,
 output, reasoning and cache), or `null` if unavailable, not per-attempt usage.
 Status uses these totals for advisory budgets; no hard interrupt is
-implied. Replayed admissions label the original `receipt` and expose a fresh
-`current` observation without submitting the work again.
+implied. Replaying an identical `requestID` returns the stored admission result
+unchanged without submitting the work again.
+
+`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, next }`;
+`model` is the resolved `provider/model[@variant]` when known. Its `next` says
+to delegate other runs in the same step, then end the turn: each settlement
+wakes the caller with its report. `team_followup` returns `{ attempt, state, next }`,
+with `next: "End your turn: its settlement wakes you."`. Session, worktree,
+Brief, budget and model provenance remain in the saved run data.
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
@@ -595,6 +602,9 @@ on the third attempt.
 - Child worktrees are removed on landing via `team_integrate`, keeping the branch ref,
   run record, reports and receipts intact while marking `worktree: "removed"`.
 - Tool inputs accept explicit `null` for optional fields (`task: null`, `scope.forbidden: null`, `findings: null`, etc.) as equivalent to omission at every depth: array elements (`checks: [{ id, argv, cwd: null }]`) and fields behind optional/default wrappers (`context: { interfaces: null }`, `followup({ budget: { turns: null } })`) included; `null` on required fields strictly produces a schema validation error.
+- If tool input validation fails, Core retries once with top-level JSON-text
+  objects or arrays parsed (for example a stringified `context`). Valid string
+  fields stay strings; a failed retry keeps the original validation error.
 - In-flight bounds (`E_BOUNDS`) count only live runs in `starting|working|idle|blocked_input` whose `sessionID` is not null. A run superseded because session creation failed never counts against bounds. The bounds themselves are the member's `team_delegate` → `Limits` rows, and the refusal says to end the turn and delegate after a settling child wakes the caller.
 - Runs in `stopped` or `superseded` state past `policy.gc.reapAfter` (e.g. `7d`) without
   open merge entries or promoted runs are transitioned to `reaped` and their worktrees removed.
