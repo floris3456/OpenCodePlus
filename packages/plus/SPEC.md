@@ -2070,6 +2070,13 @@ Error codes carrying `accepted` today:
   than failing `E_NO_BRIEF`). The `conventions` field has been removed.
 
 New input and output fields:
+- `followup.paths` adds repository-relative files or `dir/*` to a child's
+  stored `brief.json` scope and `run.json` paths. It uses delegation's scope
+  validation, caller grant rows, target accepted paths and total path limit;
+  forbidden paths stay forbidden. Before prompt admission, agent reload
+  republishes the per-run Edit scope row; edit hooks and checkpoint reread
+  the saved scope. Plus prefixes the prompt with one line naming the added
+  paths; `paths` alone admits that line. Request replay covers `paths` too.
 - `status` entries carry `waitingOn: RunID[]`: for a run that is idle with
   its attempt still open, the open children it is waiting on (see Waiting on
   children); `[]` otherwise.
@@ -2762,7 +2769,7 @@ the shipped limits):
 | `opencode_session_move` | Sessions (param `sessionID`: other sessions) · Destinations (input `directory`: absolute paths, `../`) |
 | `opencode_session_rename` | Sessions (param `sessionID`) · Limits (Longest title 80 characters, refuse) |
 | `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 12, on) · Requirements (team: reason) · Approval |
-| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`) · Limits (team: Followups per child 5, off) · Approval |
+| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`, `paths`) · Limits (team: Followups per child 5, off) · Approval |
 | `team_integrate` | Outcomes it lands (team) · Branches it lands on (team: protected branches) · Approval |
 | `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
 | `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |

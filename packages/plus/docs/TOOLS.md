@@ -402,7 +402,12 @@ Checks are at most 12, with distinct ids and explicit `bun test FILE` or
 (`packages/plus/src/teams/schema.ts:186`); `needs`, `concerns`, `deferred` max
 10 and `findings` max 50 (`packages/plus/src/teams/schema.ts:187`–
 `packages/plus/src/teams/schema.ts:196`). `followup` caps the prompt at 4000
-characters. `integrate`'s `expectedParentHead` and `checkpoint`'s
+characters. Its optional `paths` adds repository-relative files or `dir/*`
+to the child's scope (up to 40 total, subject to its Brief limits), e.g.
+`paths:["src/cli.ts"]` to answer a path need. Delegation's grant and target
+scope rules apply; forbidden paths stay forbidden. Plus prefixes the prompt
+with the added paths and sends that note alone when prompt is omitted.
+`requestID` replay includes `paths`. `integrate`'s `expectedParentHead` and `checkpoint`'s
 `expectedHead` are optional and take a full or short commit or `HEAD`; given,
 a HEAD that moved refuses (`IntegrateInput`, `CheckpointInput`).
 `stop` bounds its optional `reason` to 1–300 characters
