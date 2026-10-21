@@ -4,6 +4,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import plus, {
   activate,
+  catchUp,
   createHandlers,
   createState,
   discoverCounter,
@@ -175,6 +176,68 @@ describe("publish coalescing", () => {
     release.resolve()
     await Promise.all([busyRefresh, landedRefresh])
     expect(discoverCounter.count).toBe(1)
+  })
+
+  // Live b18-s14: a force-stopped child's folder was evicted while its refresh
+  // waited for the lock; its host reads then never answered for the full minute.
+  test("a folder evicted while its refresh waits for the process lock is not refreshed", async () => {
+    resetSharedStoreListeners()
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const stopped = path.join(root, "stopped")
+    const busy = path.join(root, "busy")
+    for (const dir of [stopped, busy]) await fs.mkdir(dir, { recursive: true })
+    const loaded = { current: true }
+    const stoppedCtx = context({
+      ...fullContext({ directory: stopped, hooks: { current: 0 } }),
+      locations: { evict: () => Effect.void, loaded: () => Effect.sync(() => loaded.current) },
+    })
+    const stoppedState = createState()
+    await Effect.runPromise(activate(stoppedCtx, stoppedState))
+    stoppedState.pendingHostChange = true
+    const release = Promise.withResolvers<void>()
+    const base = fullContext({ directory: busy, hooks: { current: 0 } })
+    const busyCtx = context({ ...base, tool: { ...base.tool, list: () => Effect.promise(() => release.promise).pipe(Effect.andThen(base.tool.list())) } })
+    const busyState = createState()
+    busyState.pendingHostChange = true
+    resetDiscoverCounter()
+    const busyRefresh = Effect.runPromise(refreshFromHost(busyCtx, busyState))
+    const stoppedRefresh = Effect.runPromise(refreshFromHost(stoppedCtx, stoppedState))
+    loaded.current = false
+    release.resolve()
+    await Promise.all([busyRefresh, stoppedRefresh])
+    expect(discoverCounter.count).toBe(1)
+  })
+
+  test("a warming ping applies a deferred refresh without counting as a use", async () => {
+    resetSharedStoreListeners()
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const project = path.join(root, "project")
+    const ctx = fullContext({ directory: project, hooks: { current: 0 } })
+    const state = createState()
+    const scope = await Effect.runPromise(Scope.make())
+    try {
+      await Effect.runPromise(watchSharedStore(ctx, state).pipe(Scope.provide(scope)))
+      await Effect.runPromise(activate(ctx, state))
+      // A finished chat that is only kept warm: idle by its last real use.
+      const idleSince = Date.now() - 10 * 60_000
+      state.lastUsedAt = idleSince
+      notifySharedStoreChanged(undefined, true)
+      expect(state.refreshTimer).toBeUndefined()
+      resetDiscoverCounter()
+      await Effect.runPromise(catchUp(ctx, state))
+      expect(discoverCounter.count).toBe(1)
+      expect(state.pendingRefresh).toBeFalsy()
+      // Still idle, so the next write is deferred again instead of refreshed at once.
+      expect(state.lastUsedAt).toBe(idleSince)
+      notifySharedStoreChanged(undefined, true)
+      expect(state.refreshTimer).toBeUndefined()
+      expect(state.pendingRefresh).toBe(true)
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+      resetSharedStoreListeners()
+    }
   })
 
   test("an idle folder defers another folder's write to its next use; a folder in use or running a session does not", async () => {
