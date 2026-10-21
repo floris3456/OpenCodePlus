@@ -149,6 +149,34 @@ describe("publish coalescing", () => {
     expect(liveState.projectRevision).toBeDefined()
   })
 
+  // Live b16-s8: a landing removed the child's worktree while its refresh waited
+  // for the process lock; the refresh then held the lock for its whole minute.
+  test("a team worktree removed while its refresh waits for the process lock is not refreshed", async () => {
+    resetSharedStoreListeners()
+    const root = await tempDir()
+    process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+    const landed = path.join(teamsDataDir(), "worktrees", "ledger", "implementer", `t2-${Date.now()}`)
+    const busy = path.join(root, "busy")
+    for (const dir of [landed, busy]) await fs.mkdir(dir, { recursive: true })
+    const landedCtx = fullContext({ directory: landed, hooks: { current: 0 } })
+    const landedState = createState()
+    await Effect.runPromise(activate(landedCtx, landedState))
+    landedState.pendingHostChange = true
+    // Another folder's refresh holds the lock until the test lets it go.
+    const release = Promise.withResolvers<void>()
+    const base = fullContext({ directory: busy, hooks: { current: 0 } })
+    const busyCtx = context({ ...base, tool: { ...base.tool, list: () => Effect.promise(() => release.promise).pipe(Effect.andThen(base.tool.list())) } })
+    const busyState = createState()
+    busyState.pendingHostChange = true
+    resetDiscoverCounter()
+    const busyRefresh = Effect.runPromise(refreshFromHost(busyCtx, busyState))
+    const landedRefresh = Effect.runPromise(refreshFromHost(landedCtx, landedState))
+    await fs.rm(landed, { recursive: true })
+    release.resolve()
+    await Promise.all([busyRefresh, landedRefresh])
+    expect(discoverCounter.count).toBe(1)
+  })
+
   test("an idle folder defers another folder's write to its next use; a folder in use or running a session does not", async () => {
     resetSharedStoreListeners()
     const root = await tempDir()
@@ -208,10 +236,16 @@ describe("publish coalescing", () => {
       expect(state.pendingRefresh).toBe(true)
       await Effect.runPromise(useLocation(ctx, state))
       expect(discoverCounter.count).toBe(1)
-      // In use: a host event refreshes at once, as before.
-      await Effect.runPromise(PubSub.publish(events, { type: "skill.updated", data: {} }))
+      // In use: a burst of host events (one write announces several) schedules one
+      // coalesced refresh, which a prompt applies at once (b16: one refresh per event).
+      for (const type of ["config.updated", "agent.updated", "skill.updated", "model.updated"])
+        await Effect.runPromise(PubSub.publish(events, { type, data: {} }))
       await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(discoverCounter.count).toBe(1)
+      expect(state.refreshTimer).toBeDefined()
+      await Effect.runPromise(useLocation(ctx, state))
       expect(discoverCounter.count).toBe(2)
+      expect(state.refreshTimer).toBeUndefined()
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void))
     }
