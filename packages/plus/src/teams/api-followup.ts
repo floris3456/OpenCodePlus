@@ -3,6 +3,7 @@ import { readdir, realpath } from "node:fs/promises"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { Session } from "@opencode/schema/session"
+import { SessionMessage } from "@opencode/schema/session-message"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Effect } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
@@ -200,9 +201,6 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     if (members !== undefined && live.length >= members)
       return fail("E_BOUNDS", `Live team runs limit ${members} reached (${live.map((run) => run.id).toSorted().join(", ")}). No capacity to resume this child; end your turn and retry after an active run settles.`, "retry after a run settles")
   }
-  if (args.paths !== undefined && args.delivery === "now" && child.state !== "idle" && child.state !== "stopped")
-    return fail("E_BUSY", `Child is working (attempt ${child.attempts.at(-1)?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`, { delivery: "queue" })
-
   // A reopened child already starts at its parent's HEAD, so it needs no rebase.
   const reopened = reopen && (args.prompt !== undefined || args.rebase === true || args.paths !== undefined) ? await reopenChild(root, parent, child) : undefined
   const rebased = reopened === undefined && args.rebase === true ? await rebaseChild(root, parent, child) : undefined
@@ -226,10 +224,7 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     return succeeded(output)
   }
 
-  const delivery = args.delivery ?? "queue"
-  const moveTo = reopened?.directory
-  if (delivery === "now") return followupNow(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason, moveTo)
-  return followupQueue(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason, moveTo)
+  return followupQueue(ctx, root, requestPath, signature, parent, child.id, prompt, args.budget, args.reason, reopened?.directory)
 }
 
 // Moves a child's commits onto its parent's HEAD in the child's own worktree,
@@ -408,10 +403,12 @@ async function followupQueue(
     if (budgeted.sessionID === null)
       throw toolError("E_INTERNAL", `Run ${budgeted.id} has no session to prompt.`, budgeted.id)
     const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
+    // team_finish holds a report the child wrote before this reached it (b12-s6).
+    const steered = SessionMessage.ID.create()
     await Effect.runPromise(
-      ctx.session.prompt({ sessionID: Session.ID.make(budgeted.sessionID), text, delivery: "steer" }),
+      ctx.session.prompt({ id: steered, sessionID: Session.ID.make(budgeted.sessionID), text, delivery: "steer" }),
     )
-    await updateRun(root, childID, (fresh) => recordInboxDelivery(fresh, [queued.id]))
+    await updateRun(root, childID, (fresh) => ({ ...recordInboxDelivery(fresh, [queued.id]), steeredMessage: steered }))
     await take(root, childID, [queued.id])
     const last = budgeted.attempts.at(-1)
     const output = { attempt: last?.n ?? 1, state: "queued", next: WAIT }
@@ -419,49 +416,14 @@ async function followupQueue(
     return succeeded(output)
   }
   // An idle child is prompted now, so the item it was prompted with is
-  // recorded as delivered and the idle drain will not repeat it.
+  // recorded as delivered and the idle drain will not repeat it. A prompt the
+  // host refused leaves the run as it was, and the item goes too: a retry
+  // brings its own.
   const queued = await put(root, childID, { kind: "followup", from: parent.id, text })
-  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id, moveTo)
-  const done = admitted.attempts[admitted.attempts.length - 1]
-  const output = { attempt: done?.n ?? 1, state: "admitted", next: WAIT }
-  await atomicJson(requestPath, { signature, output, run: childID })
-  return succeeded(output)
-}
-
-async function followupNow(
-  ctx: Context,
-  root: string,
-  requestPath: string,
-  signature: string,
-  parent: RunRecord,
-  childID: string,
-  text: string,
-  budget: FollowupBudgetInput,
-  reason?: string,
-  moveTo?: string,
-): Promise<TeamApiResult> {
-  const current = await loadRun(root, childID)
-  if (current === undefined)
-    return fail(
-      "E_NOT_CHILD",
-      `Run ${childID} is not your direct child. Your children: [${parent.children.join(", ")}]. Use status to read others.`,
-      parent.children,
-    )
-  if (isTerminal(current.state))
-    return fail(
-      "E_TERMINAL",
-      `Run ${childID} is superseded/reaped; delegate a fresh run.`,
-      "delegate a fresh run",
-    )
-  const last = current.attempts[current.attempts.length - 1]
-  await requireWorktree(current)
-  if (current.state !== "idle" && current.state !== "stopped")
-    return fail(
-      "E_BUSY",
-      `Child is working (attempt ${last?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`,
-      { delivery: "queue" },
-    )
-  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, undefined, moveTo)
+  const admitted = await admitIdleChild(ctx, root, current, text, budget, reason, parent.id, queued.id, moveTo).catch(async (error: unknown) => {
+    await take(root, childID, [queued.id])
+    throw error
+  })
   const done = admitted.attempts[admitted.attempts.length - 1]
   const output = { attempt: done?.n ?? 1, state: "admitted", next: WAIT }
   await atomicJson(requestPath, { signature, output, run: childID })

@@ -695,7 +695,7 @@ function runGatedInner<A>(
       yield* Effect.promise(() => clearMovedTo(teamsDataDir(), owned.id))
       return yield* Effect.fail(new Tool.Error({ message: movedRunError(owned.id, owned.directory, movedTo) }))
     }
-    const caller: TeamCaller = { sessionID, agent, run: owned }
+    const caller: TeamCaller = { sessionID, agent, run: owned, messageID: String(toolCtx.messageID) }
     const result = yield* Effect.promise(() => call(input, caller))
     if (!result.ok) {
       const acceptedLine =

@@ -122,6 +122,8 @@ export interface RunRecord {
   promotedFrom?: string
   /** Where the chat moved after this run was tied to a folder, when the run stays behind. Cleared once a team call reports it. */
   movedTo?: string
+  /** The host message id of the parent's latest correction steered into this run while it worked. */
+  steeredMessage?: string
   history: HistoryEntry[]
   requestedModel?: ModelIdentity | null
   loadedModel?: ModelIdentity | null

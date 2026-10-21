@@ -850,14 +850,10 @@ export const FollowupInput = Schema.Struct({
   prompt: Schema.optionalKey(
     Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4000)),
   ).annotate({
-    description: "The correction or answer; it is the child's next message.",
+    description: "The correction or answer; it is the child's next message: a working child reads it after its current step, an idle or stopped one at once.",
   }),
   paths: Schema.optionalKey(Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(40))).annotate({
     description: "Files or dir/* to add to the child's edit scope, repository-relative, e.g. [\"src/cli.ts\"]. Answers a path need; a path you forbade by name is granted again, a forbidden folder stays forbidden. May be sent without prompt.",
-  }),
-  delivery: Schema.optionalKey(Schema.Literals(["now", "queue"])).annotate({
-    description:
-      "queue (default): a working child gets it at its next step boundary, without interrupting the step; an idle or warm stopped child at once. now: only for a child that is idle already.",
   }),
   budget: Schema.optionalKey(FollowupBudget).annotate({
     description: "Changes the child's advisory budget; only given dimensions change.",
@@ -874,7 +870,7 @@ export const FollowupInput = Schema.Struct({
   }),
   rebase: Schema.optionalKey(Schema.Boolean).annotate({
     description:
-      "true: move a clean, idle child's change onto your current HEAD. Conflicts are left in its worktree to resolve and checkpoint before finishing.",
+      "true: move a clean, idle child's change onto your current HEAD; only this does it, a child cannot rebase itself. Conflicts are left in its worktree to resolve and checkpoint before finishing.",
   }),
 })
 export type FollowupInput = typeof FollowupInput.Type

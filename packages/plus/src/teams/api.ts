@@ -95,6 +95,8 @@ export interface TeamCaller {
   readonly sessionID: string
   readonly agent: string
   readonly run: RunRecord
+  /** The calling step's assistant message: ascending, created when the step starts. */
+  readonly messageID?: string
 }
 
 export interface TeamApi {
@@ -705,6 +707,15 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
     return fail("E_FINISH_TWICE", `Report already recorded for attempt ${n}. Corrections arrive as a new attempt; just stop.`, "stop")
   if (isAttemptTerminal(last.state))
     return fail("E_ATTEMPT_ENDED", `Attempt ${n} ended ${last.state} without a report. Continue the Session to open a new attempt.`, "continue the Session")
+  // A correction steered in after this step began reaches the model only at the
+  // next step: reporting now would end the attempt before the child read it
+  // (b12-s6: E_FINISH_TWICE on the work it asked for, which the parent never saw).
+  if (caller.messageID !== undefined && stored.steeredMessage !== undefined && stored.steeredMessage > caller.messageID)
+    return fail(
+      "E_CORRECTION",
+      "Your parent sent a correction while you wrote this report; it is your next message. Act on it, then team_finish.",
+      "read the correction",
+    )
 
   // Done is the parent's final word on this run: never while children still
   // work or their done commits are not in this run's HEAD (s13-b: an
@@ -1085,10 +1096,16 @@ async function diffHandler(args: DiffInput, caller: TeamCaller, table: Permissio
   const bytes = Buffer.byteLength(result.out, "utf8")
   const truncated = bytes > maxBytes
   const head = target.worktree === "removed" ? target.head : await git(directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
+  // A parent's HEAD that moved past the run's base shows its newer work as removals;
+  // a lead read that as the landing deleting it (b12-s6).
+  const outside = (await gitRaw(directory, [...NO_REPOSITORY_PROGRAMS, "merge-base", "--is-ancestor", from, head])).code === 1
   return succeeded({
     run: target.id,
     from,
     head,
+    ...(outside
+      ? { note: `${from} is not in this run's history: this diff also shows, as removals, what that commit has and the run lacks. team_integrate lands only the run's own commits (base..head) on its parent's HEAD.` }
+      : {}),
     bytes,
     truncated,
     patch: truncated ? Buffer.from(result.out, "utf8").subarray(0, maxBytes).toString("utf8") : result.out,

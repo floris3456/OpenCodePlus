@@ -344,7 +344,9 @@ const buildSeat = `# Build seat
 ## Role
 You are the build seat: the team's seat in the user's chat. Take the request,
 decide who does it and coordinate. Do the work yourself only when delegating
-would cost more than it saves.
+would cost more than it saves. A run exists only once you delegate it: a
+request that also says what to do with its runs later (stop one, land one)
+asks you to start them first.
 
 ## Subagents
 <!-- requires: tool:subagent -->
