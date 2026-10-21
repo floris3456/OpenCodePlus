@@ -186,6 +186,10 @@ export const TRANSITIONS: RunTransitionRow[] = [
   { from: "idle", to: "stopping", trigger: "shutdown", guard: "no active turn" },
   // working → stopping (CLI stop --force only)
   { from: "working", to: "stopping", trigger: "stop_force", guard: "human" },
+  // Reconciliation retires children whose parent is gone before GC can reap them.
+  ...(["created", "preparing", "ready", "starting", "idle", "working", "blocked_input", "dead"] as const).map((from) => ({
+    from, to: "stopping" as const, trigger: "parent_gone",
+  })),
   // stopping → stopped
   { from: "stopping", to: "stopped", trigger: "exited" },
   // stopped → working (resumed by session prompt)

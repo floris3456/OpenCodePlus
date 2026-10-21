@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { batchNotify, partition, peek, pendingBytes, put, take } from "../../src/teams/inbox.js"
 import type { InboxItem } from "../../src/teams/inbox.js"
 import { readJson } from "../../src/teams/store.js"
+import { saveRun } from "../../src/teams/run.js"
 
 let dir = ""
 
@@ -17,6 +18,31 @@ afterEach(async () => {
 })
 
 describe("inbox", () => {
+  test.each(["dead", "superseded", "reaped"] as const)("refuses every synthetic notice for a %s run", async (state) => {
+    const id = "main-terminal"
+    await saveRun(dir, {
+      id, state, role: "orchestrator", kind: "main", team: "test", repo: "repo", repoKey: "repo",
+      directory: dir, paths: [], branch: "main", base: "abc", head: "abc", attempts: [], task: null,
+      parent: null, children: [], briefSha: "abc", bundle: "test", budget: {},
+      createdAt: new Date(0).toISOString(), lastUsed: new Date(0).toISOString(), sessionID: null,
+      configDigest: null, history: [],
+    })
+    for (const kind of ["notify", "system", "child.settled"] as const)
+      await expect(put(dir, id, { kind, from: "child", text: "news" })).rejects.toMatchObject({ code: "E_RUN_TERMINAL" })
+    expect(await peek(dir, id)).toEqual([])
+  })
+
+  test("concurrent budget notices share one pending item per child until consumed", async () => {
+    const input = { kind: "notify" as const, from: "child", text: "Budget exceeded", dedupeKey: "budget:child" }
+    const items = await Promise.all(Array.from({ length: 4 }, () => put(dir, "main-parent", input)))
+    expect(new Set(items.map((item) => item.id)).size).toBe(1)
+    expect(await peek(dir, "main-parent")).toHaveLength(1)
+    await take(dir, "main-parent")
+    const next = await put(dir, "main-parent", input)
+    expect(next.id).not.toBe(items[0]!.id)
+    expect(await peek(dir, "main-parent")).toEqual([next])
+  })
+
   test("puts come back from peek in ULID order", async () => {
     const runID = "w-0123456789abcdef"
     const item1 = await put(dir, runID, { kind: "notify", from: "child-1", text: "msg 1" })

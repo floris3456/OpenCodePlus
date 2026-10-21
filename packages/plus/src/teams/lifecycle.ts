@@ -138,8 +138,8 @@ async function saveSafe(root: string, record: RunRecord): Promise<boolean> {
   return Option.isSome(maybe)
 }
 
-async function notifySafe(root: string, parent: string, from: string, text: string): Promise<void> {
-  await Effect.runPromise(io(() => put(root, parent, { kind: "notify", from, text })).pipe(Effect.ignore))
+async function notifySafe(root: string, parent: string, from: string, text: string, dedupeKey?: string): Promise<void> {
+  await Effect.runPromise(io(() => put(root, parent, { kind: "notify", from, text, dedupeKey })).pipe(Effect.ignore))
 }
 
 async function reconcileOne(ctx: Context, root: string, entry: string): Promise<string | undefined> {
@@ -147,6 +147,26 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
   const record = await loadRecordSafe(root, entry)
   if (record === undefined) return undefined
   if (isTerminal(record.state)) return undefined
+  if (record.parent && record.parent !== record.id && record.state !== "stopped") {
+    const parent = await loadRecordSafe(root, record.parent)
+    if (parent === undefined || isTerminal(parent.state) || parent.state === "dead") {
+      // Stop admission before interrupting: the execution-end event must not
+      // deliver a queued followup and start this orphan again.
+      const stopping = await updateRun(root, entry, (current) => {
+        if (isTerminal(current.state) || current.state === "stopped" || current.state === "stopping") return current
+        return transition(current, "stopping", "parent_gone")
+      })
+      if (stopping?.state !== "stopping") return undefined
+      if (stopping.sessionID && await sessionAlive(ctx, stopping.sessionID))
+        await Effect.runPromise(ctx.session.interrupt({ sessionID: Session.ID.make(stopping.sessionID) }))
+      const stopped = await updateRun(root, entry, (current) => {
+        if (current.state !== "stopping") return current
+        return transition(interruptOpenAttempt(withoutRetrying(current)), "stopped", "exited")
+      })
+      if (stopped?.state === "stopped") await evictRunFolder(ctx, stopped)
+      return undefined
+    }
+  }
   if (record.sessionID === null || record.sessionID === undefined) return undefined
   const sessionID = record.sessionID
   const alive = await sessionAlive(ctx, sessionID)
@@ -441,7 +461,7 @@ export async function onSessionIdle(
       attempt.notified !== true
     const next = announce ? markNotified(idle) : idle
     if (announce && attempt !== undefined) settled.attempt = attempt
-    if (!next.stopRequested) return next
+    if (!next.stopRequested || next.state === "stopping") return next
     settled.stopped = true
     const stopped = transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
     return next.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: next.stopRequestedBy } : stopped
@@ -651,7 +671,7 @@ async function notifyParent(ctx: Context, root: string, child: RunRecord, attemp
   const parentID = child.parent
   if (parentID === null || parentID === undefined || parentID === child.id) return
   const parent = await loadRun(root, parentID)
-  if (parent === undefined || isTerminal(parent.state)) return
+  if (parent === undefined || isTerminal(parent.state) || parent.state === "dead") return
   const reportPath = path.join(root, "runs", child.id, `report-${attempt.n}.json`)
   const report = await readJson<SettledReport>(reportPath)
   const displayPath = report === undefined ? undefined : path.join(root, "runs", child.id, `report-${attempt.n}.md`)
@@ -1042,6 +1062,8 @@ export async function checkBudgets(
     const record = await loadRecordSafe(root, entry)
     if (record === undefined || isTerminal(record.state)) continue
     if (record.state !== "working" || !record.parent) continue
+    const parentRecord = await loadRecordSafe(root, record.parent)
+    if (parentRecord === undefined || isTerminal(parentRecord.state) || parentRecord.state === "dead") continue
 
     const hasConfiguredBudget =
       typeof record.budget.turns === "number" ||
@@ -1062,7 +1084,6 @@ export async function checkBudgets(
       const exceededMs = Date.parse(exceededAt)
       const minutesOver = Number.isFinite(exceededMs) ? Math.max(0, Math.floor((now - exceededMs) / 60_000)) : 0
 
-      const parentRecord = await loadRecordSafe(root, record.parent)
       const pingRow =
         parentRecord !== undefined && table !== undefined
           ? bound(table, parentRecord.role, "followup", "limits.budget-ping")
@@ -1100,12 +1121,13 @@ export async function checkBudgets(
   }
 
   for (const [parentId, children] of parentDueMap) {
-    const lines = children.map((c) => {
+    // Store one pending notice per child; delivery still batches all notices
+    // into one prompt. An unread ping must not grow the inbox every interval.
+    for (const c of children) {
       const dimsText = c.dims.map((d) => `${d.name} ${d.used}/${d.budget}`).join(", ")
-      return `- Run ${c.id} (${c.role}): ${dimsText}, ${c.minutesOver} min over`
-    })
-    const text = `Budget exceeded for ${children.length} child run(s):\n${lines.join("\n")}\nFollow up with team_followup to raise budget (with reason), nudge, or stop with team_stop.`
-    await notifySafe(root, parentId, children[0].id, text)
+      const text = `Budget exceeded for child run:\n- Run ${c.id} (${c.role}): ${dimsText}, ${c.minutesOver} min over\nFollow up with team_followup to raise budget (with reason), nudge, or stop with team_stop.`
+      await notifySafe(root, parentId, c.id, text, `budget:${c.id}`)
+    }
   }
 
   for (const childId of dueChildIds) {
