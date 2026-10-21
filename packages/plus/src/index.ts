@@ -134,9 +134,11 @@ export interface PlusState {
   pendingForce: boolean
   pendingRefresh: boolean
   /**
-   * Last time this Location was used (a prompt, a warming decision, a Plus RPC).
-   * A Location idle longer than IDLE_REFRESH_MS, with no session running here,
-   * does not refresh on another Location's write: it refreshes on next use.
+   * Last time this Location was used (a prompt, a Plus RPC). A Location idle
+   * longer than IDLE_REFRESH_MS, with no session running here, does not
+   * refresh on another Location's write: it refreshes on next use. A warming
+   * ping catches up first but is no use: a finished chat kept warm would
+   * otherwise refresh on every write.
    */
   lastUsedAt: number
   /** Sessions running in this Location right now (execution started, not yet settled). */
@@ -308,7 +310,7 @@ export default Plugin.define({
       // other way round, the fact kept core's proposal ("on") after Plus had
       // turned warming off.
       // A warming ping replays this folder's prefix: bring it up to date first.
-      yield* ctx.session.hook("warming", (event) => Effect.andThen(useLocation(ctx, state), decideWarmingFor(ctx, state, event)))
+      yield* ctx.session.hook("warming", (event) => Effect.andThen(catchUp(ctx, state), decideWarmingFor(ctx, state, event)))
       // A location with a coalesced refresh pending applies it before a chat
       // request runs, so no request uses stale instructions.
       yield* ctx.session.hook("prompt", (event) =>
@@ -7010,8 +7012,13 @@ function idleLocation(state: PlusState): boolean {
 export function useLocation(ctx: Context, state: PlusState): Effect.Effect<void> {
   return Effect.suspend(() => {
     state.lastUsedAt = Date.now()
-    return state.pendingRefresh ? flushPendingRefresh(ctx, state) : Effect.void
+    return catchUp(ctx, state)
   })
+}
+
+/** Applies a refresh this Location deferred, without counting as a use (a warming ping). */
+export function catchUp(ctx: Context, state: PlusState): Effect.Effect<void> {
+  return Effect.suspend(() => (state.pendingRefresh ? flushPendingRefresh(ctx, state) : Effect.void))
 }
 
 // The coalesced refresh: one trailing second of quiet after the last notice.
@@ -7100,9 +7107,10 @@ export function stuckRefreshes(): string {
 // location's pending refresh: one refresh that never ends stops every prompt
 // in every location (B18: a landed child's removed worktree, whose host reads
 // never answered). So a team worktree's location whose directory is gone is
-// not refreshed, and a refresh gives the lock up after a minute. The directory
-// is checked again once the lock is held: a landing removes the worktree while
-// its refresh waits in line (B69).
+// not refreshed, and a refresh gives the lock up after a minute. Both are
+// checked again once the lock is held, with whether the location is still
+// loaded: a landing removes the worktree, and a stopped run's folder is
+// evicted, while its refresh waits in line (B69).
 const REFRESH_LIMIT = Duration.seconds(60)
 
 export function refreshFromHost(ctx: Context, state: PlusState, limit: Duration.Duration = REFRESH_LIMIT): Effect.Effect<void> {
@@ -7112,7 +7120,7 @@ export function refreshFromHost(ctx: Context, state: PlusState, limit: Duration.
   refreshPhase(at, "refresh: waiting for the process refresh lock")
   return refreshProcessSemaphore.withPermits(1)(
     Effect.gen(function* () {
-      if (gone()) return
+      if (gone() || !(yield* ctx.locations.loaded(ctx.location))) return
       refreshPhase(at, "refresh: loading the stores")
       const hasHostChange = state.pendingHostChange
       const forced = hasHostChange || state.pendingForce
