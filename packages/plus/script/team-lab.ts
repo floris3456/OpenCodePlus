@@ -51,10 +51,12 @@ async function runTask() {
   const followups = args["then-file"] === undefined ? [] : (await Bun.file(args["then-file"]).text()).split(/\n---\n/).map((text) => text.trim()).filter((text) => text.length > 0)
   await mkdir(out, { recursive: true })
   // A chat takes its agent's model only when the client sets it (the TUI does on agent choice).
-  const [providerID, ...modelParts] = required("model").split("/")
+  // --model provider/model[#variant] (or @variant), the variant (reasoning effort) as the TUI would pick it.
+  const [spec, variant] = required("model").split(/[#@]/)
+  const [providerID, ...modelParts] = spec!.split("/")
   const created = await api("POST", "/api/session", {
     agent: required("agent"),
-    model: { providerID, id: modelParts.join("/") },
+    model: { providerID, id: modelParts.join("/"), ...(variant === undefined ? {} : { variant }) },
     location: { directory: dir },
     title: path.basename(out),
   })
