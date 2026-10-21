@@ -821,9 +821,9 @@ test("[20h] a refusal carries the accepted line verbatim", async () => {
       await enableShippedTeam(await registerAll(fixture.ctx))
       const ctx = toolContext("ses_walkthrough_refusal", "orchestrator")
 
-      const checksInput = { checks: [{ id: "unit", argv: ["bun", "test"] }] }
-      const checksMessage = await runMessage(need(fixture.tools, "team_set_checks"), checksInput, ctx)
-      call("team_set_checks", checksInput, checksMessage)
+      const checksInput = { requestID: "ev-check", role: "implementer", objective: "Implement the change with a whole-suite check.", deliverable: { kind: "commit" }, scope: { paths: ["src/*"] }, checks: [{ id: "unit", argv: ["bun", "test"] }] }
+      const checksMessage = await runMessage(need(fixture.tools, "team_delegate"), checksInput, ctx)
+      call("team_delegate", checksInput, checksMessage)
       expect(checksMessage).toBe(
         // The refusal names the check and what this project offers instead.
         `E_CHECKS: Check "unit": Checks must be explicit bun test FILE or bun run SCRIPT commands. Whole-suite bun test is not permitted. This project names no checks (.opencodeplus/checks.json; the Project checks command in the TUI suggests them), so only bun test FILE and bun run SCRIPT run.\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}`,

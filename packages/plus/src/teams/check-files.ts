@@ -1,8 +1,9 @@
 // The files a run's checks run. A check judges a run only while the run cannot
 // rewrite what the check runs, so a member whose team_checkpoint row
 // "Files its checks run stay unchanged" is on (a Basic implementer) commits
-// none of them: its delegator wrote them, and only naming one in the Brief's
-// scope.paths hands it over (api.ts checkpointHandler).
+// none of the existing ones: its delegator wrote them, and only naming one in
+// the Brief's scope.paths hands it over (api.ts checkpointHandler). A missing
+// assigned test inside scope is the child's to create.
 //
 // A check's files, read from its stored argv against the run's base commit:
 // - every file a `bun test` check names, even one the base does not hold yet,
@@ -59,7 +60,7 @@ function namedTestFiles(checks: readonly Check[]): Set<string> {
 
 /**
  * Every `bun test` file or directory a check names that the base commit does
- * not hold. A missing one refuses the delegation before any run is created: a
+ * not hold. A missing one outside writable scope refuses the delegation: a
  * check that can never pass judges nothing. A named directory the base holds
  * with files under it counts as present (new files under it are free).
  */

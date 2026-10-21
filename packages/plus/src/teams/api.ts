@@ -25,7 +25,6 @@ import { requireWorktree } from "./availability.js"
 import { chatEditRefusal, isScopePath, namesProtectedState, protectedStateRefusal, runScope, scopeRefusal } from "./scope.js"
 import { sessionContextTokens, sessionTokens, sessionTokenUsage } from "./usage.js"
 import { followupHandler } from "./api-followup.js"
-import { setChecksHandler } from "./api-git-ops.js"
 import { integrateHandler } from "./api-integrate.js"
 import { stopHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
@@ -63,7 +62,6 @@ import {
   ModelIdentity,
   Policy,
   Report,
-  SetChecksInput,
   StatusInput,
   StopInput,
   budgetExhaustion,
@@ -104,7 +102,6 @@ export interface TeamApi {
   readonly followup: (input: FollowupInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly integrate: (input: IntegrateInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly checkpoint: (input: CheckpointInput, caller: TeamCaller) => Promise<TeamApiResult>
-  readonly set_checks: (input: SetChecksInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly stop: (input: StopInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly status: (input: StatusInput, caller: TeamCaller) => Promise<TeamApiResult>
   readonly diff: (input: DiffInput, caller: TeamCaller) => Promise<TeamApiResult>
@@ -162,7 +159,6 @@ export function createTeamApi(ctx: Context, state: PlusState): TeamApi {
     followup: (input, caller) => guarded(() => followupHandler(ctx, state, input, caller, state.permissions)),
     integrate: (input, caller) => guarded(() => integrateHandler(ctx, input, caller, state.permissions)),
     checkpoint: (input, caller) => guarded(() => checkpointHandler(input, caller, state.permissions)),
-    set_checks: (input, caller) => guarded(() => setChecksHandler(input, caller)),
     stop: (input, caller) => guarded(() => stopHandler(ctx, input, caller, state.permissions)),
     status: (input, caller) => guarded(() => statusHandler(ctx, input, caller, state.permissions)),
     diff: (input, caller) => guarded(() => diffHandler(input, caller, state.permissions)),
@@ -809,6 +805,11 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, tabl
   const locked = allows(table, record.role, "checkpoint", "requirements.check-files")
     ? await checkFiles(record.directory, record.base, await readChecks(root, record.id))
     : new Set<string>()
+  // A test assigned for this run to create has no existing assertion to
+  // protect. Its admission already required writable scope, including dir/*.
+  if (locked.size > 0) {
+    for (const missing of await missingCheckFiles(record.directory, record.base, await readChecks(root, record.id))) locked.delete(missing.file)
+  }
   const lockRefusal = (file: string): string | undefined =>
     locked.has(file) && !(scope?.paths.includes(file) ?? false)
       ? `"${file}" is a file your checks run, so it is not yours to change (Requirements for a commit). If it is wrong, commit everything else, then finish blocked with needs=[{kind:"path",detail:"${file}: why it must change"}].`

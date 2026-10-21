@@ -4,8 +4,8 @@
 // Tools and rules row) may say which rows it depends on, on the first line
 // under its heading:
 //
-//   ## Integration checks
-//   <!-- requires: tool:team_set_checks -->
+//   ## Reporting
+//   <!-- requires: tool:team_finish -->
 //
 // Each id is a row's item id (`tool:<id>`, `skill:<id>`, `mcp:<server>`,
 // `perm:<tool>:<rule>`); `!<id>` means the row must be off (guidance that

@@ -593,7 +593,7 @@ export function childSettledText(
   const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
-    if (run.parent !== null && (run.stoppedBy === run.parent || run.stopRequestedBy === run.parent) && (attempt.state === "interrupted" || run.state === "stopped")) {
+    if (run.parent !== null && run.state === "stopped" && (run.stopRequestedBy ?? run.stoppedBy) === run.parent) {
       lines.push("next: nothing is needed; you stopped this child. team_followup resumes it with its context.")
       return lines.join("\n")
     }

@@ -864,7 +864,7 @@ export const FollowupInput = Schema.Struct({
   }),
   rebase: Schema.optional(Schema.Boolean).annotate({
     description:
-      "First move the child's commits onto your current HEAD, e.g. once work it needs has landed. The child must not be working and its worktree must be clean; a conflict refuses and names the files.",
+      "true: move a clean, idle child's change onto your current HEAD. Conflicts are left in its worktree to resolve and checkpoint before finishing.",
   }),
 })
 export type FollowupInput = typeof FollowupInput.Type
@@ -898,13 +898,6 @@ export const CheckpointInput = Schema.Struct({
   }),
 })
 export type CheckpointInput = typeof CheckpointInput.Type
-
-export const SetChecksInput = Schema.Struct({
-  checks: CheckSpecs.annotate({
-    description: "Your run's integration checks (replaces the list, at most 12): each landing is verified with them.",
-  }),
-})
-export type SetChecksInput = typeof SetChecksInput.Type
 
 export const StopInput = Schema.Struct({
   run: RunID.annotate({ description: "The child run to stop. A followup after a stop needs compactWith once the child is cold." }),

@@ -1146,7 +1146,7 @@ test("team_stop on a waiting child ends its open attempt interrupted; the stoppi
 test.each([true, false])("a working child's stop settlement advises its parent only when someone else stopped it (parent stop: %s)", async (parentStop) => {
   await withIsolatedTeamsRoot(async (root) => {
     const runs = family()
-    await saveFamily(root, { ...runs, orch: { ...runs.orch, stopRequested: true, stopRequestedBy: parentStop ? runs.main.id : "another-run" } })
+    await saveFamily(root, { ...runs, orch: { ...runs.orch, stoppedBy: runs.main.id, stopRequested: true, stopRequestedBy: parentStop ? runs.main.id : "another-run" } })
     const sessions = recordSession()
     await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_orch_wait"))
     const orch = await loadRun(root, runs.orch.id)

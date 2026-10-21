@@ -20,7 +20,6 @@ export const teamTools = [
   "followup",
   "integrate",
   "checkpoint",
-  "set_checks",
   "stop",
   "status",
   "get_context",

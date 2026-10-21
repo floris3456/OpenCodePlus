@@ -283,7 +283,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     // in no diff and lands nowhere). It keeps team_integrate: in the user's
     // chat it lands what the orchestrator it delegated to reports done, which
     // that orchestrator already verified, so it records and runs no checks.
-    ...teamToolRows(off, ["set_checks", "check"]),
+    ...teamToolRows(off, ["check"]),
     ...reach(["status", "list"]),
     ...rows(on, [
       "tool:shell",
@@ -319,7 +319,7 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
   // so its own diff is always empty.
   implementer: {
     ...worker,
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "set_checks", "stop", "status", "list"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "stop", "status", "list"]),
     // The files its checks run are its delegator's (an orchestrator writes the
     // tests): it commits one only when its Brief's scope.paths names it.
     ...rows(on, ["perm:team_finish:requirements.clean", "perm:team_get_context:accepts.scope-paths", "perm:team_checkpoint:requirements.check-files"]),
@@ -333,14 +333,14 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "stop", "status", "list", "check"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list", "check"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
   },
   scout: {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "set_checks", "stop", "status", "list", "check", "diff"]),
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list", "check", "diff"]),
   },
   // The build seat is the user's chat: nobody delegates to it, so it has no
   // report to finish. It checkpoints what it may edit, like any chat run.

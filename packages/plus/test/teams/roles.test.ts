@@ -141,7 +141,7 @@ test("final ceilings are the team tool rows, exactly the old ceiling of every ro
     planner: ["delegate", "followup", "integrate", "stop", "finish", "checkpoint", "status", "list", "get_context", "diff"],
     // An orchestrator commits the tests that judge its implementers (and only
     // what it may edit: Requirements for a commit).
-    orchestrator: ["delegate", "followup", "integrate", "set_checks", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
+    orchestrator: ["delegate", "followup", "integrate", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
     reviewer: ["finish", "get_context", "diff"],
     scout: ["finish", "get_context"],

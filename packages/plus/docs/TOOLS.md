@@ -351,7 +351,7 @@ An unknown role is `E_ROLE` (`packages/plus/src/teams/policy.ts:25`).
 | Kind | Team tools (all native) |
 | --- | --- |
 | planner | `delegate`, `followup`, `stop`, `finish`, `status`, `diff`, `list`, `get_context` |
-| orchestrator | `delegate`, `followup`, `integrate`, `set_checks`, `stop`, `finish`, `status`, `diff`, `list`, `get_context`, `check` |
+| orchestrator | `delegate`, `followup`, `integrate`, `checkpoint`, `stop`, `finish`, `status`, `diff`, `list`, `get_context`, `check` |
 | implementer | `checkpoint`, `finish`, `status`, `diff`, `get_context`, `check` |
 | reviewer | `finish`, `status`, `diff`, `get_context` |
 | scout | `finish`, `status`, `diff`, `get_context` |
@@ -371,7 +371,6 @@ implementer/reviewer/scout combinations checked in the API
 | `team_followup` | native | `FollowupInput` (`packages/plus/src/teams/schema.ts:607`) | Send a correction to an owned child |
 | `team_integrate` | native | `IntegrateInput` (`packages/plus/src/teams/schema.ts:625`) | Enqueue a completed child commit |
 | `team_checkpoint` | native | `CheckpointInput` (`packages/plus/src/teams/schema.ts:631`) | Commit intended files after checking HEAD |
-| `team_set_checks` | native | `SetChecksInput` (`packages/plus/src/teams/schema.ts:638`) | Record the task's focused checks |
 | `team_stop` | native | `StopInput` (`packages/plus/src/teams/schema.ts:650`) | Stop an owned child, optionally with a reason kept on the run |
 | `team_status` | native | `StatusInput` (`packages/plus/src/teams/schema.ts:655`) | Self plus direct children status; `waitingOn` names the open children a waiting run waits on (there is no `team_wait`: a settling child wakes its parent) |
 | `team_diff` | native | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff |
@@ -379,12 +378,26 @@ implementer/reviewer/scout combinations checked in the API
 | `team_get_context` | native | `GetContextInput` (`packages/plus/src/teams/schema.ts:698`) | Scope, checks, HEAD, siblings (the parent's other open runs), inbox and budget; the Brief text again only once a compaction took it out of the chat |
 | `team_check` | native | `CheckInput` (`packages/plus/src/teams/schema.ts:701`) | Run one assigned check, or any project check (only assigned ones judge `finish`) |
 
-Registration lines: `packages/plus/src/teams/tools.ts:343` (`delegate`),
-`:352` (`finish`), `:361` (`followup`), `:370` (`integrate`), `:379`
-(`checkpoint`), `:388` (`set_checks`), `:406` (`stop`),
-`:415` (`status`), `:433` (`diff`), `:442` (`list`), `:451`
-(`get_context`), `:460` (`check`). Every tool's permission action is
-`team.<name>` (`packages/plus/src/teams/tools.ts:483`).
+Registration: `packages/plus/src/teams/tools.ts`, `registerTeamTools`.
+Every tool's permission action is `team.<name>`.
+
+`team_integrate` automatically checks the rebased tip with the child's checks,
+already-landed children's checks and the parent's Brief checks. Commands with
+the same argv/cwd run once. The child's checks must pass; other failures block
+only if they pass at the parent's HEAD. Pre-existing failures are returned as
+`stillRed` with a note, and passing receipts carry to the landed HEAD.
+
+A conflict's `next` asks for `team_followup` with `rebase: true`: Plus keeps
+the old tip reachable, replays the whole change onto the parent's HEAD, and
+leaves unstaged conflicts and untracked new files for the same child. Its
+prompt names all touched files; resolve, check, checkpoint them and finish.
+A fresh implementer with the rework task is the fallback if it cannot resume.
+Busy or dirty children still refuse a rebase.
+
+A missing assigned test file is accepted when the child's writable scope
+includes it. Outside scope or forbidden is `E_CHECKS`; finish still requires
+the check to pass. A settlement after the parent's own stop says nothing is
+needed and followup resumes the child with its context.
 
 Validation ceilings: run ids match `^(main|w)-[0-9a-f]{16}$`
 (`packages/plus/src/teams/schema.ts:18`); heads are 40 hex chars

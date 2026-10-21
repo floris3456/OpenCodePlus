@@ -830,8 +830,8 @@ test("the Attached brief file row sets the paste limit", async () => {
 }, 30000)
 
 // Every `bun test FILE` a brief names is resolved against the child's base
-// commit: a missing file refuses the delegation, names the file, and creates
-// no run.
+// commit: a missing file outside scope refuses the delegation, names the file,
+// and creates no run.
 test("a check naming a file the base does not hold refuses the delegation and creates no run", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
@@ -2039,7 +2039,7 @@ test("delegate names a missing briefFile, and refuses a review while a done chil
   })
 }, 30000)
 
-test.each(["orchestrator", "implementer"])("%s may be assigned a new test inside scope but not outside or forbidden", async (role) => {
+test.each(["orchestrator", "implementer"].flatMap((role) => ["packages/plus/test/new.test.ts", "packages/plus/test/*"].map((scope) => [role, scope] as const)))("%s may write and finish a new assigned test inside %s", async (role, scope) => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -2055,10 +2055,19 @@ test.each(["orchestrator", "implementer"])("%s may be assigned a new test inside
           checks: [{ id: "unit", argv: ["bun", "test", "packages/plus/test/new.test.ts"] }],
         })
       // The checkpoint check-files row permits explicitly scoped test files.
-      expect(required(await api.delegate(brief("author-1", ["packages/plus/src/*", "packages/plus/test/new.test.ts"]), callerFor(parent)))).toMatchObject({ state: "starting" })
+      const delegated = required(await api.delegate(brief("author-1", ["packages/plus/src/*", scope]), callerFor(parent))) as { run: string }
+      const child = (await loadRun(root, delegated.run))!
+      expect(child.state).toBe("starting")
       // Outside its scope it could not write it: refused as before.
       expect(rejected(await api.delegate(brief("author-2", ["packages/plus/src/*"]), callerFor(parent))).code).toBe("E_CHECKS")
       expect(rejected(await api.delegate(brief("author-3", ["packages/plus/test/*"], ["packages/plus/test/new.test.ts"]), callerFor(parent))).code).toBe("E_CHECKS")
+      const file = "packages/plus/test/new.test.ts"
+      await Bun.write(path.join(child.directory, file), FAILING_TEST)
+      required(await api.checkpoint({ files: [file], message: "test: add assigned test" }, callerFor(child)))
+      expect(rejected(await api.finish(finishInput({ status: "done", summary: "New test written and verified." }), callerFor(child))).code).toBe("E_CHECKS_RED")
+      await Bun.write(path.join(child.directory, file), PASSING_TEST)
+      required(await api.checkpoint({ files: [file], message: "test: complete assigned test" }, callerFor(child)))
+      required(await api.finish(finishInput({ status: "done", summary: "New test written and verified." }), callerFor(child)))
     } finally {
       await removeRepo(repo.dir)
     }

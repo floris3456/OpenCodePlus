@@ -8,6 +8,8 @@ import { create, load } from "../../src/teams/tasks.js"
 import { git } from "../../src/teams/git.js"
 import { list as listWorktrees } from "../../src/teams/worktree.js"
 import { saveRun, type RunRecord } from "../../src/teams/run.js"
+import { atomicJson } from "../../src/teams/store.js"
+import { execute, lastReceipt, stale } from "../../src/teams/checks.js"
 
 let scratch = ""
 let stateDir = ""
@@ -127,6 +129,66 @@ afterAll(async () => {
 })
 
 describe("merge queue", () => {
+  test("a child's own check passing at its tip but red in combination always blocks", async () => {
+    const parent = await makeParent("own-check")
+    const childRun = "own-check-child"
+    const parentRun = "own-check-parent"
+    const child = await makeChild("own-check", parent.head, {
+      "own.test.ts": 'import { test, expect } from "bun:test"\ntest("parent contract", async () => expect(await Bun.file("README.md").text()).toBe("fixture\\n"))\n',
+    }, "test: parent contract")
+    const check = { id: "own", argv: ["bun", "test", "own.test.ts"] }
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [check])
+    expect((await execute(stateDir, { runID: childRun, check, worktree: child.dir })).passed).toBe(true)
+    const parentHead = await commitFile(parent.dir, "README.md", "new contract\n", "feat: change contract")
+    await create(stateDir, childRun, [{ id: childRun, title: "Own check", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["own.test.ts"], checks: [check] }])
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    // The command is also assigned to the parent: deduplication must retain
+    // child ownership, even though this test is missing at the parent's HEAD.
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, [{ ...check, id: "parent-alias" }]))
+    expect(result.processed[0]).toMatchObject({ state: "red", redChecks: ["parent-alias"] })
+    expect(result.processed[0].stillRed).toBeUndefined()
+    expect(await headOf(parent.dir)).toBe(parentHead)
+  })
+
+  test("landings derive earlier children's checks, allow pre-existing red and block new red", async () => {
+    const parent = await makeParent("automatic")
+    const parentRun = "automatic-parent"
+    const firstRun = "automatic-first"
+    const secondRun = "automatic-second"
+    const baseline = await commitFile(parent.dir, "gate.test.ts", 'import { test, expect } from "bun:test"\ntest("gate", async () => expect(await Bun.file("README.md").text()).toBe("fixture\\n"))\n', "test: gate")
+    const first = await makeChild("automatic-first", baseline, { "first.txt": "first\n" }, "feat: first")
+    const second = await makeChild("automatic-second", baseline, { "README.md": "broken\n" }, "feat: second")
+    const check = { id: "unit", argv: ["bun", "test", "gate.test.ts"] }
+    await atomicJson(join(stateDir, "runs", firstRun, "checks.json"), [check])
+    await create(stateDir, secondRun, [{ id: secondRun, title: "Second", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["README.md"], checks: [] }])
+    for (const [childRun, child] of [[firstRun, first], [secondRun, second]] as const)
+      await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, [{ id: "pending-test", argv: ["bun", "test", "not-landed.test.ts"] }]))
+    expect(result.processed[0]).toMatchObject({ state: "landed", stillRed: ["pending-test"] })
+    expect(result.processed[1]).toMatchObject({ state: "red", redChecks: ["unit"], stillRed: ["pending-test"] })
+    expect(await headOf(parent.dir)).toBe(result.processed[0].landedHead!)
+    expect(await lastReceipt(stateDir, parentRun, "pending-test", result.processed[0].landedHead)).toMatchObject({ passed: false })
+  })
+
+  test("commands deduplicate across owners and aliases without losing parent finish receipts", async () => {
+    const parent = await makeParent("aliases")
+    const parentRun = "aliases-parent"
+    const childRun = "aliases-child"
+    const baseline = await commitFile(parent.dir, "gate.test.ts", 'import { test, expect } from "bun:test"\ntest("gate", () => expect(1).toBe(1))\n', "test: gate")
+    const child = await makeChild("aliases", baseline, { "other.test.ts": 'import { test, expect } from "bun:test"\ntest("other", () => expect(2).toBe(2))\n' }, "test: other")
+    const checks = [{ id: "unit", argv: ["bun", "test", "gate.test.ts"] }, { id: "alias", argv: ["bun", "test", "gate.test.ts"] }]
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [{ id: "same-command", argv: checks[0].argv }, { id: "unit", argv: ["bun", "test", "other.test.ts"] }])
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, checks))
+    expect(result.processed[0].state).toBe("landed")
+    const head = await headOf(parent.dir)
+    expect(await stale(stateDir, checks, parentRun, head)).toEqual([])
+    expect(await lastReceipt(stateDir, parentRun, "unit", head)).toMatchObject({ argv: checks[0].argv, dirty: false })
+    expect(await lastReceipt(stateDir, childRun, "unit", head)).toMatchObject({ argv: ["bun", "test", "other.test.ts"], passed: true })
+    const audit = (await Bun.file(join(stateDir, "audit.log")).text()).trim().split("\n").map((line) => JSON.parse(line) as { head: string; kind: string })
+    expect(audit.filter((line) => line.kind === "receipt.written" && line.head === head)).toHaveLength(2)
+  })
+
   test("a clean child lands and the temp worktree is gone", async () => {
     const parentRun = "w-0000000000000001"
     const childRun = "w-0000000000000002"
@@ -187,13 +249,14 @@ describe("merge queue", () => {
       }),
     )
     const before = await listWorktrees(repoRoot)
-    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, [{ id: "unlanded", argv: ["bun", "test", "unlanded.test.ts"] }]))
     expect(result.processed[0].state).toBe("conflict")
     const all = await queue(stateDir, parentRun)
     expect(all[0].conflictFiles ?? []).toContain("base.txt")
     expect(all[0].reworkTask).toBe("T1.rework.1")
     const graph = await load(stateDir, planRun)
     expect(graph.tasks["T1.rework.1"].paths).toContain("base.txt")
+    expect(graph.tasks["T1.rework.1"].checks).toEqual([])
     expect(graph.tasks["T1"].state).toBe("rework")
     expect(await headOf(parent.dir)).toBe(p1)
     expect(await statusOf(parent.dir)).toBe("")

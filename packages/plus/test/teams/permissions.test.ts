@@ -157,7 +157,7 @@ test("an implementer-preset member's rows resolve to the old implementer answers
   expect(off).toEqual(
     [
       "shell", "question", "subagent", "search_tavily_search", "search_tavily_extract", "websearch",
-      "team_delegate", "team_followup", "team_integrate", "team_set_checks", "team_stop", "team_status", "team_list",
+      "team_delegate", "team_followup", "team_integrate", "team_stop", "team_status", "team_list",
       ...seatOnlyTools,
     ].toSorted(),
   )
@@ -300,7 +300,6 @@ test("a published member carries its preset's denies while a non-member carries 
   expect(has(orchestrator, "team_delegate", "*", "deny")).toBe(false)
   // It commits the tests that judge its implementers.
   expect(has(orchestrator, "team_checkpoint", "*", "deny")).toBe(false)
-  expect(has(orchestrator, "team_set_checks", "*", "deny")).toBe(false)
   // A member is never hidden from the namespace it belongs to.
   expect(has(member, "team.*", "*", "deny")).toBe(false)
 

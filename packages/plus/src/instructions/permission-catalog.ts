@@ -913,20 +913,6 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       ],
     },
   ],
-  team_set_checks: [
-    {
-      id: "checks",
-      label: "Check commands",
-      kind: "input",
-      field: "checks[].argv",
-      summary: "Commands this member may record as integration checks.",
-      rows: [
-        { id: "tests", label: "Test files (bun test FILE)", on: true, patterns: ["bun test *"], message: "recording test checks is not allowed here" },
-        { id: "scripts", label: "Package scripts (bun run SCRIPT)", on: true, patterns: ["bun run *"], message: "recording package-script checks is not allowed here" },
-      ],
-    },
-    approval(),
-  ],
   team_stop: [runs("team_stop"), approval()],
   team_status: [runs("team_status")],
   team_diff: [

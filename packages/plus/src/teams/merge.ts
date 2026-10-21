@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { atomicJson, lock, readJson, ulid } from "./store.js"
 import { git, gitRaw } from "./git.js"
-import { execute } from "./checks.js"
+import { computePolicyDigest, execute, type Receipt } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -21,8 +21,10 @@ export interface MergeEntry {
   state: MergeState
   conflictFiles?: string[]
   redChecks?: string[]
-  /** Every red check fails at the parent's HEAD too, without the child: maybe not the child's doing. */
+  /** Historical entries used this flag when pre-existing failures blocked landing. */
   redAtParent?: boolean
+  /** Other assigned checks that already fail without this landing. */
+  stillRed?: string[]
   landedHead?: string
   reworkTask?: string
   at: string
@@ -139,24 +141,24 @@ async function removeTemp(root: string, ctx: MergeContext, dir: string): Promise
 async function copyReceipts(
   root: string,
   runID: string,
-  ids: string[],
-  fromHead: string,
+  checks: Check[],
+  passed: Receipt[],
   toHead: string,
 ): Promise<void> {
-  if (fromHead === toHead) return
   const dir = join(root, "runs", runID, "receipts")
-  for (const id of ids) {
-    const fromStem = `${id}-${fromHead.slice(0, 7)}`
-    const toStem = `${id}-${toHead.slice(0, 7)}`
-    const receipt = await readJson<Record<string, unknown>>(join(dir, `${fromStem}.json`))
+  for (const check of checks) {
+    const receipt = passed.find((item) => commandKey(item) === commandKey(check))
     if (receipt === undefined) continue
-    receipt["head"] = toHead
+    const toStem = `${check.id}-${toHead.slice(0, 7)}`
+    const outputPath = join(dir, `${toStem}.log`)
     await Effect.runPromise(io(() => mkdir(dir, { recursive: true })))
-    await atomicJson(join(dir, `${toStem}.json`), receipt)
-    await Effect.runPromise(
-      Effect.ignore(io(() => copyFile(join(dir, `${fromStem}.log`), join(dir, `${toStem}.log`)).then(() => undefined))),
-    )
+    await atomicJson(join(dir, `${toStem}.json`), { ...receipt, id: check.id, head: toHead, policyDigest: computePolicyDigest(check), outputPath })
+    if (receipt.outputPath !== outputPath) await copyFile(receipt.outputPath, outputPath)
   }
+}
+
+function commandKey(check: { readonly argv: readonly string[]; readonly cwd?: string }): string {
+  return JSON.stringify([check.cwd ?? "", check.argv])
 }
 
 function listMergeFiles(root: string, parentRun: string): Promise<string[] | undefined> {
@@ -275,6 +277,29 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
     Effect.gen(function* () {
       const taskIdentity = yield* io(() => resolveTaskIdentity(root, entry.childRun))
       const rebaseBase = yield* io(() => getHead(ctx.parentWorktree))
+      // The queue already records which children landed; checks need no second
+      // registry. Group by command AND directory, retaining child ownership.
+      const landed = yield* io(() => queue(root, entry.parentRun))
+      const sources = yield* io(() =>
+        Promise.all(
+          [...new Set([entry.childRun, ...landed.filter((item) => item.state === "landed").map((item) => item.childRun)])].map(async (runID) => ({
+            runID,
+            checks: (await readJson<Check[]>(join(root, "runs", runID, "checks.json"))) ?? [],
+          })),
+        ),
+      )
+      const groups = new Map<string, { check: Check; runID: string; own: boolean }>()
+      for (const source of [{ runID: entry.parentRun, checks: ctx.checks }, ...sources]) {
+        for (const check of source.checks) {
+          const key = commandKey(check)
+          const previous = groups.get(key)
+          groups.set(key, {
+            check: previous?.check ?? check,
+            runID: previous?.runID ?? source.runID,
+            own: previous?.own === true || source.runID === entry.childRun,
+          })
+        }
+      }
       let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso() }
       yield* io(() => saveEntry(root, cur))
       const tempDir = tempDirFor(ctx, entry.parentRun, entry.id)
@@ -289,39 +314,53 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
             .map((s) => s.trim())
             .filter((s) => s !== "")
           yield* io(() => gitRaw(tempDir, [...NO_REPOSITORY_PROGRAMS, "rebase", "--abort"]).then(() => undefined))
-          const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, conflictFiles, ctx.checks))
+          const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, conflictFiles, sources.find((source) => source.runID === entry.childRun)?.checks ?? []))
           cur = conflictEntry(cur, conflictFiles, reworkId)
           yield* io(() => saveEntry(root, cur))
           return cur
         }
-        // 2. verifying: parent's checks run in the temp worktree.
+        // 2. Verify the combined change, then compare only other red checks
+        // against the parent. The landing child's own checks must always pass.
         cur = { ...cur, state: "verifying", updatedAt: nowIso() }
         yield* io(() => saveEntry(root, cur))
-        const redIds: string[] = []
+        const rebasedTip = yield* io(() => getHead(tempDir))
+        const passed: Receipt[] = []
         const redChecks: Check[] = []
-        for (const c of ctx.checks) {
-          const res = yield* io(() => execute(root, { runID: entry.parentRun, check: c, worktree: tempDir }))
-          if (!res.passed) {
-            redIds.push(c.id)
-            redChecks.push(c)
+        const compare: { check: Check; runID: string }[] = []
+        const stillRed: string[] = []
+        for (const group of groups.values()) {
+          const res = yield* io(() => execute(root, { runID: group.runID, check: group.check, worktree: tempDir }))
+          if (res.passed) {
+            passed.push(res)
+            continue
+          }
+          if (group.own) {
+            redChecks.push(group.check)
+            continue
+          }
+          compare.push(group)
+        }
+        if (compare.length > 0) {
+          yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "checkout", "--quiet", "--detach", "--force", rebaseBase]))
+          for (const group of compare) {
+            const baseline = yield* io(() => execute(root, { runID: group.runID, check: group.check, worktree: tempDir }))
+            if (baseline.passed) {
+              redChecks.push(group.check)
+              continue
+            }
+            stillRed.push(group.check.id)
           }
         }
-        if (redIds.length > 0) {
-          // Whether they fail at the parent's HEAD as well, without the child
-          // (say the tests of tasks not landed yet): then the caller learns
-          // that redoing this child may fix nothing.
-          yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "checkout", "--quiet", "--detach", "--force", rebaseBase]))
-          const passedAtParent: boolean[] = []
-          for (const c of redChecks) passedAtParent.push((yield* io(() => execute(root, { runID: entry.parentRun, check: c, worktree: tempDir }))).passed)
+        if (stillRed.length > 0) cur = { ...cur, stillRed }
+        if (redChecks.length > 0) {
           const reworkId = yield* io(() => reworkTask(root, taskIdentity.planRun, taskIdentity.taskID, [], redChecks))
-          cur = { ...redEntry(cur, redIds, reworkId), ...(passedAtParent.every((passed) => !passed) ? { redAtParent: true } : {}) }
+          cur = redEntry(cur, redChecks.map((check) => check.id), reworkId)
           yield* io(() => saveEntry(root, cur))
           return cur
         }
         // 3. landing: re-read the parent HEAD under the repo lock.
         cur = { ...cur, state: "landing", updatedAt: nowIso() }
         yield* io(() => saveEntry(root, cur))
-        const rebasedTip = yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"]))
         let staleHead: string | undefined
         let landedHead = ""
         yield* io(() =>
@@ -354,9 +393,9 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           yield* io(() => saveEntry(root, requeued))
           return yield* Effect.fail(toolError("E_STALE_PARENT", `Your HEAD is ${current}; pass it as expectedParentHead (never the child's commit).`, current))
         }
-        // 4. landed: receipts already sit at the rebased tip (= new HEAD);
-        // copy is a no-op when the two match and a real copy otherwise.
-        yield* io(() => copyReceipts(root, entry.parentRun, ctx.checks.map((c) => c.id), rebasedTip, landedHead))
+        // 4. Parent finish needs every assigned id, including command aliases
+        // deduplicated above. Never turn a pre-existing red into a green receipt.
+        yield* io(() => copyReceipts(root, entry.parentRun, ctx.checks, passed, landedHead))
         cur = { ...cur, state: "landed", landedHead, updatedAt: nowIso() }
         yield* io(() => saveEntry(root, cur))
         return cur

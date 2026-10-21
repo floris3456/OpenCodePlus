@@ -35,7 +35,6 @@ const teamNames = [
   "followup",
   "integrate",
   "checkpoint",
-  "set_checks",
   "stop",
   "status",
   "diff",
@@ -246,7 +245,7 @@ async function runMessage(
 test("every team tool registers direct under namespace team with its permission", async () => {
   const tools = await registeredTools()
   const registered = teamNames.map((name) => need(tools, `team_${name}`))
-  expect(registered).toHaveLength(12)
+  expect(registered).toHaveLength(11)
   for (const [index, tool] of registered.entries()) {
     const name = teamNames[index] as string
     expect(tool.origin).toEqual({ type: "plugin", name: "opencode.plus" })
@@ -577,7 +576,7 @@ test("the instructions namespace still registers alongside team", async () => {
     "instructions_set",
     "instructions_split",
   ])
-  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(12)
+  expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(11)
 })
 
 async function auditLines(root: string): Promise<Array<Record<string, unknown>>> {
@@ -672,7 +671,7 @@ test("successful gated call writes tool.call with run id and chain verifies acro
   })
 })
 
-test("integrate, set_checks, stop and list reach real handlers", async () => {
+test("integrate, stop and list reach real handlers", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     await saveRun(root, makeRun("w-dddddddddddddddd", "orchestrator", "ses_team_orch"))
     const tools = await registeredTools()
@@ -690,36 +689,8 @@ test("integrate, set_checks, stop and list reach real handlers", async () => {
     expect(stopMessage.startsWith("E_NOT_CHILD:")).toBe(true)
     expect(stopMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
 
-    const setChecksMessage = await runMessage(
-      need(tools, "team_set_checks"),
-      { checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] },
-      ctx,
-    )
-    expect(setChecksMessage.startsWith("E_CHECKS:")).toBe(true)
-    expect(setChecksMessage.includes("E_NOT_IMPLEMENTED")).toBe(false)
-
     const listResult = (await runSuccess(need(tools, "team_list"), { parent: "w-0000000000000000" }, ctx)) as unknown[]
     expect(listResult).toEqual([])
-  })
-})
-
-test("registered set_checks returns E_CHECKS for an invalid check through the tool seam", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    await saveRun(root, makeRun("w-eeeeeeeeeeeeeeee", "orchestrator", "ses_team_checks_invalid"))
-    const tools = await registeredTools()
-    const tool = need(tools, "team_set_checks")
-    const invalid = { checks: [{ id: "Bad_ID!", argv: ["bun", "test", "x.test.ts"] }] }
-    const inputSchema = tool.input
-    expect(Schema.isSchema(inputSchema)).toBe(true)
-    if (Schema.isSchema(inputSchema)) {
-      const decoded = Schema.decodeUnknownOption(inputSchema)(invalid)
-      expect(Option.isSome(decoded)).toBe(true)
-    }
-    const ctx = toolContext("ses_team_checks_invalid", "orchestrator")
-    const message = await runMessage(tool, invalid, ctx)
-    expect(message.startsWith("E_CHECKS:")).toBe(true)
-    expect(message).toContain('Check id "Bad_ID!" must be short kebab-case')
-    expect(message).toContain('\naccepted: {"id":"unit","argv":["bun","test","test/unit.test.ts"]}')
   })
 })
 
@@ -788,10 +759,15 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         `E_ROLE: planner may not delegate to "scout". You may delegate to: orchestrator.\naccepted: {"role":"orchestrator"}`,
       )
 
-      // 3. E_CHECKS: Invalid check ID in set_checks
+      // 3. E_CHECKS: Invalid check ID in a Brief
       const checksMsg = await runMessage(
-        need(tools, "team_set_checks"),
+        need(tools, "team_delegate"),
         {
+          requestID: "r-checks",
+          role: "implementer",
+          objective: "Implement a change with an invalid check ID.",
+          deliverable: { kind: "commit" },
+          scope: { paths: ["src/*"] },
           checks: [{ id: "Bad_ID!", argv: ["bun", "test", "packages/plus/test/model.test.ts"] }],
         },
         orchCtx,
@@ -1792,9 +1768,6 @@ test("C — every field path of every registered team tool treats null as omissi
       expectedHead: "0123456789abcdef0123456789abcdef01234567",
       files: ["a.ts"],
     },
-    team_set_checks: {
-      checks: [{ id: "c1", argv: ["bun", "test", "test.ts"] }],
-    },
     team_stop: {
       run: "w-0123456789abcdef",
     },
@@ -1810,7 +1783,7 @@ test("C — every field path of every registered team tool treats null as omissi
   }
 
   const regressionPaths: Array<[string, FieldPath]> = [
-    ["team_set_checks", ["checks", 0, "cwd"]],
+    ["team_delegate", ["checks", 0, "cwd"]],
     ["team_delegate", ["context", "interfaces", 0, "symbol"]],
     ["team_followup", ["budget", "turns"]],
   ]
@@ -1863,10 +1836,11 @@ test("C — every field path of every registered team tool treats null as omissi
   expect(totalRequiredFieldsTested).toBeGreaterThan(10)
 })
 
-test("C1 — null in an array element field decodes as omission (set_checks checks[0].cwd)", async () => {
-  const schema = registeredSchema(await registeredTools(), "team_set_checks")
-  const omitted = Schema.decodeUnknownSync(schema)({ checks: [{ id: "x", argv: ["bun", "test", "test/x.test.ts"] }] })
-  const withNull = { checks: [{ id: "x", argv: ["bun", "test", "test/x.test.ts"], cwd: null }] }
+test("C1 — null in an array element field decodes as omission (delegate checks[0].cwd)", async () => {
+  const schema = registeredSchema(await registeredTools(), "team_delegate")
+  const brief = { requestID: "r", role: "implementer", objective: "Implement the specified change cleanly", deliverable: { kind: "commit" }, scope: { paths: ["src/*"] } }
+  const omitted = Schema.decodeUnknownSync(schema)({ ...brief, checks: [{ id: "x", argv: ["bun", "test", "test/x.test.ts"] }] })
+  const withNull = { ...brief, checks: [{ id: "x", argv: ["bun", "test", "test/x.test.ts"], cwd: null }] }
   expect(Schema.decodeUnknownSync(schema)(withNull)).toEqual(omitted)
 })
 
