@@ -19,7 +19,7 @@ import { Effect, Option, Schema } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { Release } from "../release/identity.js"
 import type { PlusState } from "../index.js"
-import { checkFiles, missingCheckFiles } from "./check-files.js"
+import { checkFiles, missingCheckFiles, pathsNotAt } from "./check-files.js"
 import { execute, isCleanReceipt, lastReceipt, receiptsAt, run, stale, verifyReceipt } from "./checks.js"
 import { requireWorktree } from "./availability.js"
 import { DEFAULT_ATTACHMENT_LIMIT } from "./brief.js"
@@ -418,6 +418,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
 
   const briefModule = await import("./brief.js")
   const budget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
+  const newPaths = await pathsNotAt(repo.root, baseSha, resolved.scope.paths)
 
   // A review starts where the delegating run started and ends at the commit
   // the reviewer's worktree starts from; the run's own check results there
@@ -438,6 +439,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
       : undefined
   const rendered = briefModule.render(resolved, {
     budget,
+    newPaths,
     ...(attached === undefined ? {} : { attached }),
     ...(attachmentLimit === undefined ? {} : { attachmentLimit }),
     ...(review === undefined ? {} : { review }),
@@ -653,7 +655,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     branch: created.branch,
     base: baseSha,
     ...(resolvedModel === null ? {} : { model: `${resolvedModel.providerID}/${resolvedModel.modelID}${resolvedModel.variant === undefined ? "" : `@${resolvedModel.variant}`}` }),
-    next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report.",
+    next: "If other work is ready, delegate it now; then end your turn: each settlement wakes you with its report.",
   }
   await atomicJson(requestPath, { signature, output, run: childID })
   return succeeded(output)

@@ -480,6 +480,43 @@ test("any team tool from a no-run planner/orchestrator session bootstraps a root
   })
 })
 
+// B48 (live b6-s14): a chat's first step called team_list and team_status side
+// by side; each missed the session's run and made its own main run, and the
+// second one's attempt stayed streaming forever.
+test("team calls of one step from a no-run chat bootstrap one root run between them", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repoDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-team-root-race-"))
+    try {
+      await git(repoDir, ["init"])
+      await git(repoDir, ["config", "user.name", "team-test"])
+      await git(repoDir, ["config", "user.email", "team-test@local"])
+      await fs.writeFile(path.join(repoDir, "README.md"), "# root\n")
+      await git(repoDir, ["add", "README.md"])
+      await git(repoDir, ["commit", "-m", "feat: initial commit"])
+      const harness = toolHarness()
+      const directory = AbsolutePath.make(repoDir)
+      const location = new Location.Info({
+        directory,
+        project: { id: Project.ID.global, directory, canonical: directory },
+      })
+      const pluginCtx = context({ tool: harness.domain, location })
+      await registerTeamTools(pluginCtx, createTeamApi(pluginCtx, teamState()), shippedTable)
+      const toolCtx = toolContext("ses_team_root_race", "orchestrator")
+      const outputs = await Promise.all(
+        ["team_list", "team_status", "team_list"].map((name) =>
+          Effect.runPromise(need(harness.tools, name).execute({}, toolCtx).pipe(Effect.map((result) => result.output as Record<string, unknown>[]))),
+        ),
+      )
+      const runs = new Set(outputs.map((output) => String(output[0]?.run)))
+      expect(runs.size).toBe(1)
+      const entries = await fs.readdir(path.join(root, "runs"))
+      expect(entries.filter((entry) => entry.startsWith("main-"))).toEqual([...runs])
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true })
+    }
+  })
+})
+
 // Item 10 #27: a repository with no commit has no base for a run; the
 // bootstrap answers a classified refusal telling the caller to make a first
 // commit, not a raw git error.

@@ -14,6 +14,7 @@ import { rowState, unattendedMessage, type PermissionTable } from "../instructio
 import type { TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
 import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
+import { lock } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import {
   Brief,
@@ -38,7 +39,7 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 // is sent with every request, and a Code Mode catalog shows only the first
 // line, so each first line stands on its own and stays short.
 const DelegateDescription =
-  "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run (several runs: one call each, in the same step); its settlement wakes you with the report, so end your turn instead of polling."
+  "Start a run for a team member in its own worktree, from your last commit.\nEach call starts one run; to start several, make their calls together in one step. Its settlement wakes you with the report, so end your turn instead of polling."
 const FinishDescription = "Report your task's outcome; in a delegated run, end your turn. Once per attempt; corrections arrive as new messages."
 const FollowupDescription =
   "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
@@ -47,9 +48,10 @@ const IntegrateDescription =
 const CheckpointDescription = "Commit chosen files in your own worktree."
 const StopDescription =
   "Stop a child run you no longer need: now, or after its turn while it works (force ends it now)."
-const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size. Not for waiting: settlements wake you."
+const StatusDescription =
+  "State, latest report, checks and HEAD of your children or your own run; each child's budget includes contextTokens, its latest step's context size. A settlement already carries its run's report, so this is for a run you have not heard from. Not for waiting: settlements wake you."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
-const ListDescription = "List the runs in this namespace."
+const ListDescription = "List the team runs of this repository still in play. Not for waiting: settlements wake you."
 const GetContextDescription = "After a compaction: your Brief again, with your scope, checks, HEAD and budget. Not needed at the start: your Brief is your first message."
 const CheckDescription =
   "Run one of your assigned checks in your worktree, or any project check (path when it needs one). Only assigned checks judge your finish."
@@ -633,43 +635,52 @@ function runGatedInner<A>(
         const branch = branchOut.code === 0 && branchOut.out.length > 0 ? branchOut.out : "HEAD"
         const now = new Date().toISOString()
         const repoKey = path.basename(top.out) || top.out
-        const base = startAttempt(
-          {
-            id: newRunID("main"),
-            role: agent,
-            ...(team === undefined ? {} : { team }),
-            kind: "main",
-            repo: repoKey,
-            repoKey,
-            directory,
-            paths: [],
-            branch,
-            base: headOut.out,
-            head: headOut.out,
-            state: "working",
-            attempts: [],
-            task: null,
-            parent: null,
-            children: [],
-            briefSha: "",
-            bundle: "root",
-            budget: {},
-            createdAt: now,
-            lastUsed: now,
-            sessionID,
-            projectDirectory: directory,
-            configDigest: null,
-            history: [],
-          },
-          { trigger: "prepare" },
+        const root = teamsDataDir()
+        // Team calls of one step run side by side (team_list and team_status
+        // as a chat's first calls): each missed bySession above. Under the
+        // lock a later call finds the first one's run, instead of making a
+        // second main run whose attempt nothing ever settles.
+        const bootstrapped = yield* Effect.promise(() =>
+          lock(root, "state", `bootstrap-${sessionID}`, async () => {
+            const existing = await bySession(root, sessionID)
+            if (existing !== undefined) return existing
+            const base = startAttempt(
+              {
+                id: newRunID("main"),
+                role: agent,
+                ...(team === undefined ? {} : { team }),
+                kind: "main",
+                repo: repoKey,
+                repoKey,
+                directory,
+                paths: [],
+                branch,
+                base: headOut.out,
+                head: headOut.out,
+                state: "working",
+                attempts: [],
+                task: null,
+                parent: null,
+                children: [],
+                briefSha: "",
+                bundle: "root",
+                budget: {},
+                createdAt: now,
+                lastUsed: now,
+                sessionID,
+                projectDirectory: directory,
+                configDigest: null,
+                history: [],
+              },
+              { trigger: "prepare" },
+            )
+            const streaming = attemptTransition(attemptTransition(base, "admitted", "admit"), "streaming", "first_event")
+            await saveRun(root, streaming)
+            return streaming
+          }),
         )
-        const admitted = attemptTransition(base, "admitted", "admit")
-        const streaming = attemptTransition(admitted, "streaming", "first_event")
-        yield* Effect.promise(() => saveRun(teamsDataDir(), streaming))
-        auditState.run = streaming.id
-        // A second call finds this run through bySession, so the bootstrap is
-        // idempotent without a second branch.
-        run = streaming
+        auditState.run = bootstrapped.id
+        run = bootstrapped
       }
     }
     const owned = yield* requireActor(run, input, agent)

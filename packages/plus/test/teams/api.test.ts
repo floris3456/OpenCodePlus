@@ -189,7 +189,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
         state: "starting",
         branch: persisted.branch,
         base: repo.head,
-        next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report.",
+        next: "If other work is ready, delegate it now; then end your turn: each settlement wakes you with its report.",
       })
       expect((await fs.stat(persisted.directory)).isDirectory()).toBe(true)
       expect(sessions.created).toHaveLength(1)
@@ -1989,6 +1989,25 @@ test("a review brief names the change since the delegating run started and that 
       // A non-review Brief carries no Review section.
       const implementer = required(await api.delegate(delegateInput({ requestID: "impl-1" }), callerFor(parent))) as { run: string }
       expect(await fs.readFile(path.join(root, "runs", implementer.run, "brief.md"), "utf8")).not.toContain("## Review")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// Live b6-s3/s13: an implementer read the test file its Brief named before
+// creating it. The Brief marks a scope path the base does not hold as new.
+test("delegate marks scope paths the base does not hold as new in the Brief", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", directory: repo.dir, base: repo.head, head: repo.head, sessionID: "ses_parent_new" })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const scope = { paths: ["README.md", "packages/plus/test/unit.test.ts", "src/new.ts", "test/new.test.ts", "packages/plus/src/*"] }
+      const delegated = required(await api.delegate(delegateInput({ requestID: "new-1", scope }), callerFor(parent))) as { run: string }
+      const brief = await fs.readFile(path.join(root, "runs", delegated.run, "brief.md"), "utf8")
+      expect(brief).toContain("May edit: README.md, packages/plus/test/unit.test.ts, src/new.ts (new), test/new.test.ts (new), packages/plus/src/*\n")
     } finally {
       await removeRepo(repo.dir)
     }

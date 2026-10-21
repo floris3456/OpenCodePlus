@@ -344,7 +344,7 @@ test("the parent of a child stopped for inactivity hears why and how to resume i
     expect(text).toContain("attempt 1 interrupted")
     expect(text).toContain("No session activity for an hour")
     expect(text).toContain("nothing resumes it on its own")
-    expect(text).toContain("next: read team_status and team_diff for it, then team_followup to resume it or team_stop.")
+    expect(text).toContain('next: read team_status and team_diff with run: "w-9999999999999996", then team_followup to resume it or team_stop.')
   })
 })
 
@@ -622,7 +622,7 @@ test("the settlement carries the whole report and the next step, so the parent n
         "Concerns:\n- the cache key may collide",
         "Deferred:\n- docs update: out of time",
         "Findings:\n- note src/q.ts:12: filter applied here",
-        "next: weigh the concerns, then check the change with team_diff and land it with team_integrate.",
+        'next: weigh the concerns, then check the change with team_diff run: "w-6666666666666666", then land it with team_integrate run: "w-6666666666666666". Work a concern leaves undone goes to this run with team_followup (paths: for files outside its scope), also once it has landed: it keeps its context.',
       ].join("\n"),
     )
   })

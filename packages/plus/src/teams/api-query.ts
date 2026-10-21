@@ -56,11 +56,18 @@ function finished(record: RunRecord): boolean {
 }
 
 // Runs a member lists: its own and its direct children always, deeper
-// descendants and every other run by its team_list Runs rows (a planner's
-// ship on, the old "planners see every run" rule).
+// descendants and other runs of this repository by its team_list Runs rows (a
+// planner's ship on, the old "planners see every run" rule). Other
+// repositories' runs stay out: one store serves every project, and a build
+// seat read another project's idle children as runs of its own.
 async function visibleTo(root: string, all: RunRecord[], self: RunRecord, agent: string, table?: PermissionTable): Promise<RunRecord[]> {
+  const project = self.projectDirectory ?? self.directory
   const out: RunRecord[] = []
-  for (const record of all) if (mayReach(table, agent, "list", await relationOf(root, self, record))) out.push(record)
+  for (const record of all) {
+    const relation = await relationOf(root, self, record)
+    if (relation === "other" && (record.projectDirectory ?? record.directory) !== project) continue
+    if (mayReach(table, agent, "list", relation)) out.push(record)
+  }
   return out
 }
 

@@ -80,6 +80,23 @@ export async function missingCheckFiles(directory: string, base: string, checks:
   return missing
 }
 
+/**
+ * The scope paths (as written) that name a file or directory the base commit
+ * does not hold, for the Brief to mark new: implementers spent a call reading
+ * a test file their Brief named that they were to create. Patterns are left
+ * out; they name no one file.
+ */
+export async function pathsNotAt(directory: string, base: string, paths: readonly string[]): Promise<string[]> {
+  const literal = paths.flatMap((entry) => {
+    if (/[*?[]/.test(entry)) return []
+    const file = inside("", entry)
+    return file === undefined ? [] : [{ entry, file }]
+  })
+  const held = await lsTree(directory, base, literal.map((item) => item.file)).catch(() => undefined)
+  if (held === undefined) return []
+  return literal.filter((item) => !held.some((found) => found === item.file || found.startsWith(`${item.file}/`))).map((item) => item.entry)
+}
+
 async function lsTree(directory: string, base: string, candidates: readonly string[]): Promise<string[]> {
   if (candidates.length === 0) return []
   return (await git(directory, [...NO_REPOSITORY_PROGRAMS, "--literal-pathspecs", "ls-tree", "-r", "--name-only", "-z", base, "--", ...candidates]))

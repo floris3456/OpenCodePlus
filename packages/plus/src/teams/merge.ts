@@ -118,6 +118,31 @@ async function trackedDirtyFiles(worktree: string): Promise<string[]> {
   return files
 }
 
+/**
+ * Untracked files in the parent's checkout that a landing from `from` to `to`
+ * would write, which git refuses to fast-forward over. One whose exact content
+ * the landing's own commits hold is safe to replace: live, a planner's
+ * uncommitted plan, attached to its Brief, was saved and committed by the
+ * child as it was. Any other is the parent's own work.
+ */
+async function untrackedCollisions(worktree: string, from: string, to: string): Promise<{ safe: string[]; unsafe: string[] }> {
+  const top = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--show-toplevel"])
+  const added = (await git(top, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", from, to])).split("\0").filter(Boolean)
+  if (added.length === 0) return { safe: [], unsafe: [] }
+  const untracked = new Set(
+    (await git(top, [...NO_REPOSITORY_PROGRAMS, "--literal-pathspecs", "ls-files", "--others", "--exclude-standard", "-z", "--", ...added])).split("\0").filter(Boolean),
+  )
+  const colliding = added.filter((file) => untracked.has(file))
+  if (colliding.length === 0) return { safe: [], unsafe: [] }
+  const raw = await git(top, [...NO_REPOSITORY_PROGRAMS, "--literal-pathspecs", "log", "--format=", "--raw", "--no-abbrev", "--no-renames", `${from}..${to}`, "--", ...colliding])
+  const held = new Set(raw.split("\n").flatMap((line) => (line.startsWith(":") ? [line.split(/\s+/)[3] ?? ""] : [])))
+  const hashes = await Promise.all(colliding.map((file) => git(top, [...NO_REPOSITORY_PROGRAMS, "hash-object", "--", join(top, file)])))
+  return {
+    safe: colliding.filter((_, index) => held.has(hashes[index] ?? "")),
+    unsafe: colliding.filter((_, index) => !held.has(hashes[index] ?? "")),
+  }
+}
+
 function withRepoLock<T>(root: string, ctx: MergeContext, fn: () => Promise<T>): Promise<T> {
   return lock(root, "repo", ctx.repoKey, fn)
 }
@@ -209,6 +234,13 @@ export async function enqueue(root: string, input: EnqueueInput): Promise<MergeE
         "E_DIRTY",
         `Your worktree has tracked modifications [${dirty.join(", ")}]; commit or discard them; the merge queue is paused until clean.`,
         dirty,
+      )
+    const collisions = await untrackedCollisions(input.parentWorktree, parentHead, input.childHead)
+    if (collisions.unsafe.length > 0)
+      throw toolError(
+        "E_DIRTY",
+        `Untracked [${collisions.unsafe.join(", ")}] in your worktree would be overwritten: ${input.childRun}'s commits add another version. Remove yours if the child's replaces it, or commit it with team_checkpoint to keep it (the child's version then conflicts), then integrate again.`,
+        collisions.unsafe,
       )
     const existing = await queue(root, input.parentRun)
     const landed = existing.find((e) => e.childRun === input.childRun && e.childBranch === input.childBranch && e.state === "landed")
@@ -386,6 +418,9 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
               staleHead = current
               return
             }
+            const collisions = await untrackedCollisions(ctx.parentWorktree, rebaseBase, rebasedTip)
+            const top = await git(ctx.parentWorktree, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--show-toplevel"])
+            await Promise.all(collisions.safe.map((file) => rm(join(top, file), { force: true })))
             await git(ctx.parentWorktree, [...NO_REPOSITORY_PROGRAMS, "merge", "--ff-only", rebasedTip])
             landedHead = await getHead(ctx.parentWorktree)
           }),

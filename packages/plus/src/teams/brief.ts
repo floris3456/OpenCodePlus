@@ -35,6 +35,8 @@ export interface RenderFilled {
   review?: ReviewContext
   /** The member's "Attached brief file" limit; a larger attachment is named by path only. */
   attachmentLimit?: number
+  /** Scope paths the base does not hold yet: the child creates them. */
+  newPaths?: readonly string[]
 }
 
 /**
@@ -83,7 +85,8 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   const kind = brief.deliverable.kind
   const format = brief.deliverable.format === undefined ? "" : ` (${brief.deliverable.format})`
   sections.push(`## Deliverable\n${kind}${format}: ${DELIVERABLE_MEANING[kind]}.`)
-  const scope = [`May edit: ${paths.length === 0 ? "nothing (read-only task)" : paths.join(", ")}`]
+  const fresh = filled.newPaths ?? []
+  const scope = [`May edit: ${paths.length === 0 ? "nothing (read-only task)" : paths.map((entry) => (fresh.includes(entry) ? `${entry} (new)` : entry)).join(", ")}`]
   if (forbidden.length > 0) scope.push(`Must not touch: ${forbidden.join(", ")}`)
   sections.push(`## Scope\n${scope.join("\n")}`)
   if (interfaces.length > 0)

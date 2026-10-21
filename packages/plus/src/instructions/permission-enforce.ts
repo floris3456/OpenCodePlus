@@ -926,7 +926,7 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target), ...noCommit(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
     }
     if (name === "team_finish") definition.description += requirements(rows, "Requirements for done")
     if (name === "team_checkpoint") definition.description += requirements(rows, "Requirements for a commit")
@@ -959,6 +959,12 @@ function checkFilesRule(table: PermissionTable, target: string): string[] {
     .toolRows(target, "team_checkpoint")
     .filter((row) => row.on && row.item.ruleId === "requirements.check-files")
     .map((row) => `${target}: ${row.item.title.charAt(0).toLowerCase()}${row.item.title.slice(1)}.`)
+}
+
+// A target that cannot commit, said before a commit Brief to it is refused
+// (E_ROLE): a user who asked the scout for a fix got that refusal first.
+function noCommit(table: PermissionTable, target: string): string[] {
+  return table.toolEnabled(target, "team_checkpoint") ? [] : [`${target} cannot commit: never give it a commit deliverable.`]
 }
 
 // The agent's own requirement rows of one tool ("Requirements for done",
