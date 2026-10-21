@@ -238,17 +238,39 @@ test.each([false, true])("integrate reuses child tree proof unless the parent's 
       await git(parent.directory, ["add", "parent.txt"])
       await git(parent.directory, ["commit", "-m", "feat: parent change"])
     }
-    const landed = required(await integrateHandler(ctxFor(), { run: child.id }, callerFor(parent), shippedTable())) as { head: string; reusedChecks?: Array<{ id: string; reused: boolean; at: number }> }
+    const landed = required(await integrateHandler(ctxFor(), { run: child.id }, callerFor(parent), shippedTable())) as { head: string; verified?: string; checks?: Array<{ id: string; reused: boolean; at: number }> }
     expect(landed).toMatchObject({ state: "landed" })
     expect(await Bun.file(counter).text()).toBe(moved ? "run\nrun\n" : "run\n")
     const receipt = await lastReceipt(root, child.id, check.id, landed.head)
     expect(receipt).toMatchObject({ passed: true, reused: !moved })
     if (moved) {
-      expect(landed.reusedChecks).toBeUndefined()
+      expect(landed.verified).toBeUndefined()
+      expect(landed.checks).toBeUndefined()
       return
     }
-    expect(landed.reusedChecks).toEqual([{ id: check.id, reused: true, at: checked.at }])
+    expect(landed).not.toHaveProperty("reusedChecks")
+    expect(landed.verified).toBe("Checks [count] passed on this exact tree with the same commands. The verified tree matches the rebased tree exactly, so these checks were not run again.")
+    expect(landed.checks).toEqual([{ id: check.id, reused: true, at: checked.at }])
     expect(receipt?.at).toBe(checked.at)
+  })
+})
+
+test("a red integration still explains its passing exact-tree proof", async () => {
+  await withReadyChild(async ({ root, parent, child }) => {
+    const check = { id: "green", argv: ["bun", "-e", "process.exit(0)"] }
+    const red = { id: "red", argv: ["bun", "-e", "process.exit(1)"] }
+    await create(root, "p-5555555555555555", [{ id: "T1", title: "Checked change", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["child.txt"], checks: [check, red] }])
+    await saveRun(root, { ...child, task: "T1" })
+    await atomicJson(path.join(root, "runs", child.id, "checks.json"), [check, red])
+    const checked = await execute(root, { runID: child.id, check, worktree: child.directory })
+    const result = required(await integrateHandler(ctxFor(), { run: child.id }, callerFor(parent), shippedTable()))
+    expect(result).toMatchObject({
+      state: "red",
+      redChecks: ["red"],
+      verified: "Checks [green] passed on this exact tree with the same commands. The verified tree matches the rebased tree exactly, so these checks were not run again.",
+      checks: [{ id: "green", reused: true, at: checked.at }],
+    })
+    expect(result).not.toHaveProperty("reusedChecks")
   })
 })
 

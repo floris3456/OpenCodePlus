@@ -1154,6 +1154,7 @@ test("an instruction that is new, or switched back on, is announced as added", (
 
 function answering(label: string): PermissionTable {
   return {
+    toolEnabled: () => label === "before",
     rows: () => [],
     toolRows: (agent, tool) => [{ item: makeItem({ id: `tool:${tool}`, kind: "tool", text: tool }), on: true, text: `${label}: ${agent} ${tool}` }],
     ruleRows: () => [],
@@ -1182,6 +1183,7 @@ test("after a restart, narrowing reads the permission answers the pin stored and
   const pin = before.pinSession("ses_answers", model, narrowingPlans(answering("before")))
   const asked = pinnedPermissions(pin, "alpha", pin.planSet.permissions)
   expect(asked.toolRows("alpha", "bash")[0]?.text).toBe("before: alpha bash")
+  expect(asked.toolEnabled("alpha", "team_checkpoint")).toBe(true)
   expect(asked.describe("quiet")).toBeUndefined()
   await Effect.runPromise(before.save(pin, "alpha"))
 
@@ -1189,6 +1191,8 @@ test("after a restart, narrowing reads the permission answers the pin stored and
   if (restored === undefined) throw new Error("expected the stored pin")
   const replayed = pinnedPermissions(restored, "alpha", restored.planSet.permissions)
   expect(replayed.toolRows("alpha", "bash")[0]?.text).toBe("before: alpha bash")
+  expect(replayed.toolEnabled("alpha", "team_checkpoint")).toBe(true)
+  expect(replayed.toolEnabled("quiet", "team_checkpoint")).toBe(false)
   expect(replayed.describe("quiet")).toBeUndefined()
   expect(replayed.toolRows("alpha", "edit")[0]?.text).toBe("after: alpha edit")
   expect(restored.planSet.needsNarrowing).toBe(true)

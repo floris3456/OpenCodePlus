@@ -43,6 +43,8 @@ export interface PermRow {
 }
 
 export interface PermissionTable {
+  /** Whether the tool itself is on for the target agent. Missing tools are off. */
+  readonly toolEnabled: (agent: string, tool: string) => boolean
   /** Every non-rule row that applies to the agent, resolved for it. */
   readonly rows: (agent: string) => readonly PermRow[]
   /** The agent's rows listed under one tool, its own and the ones it shares. */
@@ -114,6 +116,12 @@ export function permissionTable(input: {
     return resolved
   }
   return {
+    toolEnabled: (agent, tool) => {
+      const source = input.items.find((item) => item.id === `tool:${tool}`)
+      if (source === undefined) return false
+      const item = input.item === undefined ? source : input.item(source, agent)
+      return item !== undefined && applies(item, agent) && input.resolve(item, agent).enabled
+    },
     rows: agentRows,
     toolRows: (agent, tool) => {
       const key = `${agent}\u0000${tool}`

@@ -211,6 +211,22 @@ test("removed worktree diff uses retained commits, not the surviving parent's di
   })
 })
 
+test("team_diff defaults an omitted run to the caller's own run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = baseRun({ id: "w-5b0000000000000b", directory: repo.dir, base: repo.head, head: repo.head, parent: "main-5a0000000000000a" })
+      await saveRun(root, child)
+      await Bun.write(path.join(repo.dir, "README.md"), "my own change\n")
+      const api = createTeamApi(context(), teamState())
+      const diff = required(await api.diff(Schema.decodeUnknownSync(DiffInput)({}), callerFor(child))) as { run: string; patch: string }
+      expect(diff.run).toBe(child.id)
+      expect(diff.patch).toContain("+my own change")
+      expect(required(await api.diff({ run: child.id }, callerFor(child)))).toEqual(diff)
+    } finally { await removeRepo(repo.dir) }
+  })
+})
+
 // Leads and reviewers pass the short shas reports and settlements print.
 test("team_diff takes a short commit as from", async () => {
   await withIsolatedTeamsRoot(async (root) => {

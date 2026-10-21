@@ -179,7 +179,7 @@ function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
     ...(entry.redChecks === undefined ? {} : { redChecks: entry.redChecks }),
     ...(entry.redAtParent === true ? { redAtParent: true } : {}),
     ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed }),
-    ...(entry.reusedChecks === undefined ? {} : { reusedChecks: entry.reusedChecks }),
+    ...verifiedChecks(entry),
     ...(task === undefined ? {} : { reworkTask: task }),
     next,
     cleanup,
@@ -222,8 +222,16 @@ function landedValue(entry: MergeEntry, cleanup: Cleanup[]) {
     worktree: removal?.worktree,
     reason: removal?.reason,
     ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed, note: `Checks [${entry.stillRed.join(", ")}] already fail at the parent's HEAD; they did not block this landing.` }),
-    ...(entry.reusedChecks === undefined ? {} : { reusedChecks: entry.reusedChecks }),
+    ...verifiedChecks(entry),
     cleanup,
+  }
+}
+
+function verifiedChecks(entry: MergeEntry) {
+  if (entry.reusedChecks === undefined || entry.reusedChecks.length === 0) return {}
+  return {
+    verified: `Checks [${entry.reusedChecks.map((check) => check.id).join(", ")}] passed on this exact tree with the same commands. The verified tree matches the rebased tree exactly, so these checks were not run again.`,
+    checks: entry.reusedChecks,
   }
 }
 

@@ -179,11 +179,14 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     return fail("E_UNRESUMABLE", `Run ${child.id} is ${child.state} or stopping; delegate fresh from current parent.`, "delegate fresh from current parent")
   if (!occupiesSlot(child)) {
     const records = await Promise.all((await readdir(path.join(root, "runs"))).filter((name) => !name.startsWith(".")).map((name) => loadRun(root, name)))
-    const live = records.filter((run): run is RunRecord => run !== undefined && occupiesSlot(run))
+    const live = records.filter((run): run is RunRecord => run !== undefined && run.kind !== "main" && occupiesSlot(run))
     const inflight = bound(table, caller.agent, "delegate", "limits.inflight")
     const members = bound(table, caller.agent, "delegate", "limits.members")
-    if ((inflight !== undefined && live.filter((run) => run.parent === parent.id).length >= inflight) || (members !== undefined && live.length >= members))
-      return fail("E_BOUNDS", "No capacity to resume this child; end your turn and retry after an active run settles.", "retry after a run settles")
+    const children = live.filter((run) => run.parent === parent.id).map((run) => run.id).toSorted()
+    if (inflight !== undefined && children.length >= inflight)
+      return fail("E_BOUNDS", `In-flight limit ${inflight} reached (${children.join(", ")}). No capacity to resume this child; end your turn and retry after an active run settles.`, "retry after a run settles")
+    if (members !== undefined && live.length >= members)
+      return fail("E_BOUNDS", `Live team runs limit ${members} reached (${live.map((run) => run.id).toSorted().join(", ")}). No capacity to resume this child; end your turn and retry after an active run settles.`, "retry after a run settles")
   }
   if (args.paths !== undefined && args.delivery === "now" && child.state !== "idle" && child.state !== "stopped")
     return fail("E_BUSY", `Child is working (attempt ${child.attempts.at(-1)?.n ?? 1}). Use delivery:"queue" (default); it is delivered when the child goes idle.`, { delivery: "queue" })

@@ -327,6 +327,7 @@ export function pinnedPermissions(pin: SessionPin, agent: string, table: Permiss
     return answer
   }
   return {
+    toolEnabled: (target, tool) => remember(() => table.toolEnabled(target, tool), "toolEnabled", target, tool),
     rows: (target) => remember(() => table.rows(target), "rows", target),
     toolRows: (target, tool) => remember(() => table.toolRows(target, tool), "toolRows", target, tool),
     ruleRows: (target, tool) => remember(() => table.ruleRows(target, tool), "ruleRows", target, tool),

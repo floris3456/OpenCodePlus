@@ -449,10 +449,15 @@ the new HEAD for the parent's finish.
 Finish and landing reuse a passing receipt with the same check definition and
 measured Git tree, including checks run before checkpointing that exact content;
 reused results are labelled with `reused: true` and retain the original check time.
+Landed and red integration results explain this exact-tree proof in `verified`,
+with the check ids and original times in `checks`, rather than bare `reusedChecks`.
 
 A Brief may assign a test file the child will create when it is inside
 `scope.paths` and not forbidden. A missing file outside scope is `E_CHECKS`.
-Finish still requires the assigned check to pass at the committed HEAD.
+Finish still requires the assigned check to pass at the committed HEAD. With
+assigned checks and the “Assigned checks pass at HEAD” requirement on, both
+`done` and `done_with_concerns` first refuse uncommitted files with `E_DIRTY`,
+before running checks. Checkpoint or revert the named files, then finish.
 Stored instruction overrides for removed tools stay orphaned and do not
 affect the current tool inventory or publication.
 
@@ -463,7 +468,7 @@ Team tools live in `src/teams` and are registered for every Plus instance. The n
 `stop`, `status`, `get_context`, `diff`, `list` and `check`. There is no `wait`: a parent ends its turn and each child's
 settlement wakes it (below). Nothing advertised returns `E_NOT_IMPLEMENTED`. `team_diff` is a
 read-only `git diff` of your own run or one of your children (further only
-when your `Runs` rows on `team_diff` allow it), truncated to `maxBytes`
+when your `Runs` rows on `team_diff` allow it); omit `run` for your own run. It is truncated to `maxBytes`
 (default 200000) with `truncated: true`.
 
 A planner, orchestrator or build member opening a fresh chat and calling any
@@ -471,6 +476,13 @@ team tool creates a root `main` run bound to that session automatically. There
 is no `prepare`. A session with no location / no repository directory calling any team tool gets
 `E_NOT_ACTOR: This session has no repository directory; open the chat in a git repository to use team tools.`
 and writes no run record. Root-run bootstrap executes only when `git rev-parse --show-toplevel` succeeds.
+
+Delegation and followup capacity counts only slot-holding team member runs,
+never users' `main` chat runs. The total remains install-wide across projects.
+`E_BOUNDS` names the in-flight or total limit, its number and the counted run ids.
+A `commit` Brief requires the target member's `team_checkpoint` tool to be on;
+otherwise `E_ROLE` names the reachable members that can commit. Every report
+summary, including a commit deliverable's, may contain up to 40 lines.
 
 A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.execution.succeeded`,
@@ -485,6 +497,11 @@ transitions to `working` (`prompt` for idle, `resume` for others), following the
 Resuming a `stopped` or `dead` run consumes the `stopRequested` intent its own stop already
 satisfied, so the resumed turn settles `idle` instead of stopping again; a stop intent on a run that
 has not stopped yet is still honoured at settlement. A `working` run is a no-op; `superseded`/`reaped` runs remain unchanged.
+
+A scheduled provider retry notifies the parent only when its wait is at least
+10 minutes, once per error type per attempt (per busy period for plain
+subagents). Short retries keep their status but do not wake the parent, even
+on the third attempt.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`. Without a report, its attempt is `no_report` — unless the run

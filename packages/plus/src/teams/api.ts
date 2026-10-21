@@ -199,6 +199,14 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
     return fail("E_ROLE", `"${brief.role}" is not a member of an enabled team. ${acceptedLine}`, acceptedRole)
   if (!mayDelegate(table, agent, brief.role))
     return fail("E_ROLE", `${agent} may not delegate to "${brief.role}". ${acceptedLine}`, acceptedRole)
+  if (brief.deliverable.kind === "commit" && !table.toolEnabled(brief.role, "team_checkpoint")) {
+    const committers = [...table.teamMembers].filter((member) => mayDelegate(table, agent, member) && table.toolEnabled(member, "team_checkpoint")).toSorted()
+    return fail(
+      "E_ROLE",
+      `${brief.role} cannot commit: its team_checkpoint tool is off. Reachable members that can commit: [${committers.join(", ")}]. Delegate this commit Brief to one of them.`,
+      { roles: committers },
+    )
+  }
   const signature = signatureOf(brief)
   const requestPath = path.join(root, "requests", `${sanitizeLockKey(parent.id)}__${sanitizeLockKey(brief.requestID)}.json`)
   const replay = await readJson<{ signature?: string; output?: Record<string, unknown>; run?: string }>(requestPath)
@@ -330,7 +338,7 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   }
 
   const records = await listRuns(root)
-  const live = records.filter((record) => occupiesSlot(record))
+  const live = records.filter((record) => record.kind !== "main" && occupiesSlot(record))
   const inFlight = live
     .filter((record) => record.parent === parent.id)
     .map((record) => record.id)
@@ -687,6 +695,13 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   const porcelain = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-uall"])
   const dirtyFiles = parsePorcelain(porcelain)
 
+  if (done && allows(table, stored.role, "finish", "requirements.checks") && assigned.length > 0 && dirtyFiles.length > 0)
+    return fail(
+      "E_DIRTY",
+      `Worktree has uncommitted changes in [${dirtyFiles.join(", ")}]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.`,
+      { files: [...dirtyFiles] },
+    )
+
   // Compound behaviour: reuse same-tree proof only for a clean worktree;
   // assigned checks with no matching receipt run now,
   // through the same executor as team_check, before any gate judges them.
@@ -1004,7 +1019,7 @@ const DIFF_MAX_BYTES = 200_000
 async function diffHandler(args: DiffInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const self = (await loadRun(root, caller.run.id)) ?? caller.run
-  const target = args.run === self.id ? self : await loadRun(root, args.run)
+  const target = args.run === undefined || args.run === self.id ? self : await loadRun(root, args.run)
   if (target === undefined) return fail("E_NOT_VISIBLE", `Run ${args.run} is not in this namespace.`, "a run id from list{}")
   if (!mayReach(table, caller.agent, "diff", await relationOf(root, self, target)))
     return fail("E_NOT_VISIBLE", `Run ${args.run} is neither your run nor one of your children.`, self.id)

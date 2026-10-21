@@ -498,6 +498,53 @@ test("a Children working at once row edited to 1 refuses a second working child"
   expect((await loadRun(root, started.run))?.parent).toBe(parent.id)
 }, 30000)
 
+test.each(["delegate", "followup"].flatMap((tool) => ["inflight", "members"].map((limit) => [tool, limit] as const)))("%s bounds %s count team members, name counted runs, and exclude user chats", async (tool, limit) => {
+  const repo = await makeRepo()
+  const parent = working({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", directory: repo.dir, base: repo.head, head: repo.head })
+  const chat = working({ id: "main-1111111111111111", role: "ocp-build", kind: "main", repo: "another-project", directory: repo.dir })
+  const child = baseRun({ id: "w-aaaaaaaaaaaaaaaa", role: "implementer", parent: parent.id, directory: repo.dir, sessionID: "ses_resume", attempts: [{ n: 1, state: "reported", trigger: "delegate", startedAt: parent.createdAt, endedAt: parent.createdAt }] })
+  const blocker = working({ id: "w-bbbbbbbbbbbbbbbb", role: "implementer", parent: limit === "inflight" ? parent.id : chat.id, repo: limit === "inflight" ? parent.repo : chat.repo, directory: repo.dir })
+  for (const run of [parent, chat, child, blocker]) await saveRun(root, run)
+  const api = apiWith(tableWith({ agent: parent.role, id: `perm:team_delegate:limits.${limit}`, text: "1" }))
+  const call = () => tool === "delegate"
+    ? api.delegate(brief({}), callerFor(parent))
+    : api.followup({ run: child.id, requestID: "resume", prompt: "Continue after the blocked need was resolved." }, callerFor(parent))
+  const error = rejected(await call())
+  expect(error.code).toBe("E_BOUNDS")
+  expect(error.message).toContain(`${limit === "inflight" ? "In-flight" : "Live team runs"} limit 1 reached (${blocker.id})`)
+  expect(error.message).not.toContain(parent.id)
+  expect(error.message).not.toContain(chat.id)
+  await saveRun(root, { ...blocker, state: "superseded" })
+  expect(required(await call())).toMatchObject({ state: tool === "delegate" ? "starting" : "admitted" })
+}, 30000)
+
+test("a commit Brief requires the target's checkpoint tool and names only reachable committers", async () => {
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "ocp-build", kind: "main" })
+  await saveRun(root, parent)
+  const input = brief({ role: "scout", repo: "not-a-configured-repo" })
+  const table = tableWith(
+    { agent: "ocp-build", id: "perm:team_delegate:to.planner", enabled: false },
+    { agent: "implementer", id: "tool:team_checkpoint", enabled: false },
+  )
+  const error = rejected(await apiWith(table).delegate(input, callerFor(parent)))
+  expect(error).toMatchObject({ code: "E_ROLE", accepted: { roles: ["build-seat", "orchestrator"] } })
+  expect(error.message).toContain("scout cannot commit: its team_checkpoint tool is off")
+  expect(error.message).toContain("Reachable members that can commit: [build-seat, orchestrator]")
+  // A report does not require commit rights; opening the target's tool also
+  // admits a commit Brief through this gate, before repo validation.
+  expect(rejected(await apiWith(table).delegate({ ...input, deliverable: { kind: "report" } }, callerFor(parent))).code).toBe("E_REPO")
+  expect(rejected(await apiWith(tableWith({ agent: "scout", id: "tool:team_checkpoint", enabled: true })).delegate(input, callerFor(parent))).code).toBe("E_REPO")
+})
+
+test("a commit refusal includes reachable committers from other teams", async () => {
+  const external = linked("external-coder", "implementer", "other-team")
+  const table = presetTable({ members: [...members, external], records: [change(memberOf("ocp-build"), "perm:team_delegate:to.other-teams", { state: "on" })] })
+  const parent = baseRun({ id: "main-0123456789abcdef", role: "ocp-build", kind: "main" })
+  const error = rejected(await apiWith(table).delegate(brief({ role: "scout" }), callerFor(parent)))
+  expect(error.code).toBe("E_ROLE")
+  expect(error.message).toContain("external-coder")
+})
+
 test("status reads another run only while the caller's Any other run row for team_status is on", async () => {
   const orchestrator = baseRun({ id: "main-0123456789abcdef", role: "orchestrator", kind: "main", sessionID: "ses_orchestrator" })
   const implementer = baseRun({ id: "main-1111111111111111", role: "implementer", kind: "main", sessionID: "ses_implementer" })
