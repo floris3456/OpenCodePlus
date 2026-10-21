@@ -41,7 +41,8 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 // line, so each first line stands on its own and stays short.
 const DelegateDescription =
   "Start a run for a team member in its own worktree, from your last commit.\nEach call starts one run; to start several, make their calls together in one step. Its settlement wakes you with the report, so end your turn instead of polling."
-const FinishDescription = "Report your task's outcome; in a delegated run, end your turn. Once per attempt; corrections arrive as new messages."
+const FinishDescription =
+  "In a delegated run: report your task's outcome to your parent; it ends your turn. Once per attempt; corrections arrive as new messages. In the user's chat, answer the user instead."
 const FollowupDescription =
   "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
 const IntegrateDescription =
