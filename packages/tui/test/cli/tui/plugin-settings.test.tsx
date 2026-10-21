@@ -53,7 +53,7 @@ async function renderDialog(component: () => JSX.Element) {
   )
 }
 
-test("a plugin setting shows in the Settings window under its category and runs on Enter", async () => {
+test("a plugin setting shows in the Settings window under its category and runs on Enter and ←/→", async () => {
   let ran = 0
   let value = "on"
   const unregister = registerSetting({
@@ -74,6 +74,13 @@ test("a plugin setting shows in the Settings window under its category and runs 
     await app.waitForFrame((frame) => frame.includes("Example plugin setting"))
     app.mockInput.pressEnter()
     await app.waitFor(() => ran === 1)
+    expect(value).toBe("off")
+    // ←/→, the footer's "change", run it too.
+    app.mockInput.pressArrow("right")
+    await app.waitFor(() => ran === 2)
+    expect(value).toBe("on")
+    app.mockInput.pressArrow("left")
+    await app.waitFor(() => ran === 3)
     expect(value).toBe("off")
   } finally {
     app.renderer.destroy()

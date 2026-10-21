@@ -409,6 +409,8 @@ export function DialogConfig(props: { current?: string }) {
   async function change(direction: number, index = selected()) {
     if (saving()) return
     const row = rows()[index]
+    // A plugin row changes its own value: ←/→ do what Enter does.
+    if (row?.kind === "plugin") return void row.setting.run()
     if (row?.kind !== "config") return
     const setting = row.setting
     const current = value(setting)

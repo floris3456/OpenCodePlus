@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { Effect } from "effect"
 import { createAttentionStore, decideAttention, PLAYER_TTL_MS } from "../src/attention.js"
 import {
   agentAttention,
@@ -12,6 +16,10 @@ import { controlRecordError, controlItems } from "../src/instructions/agent-cont
 import { attentionRowsOf, controlPlans, type ApplyInput } from "../src/instructions/apply.js"
 import type { AttentionSettings, Plus } from "../src/rpc.js"
 import { controlRecord } from "./agent-controls-fixture.js"
+import { context } from "./harness.js"
+import { memberSettled } from "../src/index.js"
+import { teamsDataDir } from "../src/instructions/paths.js"
+import { saveRun, type RunRecord } from "../src/teams/run.js"
 
 const on = (sound = "bip-bop-01") => ({ notify: true, sound })
 const off = { notify: false, sound: "off" }
@@ -116,6 +124,7 @@ function watcher(options: {
   readonly notices?: readonly Plus.MonitorNotice[]
   /** The chats a TUI has open; default: every top-level chat. */
   readonly open?: readonly string[]
+  readonly settled?: Record<string, string>
 }) {
   const emitted: Plus.Attention[] = []
   const store = createAttentionStore({ now: () => 0 })
@@ -129,6 +138,7 @@ function watcher(options: {
     chatOf: async (id) => options.chats[id],
     settingsFor: async (agent) => (agent === undefined ? undefined : options.settings?.[agent]) ?? DEFAULT_ATTENTION,
     workRuns: async (id) => options.running?.has(id) === true,
+    settledOf: async (id) => options.settled?.[id],
     notices: async () => options.notices ?? [],
     emit: async (attention) => {
       emitted.push(attention)
@@ -202,6 +212,25 @@ test("children raise child and questions at their depth under the root chat's ti
   ])
 })
 
+test("a team member's turn says how it settled; one that waits for its own children raises nothing", async () => {
+  const lab = watcher({
+    chats: {
+      ses_lead: { agent: "build-seat", title: "Ledger" },
+      ses_scout: { agent: "scout", title: "scout: Find the budget check", parent: "ses_lead" },
+      ses_orch: { agent: "orchestrator", title: "orchestrator: Build budgets", parent: "ses_lead" },
+    },
+    settings: { "build-seat": settings({ child: { ...on("yup-01"), depth: 1 } }) },
+    running: new Set(["ses_orch"]),
+    settled: { ses_scout: "scout needs context: Find the budget check" },
+  })
+  await lab.watch.handle(lab.event("e1", "session.execution.succeeded", { sessionID: "ses_scout" }))
+  await lab.watch.handle(lab.event("e2", "session.execution.succeeded", { sessionID: "ses_orch" }))
+  expect(lab.emitted.map((attention) => [attention.id, attention.kind, attention.message])).toEqual([
+    ["e1", "child", "scout needs context: Find the budget check"],
+  ])
+  expect(decideAttention({ type: "turn", waiting: true }, 1, settings(), settings({ child: { ...on(), depth: 1 } }))).toBeUndefined()
+})
+
 test("a new cache notice after a step raises cacheMiss with the agent's settings", async () => {
   const notice: Plus.MonitorNotice = {
     requestID: "req_1",
@@ -261,4 +290,35 @@ test("a TUI's report of open chats lasts 45 s", () => {
   expect(store.isOpen(["ses_9", "ses_1"])).toBe(true)
   clock.now += PLAYER_TTL_MS
   expect(store.isOpen(["ses_1"])).toBe(false)
+})
+
+test("a team member's settled text comes from its report: status words, role, objective", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-attention-member-"))
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = dir
+  try {
+    const run = (id: string, role: string, sessionID: string, attempts: number): RunRecord => ({
+      id, role, kind: "w", repo: "ledger", repoKey: "ledger", directory: dir, paths: [], branch: `team/${role}/${id}`,
+      base: "0123456789abcdef0123456789abcdef01234567", head: "0123456789abcdef0123456789abcdef01234567", state: "idle",
+      attempts: Array.from({ length: attempts }, (_, index) => ({ n: index + 1, state: "reported" as const, startedAt: "2026-01-01T00:00:00.000Z", trigger: "admit" })),
+      task: null, parent: "main-0000000000000001", children: [], briefSha: "abc", bundle: "team-test", budget: {},
+      createdAt: "2026-01-01T00:00:00.000Z", lastUsed: "2026-01-01T00:00:00.000Z", sessionID, configDigest: null, history: [],
+    })
+    await saveRun(teamsDataDir(), run("w-scout0000000001", "scout", "ses_scout", 1))
+    await saveRun(teamsDataDir(), run("w-impl00000000001", "implementer", "ses_impl", 2))
+    await Bun.write(path.join(teamsDataDir(), "runs", "w-scout0000000001", "report-1.json"), JSON.stringify({ status: "needs_context" }))
+    await Bun.write(path.join(teamsDataDir(), "runs", "w-impl00000000001", "report-1.json"), JSON.stringify({ status: "blocked" }))
+    await Bun.write(path.join(teamsDataDir(), "runs", "w-impl00000000001", "report-2.json"), JSON.stringify({ status: "done" }))
+    const titles: Record<string, string> = { ses_scout: "scout: Find the budget check", ses_impl: `implementer: ${"Fix the parser ".repeat(8)}` }
+    const ctx = context({ session: { get: (input) => Effect.succeed({ id: input.sessionID, title: titles[input.sessionID] } as never) } })
+    expect(await memberSettled(ctx, "ses_scout")).toBe("scout needs context: Find the budget check")
+    // The latest attempt's report counts; a long objective is cut.
+    expect(await memberSettled(ctx, "ses_impl")).toBe(`implementer is done: ${"Fix the parser ".repeat(8).slice(0, 79)}…`)
+    // Not a team member: no settled text.
+    expect(await memberSettled(ctx, "ses_chat")).toBeUndefined()
+  } finally {
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 })
