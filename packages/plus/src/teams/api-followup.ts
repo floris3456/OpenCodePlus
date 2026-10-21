@@ -273,7 +273,9 @@ async function rebaseChild(
         await updateRun(root, child.id, (record) => ({ ...record, base: head, head }))
         return {
           ok: true as const,
-          note: `Plus replayed your whole change onto your parent's current HEAD ${head}. Your base and HEAD are now that commit; your old commits remain at ${backup}. Conflicts (text files have conflict markers): [${conflicts.join(", ")}]. Every file your change touches: [${files.join(", ")}]. Resolve the markers keeping both sides' intent, run your checks, team_checkpoint every changed file (including new files), then finish.`,
+          // Live, a worker committed only the conflicted file and finish refused the
+          // rest (E_DIRTY): the whole change is uncommitted now, so name the one call.
+          note: `Plus replayed your whole change onto your parent's current HEAD ${head}: your base and HEAD are now that commit, and every file your change touches is uncommitted in your worktree: [${files.join(", ")}]. Conflict markers are in [${conflicts.join(", ")}]. Resolve them keeping both sides' intent, run your checks, then commit the whole change in one call, team_checkpoint with files [${files.join(", ")}], and finish. Your old commits remain at ${backup}.`,
         }
       }
       const tip = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
