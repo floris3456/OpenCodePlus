@@ -1270,6 +1270,22 @@ export const RunUnknown = Schema.Struct({
 export interface TeamsChanged extends Schema.Schema.Type<typeof TeamsChanged> {}
 export const TeamsChanged = Schema.Struct({}).annotate({ identifier: "Plus.TeamsChanged" })
 
+// The early compaction threshold an agent on a model resolves, so the TUI
+// measures context usage against it.
+export interface CompactionWindowInput extends Schema.Schema.Type<typeof CompactionWindowInput> {}
+export const CompactionWindowInput = Schema.Struct({
+  agent: Schema.String,
+  providerID: Schema.String,
+  modelID: Schema.String,
+  variant: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "Plus.CompactionWindowInput" })
+
+export interface CompactionWindow extends Schema.Schema.Type<typeof CompactionWindow> {}
+export const CompactionWindow = Schema.Struct({
+  /** Compaction › Input token threshold; absent when none is set or it is off. */
+  input: Schema.optionalKey(Schema.Number),
+}).annotate({ identifier: "Plus.CompactionWindow" })
+
 // Cache warming per chat: the per-chat switch and the chat's current warming
 // window, so the TUI can count down to when warming stops.
 export interface WarmingSessionInput extends Schema.Schema.Type<typeof WarmingSessionInput> {}
@@ -2606,6 +2622,8 @@ const PortableChecksInvalid = Schema.toStandardSchemaV1(ChecksInvalid)
 const PortableWarmingSessionInput = Schema.toStandardSchemaV1(
   WarmingSessionInput.annotate({ identifier: "Plus.WarmingSessionInput" }),
 )
+const PortableCompactionWindowInput = Schema.toStandardSchemaV1(CompactionWindowInput)
+const PortableCompactionWindow = Schema.toStandardSchemaV1(CompactionWindow)
 const PortableWarmingSetInput = Schema.toStandardSchemaV1(
   WarmingSetInput.annotate({ identifier: "Plus.WarmingSetInput" }),
 )
@@ -3076,6 +3094,11 @@ export const Definition = Rpc.define({
     "warming.status": {
       input: PortableWarmingSessionInput,
       output: PortableWarmingStatus,
+      errors: {},
+    },
+    "compaction.window": {
+      input: PortableCompactionWindowInput,
+      output: PortableCompactionWindow,
       errors: {},
     },
     "warming.set": {

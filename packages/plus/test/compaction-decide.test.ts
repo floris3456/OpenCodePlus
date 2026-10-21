@@ -20,7 +20,7 @@ import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
-import { createState, decideCompactionFor, warmingStatusFor, type PlusState } from "../src/index.js"
+import { createHandlers, createState, decideCompactionFor, warmingStatusFor, type PlusState } from "../src/index.js"
 import { warmingStore } from "../src/warming.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { effectiveCompaction, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
@@ -289,6 +289,23 @@ test("cold, compactWith and account-switch summaries are local under a remote st
   const handoff = decision({ metadata: { "quota.handoff": "intent" }, compact: true, portable: true })
   decideCompaction(handoff, remote)
   expect(handoff.strategy).toBe("remote")
+})
+
+test("compaction.window answers the input threshold the agent and model resolve, for the TUI's context %", async () => {
+  const state: PlusState = {
+    ...createState(),
+    cachedAgents: [{ id: "alpha", scope: "project" as const }],
+    cachedModels: [{ type: "model", level: "project", agent: "alpha", providerID: "anthropic", modelID: "claude", compactionInput: "90000", updated: UPDATED }],
+    cachedModelSettings: [settings({ compactionInput: "150000" }), settings({ providerID: "anthropic", modelID: "opus", compactionInput: "off" })],
+    cachedScopes: { global: new Set<string>(), defaults: new Set<string>() },
+  }
+  const window = createHandlers(fullContext({ directory: "/workspace" }), state, { builtins: [] })["compaction.window"]
+  const ask = (input: { agent: string; providerID: string; modelID: string }) =>
+    Effect.runPromise(window(input, { error: (type: string, message: string, data?: unknown): never => { throw { type, message, data } } }))
+  // The agent's own model row, then Every model; this model's off turns it off.
+  expect(await ask({ agent: "alpha", providerID: "anthropic", modelID: "claude" })).toEqual({ input: 90_000 })
+  expect(await ask({ agent: "beta", providerID: "anthropic", modelID: "claude" })).toEqual({ input: 150_000 })
+  expect(await ask({ agent: "alpha", providerID: "anthropic", modelID: "opus" })).toEqual({})
 })
 
 test("compactionRowsOf resolves the agent model row down the store chain", () => {

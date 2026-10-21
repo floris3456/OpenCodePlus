@@ -99,7 +99,7 @@ import { agentAttention, mergeAttention, type AttentionRow } from "./attention-s
 import { attentionStore } from "./attention.js"
 import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
-import { compactionRowsOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
+import { compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionWarming } from "@opencode/plugin/effect/session"
@@ -3952,6 +3952,15 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         return { path: written.path, checks: input.checks.map((check) => check.id) }
       }),
     "warming.status": (input) => Effect.promise(() => warmingStatusFor(input.sessionID, Date.now())),
+    "compaction.window": (input) =>
+      Effect.sync(() => {
+        const threshold = inputThresholdOf(state, input.agent, {
+          providerID: input.providerID,
+          id: input.modelID,
+          ...(input.variant === undefined ? {} : { variant: input.variant }),
+        })
+        return threshold === undefined ? {} : { input: threshold }
+      }),
     "warming.set": (input) =>
       Effect.gen(function* () {
         const status = yield* Effect.promise(() => warmingStore.setChat(input.sessionID, input.chat))
