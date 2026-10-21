@@ -333,7 +333,8 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...worker,
     ...readOnly,
     ...rows(off, ["skill:opencode"]),
-    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list", "check"]),
+    // It keeps team_check (shipped on): a finding about tests rests on running them.
+    ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list"]),
     ...rows(off, ["perm:team_get_context:accepts.followup"]),
   },
   scout: {

@@ -860,7 +860,7 @@ export const FollowupInput = Schema.Struct({
   compactWith: Schema.optional(
     Schema.String.check(Schema.isMinLength(1)),
   ).annotate({
-    description: "Model to compact with when resuming a cold stopped child.",
+    description: "Only when resuming a stopped child whose cache is cold: the provider/model to compact its chat with first, e.g. the child's own model. E_STOPPED names it.",
   }),
   rebase: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -900,7 +900,7 @@ export const CheckpointInput = Schema.Struct({
 export type CheckpointInput = typeof CheckpointInput.Type
 
 export const StopInput = Schema.Struct({
-  run: RunID.annotate({ description: "The child run to stop. A followup after a stop needs compactWith once the child is cold." }),
+  run: RunID.annotate({ description: "The child run to stop." }),
   force: Schema.optional(Schema.Boolean).annotate({
     description: "End a working child now instead of after its turn.",
   }),

@@ -106,7 +106,7 @@ test("every Basic member preset's team tool rows are the old role ceiling", () =
     // what it may edit: Requirements for a commit).
     orchestrator: ["delegate", "followup", "integrate", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
-    reviewer: ["finish", "get_context", "diff"],
+    reviewer: ["finish", "get_context", "diff", "check"],
     scout: ["finish", "get_context"],
     "build-seat": teamTools.filter((tool) => tool !== "finish"),
   }
@@ -237,12 +237,12 @@ test("every Basic body splits into Team member, Delegating and role sections", (
     ...shared,
     "implementer",
     "implementer/task",
+    "implementer/tests",
     "implementer/checks",
     "implementer/live-testing",
     "implementer/outside-your-scope",
-    "implementer/worktrees",
   ])
-  expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/findings"])
+  expect(ids("reviewer")).toEqual([...shared, "reviewer", "reviewer/the-change", "reviewer/judging", "reviewer/checks", "reviewer/findings"])
   expect(ids("scout")).toEqual([...shared, "scout", "scout/task", "scout/answer"])
   expect(ids("planner")).toEqual([...shared, ...delegating, "planner", "planner/the-plan", "planner/questions", "planner/hand-off", "planner/worktrees", "planner/merges"])
   expect(ids("orchestrator")).toEqual([
@@ -281,9 +281,8 @@ test("a Basic worker's role sends what it cannot do to its delegator, not the us
     const role = body.slice(derive(body, "Role/persona").sections.find((section) => section.id === worker)!.start)
     expect([worker, role.match(/\b(ask|tell)s? the user\b|user's chat/gi)]).toEqual([worker, null])
   }
-  const worktrees = basicBody("implementer").split("## Worktrees\n")[1]
-  expect(worktrees).toContain("finish blocked")
-  expect(worktrees).toContain("the agent that delegated you")
+  const outside = basicBody("implementer").split("## Outside your scope\n")[1]
+  expect(outside).toContain("finish blocked")
 })
 
 // What a Brief to a target must carry, whether it takes followups and what
