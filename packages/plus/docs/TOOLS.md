@@ -380,7 +380,7 @@ implementer/reviewer/scout combinations checked in the API
 | `team_checkpoint` | native | `CheckpointInput` (`packages/plus/src/teams/schema.ts:631`) | Commit intended files after checking HEAD |
 | `team_stop` | native | `StopInput` (`packages/plus/src/teams/schema.ts:650`) | Stop an owned child, optionally with a reason kept on the run |
 | `team_status` | native | `StatusInput` (`packages/plus/src/teams/schema.ts:655`) | Self plus direct children status; `waitingOn` names the open children a waiting run waits on (there is no `team_wait`: a settling child wakes its parent) |
-| `team_diff` | native | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff; omit `run` for your own run |
+| `team_diff` | native | `DiffInput` (`packages/plus/src/teams/schema.ts:682`) | A run's worktree diff; omit `run` for your own run; a `note` says when `from` is not in the run's history |
 | `team_list` | native | `ListInput` (`packages/plus/src/teams/schema.ts:690`) | Runs visible to this caller |
 | `team_get_context` | native | `GetContextInput` (`packages/plus/src/teams/schema.ts:698`) | Scope, checks, HEAD, siblings (the parent's other open runs), inbox and budget; the Brief text again only once a compaction took it out of the chat |
 | `team_check` | native | `CheckInput` (`packages/plus/src/teams/schema.ts:701`) | Run one assigned check, or any project check (only assigned ones judge `finish`) |
@@ -513,6 +513,7 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_REQUEST_ID` | Reused request id | `packages/plus/src/teams/api.ts:293`, `packages/plus/src/teams/api-followup.ts:85` |
 | `E_FINISH_TWICE` | A second report for the same attempt | `packages/plus/src/teams/api.ts:466` |
 | `E_WAITING` | `finish done` while a child of the run is still working | `packages/plus/src/teams/api.ts:675` |
+| `E_CORRECTION` | A finish written in a step that began before its parent's last correction arrived; the correction is the next message | `packages/plus/src/teams/api.ts` (`finishHandler`) |
 | `E_UNLANDED` | `finish done` while a done child's commits have not landed, or a review delegated from a base that holds none of them | `packages/plus/src/teams/api.ts:279`, `packages/plus/src/teams/api.ts:682` |
 | `E_CHECKS_RED` | `finish done` with a failing check | `packages/plus/src/teams/api.ts:494` |
 | `E_DIRTY` | Worktree dirty at a boundary that needs it clean | `packages/plus/src/teams/api.ts:503`, `packages/plus/src/teams/merge.ts:200` |
@@ -526,7 +527,7 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_NO_BRIEF` | `get_context` with no stored brief | `packages/plus/src/teams/api.ts:692` |
 | `E_UNKNOWN_RUN` | Unknown run id | `packages/plus/src/teams/api-query.ts:88`, `packages/plus/src/teams/api.ts:1003` |
 | `E_NOT_CHILD` | Target is not a direct child | `packages/plus/src/teams/api-lifecycle.ts:27` |
-| `E_BUSY` | Target is working (or delivery:`now` while busy) | `packages/plus/src/teams/api-lifecycle.ts:84`, `packages/plus/src/teams/api-followup.ts:169` |
+| `E_BUSY` | Target is working (a rebase followup, or a lifecycle call that needs it idle) | `packages/plus/src/teams/api-lifecycle.ts:48`, `packages/plus/src/teams/api-followup.ts:240` |
 | `E_NOT_DONE` | The child's latest report is not done/done_with_concerns | `packages/plus/src/teams/api-integrate.ts:71` |
 | `E_TERMINAL` | Target is terminal | `packages/plus/src/teams/api-followup.ts:66` |
 | `E_REVIEWER` | Followup addressed to a reviewer | `packages/plus/src/teams/api-followup.ts:74` |

@@ -4,6 +4,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Session } from "@opencode/schema/session"
+import { SessionMessage } from "@opencode/schema/session-message"
 import { Effect, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -36,7 +37,7 @@ async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promi
 
 function recordSession() {
   const created: unknown[] = []
-  const prompted: Array<{ sessionID: unknown; text: unknown; delivery?: unknown }> = []
+  const prompted: Array<{ id?: unknown; sessionID: unknown; text: unknown; delivery?: unknown }> = []
   const waited: unknown[] = []
   let seq = 0
   const domain = {
@@ -46,8 +47,8 @@ function recordSession() {
       seq += 1
       return Effect.succeed({ id: Session.ID.make(`ses_child_${seq}`) })
     },
-    prompt: (input: { sessionID: unknown; text: unknown; delivery?: unknown }) => {
-      prompted.push({ sessionID: input.sessionID, text: input.text, delivery: input.delivery })
+    prompt: (input: { id?: unknown; sessionID: unknown; text: unknown; delivery?: unknown }) => {
+      prompted.push({ id: input.id, sessionID: input.sessionID, text: input.text, delivery: input.delivery })
       return Effect.succeed(undefined as never)
     },
     wait: (input: unknown) => {
@@ -211,26 +212,6 @@ test("queued followup lands in the child inbox and get_context sees it", async (
     expect(seen.inbox).toHaveLength(1)
     expect(seen.inbox[0]?.kind).toBe("followup")
     expect(seen.inbox[0]?.text).toContain("Clarify the blocked need")
-  })
-})
-
-test("delivery now on a working child fails E_BUSY with the exact message", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const now = new Date().toISOString()
-    const { parent, child } = parentChild("main-0123456789abcdef", "w-bbbbbbbbbbbbbbbb", {
-      state: "working",
-      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
-    })
-    await saveRun(root, parent)
-    await saveRun(root, child)
-    const api = createTeamApi(context({ session: recordSession().domain }), teamState())
-    const result = await api.followup(followupInput({ run: child.id, requestID: "busy-1", delivery: "now" }), callerFor(parent))
-    const error = rejected(result)
-    expect(error.code).toBe("E_BUSY")
-    expect(error.message).toBe(`Child is working (attempt 1). Use delivery:"queue" (default); it is delivered when the child goes idle.`)
-    if (!result.ok) expect(result.error.accepted).toEqual({ delivery: "queue" })
-    else throw new Error("expected E_BUSY")
-    expect(await peek(root, child.id)).toEqual([])
   })
 })
 
@@ -584,29 +565,6 @@ test("unavailable targets refuse before inbox, budget or request receipt changes
   })
 })
 
-test("delivery now on an idle child prompts, moves to working and returns admitted", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const { parent, child } = parentChild("main-0123456789abcdef", "w-1111111111111111")
-    await saveRun(root, parent)
-    await saveRun(root, child)
-    const sessions = recordSession()
-    const api = createTeamApi(context({ session: sessions.domain }), teamState())
-    const value = required(
-      await api.followup(
-        followupInput({ run: child.id, requestID: "now-1", delivery: "now", prompt: "Continue in place: fix the off-by-one now." }),
-        callerFor(parent),
-      ),
-    ) as { attempt: number; state: string; next: string }
-    expect(value).toEqual({ attempt: 2, state: "admitted", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
-    expect(sessions.prompted).toHaveLength(1)
-    expect(sessions.prompted[0]?.text).toContain("fix the off-by-one")
-    const moved = await loadRun(root, child.id)
-    expect(moved?.state).toBe("working")
-    expect(moved?.attempts[moved.attempts.length - 1]?.state).toBe("admitted")
-    expect(moved?.attempts[moved.attempts.length - 1]?.n).toBe(2)
-  })
-})
-
 test("queue default on an idle child prompts and returns admitted with the real attempt", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-2222222222222222")
@@ -719,14 +677,14 @@ test("a followup delivered as a steer to a working child is not repeated when it
   })
 })
 
-test("now whose prompt rejects restores the run and allows a same-requestID retry", async () => {
+test("a followup whose prompt rejects restores the run and allows a same-requestID retry", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-5555555555555555")
     await saveRun(root, parent)
     await saveRun(root, child)
     const failing = recordRejectingSession()
     const failingApi = createTeamApi(context({ session: failing.domain }), teamState())
-    const input = followupInput({ run: child.id, requestID: "now-fail-1", delivery: "now", prompt: "Continue in place: retry the failed admit now." })
+    const input = followupInput({ run: child.id, requestID: "now-fail-1", prompt: "Continue in place: retry the failed admit now." })
     const result = await failingApi.followup(input, callerFor(parent))
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error("expected prompt failure")
@@ -745,6 +703,8 @@ test("now whose prompt rejects restores the run and allows a same-requestID retr
     const moved = await loadRun(root, child.id)
     expect(moved?.state).toBe("working")
     expect(moved?.attempts[moved.attempts.length - 1]?.n).toBe(2)
+    // Only the retry's item is left, recorded as delivered: the refused one went with its refusal.
+    expect((await peek(root, child.id)).map((item) => item.id)).toEqual(moved?.attempts.at(-1)?.inbox ?? [])
   })
 })
 
@@ -925,6 +885,40 @@ async function landingFixture(root: string) {
   await writeDone(root, child.id, 1)
   return { scratch, main, worktree, base, childHead, parent: parentRecord, child }
 }
+
+test("a correction steered in after the child's finishing step began holds its report until a later step (b12-s6)", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await rebaseFixture({ "child.ts": "export const child = 1\n" }, { "sibling.ts": "export const sibling = 1\n" })
+    try {
+      const now = new Date().toISOString()
+      const { parent, child } = await rebaseRuns(root, repo, { state: "working", attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }] })
+      const session = recordSession()
+      const api = createTeamApi(context({ session: session.domain }), teamState())
+      // The step that writes the report starts, then the parent's correction arrives.
+      const writing = SessionMessage.ID.create()
+      expect(required(await api.followup(followupInput({ prompt: "Also cover an empty file." }), callerFor(parent)))).toMatchObject({ state: "queued", attempt: 1 })
+      const steered = session.prompted.at(-1)
+      expect(steered?.delivery).toBe("steer")
+      expect((await loadRun(root, child.id))?.steeredMessage).toBe(String(steered?.id))
+      const report = Schema.decodeUnknownSync(Report)({ status: "done", summary: "Added child.ts." })
+      const held = rejected(await api.finish(report, { ...callerFor(child), messageID: writing }))
+      expect(held.code).toBe("E_CORRECTION")
+      expect(held.message).toBe("Your parent sent a correction while you wrote this report; it is your next message. Act on it, then team_finish.")
+      expect(await Bun.file(path.join(root, "runs", child.id, "report-1.json")).exists()).toBe(false)
+      // The step after it has the correction in its history.
+      expect(required(await api.finish(report, { ...callerFor(child), messageID: SessionMessage.ID.create() }))).toMatchObject({ attempt: 1, status: "done" })
+      // From its parent's newer HEAD the child's diff shows the sibling as removed; landing does not.
+      const fromParent = required(await api.diff({ run: child.id, from: "parent" }, callerFor(parent))) as { note?: string; patch: string }
+      expect(fromParent.patch).toContain("-export const sibling = 1")
+      expect(fromParent.note).toBe(
+        `${repo.parentHead} is not in this run's history: this diff also shows, as removals, what that commit has and the run lacks. team_integrate lands only the run's own commits (base..head) on its parent's HEAD.`,
+      )
+      expect(required(await api.diff({ run: child.id }, callerFor(parent)))).not.toHaveProperty("note")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
 
 async function writeDone(root: string, runID: string, n: number) {
   await atomicJson(path.join(root, "runs", runID, `report-${n}.json`), { run: runID, attempt: n, status: "done", summary: "done", commits: [] })

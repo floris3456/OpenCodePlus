@@ -183,16 +183,6 @@ test("followup refuses invalid, protected, forbidden, ungrantable and unaccepted
   }
 })
 
-test("a busy now delivery cannot partially grant paths", async () => {
-  await using f = await fixture()
-  const current = (await loadRun(f.root, f.child.id))!
-  await saveRun(f.root, { ...current, state: "working" })
-  expect(rejected(await f.api.followup({ run: f.child.id, requestID: "busy", paths: ["src/cli.ts"], delivery: "now" }, f.caller)).code).toBe("E_BUSY")
-  expect(await readJson<Brief>(f.briefPath)).toEqual(f.brief)
-  expect((await loadRun(f.root, f.child.id))?.paths).toEqual(f.child.paths)
-  expect(f.prompts).toEqual([])
-})
-
 test("the followup paths parameter can be closed without closing ordinary corrections", () => {
   const parent = shippedMembers().find((member) => member.id === "build-seat")!
   const table = presetTable({ records: [change(parent, "perm:team_followup:parameters.paths", { state: "off" })] })
