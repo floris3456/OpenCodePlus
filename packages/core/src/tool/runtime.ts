@@ -2,7 +2,7 @@ import type { ToolDefinition } from "@opencode/ai"
 import { emptyInputJsonSchema } from "@opencode/ai/tool"
 import { Tool } from "@opencode/schema/tool"
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec"
-import { Cache, Effect, JsonPointer, JsonSchema, Schema, SchemaIssue, SchemaRepresentation } from "effect"
+import { Cache, Effect, JsonPointer, JsonSchema, Option, Schema, SchemaIssue, SchemaRepresentation } from "effect"
 import { $ZodType, toJSONSchema } from "zod/v4/core"
 
 const formatEffectIssues = SchemaIssue.makeFormatterStandardSchemaV1()
@@ -65,9 +65,19 @@ export const execute = (tool: Tool.Info<any, any>, input: unknown, context: Tool
 const decodeInput = (tool: Tool.Info<any, any>, value: unknown) =>
   Effect.gen(function* () {
     const result = yield* validateInput(tool.input, value)
-    if (result.issues)
-      return yield* new Tool.Error({ message: formatInputIssues(effectiveName(tool), result.issues, value) })
-    return result.value
+    if (!result.issues) return result.value
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const entries = Object.entries(value).map(([key, field]): [string, unknown] => {
+        if (typeof field !== "string" || !/^[{[]/.test(field.trim())) return [key, field]
+        const parsed = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(field)
+        return [key, Option.isSome(parsed) && typeof parsed.value === "object" && parsed.value !== null ? parsed.value : field]
+      })
+      if (entries.some(([key, field]) => field !== Reflect.get(value, key))) {
+        const retried = yield* validateInput(tool.input, Object.fromEntries(entries))
+        if (!retried.issues) return retried.value
+      }
+    }
+    return yield* new Tool.Error({ message: formatInputIssues(effectiveName(tool), result.issues, value) })
   })
 
 const validateInput = (
