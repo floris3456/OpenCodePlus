@@ -38,7 +38,7 @@ export function linked(id: string, preset: string, team = shippedTeam): TeamMemb
   return { id, team, preset: { kind: "member", team: "basic", id: preset } }
 }
 
-const nativeTools = ["read", "glob", "grep", "edit", "write", "patch", "shell", "question", "subagent"]
+const nativeTools = ["read", "glob", "grep", "edit", "write", "patch", "shell", "question", "subagent", "skill"]
 const searchTools = ["search_tavily_search", "search_tavily_extract", "search_exa_code_search"]
 
 function toolItem(id: string, group: Item["group"]): Item {

@@ -225,7 +225,7 @@ What the Basic member presets set (on = permitted):
 
 | | planner | orchestrator | implementer | reviewer | scout | build seat |
 | --- | --- | --- | --- | --- | --- | --- |
-| `shell` tool | off | on, except changing files, commits or refs | off | off | off | on |
+| `shell` tool | on, only `git worktree add` and `git merge` change anything | on, except changing files, commits or refs | off | off | off | on |
 | `question` tool | on | off | off | off | off | on |
 | paths outside the checkout (read/edit Where, `external_directory`) | on | on | off | off | off | on |
 | `subagent` tool | off | off | off | off | off | on |

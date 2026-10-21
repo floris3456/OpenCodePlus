@@ -199,6 +199,13 @@ test("members other than the build seat get search direct and no execute; the se
   expect(denied("build-seat")).toEqual([])
 })
 
+test("a reviewer and a scout, with no skill on, get no skill tool; an implementer keeps it", async () => {
+  const members = [linked("reviewer", "reviewer"), linked("scout", "scout"), linked("implementer", "implementer")]
+  const input = presetInput({ members })
+  const skill = await Promise.all(members.map(async (member) => (await applyFor(input, member.id)).tools.find((plan) => plan.tool === "skill")?.enabled))
+  expect(skill).toEqual([false, false, undefined])
+})
+
 test("a project-level record on a preset row overrides the shipped answer", async () => {
   const member = linked("implementer", "implementer")
   const { tools } = await applyFor(presetInput({ members: [member], records: [change(member, "tool:shell", { state: "on" })] }), member.id)
