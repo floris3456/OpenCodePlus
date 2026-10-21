@@ -107,6 +107,11 @@ const rewrittenRows = [
 ]
 const currentText = (id: string): string | undefined => migratedInput.after.items.find((item) => item.id === id)?.text
 
+// Rows a member preset stopped turning off after the snapshot was taken: they
+// now take the row's shipped value (on). The reviewer runs tests with
+// team_check, since a finding about tests rests on running them.
+const reopened: Record<string, readonly string[]> = { reviewer: ["tool:team_check"] }
+
 // The snapshot, with the rows the member preset has changed on purpose since.
 function expectedFor(agentId: string, memberId: string): { role: string; items: Record<string, { state: string; text: string }> } {
   const before = fixture.agents[agentId]
@@ -114,7 +119,7 @@ function expectedFor(agentId: string, memberId: string): { role: string; items: 
   if (before === undefined || member === undefined) throw new Error(`missing ${agentId} or ${memberId}`)
   const items = Object.fromEntries(
     Object.entries(before.items).filter(([id]) => !retired(id)).map(([id, value]) => {
-      const state = member.overrides[id]?.state ?? (member.offPrefixes.some((prefix) => id.startsWith(prefix)) ? "off" : undefined)
+      const state = member.overrides[id]?.state ?? (member.offPrefixes.some((prefix) => id.startsWith(prefix)) ? "off" : reopened[memberId]?.includes(id) ? "on" : undefined)
       const text = rewrittenRows.includes(id) ? currentText(id) ?? value.text : value.text
       return [id, { ...value, text, ...(state === undefined ? {} : { state }) }]
     }),

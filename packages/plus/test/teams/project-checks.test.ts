@@ -13,7 +13,7 @@ import {
   writeProjectChecks,
   type ProjectChecks,
 } from "../../src/teams/project-checks.js"
-import { Brief, nullTolerant } from "../../src/teams/schema.js"
+import { Brief, CheckInput, nullTolerant } from "../../src/teams/schema.js"
 import { Schema } from "effect"
 
 // Checks run unattended, so what runs must be a command a person put in the
@@ -206,4 +206,12 @@ test("delegators read the project's checks on the checks field of team_delegate"
   const bare = { team_delegate: { input: Schema.toJsonSchemaDocument(nullTolerant(Brief as Schema.Top)).schema as unknown } }
   describeProjectChecks(bare, undefined)
   expect(JSON.stringify(bare.team_delegate.input)).toContain("This project names no checks")
+})
+
+// A worker learns the project's checks from team_check itself, not from a
+// team_get_context call (live: children called it first just for this list).
+test("workers read the project's checks on the id field of team_check", () => {
+  const tools = { team_check: { input: Schema.toJsonSchemaDocument(nullTolerant(CheckInput as Schema.Top)).schema as unknown } }
+  describeProjectChecks(tools, project)
+  expect(JSON.stringify(tools.team_check.input)).toContain("Project checks: unit (all tests); pytest-file (one file) — needs path; lint.")
 })

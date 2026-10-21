@@ -1856,8 +1856,8 @@ What the Basic member presets set (every other row is the catalogue's shipped va
   `tool:shell` is off: a level that turns `tool:shell` and `skill:pilotty` on
   gives it a shell for live tests that drives terminals and runs nothing else.
 - **reviewer** — as implementer's worker rows, with every team tool but
-  `finish`, `diff`, `get_context` off, and Corrections by followup off.
-- **scout** — as reviewer without `diff` (it changes nothing), taking
+  `finish`, `diff`, `get_context` and `check` off, and Corrections by followup off.
+- **scout** — as reviewer without `diff` and `check` (it changes nothing), taking
   corrections.
 - **build-seat** — `team_finish` off (nobody delegates to it). Its chat run
   checkpoints what it may edit (`scope.chatEditRefusal`: the agent's edit

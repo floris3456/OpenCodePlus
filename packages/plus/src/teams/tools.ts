@@ -38,21 +38,21 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 // is sent with every request, and a Code Mode catalog shows only the first
 // line, so each first line stands on its own and stays short.
 const DelegateDescription =
-  "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run; its settlement wakes you with the report."
+  "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run (several runs: one call each, in the same step); its settlement wakes you with the report, so end your turn instead of polling."
 const FinishDescription = "Report your task's outcome; in a delegated run, end your turn. Once per attempt; corrections arrive as new messages."
 const FollowupDescription =
-  "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context. A followup after a stop needs compactWith once the child is cold."
+  "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
 const IntegrateDescription =
-  "Land a done child's commits on your branch after rebasing and automatic checks. Verifies its assigned checks, landed children's checks and your Brief's checks; only its own failures or new breakages block landing."
+  "Land a done child's commits on your branch: rebased onto your HEAD, verified (its checks, landed children's and your Brief's; only its own failures or new breakages block), then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."
 const StopDescription =
-  "Stop a child run you no longer need: now, or after its turn while it works (force ends it now). A followup after a stop needs compactWith once the child is cold."
-const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size."
+  "Stop a child run you no longer need: now, or after its turn while it works (force ends it now)."
+const StatusDescription = "State, latest report, checks and HEAD of your run and your children; each child's budget includes contextTokens, its latest step's context size. Not for waiting: settlements wake you."
 const DiffDescription = "Git diff of your run or a child's, against its base, its parent or a commit."
 const ListDescription = "List the runs in this namespace."
-const GetContextDescription = "Your Brief, scope, checks, HEAD, budget and pending messages; after a compaction, your Brief again."
+const GetContextDescription = "After a compaction: your Brief again, with your scope, checks, HEAD and budget. Not needed at the start: your Brief is your first message."
 const CheckDescription =
-  "Run one of your assigned checks in your worktree, or any project check (get_context projectChecks; path when it needs one). Only assigned checks judge your finish."
+  "Run one of your assigned checks in your worktree, or any project check (path when it needs one). Only assigned checks judge your finish."
 
 // One team tool call in flight, remembered at `tool.execute.before` so a refusal
 // seen on the event stream can be audited with the same actor, session and

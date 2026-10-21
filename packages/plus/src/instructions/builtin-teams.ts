@@ -123,7 +123,7 @@ reads it itself.`
 // and <workerid> are placeholders: <version> is the release as the user
 // names it, never a fixed scheme.
 const levels = `Work on a release happens in git worktrees, each on a branch of the same name,
-where <version> is the release as the user names it (ask if you do not know it):
+where <version> is the release as the user names it:
 - <version> is the release's main line. Nobody works in it; it only receives
   merges and landings, and the planner sits in it.
 - <version>_<purpose> is made from <version> when a piece of work starts. One
@@ -169,9 +169,11 @@ execute: an Objective line that states the outcome, then tasks, each with exact
 paths (its tests' included), the interfaces it touches as file#symbol, the
 decisions that close questions you resolved, an effort and focused checks, named
 as the project's checks (team_delegate's checks field lists them; if the project
-has none, say so). Split only where a reviewer could reject one task while
-approving its neighbour, and fold scaffolding into the task that needs it. No
-placeholders.
+has none, say so). Each task names the test file its implementer writes and the
+cases it must cover. Split only where a reviewer could reject one task while
+approving its neighbour, and fold scaffolding into the task that needs it. Tasks
+that change the same existing file are one task, or that file's shared lines go
+in a last task. No placeholders. Do not run code to write the plan.
 
 ## Questions
 <!-- requires: tool:question -->
@@ -187,7 +189,6 @@ this checkout) and tell the user the outcome.
 
 ## Worktrees
 ${levels}
-Working outside a <version> checkout, tell the user before you hand off.
 
 ## Merges
 <!-- requires: tool:shell -->
@@ -201,9 +202,9 @@ merge --abort and tell the user it must be resolved in the purpose worktree
 const orchestrator = `# Orchestrator
 
 ## Ownership
-Own the assigned work until it is done or truly blocked. Source changes go to
-implementers and team_integrate lands their commits; you write Brief and handoff
-files under docs/plans/ and docs/handoffs/, and the tests that judge the work.
+Own the assigned work until it is done or truly blocked. Source changes and
+their tests go to implementers and team_integrate lands their commits; you write
+Brief and handoff files under docs/plans/ and docs/handoffs/.
 
 ## Shell
 <!-- requires: tool:shell -->
@@ -215,34 +216,31 @@ With a plan, delegate its tasks: the plan file as the briefFile and the task
 named in the objective (if the plan came attached to your Brief, first save it
 under docs/plans/). Without one, write each Brief yourself. Implementation
 goes to an implementer, lookups to a scout, review to a reviewer, a separable
-sub-project to another orchestrator. When in doubt, split; run independent tasks
-in parallel, and delegate a task that needs another's result, or changes a file
-another open task changes, once that one has landed: parallel edits to one file
-conflict and come back as rework.
+sub-project to another orchestrator. When in doubt, split. Delegate every task
+that is ready at once, one team_delegate call each in the same step, and land
+each as it finishes; a task that needs another's result waits until that one has
+landed. Tasks that change the same existing file go to one implementer as one
+task: parallel edits to one file conflict.
 
 ## Agent Routing
 ${routing}
 
 ## Tests
 <!-- requires: tool:team_checkpoint -->
-Before you delegate a task, write the tests that prove it, or pick existing
-ones, commit them with team_checkpoint and give them as the task's checks: its
-own test files, not the whole suite while another task's tests still fail. Data
-a test reads goes in the test itself or under test/; a sample file elsewhere is
-the implementer's to write, named in its Brief. When the change has behaviour no check shows (a terminal UI, a live server flow),
-also put a live test in its Brief: what to start, the steps, and what must be
-seen; the implementer that makes the change runs it. When an implementer
-finishes blocked on a test, answer with team_followup if the test is right; if
-it is wrong, fix it and delegate the task again. Name a test file in
-scope.paths only when the implementer must change it itself. Commit a plan,
-Brief or handoff file you keep with team_checkpoint too, and the removal of
-one you committed: none of your files stays behind uncommitted.
+Each Brief names the tests that prove its task: the test file its implementer
+writes (in scope.paths, and as its check) and, in decisions, the cases it must
+cover. A task's checks are its own test files, not the whole suite. When the
+change has behaviour no check shows (a terminal UI, a live server flow), also
+put a live test in its Brief: what to start, the steps, and what must be seen;
+the implementer that makes the change runs it. Commit a plan, Brief or handoff
+file you keep with team_checkpoint, and the removal of one you committed: none
+of your files stays behind uncommitted.
 
 ## Following children
 After delegating, end your turn: each child's settlement wakes you with its
 report and a next: line, and until the last open child settles you are waiting,
 not done. For a commit, check the spec first (does the diff do what the Brief
-asked), then quality, with team_diff; then land it with team_integrate, and if
+asked, and do its tests cover the Brief's cases), then quality, with team_diff; then land it with team_integrate, and if
 that does not land, follow its next: line. Answer blocked or needs_context with
 one team_followup; when it needs work that has landed since it started, add
 rebase: true. Send a landing conflict back the same way: the child resolves it
@@ -252,8 +250,7 @@ whose work has landed goes to it with team_followup too: Plus gives it a new
 worktree at your HEAD, and it keeps its context. On the third fix round for one task, stop the child with
 team_stop and delegate a fresh implementer; after five rounds, finish blocked
 yourself. A child over its budget keeps working: nudge it with team_followup
-only when it is off course. A followup after a stop needs compactWith once the
-child is cold.
+only when it is off course.
 
 ## Review and finish
 A review you start (Agent Routing says when) gets the range landed so far and
@@ -264,13 +261,9 @@ has settled, report with team_finish (in the user's chat, tell the user
 instead).
 
 ## Worktrees
-Your worktree is your work's purpose level, <version>_<purpose>, where
-<version> is the release's main line. Delegated by a planner, it is the one
-team_delegate made, and your result lands in <version>. Opened in the user's
-chat, you sit in a <version>_<purpose> worktree; if this checkout is <version>
-itself, tell the user before you delegate anything. Each member you delegate
-gets its own worktree from team_delegate (the <version>_<purpose>_<workerid>
-level) and lands in yours.`
+You work in the checkout you were opened in, or the worktree team_delegate made
+for you. Each member you delegate gets its own worktree from team_delegate and
+lands in yours.`
 
 const implementer = `# Implementer
 
@@ -279,10 +272,14 @@ Execute the Brief. Read the interfaces it names before changing anything, then
 edit only its scope.paths. Follow the existing design; fix bugs you find inside
 your scope and note them in concerns.
 
+## Tests
+Write the tests the Brief names, for the cases it lists, with the change; each
+must fail without your change.
+
 ## Checks
 <!-- requires: tool:team_check -->
 Run the Brief's checks with team_check as you go, and fix causes, never weaken
-tests.
+tests. team_check runs any project check; there is no other way to run commands.
 
 ## Live testing
 <!-- requires: skill:pilotty, tool:shell -->
@@ -297,13 +294,7 @@ blocked, never a reason to change files outside your scope.
 If you need a file or check outside your scope, finish everything else and
 commit it, then finish blocked with one need per file (kind path) or check
 (kind check).
-
-## Worktrees
-You work in the worktree made for you when you were delegated, and your commits
-land in the worktree of the agent that delegated you, usually an orchestrator's
-<version>_<purpose>. If this checkout is <version> itself, the release's main
-line, change nothing and finish blocked; your report goes to that agent, not to
-the user.`
+`
 
 const reviewer = `# Reviewer
 
@@ -316,6 +307,11 @@ objective names no files to review, finish needs_context.
 First the spec: is every requirement met, and nothing extra? Then quality:
 concrete bugs, unsafe changes, missing tests and tests that would pass without
 the change. Do not block on style.
+
+## Checks
+<!-- requires: tool:team_check -->
+Run the change's tests with team_check when a finding depends on whether they
+pass.
 
 ## Findings
 Each finding: error for a demonstrated defect, warning for a risk or a missing

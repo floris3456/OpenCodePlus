@@ -1204,10 +1204,10 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
 }
 
 // The project's named checks (main checkout .opencodeplus/checks.json) on the
-// checks field of team_delegate. Only when that tool is
-// in the request; a failed read leaves the tools as they are.
+// checks field of team_delegate and the id field of team_check. Only when one
+// of them is in the request; a failed read leaves the tools as they are.
 function describeChecks(ctx: Context, event: { readonly tools: Record<string, { input: unknown }> }): Effect.Effect<void> {
-  if (event.tools.team_delegate === undefined) return Effect.void
+  if (event.tools.team_delegate === undefined && event.tools.team_check === undefined) return Effect.void
   return Effect.promise(async () => {
     const project = await readProjectChecks(ctx.location.directory).catch(() => undefined)
     describeProjectChecks(event.tools, project)

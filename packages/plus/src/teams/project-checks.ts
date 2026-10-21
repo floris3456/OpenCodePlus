@@ -262,20 +262,23 @@ export function checksNote(project: ProjectChecks | undefined): string {
 }
 
 /**
- * Append the project's check list to the checks field of the tools that take
- * checks, so a delegator names a real check the first time. A defaulted
+ * Append the project's check list to the fields that name a check, so a
+ * delegator or a worker names a real check the first time. A defaulted
  * field's description sits in its non-null branch, which is where it goes.
  */
 export function describeProjectChecks(tools: Record<string, { input: unknown }>, project: ProjectChecks | undefined): void {
   const note = checksNote(project)
-  const definition = tools.team_delegate
-  if (definition === undefined) return
-  const schema = structuredClone(definition.input) as JsonNode
-  const field = schema.properties?.checks
-  if (field === undefined) return
-  const target = field.description !== undefined ? field : field.anyOf?.find((branch) => branch.description !== undefined) ?? field
-  target.description = target.description === undefined ? note : `${target.description} ${note}`
-  definition.input = schema
+  // team_delegate's checks field and team_check's id field: both name a check.
+  for (const [name, fieldName] of [["team_delegate", "checks"], ["team_check", "id"]] as const) {
+    const definition = tools[name]
+    if (definition === undefined) continue
+    const schema = structuredClone(definition.input) as JsonNode
+    const field = schema.properties?.[fieldName]
+    if (field === undefined) continue
+    const target = field.description !== undefined ? field : field.anyOf?.find((branch) => branch.description !== undefined) ?? field
+    target.description = target.description === undefined ? note : `${target.description} ${note}`
+    definition.input = schema
+  }
 }
 
 // ── suggestions ─────────────────────────────────────────────────────────────

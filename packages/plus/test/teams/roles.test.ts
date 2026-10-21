@@ -143,7 +143,7 @@ test("final ceilings are the team tool rows, exactly the old ceiling of every ro
     // what it may edit: Requirements for a commit).
     orchestrator: ["delegate", "followup", "integrate", "stop", "finish", "checkpoint", "status", "list", "get_context", "check", "diff"],
     implementer: ["checkpoint", "finish", "get_context", "check", "diff"],
-    reviewer: ["finish", "get_context", "diff"],
+    reviewer: ["finish", "get_context", "diff", "check"],
     scout: ["finish", "get_context"],
     "build-seat": teamTools.filter((tool) => tool !== "finish"),
   }

@@ -249,8 +249,8 @@ Team tools are tool rows: a planner lacks `check` (it keeps
 `checkpoint` to commit its plan file when delegated, and `integrate` to land in
 your checkout what the orchestrator it delegated to reports done); an
 orchestrator lacks `checkpoint`; an implementer keeps only `checkpoint`,
-`finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`
-and `get_context`; a scout only `finish` and `get_context`; a build seat has
+`finish`, `diff`, `get_context` and `check`; a reviewer only `finish`, `diff`,
+`get_context` and `check`; a scout only `finish` and `get_context`; a build seat has
 every team tool but `finish` (nobody delegates to it). A chat run (no Brief)
 checkpoints what its agent may edit: its edit rows (Where, Files it may
 change, Protected files) decide, never protected state such as `.git` or
@@ -319,8 +319,8 @@ the path must be repository-relative, no globs, no leading `-`). The run stores
 and runs the resolved command. `bun test FILE` / `bun run SCRIPT` as `argv`
 keep working for Bun projects. Anything else is refused with `E_CHECKS`
 naming the project's checks. Every request a team member makes lists the
-project's checks on the `checks` field of `team_delegate`
-(and `team_get_context` reports them as `projectChecks`), so
+project's checks on the `checks` field of `team_delegate` and the `id` field
+of `team_check` (and `team_get_context` reports them as `projectChecks`), so
 the first call names a real check. `setup` prepares each fresh worktree once,
 before its first check, in place of the built-in Bun install.
 
