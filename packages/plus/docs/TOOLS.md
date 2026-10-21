@@ -63,6 +63,8 @@ exact name ignoring case with `*`/`%` wildcards (`_` is the shared rows), and
 `tool:<id>` takes in the tool's own rows (the tool, its parameters, rules and
 offering). The other keys are listed in the `instructions-tools` skill
 (`packages/plus/src/instructions/teaching.ts`, `packages/plus/src/instructions/query.ts`).
+`team` includes ordinary members' rows, including models, even though their
+stored overrides belong to the agent rather than carrying a `team` field.
 
 `find` answers one row per thing (`findCollapse` in `query.ts`; the TUI filter
 does not collapse): each row at its most specific level, chosen before

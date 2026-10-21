@@ -863,9 +863,8 @@ function isOf(state: QueryState, candidate: Candidate, what: string): boolean {
 }
 
 function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
-  if (candidate.address?.team !== undefined) {
-    return [candidate.address.team.team]
-  }
+  const team = candidate.address?.memberOf ?? candidate.address?.team
+  if (team !== undefined) return [team.team]
   // Team presets, member presets and Teams entries name their team on the row.
   const ownerTeam = candidate.lazy?.owner?.team
   if (ownerTeam !== undefined) return [ownerTeam.team]

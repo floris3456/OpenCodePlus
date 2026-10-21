@@ -880,12 +880,16 @@ export function modelRuntimeScope(input: { scopes: Scopes; level: Level; owner: 
   replaces a target's tombstone (re-adding clears the hide); `hasModelRecordAt`
   counts live records only.
   `modelRuntimeScope` names the chain a row's agent resolves through: the
-  address itself for shared and team-scoped rows, `runtimeScope` for an
+  address itself for shared and team-scoped rows (ordinary members carrying
+  `memberOf` use their team's tier too), `runtimeScope` for an
   agent's own level (a native built-in's Defaults row runs at Project). The
   TUI marks the runtime winner active (`badges.activeFrom` when it sits at
   another level) and carries `badges.effective` on the group when the winner
   is not one of the level's rows; removal decisions (`ops.ts`
   `removeModelRow`) read the same chain.
+  Defaults model-settings change-log summaries name only fields whose stored
+  values changed, including compaction, images, cleared fields and warming
+  rounded by the save; unchanged fields are omitted.
 - Cache warming per agent and model: a model record may carry `warming`
   (`"off"`, `"on"`, or a total time `"45m"`, `"2h"`, `"1h30m"`; 1m to 24h,
   canonicalised by `parseWarming`/`formatWarming`), `interval` (`"4m"`,
