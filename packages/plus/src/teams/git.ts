@@ -13,10 +13,10 @@ export interface GitResult {
 }
 
 // Non-throwing variant: captures exit code, trimmed stdout and trimmed stderr.
-export async function gitRaw(dir: string, args: string[]): Promise<GitResult> {
+export async function gitRaw(dir: string, args: string[], env: Record<string, string> = {}): Promise<GitResult> {
   const p = Bun.spawn(["git", ...args], {
     cwd: dir,
-    env: { ...process.env, PATH: systemPath() },
+    env: { ...process.env, PATH: systemPath(), ...env },
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -30,8 +30,8 @@ export async function gitRaw(dir: string, args: string[]): Promise<GitResult> {
 
 // Throwing variant: rejects with the stderr text on non-zero exit,
 // resolves with trimmed stdout otherwise.
-export async function git(dir: string, args: string[]): Promise<string> {
-  const r = await gitRaw(dir, args)
+export async function git(dir: string, args: string[], env: Record<string, string> = {}): Promise<string> {
+  const r = await gitRaw(dir, args, env)
   if (r.code !== 0) throw new Error(r.err || r.out || `git ${args.join(" ")} exited ${r.code}`)
   return r.out
 }

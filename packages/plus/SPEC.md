@@ -1720,6 +1720,10 @@ own failure at the rebased tip refuses the landing. Other red checks run at
 the parent's HEAD too: only a new failure refuses; pre-existing failures
 appear in `stillRed` with a note on the landed result. Passing parent checks,
 including aliases of a deduplicated command, keep receipts at the landed HEAD.
+Receipts record `measuredTree` from tracked and untracked, non-ignored files without
+changing the real index; finish on a clean worktree and landing reuse passing
+same-definition, same-tree proof, labelled `reused` with its original `at` time.
+Legacy receipts without `measuredTree` retain their clean-HEAD binding rules.
 No separate integration-check list is stored. Unknown instruction-row records
 remain orphaned; they neither recreate a removed tool nor block publication.
 

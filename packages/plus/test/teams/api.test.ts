@@ -1122,6 +1122,44 @@ test("finish runs a stale check instead of refusing it", async () => {
   })
 }, 30000)
 
+test.each([false, true])("finish reuses a dirty check after checkpoint only for identical content (changed: %s)", async (changed) => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const counter = path.join(root, "executions.log")
+      await fs.mkdir(root, { recursive: true })
+      const child = {
+        ...await finishChild(root, repo, `import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(counter)}, "run\\n")\n${PASSING_TEST}`),
+        paths: ["docs/*"],
+      }
+      await saveRun(root, child)
+      await fs.mkdir(path.join(repo.dir, "docs"))
+      await fs.writeFile(path.join(repo.dir, "docs", "notes.md"), "checked content\n")
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean; at: number; dirty: boolean; measuredTree: string; reused: boolean }
+      expect(checked).toMatchObject({ passed: true, dirty: true, reused: false })
+      expect(await Bun.file(counter).text()).toBe("run\n")
+      if (changed) await fs.writeFile(path.join(repo.dir, "docs", "notes.md"), "different content\n")
+      required(await api.checkpoint({ files: ["docs/notes.md"], message: "docs: checkpoint notes" }, callerFor(child)))
+      const head = await git(repo.dir, ["rev-parse", "HEAD"])
+      const tree = await git(repo.dir, ["rev-parse", "HEAD^{tree}"])
+      expect(checked.measuredTree === tree).toBe(!changed)
+      const finished = required(await api.finish(finishInput({ status: "done", summary: "Checked and checkpointed the notes." }), callerFor(child))) as { checks: Array<{ reused?: boolean; at: number }>; reportPath: string }
+      expect(await Bun.file(counter).text()).toBe(changed ? "run\nrun\n" : "run\n")
+      expect(finished.checks[0].reused ?? false).toBe(!changed)
+      const receipt = await lastReceipt(root, child.id, "t", head)
+      expect(receipt).toMatchObject({ passed: true, dirty: false, measuredTree: tree, reused: !changed })
+      expect((await lastReceipt(root, child.id, "t"))?.head).toBe(head)
+      if (changed) return
+      expect(finished.checks[0].at).toBe(checked.at)
+      expect(receipt?.reusedFrom).toMatchObject({ at: checked.at, dirty: true })
+      expect(await Bun.file(finished.reportPath).text()).toContain(`reused same-tree check from ${checked.at}`)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+})
+
 test("finish re-runs a dirty-tree receipt at the commit and fails E_CHECKS_RED with the exact message", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()

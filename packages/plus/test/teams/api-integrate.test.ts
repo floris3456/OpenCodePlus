@@ -7,6 +7,7 @@ import os from "node:os"
 import path from "node:path"
 import { context } from "../harness.js"
 import { integrateHandler } from "../../src/teams/api-integrate.js"
+import { execute, lastReceipt } from "../../src/teams/checks.js"
 import { shippedTable } from "./preset-table.js"
 import type { TeamCaller } from "../../src/teams/api.js"
 import { git } from "../../src/teams/git.js"
@@ -218,6 +219,32 @@ test("a user chat has no assigned checks, even with an old integration list on d
     expect(landed).toMatchObject({ state: "landed", head })
     expect(landed.stillRed).toBeUndefined()
     expect(await Bun.file(path.join(root, "runs", parent.id, "receipts", `old-list-${head.slice(0, 7)}.json`)).exists()).toBe(false)
+  })
+})
+
+test.each([false, true])("integrate reuses child tree proof unless the parent's content moved (moved: %s)", async (moved) => {
+  await withReadyChild(async ({ root, repo, parent, child }) => {
+    const counter = path.join(repo.scratch, "executions.log")
+    const check = { id: "count", argv: ["bun", "-e", `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(counter)}, 'run\\n')`] }
+    await atomicJson(path.join(root, "runs", child.id, "checks.json"), [check])
+    const checked = await execute(root, { runID: child.id, check, worktree: child.directory })
+    expect(checked.passed).toBe(true)
+    if (moved) {
+      await fs.writeFile(path.join(parent.directory, "parent.txt"), "parent advanced\n")
+      await git(parent.directory, ["add", "parent.txt"])
+      await git(parent.directory, ["commit", "-m", "feat: parent change"])
+    }
+    const landed = required(await integrateHandler(ctxFor(), { run: child.id }, callerFor(parent), shippedTable())) as { head: string; reusedChecks?: Array<{ id: string; reused: boolean; at: number }> }
+    expect(landed).toMatchObject({ state: "landed" })
+    expect(await Bun.file(counter).text()).toBe(moved ? "run\nrun\n" : "run\n")
+    const receipt = await lastReceipt(root, child.id, check.id, landed.head)
+    expect(receipt).toMatchObject({ passed: true, reused: !moved })
+    if (moved) {
+      expect(landed.reusedChecks).toBeUndefined()
+      return
+    }
+    expect(landed.reusedChecks).toEqual([{ id: check.id, reused: true, at: checked.at }])
+    expect(receipt?.at).toBe(checked.at)
   })
 })
 

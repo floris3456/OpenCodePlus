@@ -446,6 +446,9 @@ The landing child's checks must pass on the rebased tip. Other failing checks
 run again at the parent's HEAD: new failures block; failures there too are
 reported as `stillRed` and do not block. Passing receipts remain available at
 the new HEAD for the parent's finish.
+Finish and landing reuse a passing receipt with the same check definition and
+measured Git tree, including checks run before checkpointing that exact content;
+reused results are labelled with `reused: true` and retain the original check time.
 
 A Brief may assign a test file the child will create when it is inside
 `scope.paths` and not forbidden. A missing file outside scope is `E_CHECKS`.

@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { Effect } from "effect"
 import { atomicJson, lock, readJson, ulid } from "./store.js"
 import { git, gitRaw } from "./git.js"
-import { computePolicyDigest, execute, type Receipt } from "./checks.js"
+import { computePolicyDigest, execute, passingReceipt, reuseReceipt, type Receipt } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -25,6 +25,7 @@ export interface MergeEntry {
   redAtParent?: boolean
   /** Other assigned checks that already fail without this landing. */
   stillRed?: string[]
+  reusedChecks?: { id: string; reused: true; at: number }[]
   landedHead?: string
   reworkTask?: string
   at: string
@@ -288,7 +289,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           })),
         ),
       )
-      const groups = new Map<string, { check: Check; runID: string; own: boolean }>()
+      const groups = new Map<string, { check: Check; runID: string; own: boolean; bindings: { check: Check; runID: string }[] }>()
       for (const source of [{ runID: entry.parentRun, checks: ctx.checks }, ...sources]) {
         for (const check of source.checks) {
           const key = commandKey(check)
@@ -297,6 +298,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
             check: previous?.check ?? check,
             runID: previous?.runID ?? source.runID,
             own: previous?.own === true || source.runID === entry.childRun,
+            bindings: [...(previous?.bindings ?? []), { check, runID: source.runID }],
           })
         }
       }
@@ -324,11 +326,24 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         cur = { ...cur, state: "verifying", updatedAt: nowIso() }
         yield* io(() => saveEntry(root, cur))
         const rebasedTip = yield* io(() => getHead(tempDir))
+        const tree = yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD^{tree}"]))
         const passed: Receipt[] = []
         const redChecks: Check[] = []
         const compare: { check: Check; runID: string }[] = []
         const stillRed: string[] = []
+        const reusedChecks: NonNullable<MergeEntry["reusedChecks"]> = []
         for (const group of groups.values()) {
+          // Validate the original definition before mapping command aliases,
+          // just as copyReceipts maps one executed command to parent aliases.
+          const receipts = yield* io(() => Promise.all(group.bindings.map((binding) =>
+            passingReceipt(root, [entry.childRun, entry.parentRun, binding.runID], binding.check, { head: rebasedTip, tree }),
+          )))
+          const receipt = receipts.find((item) => item !== undefined)
+          if (receipt !== undefined) {
+            passed.push(yield* io(() => reuseReceipt(root, group.runID, { ...receipt, id: group.check.id, policyDigest: computePolicyDigest(group.check) }, { head: rebasedTip, tree })))
+            reusedChecks.push({ id: group.check.id, reused: true, at: receipt.at })
+            continue
+          }
           const res = yield* io(() => execute(root, { runID: group.runID, check: group.check, worktree: tempDir }))
           if (res.passed) {
             passed.push(res)
@@ -340,6 +355,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           }
           compare.push(group)
         }
+        if (reusedChecks.length > 0) cur = { ...cur, reusedChecks }
         if (compare.length > 0) {
           yield* io(() => git(tempDir, [...NO_REPOSITORY_PROGRAMS, "checkout", "--quiet", "--detach", "--force", rebaseBase]))
           for (const group of compare) {
