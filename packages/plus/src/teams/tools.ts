@@ -40,7 +40,7 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 // line, so each first line stands on its own and stays short.
 const DelegateDescription =
   "Start a run for a team member in its own worktree, from your last commit.\nOne call = one run; its settlement wakes you with the report."
-const FinishDescription = "Report your task's outcome to your parent. Once per attempt; a correction arrives as a new message."
+const FinishDescription = "Report your task's outcome; in a delegated run, end your turn. Once per attempt; corrections arrive as new messages."
 const FollowupDescription =
   "Send a correction, more work or a budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context. A followup after a stop needs compactWith once the child is cold."
 const IntegrateDescription =
@@ -529,7 +529,7 @@ function runGated<A>(
   pluginCtx: Context,
   state: TeamAuditState,
   call: (args: A, caller: TeamCaller) => Promise<TeamApiResult>,
-): Effect.Effect<{ output: unknown }, Tool.Error> {
+): Effect.Effect<Tool.Result, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
@@ -550,7 +550,7 @@ function runGated<A>(
     }
     const auditState: { run: string | null } = { run: null }
     const settled = yield* runGatedInner(name, input, toolCtx, pluginCtx, call, auditState, state.permissions(), state.team?.(agent)).pipe(
-      Effect.map((result) => ({ ok: true as const, output: result.output })),
+      Effect.map((result) => ({ ok: true as const, result })),
       Effect.catchTag("Tool.Error", (error) => Effect.succeed({ ok: false as const, message: error.message })),
     )
     const durationMs = Date.now() - mine.start
@@ -569,7 +569,7 @@ function runGated<A>(
       outcome,
     })
     if (!settled.ok) return yield* Effect.fail(new Tool.Error({ message: settled.message }))
-    return { output: settled.output }
+    return settled.result
   })
 }
 
@@ -582,7 +582,7 @@ function runGatedInner<A>(
   auditState: { run: string | null },
   table: PermissionTable | undefined,
   team?: string,
-): Effect.Effect<{ output: unknown }, Tool.Error> {
+): Effect.Effect<Tool.Result, Tool.Error> {
   return Effect.gen(function* () {
     const agent = String(toolCtx.agent)
     const sessionID = String(toolCtx.sessionID)
@@ -702,7 +702,10 @@ function runGatedInner<A>(
         new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
       )
     }
-    return { output: result.value }
+    return {
+      output: result.value,
+      ...(name === "finish" && owned.parent != null ? { endTurn: true } : {}),
+    }
   })
 }
 
