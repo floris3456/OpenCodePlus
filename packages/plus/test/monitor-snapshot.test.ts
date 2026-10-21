@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { statSync } from "node:fs"
+import { existsSync, statSync } from "node:fs"
 import { backfillCacheBatch, captureWire, compareWire, projectCacheResult, queryCacheResults } from "../src/monitor/snapshot.js"
 import { wireBody } from "../src/monitor/wire.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
@@ -61,6 +61,19 @@ test("saved results survive reopening; reads never load fingerprints or full tra
     expect(queryCacheResults(reopened, { scope: "all" }, { now: 100 }).requests).toEqual(report.requests)
   } finally {
     reopened.close()
+  }
+})
+
+test("an in-memory ledger keeps its transcripts in memory, not in the working directory", async () => {
+  const memory = createLedger(":memory:")
+  try {
+    memory.requestStarted({ id: "m", sessionID: "chat", started: 1, kind: "step", provider: "fixture", model: "fixture" })
+    await captureWire(memory, "m", body())
+    await captureWire(memory, "n", "not json")
+    expect(wireBody(memory, "m")).toBe(body())
+    expect(existsSync(":memory:.transcripts")).toBe(false)
+  } finally {
+    memory.close()
   }
 })
 
