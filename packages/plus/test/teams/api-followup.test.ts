@@ -375,7 +375,7 @@ test("same requestID twice is idempotent, different args fail E_REQUEST_ID", asy
     const second = required(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "First followup text to answer the need." }), callerFor(parent)),
     )
-    expect(second).toEqual(first)
+    expect(second).toEqual({ ...(first as object), replayed: true, state: "working" })
     expect(await peek(root, child.id)).toHaveLength(1)
     const error = rejected(
       await api.followup(followupInput({ run: child.id, requestID: "idem-1", prompt: "A different followup text entirely here." }), callerFor(parent)),
@@ -426,7 +426,8 @@ test("a stopped child resumes once, consumes stop intent, and replays after sett
     expect(settled?.state).toBe("idle")
     expect(settled?.attempts).toHaveLength(2)
     expect(settled?.attempts[0]).toEqual(child.attempts[0])
-    expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "admitted", next: "End your turn: its settlement wakes you." })
+    // A replay returns the stored result with the child's state now.
+    expect(required(await api.followup(input, callerFor(parent)))).toEqual({ attempt: 2, state: "idle", replayed: true, next: "End your turn: its settlement wakes you." })
     expect(sessions.prompted).toHaveLength(1)
     expect(await peek(root, child.id)).toEqual([])
   })

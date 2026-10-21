@@ -97,7 +97,7 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
       return fail("E_REQUEST_ID", `requestID "${args.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
-    if (replay.output !== undefined) return succeeded(replay.output)
+    if (replay.output !== undefined) return succeeded({ ...replay.output, replayed: true, state: child.state })
   }
   const rounds = bound(table, caller.agent, "followup", "limits.rounds")
   if (rounds !== undefined && child.attempts.length > rounds)

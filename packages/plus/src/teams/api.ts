@@ -213,7 +213,11 @@ async function delegateHandler(ctx: Context, state: PlusState, brief: Brief, cal
   if (replay?.signature !== undefined) {
     if (replay.signature !== signature)
       return fail("E_REQUEST_ID", `requestID "${brief.requestID}" was used with different arguments; reuse only to retry the identical call, else pick a new requestID.`, "pick a new requestID")
-    if (replay.output !== undefined) return succeeded(replay.output)
+    if (replay.output !== undefined) {
+      // The stored result, with the run's state now: it may have settled since.
+      const current = replay.run === undefined ? undefined : await loadRun(root, replay.run)
+      return succeeded({ ...replay.output, replayed: true, state: current?.state ?? null })
+    }
   }
   const maxDepth = bound(table, agent, "delegate", "limits.depth")
   if (maxDepth !== undefined && (await depthOf(root, parent)) >= maxDepth)

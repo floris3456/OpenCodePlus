@@ -213,7 +213,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
       expect(persisted?.projectDirectory).toBe(repo.dir)
       await onSessionEvent(context({ session: sessions.domain }), root, { type: "session.execution.succeeded", data: { sessionID: persisted.sessionID } })
       const replay = required(await api.delegate(delegateInput(), callerFor(parent)))
-      expect(replay).toEqual(value)
+      expect(replay).toEqual({ ...value, replayed: true, state: "idle" })
       expect(sessions.created).toHaveLength(1)
       expect(sessions.prompted.filter((prompt) => prompt.sessionID === persisted.sessionID)).toHaveLength(1)
       expect(rejected(await api.delegate(delegateInput({ objective: "A different objective must not replace the admitted payload." }), callerFor(parent))).code).toBe("E_REQUEST_ID")
