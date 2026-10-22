@@ -164,10 +164,8 @@ export default Plugin.define({
       if (!controller.enabled(query.providerID) || !query.modelID.toLowerCase().startsWith("claude-")) return undefined
       const read = await chatView(state.routes[query.providerID], query, query.after)
       const cache = cacheOf(read, query.modelID)
-      return {
-        ...(cache === undefined ? {} : { cache }),
-        ...(usedUpOf(read, query.modelID, Date.now()) ? { usedUp: true as const } : {}),
-      }
+      const usedUp = usedUpOf(read, query.modelID, Date.now())
+      return { ...(cache === undefined ? {} : { cache }), ...(usedUp === undefined ? {} : { usedUp }) }
     })
     await ctx.rpc.register(UsageDefinition, {
       enabled: async () => {

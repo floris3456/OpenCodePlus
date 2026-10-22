@@ -4009,7 +4009,12 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
 // Cache warming: the per-chat switch, then the agent's model row (Models tab,
 // resolved down the agent's chain like its active model), then the host
 // configuration core proposed. A failure leaves core's proposal in place.
-export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionWarming): Effect.Effect<void> {
+export function decideWarmingFor(
+  ctx: Context,
+  state: PlusState,
+  event: SessionWarming,
+  usedUp: typeof pacerUsedUp = pacerUsedUp,
+): Effect.Effect<void> {
   // A keep-alive's outcome: whether it went through decides how long the cache stays warm.
   if (event.phase === "warmed")
     return Effect.suspend(() =>
@@ -4056,6 +4061,15 @@ export function decideWarmingFor(ctx: Context, state: PlusState, event: SessionW
       if (warm.warmUntil !== undefined && warm.warmUntil <= event.now && warm.compacted !== true) {
         event.settings = undefined
         return warmingStore.cool(event.sessionID, warm.warmUntil)
+      }
+      // Pacer has decided the chat's account cannot serve its next step, which compacts and moves to
+      // another account: a keep-alive would spend that account's last usage on a cache the move does not
+      // reuse. It goes on only while the account serves again (its meters at their floor reset) within
+      // USED_UP_RESET_MS, when the chat may still stay; the window ends where its cache goes cold.
+      const out = await usedUp({ sessionID: event.sessionID, providerID: event.model.providerID, modelID: event.model.id })
+      if (out !== undefined && !(out.servesAt !== undefined && out.servesAt - event.now <= USED_UP_RESET_MS)) {
+        event.settings = undefined
+        return warmingStore.cool(event.sessionID, Math.max(event.now, warm.warmUntil ?? event.now))
       }
     }
     return warmingStore.decide(event, warmingRowsOf(state, event.agent, event.model), (sessionID) =>
@@ -4275,9 +4289,9 @@ export async function footerStatusFor(
 ): Promise<WarmingStatus> {
   const [status, out] = await Promise.all([
     warmingStatusFor(sessionID, now, ledger, pacer),
-    model === undefined ? false : usedUp({ sessionID, providerID: model.providerID, modelID: model.id }),
+    model === undefined ? undefined : usedUp({ sessionID, providerID: model.providerID, modelID: model.id }),
   ])
-  return out ? { ...status, accountUsedUp: true } : status
+  return out === undefined ? status : { ...status, accountUsedUp: true }
 }
 
 // A request touched the chat's cache on the provider when it got an answer (or
@@ -4291,6 +4305,9 @@ const touchedCache = (row: RequestRow) =>
 
 // A request the store saw start but the Monitor has not recorded yet is under way, for a while.
 const PENDING_MS = 120_000
+
+// A used-up account whose meters reset within this keeps its chat warming.
+const USED_UP_RESET_MS = 10 * 60_000
 
 // Pacer learns a request's cache use from its usage, after the answer: its
 // reading counts from a minute after the chat's latest request ended.

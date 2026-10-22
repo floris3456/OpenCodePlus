@@ -1,6 +1,6 @@
 import { originOf, parseNextUse, type NextUse } from "opencode-pacer/core"
 import { Option, Schema } from "effect"
-import type { PacerCache } from "../pacer-cache.js"
+import type { PacerCache, PacerUsedUp } from "../pacer-cache.js"
 import { Stored } from "./protocol.js"
 
 type IO = { read(key: string): Promise<unknown>; fetch: typeof fetch; now(): number }
@@ -74,12 +74,20 @@ export function nextUseOf(read: ChatRead | undefined, modelID: string, now: numb
   }
 }
 
+// Pacer's client library drops fields it does not know, so `serves_at_ms` is read from the view itself.
+const ForcedNow = Schema.Struct({
+  next_use: Schema.Struct({ at_ms: Schema.Number, serves_at_ms: Schema.optional(Schema.Number) }),
+})
+
 /**
- * Whether Pacer's preview says the chat's next step is a forced move off its account now (`force_reason`
- * "now": the account cannot serve). "soon" (a meter near its floor) still serves the next step.
+ * Pacer's preview says the chat's next step is a forced move off its account now (`force_reason` "now":
+ * the account cannot serve), with when the account serves again (`serves_at_ms`, moved from Pacer's clock
+ * at `at_ms` onto this one), when Pacer says. "soon" (a meter near its floor) still serves the next step.
  */
-export function usedUpOf(read: ChatRead | undefined, modelID: string, now: number): boolean {
-  return nextUseOf(read, modelID, now)?.force_reason === "now"
+export function usedUpOf(read: ChatRead | undefined, modelID: string, now: number): PacerUsedUp | undefined {
+  if (read === undefined || nextUseOf(read, modelID, now)?.force_reason !== "now") return
+  const next = Option.getOrUndefined(Schema.decodeUnknownOption(ForcedNow)(read.view))?.next_use
+  return next?.serves_at_ms === undefined ? {} : { servesAt: next.serves_at_ms - next.at_ms + read.at }
 }
 
 const CacheView = Schema.Struct({

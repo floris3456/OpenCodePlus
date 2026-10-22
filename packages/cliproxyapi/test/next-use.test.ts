@@ -114,7 +114,7 @@ test("one read gives the preview and Pacer's cache warmth, on this clock; a newe
   }
 })
 
-test("only Pacer's forced move now marks the chat's account used up", () => {
+test("only Pacer's forced move now marks the chat's account used up, with when it serves again", () => {
   const now = 1_000_000
   const read = (next: Record<string, unknown>) => ({
     at: now,
@@ -139,11 +139,16 @@ test("only Pacer's forced move now marks the chat's account used up", () => {
       },
     },
   })
-  expect(usedUpOf(read({}), "claude-opus", now)).toBe(true)
+  // An older Pacer does not say when the account serves again.
+  expect(usedUpOf(read({}), "claude-opus", now)).toEqual({})
+  // Pacer's clock runs 40 s ahead: the reset 8 minutes after its preview is 8 minutes after this read.
+  expect(usedUpOf(read({ at_ms: now + 40_000, expires_ms: now + 70_000, serves_at_ms: now + 40_000 + 8 * 60_000 }), "claude-opus", now)).toEqual({
+    servesAt: now + 8 * 60_000,
+  })
   // A meter near its floor still serves the next step.
-  expect(usedUpOf(read({ reason: "cold_stay", forced: false, auth: undefined, alias: undefined, force_reason: "soon" }), "claude-opus", now)).toBe(false)
+  expect(usedUpOf(read({ reason: "cold_stay", forced: false, auth: undefined, alias: undefined, force_reason: "soon" }), "claude-opus", now)).toBeUndefined()
   // A dry-run Pacer moves nothing.
-  expect(usedUpOf(read({ mode: "dry-run" }), "claude-opus", now)).toBe(false)
+  expect(usedUpOf(read({ mode: "dry-run" }), "claude-opus", now)).toBeUndefined()
   // No other account can take the chat: Pacer names no move.
   expect(
     usedUpOf(
@@ -151,8 +156,8 @@ test("only Pacer's forced move now marks the chat's account used up", () => {
       "claude-opus",
       now,
     ),
-  ).toBe(false)
-  expect(usedUpOf(read({}), "claude-sonnet", now)).toBe(false)
-  expect(usedUpOf(read({}), "claude-opus", now + 30_000)).toBe(false)
-  expect(usedUpOf(undefined, "claude-opus", now)).toBe(false)
+  ).toBeUndefined()
+  expect(usedUpOf(read({}), "claude-sonnet", now)).toBeUndefined()
+  expect(usedUpOf(read({}), "claude-opus", now + 30_000)).toBeUndefined()
+  expect(usedUpOf(undefined, "claude-opus", now)).toBeUndefined()
 })
