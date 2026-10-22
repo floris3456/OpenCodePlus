@@ -31,7 +31,9 @@ export function formatRemaining(ms: number): string {
  * mid-window counts down to the keep-alive where it stops; a chat that never
  * warmed counts down to when its cache goes cold. Either way the footer then
  * says the cache is cold, without holding a send (`holds: false`): warming
- * is off for it.
+ * is off for it. When Pacer has decided the chat's account cannot serve its
+ * next step, the footer says so instead: that step compacts and moves to
+ * another account, so the cache no longer matters and nothing is held.
  */
 export function warmingLabel(
   given: Plus.WarmingStatus | undefined,
@@ -39,6 +41,7 @@ export function warmingLabel(
 ): { text: string; tone: "muted" | "warning"; holds?: false } | undefined {
   if (given === undefined) return undefined
   if (given.compacted) return { text: "compacted", tone: "muted" }
+  if (given.accountUsedUp) return { text: "out of usage · compacts to next account", tone: "warning", holds: false }
   const status = cutAtCold(given, now)
 
   const coldFirst = status.coldModels?.[0]

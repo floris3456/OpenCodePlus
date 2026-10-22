@@ -202,6 +202,11 @@ export interface WarmingStatus {
   readonly warmUntil?: number
   /** Who knows `warmUntil`: the Monitor's requests, or Pacer on the server. */
   readonly warmBy?: "monitor" | "pacer"
+  /**
+   * Pacer has decided the account of the chat's model cannot serve its next step: that step compacts and
+   * moves to another account. Set by `footerStatusFor` only.
+   */
+  readonly accountUsedUp?: boolean
   /** Server clock when this status was read. */
   readonly now: number
 }

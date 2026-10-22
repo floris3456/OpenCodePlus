@@ -9,7 +9,7 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Agent } from "@opencode/schema/agent"
 import { Provider } from "@opencode/core/provider"
 import Pacer from "@opencodeplus/cliproxyapi/pacer"
-import { pacerCache } from "@opencodeplus/cliproxyapi/server"
+import { pacerCache, pacerUsedUp } from "@opencodeplus/cliproxyapi/server"
 import { UsageDefinition } from "../../../cliproxyapi/src/quota/usage"
 import { Definition } from "../../../cliproxyapi/src/quota/rpc"
 import { Bus } from "@opencode/core/bus"
@@ -23,7 +23,7 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
   Effect.acquireUseRelease(
     Effect.sync(() => {
       const paths: string[] = []
-      const reading = { left: 73, at: Date.now(), cursor: "initial" }
+      const reading = { left: 73, at: Date.now(), cursor: "initial", forcedMove: false }
       const changed = Promise.withResolvers<void>()
       const subscribed = Promise.withResolvers<void>()
       const server = Bun.serve({
@@ -63,6 +63,17 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
                       auth: "claude-next",
                       reason: "cold_move",
                       forced: false,
+                      // Pacer forcing the chat off its account now: it cannot serve the next step.
+                      ...(reading.forcedMove
+                        ? {
+                            mode: "active",
+                            reason: "forced_move",
+                            forced: true,
+                            force_auth: "claude-next",
+                            force_alias: "claude-next",
+                            force_reason: "now",
+                          }
+                        : {}),
                     },
                   }
                 : {}),
@@ -270,6 +281,18 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         expect(paths.length).toBe(requestsBeforeQuota + 1)
         // A model Pacer does not coordinate has no answer.
         expect(yield* Effect.promise(() => pacerCache({ sessionID, providerID: "cliproxyapi", modelID: "deepseek-flash" }))).toBeUndefined()
+        // The same read tells the footer whether the chat's account still serves its next step: a dry-run
+        // cold move does, a forced move now does not.
+        const usedUp = (after?: number) =>
+          Effect.promise(() => pacerUsedUp({ sessionID, providerID: "cliproxyapi", modelID: ref.id, ...(after === undefined ? {} : { after }) }))
+        expect(yield* usedUp()).toBe(false)
+        expect(paths.length).toBe(requestsBeforeQuota + 1)
+        reading.forcedMove = true
+        expect(yield* usedUp(Date.now())).toBe(true)
+        reading.forcedMove = false
+        // An answer from the same millisecond is not older than `after`, so it would be reused.
+        yield* Effect.sleep("5 millis")
+        expect(yield* usedUp(Date.now())).toBe(false)
         yield* hooks.trigger("session", "http.response", {
           sessionID,
           agent,

@@ -1,7 +1,8 @@
 /**
- * Pacer's answer about one chat's prompt cache (Pacer's client-protocol.md, "Per-chat cache warmth"),
- * read by the Pacer adapter with the chat's own capability. Plus consumes it, but this package must not
- * depend on Plus, so the adapter provides a reader here and Plus asks through `pacerCache`.
+ * Pacer's answers about one chat (Pacer's client-protocol.md, "Per-chat cache warmth" and the usage view's
+ * `next_use`), read by the Pacer adapter with the chat's own capability. Plus consumes them, but this package
+ * must not depend on Plus, so the adapter provides a reader here and Plus asks through `pacerCache` and
+ * `pacerUsedUp`.
  */
 export interface PacerCache {
   readonly warm: boolean
@@ -16,6 +17,16 @@ export interface PacerCache {
   readonly at: number
 }
 
+/** What one read of the chat's usage view says. */
+export interface PacerChat {
+  readonly cache?: PacerCache
+  /**
+   * Pacer has decided the chat's account cannot serve its next step (a meter at its floor, or CPA no longer
+   * offers the account): that step is a forced move to the other account Pacer names, after a compaction.
+   */
+  readonly usedUp?: true
+}
+
 export interface PacerCacheQuery {
   readonly sessionID: string
   readonly providerID: string
@@ -24,20 +35,29 @@ export interface PacerCacheQuery {
   readonly after?: number
 }
 
-type Reader = (query: PacerCacheQuery) => Promise<PacerCache | undefined>
+type Reader = (query: PacerCacheQuery) => Promise<PacerChat | undefined>
 
 const readers = new Set<Reader>()
 
 /** Registers the adapter's reader; call the returned function when the adapter stops. */
-export function providePacerCache(reader: Reader): () => void {
+export function providePacerChat(reader: Reader): () => void {
   readers.add(reader)
   return () => {
     readers.delete(reader)
   }
 }
 
-/** Pacer's answer for the chat, or undefined: no Pacer, a model it does not coordinate, or no answer. */
+/** Pacer's answer for the chat's cache, or undefined: no Pacer, a model it does not coordinate, or no answer. */
 export function pacerCache(query: PacerCacheQuery): Promise<PacerCache | undefined> {
+  return pacerChat(query).then((chat) => chat?.cache)
+}
+
+/** Whether Pacer has decided the chat's account cannot serve its next step (see `PacerChat.usedUp`). */
+export function pacerUsedUp(query: PacerCacheQuery): Promise<boolean> {
+  return pacerChat(query).then((chat) => chat?.usedUp === true)
+}
+
+function pacerChat(query: PacerCacheQuery): Promise<PacerChat | undefined> {
   const reader = [...readers].at(-1)
   if (reader === undefined) return Promise.resolve(undefined)
   return reader(query).catch(() => undefined)

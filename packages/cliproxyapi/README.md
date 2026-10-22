@@ -30,6 +30,10 @@ The bundled code stays in the executable when removed from the enabled plugins.
   are coalesced for 15 seconds per chat/model; they read Pacer's stored evidence,
   never a provider quota endpoint. Expired previews and changed models clear the
   marker. The live Pacer server must support `next_use`; older servers omit it.
+- The same read answers Plus through `pacerCache` (the chat's cache warmth) and
+  `pacerUsedUp` (`src/pacer-cache.ts`): the preview's `force_reason: "now"`, a
+  forced move off an account that cannot serve, shows under the prompt as
+  `out of usage · compacts to next account`.
 - Plus's dedicated compaction decision hook replaces the stock plugin's
   context-overflow workaround. Summary selection stays per chat, supports a
   fallback, preserves portable checkpoint conversion and bounds switch retries.

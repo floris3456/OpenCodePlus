@@ -14,7 +14,7 @@ import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
-import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, warmingStatusFor, type PlusState } from "../src/index.js"
+import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, footerStatusFor, warmingStatusFor, type PlusState } from "../src/index.js"
 import { warmingStore } from "../src/warming.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { effectiveCompaction, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
@@ -592,6 +592,27 @@ test("failed requests do not keep a cache warm: an agent whose steps fail is col
     const counted = rowsLedger([answered, failing[0]!, { ...failing[1]!, cacheReadTokens: 900 }], { req_ok: fiveMinuteFingerprint(), req_err2: fiveMinuteFingerprint() })
     expect((await warmingStatusFor(sessionID, now, counted, noPacer)).warmUntil).toBe(now + 4 * MINUTE)
   }))
+
+test("the footer's status says when Pacer has decided the account of the chat's current model cannot serve", async () => {
+  const sessionID = "ses_used_up"
+  const now = Date.now()
+  const asked: PacerCacheQuery[] = []
+  const usedUp = async (query: PacerCacheQuery) => {
+    asked.push(query)
+    return query.modelID === "claude-opus-5-5"
+  }
+  const ledger = rowsLedger([requestRow(now - MINUTE, { sessionID, ended: now - MINUTE + 5_000 })], { req_last: fiveMinuteFingerprint() })
+  const footer = await footerStatusFor(sessionID, { providerID: "cliproxyapi", id: "claude-opus-5-5" }, now, usedUp, ledger, noPacer)
+  expect(asked).toEqual([{ sessionID, providerID: "cliproxyapi", modelID: "claude-opus-5-5" }])
+  // The rest is the warming status cold compaction reads, which never asks.
+  expect(footer).toEqual({ ...(await warmingStatusFor(sessionID, now, ledger, noPacer)), accountUsedUp: true })
+  expect(asked).toHaveLength(1)
+  const other = await footerStatusFor(sessionID, { providerID: "cliproxyapi", id: "claude-haiku-5-5" }, now, usedUp, ledger, noPacer)
+  expect(other.accountUsedUp).toBeUndefined()
+  // A chat without a model asks nothing.
+  expect((await footerStatusFor(sessionID, undefined, now, usedUp, ledger, noPacer)).accountUsedUp).toBeUndefined()
+  expect(asked).toHaveLength(2)
+})
 
 test("keep-alives that do not go through end the window where its cache went cold; the agent's next step compacts first", () =>
   withColdSwitch(async () => {

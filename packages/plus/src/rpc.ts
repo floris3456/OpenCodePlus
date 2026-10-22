@@ -1509,6 +1509,11 @@ export const WarmingStatus = Schema.Struct({
    */
   warmUntil: Schema.optionalKey(Schema.Number),
   warmBy: Schema.optionalKey(Schema.Literals(["monitor", "pacer"])),
+  /**
+   * Pacer has decided the account of the chat's model cannot serve its next step: that step compacts and
+   * moves to another account. Only the footer's status read asks Pacer; absent from an older server.
+   */
+  accountUsedUp: Schema.optionalKey(Schema.Boolean),
   now: Schema.Number,
 }).annotate({ identifier: "Plus.WarmingStatus" })
 

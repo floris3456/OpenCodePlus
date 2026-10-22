@@ -1,4 +1,4 @@
-import { pacerCache, provideLegacyQuotaStorage, onQuotaFact } from "@opencodeplus/cliproxyapi/server"
+import { pacerCache, pacerUsedUp, provideLegacyQuotaStorage, onQuotaFact } from "@opencodeplus/cliproxyapi/server"
 import { Plugin } from "@opencode/plugin/effect"
 import type { AgentEditor } from "@opencode/plugin/effect/agent"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -3949,7 +3949,13 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
         if (!written.ok) return yield* Effect.fail(context.error("checks.invalid", written.reason, { reason: written.reason }))
         return { path: written.path, checks: input.checks.map((check) => check.id) }
       }),
-    "warming.status": (input) => Effect.promise(() => warmingStatusFor(input.sessionID, Date.now())),
+    "warming.status": (input) =>
+      Effect.promise(async () => {
+        const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(input.sessionID) })).catch(
+          () => undefined,
+        )
+        return footerStatusFor(input.sessionID, session?.model, Date.now())
+      }),
     "compaction.window": (input) =>
       Effect.sync(() => {
         const threshold = inputThresholdOf(state, input.agent, {
@@ -4252,6 +4258,26 @@ export async function warmingStatusFor(
     return { ...cut, active: false, expires: Math.max(status.since ?? warm.until, warm.until) }
   }
   return status.coldAt === undefined ? known : { ...known, coldAt: warm.until }
+}
+
+/**
+ * The footer's status: the chat's warming status, and whether Pacer has decided the account of the chat's
+ * current model cannot serve its next step (it compacts and moves to another account). Only the footer asks
+ * Pacer this: a step's compaction decision does not wait on it.
+ */
+export async function footerStatusFor(
+  sessionID: string,
+  model: { readonly providerID: string; readonly id: string } | undefined,
+  now: number,
+  usedUp: typeof pacerUsedUp = pacerUsedUp,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+  pacer: typeof pacerCache = pacerCache,
+): Promise<WarmingStatus> {
+  const [status, out] = await Promise.all([
+    warmingStatusFor(sessionID, now, ledger, pacer),
+    model === undefined ? false : usedUp({ sessionID, providerID: model.providerID, modelID: model.id }),
+  ])
+  return out ? { ...status, accountUsedUp: true } : status
 }
 
 // A request touched the chat's cache on the provider when it got an answer (or

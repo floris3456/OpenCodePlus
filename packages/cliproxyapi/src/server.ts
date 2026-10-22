@@ -10,8 +10,8 @@ import { portableMessages } from "./quota/portable.js"
 import { Definition } from "./quota/rpc.js"
 import { UsageDefinition } from "./quota/usage.js"
 import { pacerSnapshot } from "./quota/pacer-snapshot.js"
-import { cacheOf, createChatView, nextUseOf } from "./quota/next-use.js"
-import { providePacerCache } from "./pacer-cache.js"
+import { cacheOf, createChatView, nextUseOf, usedUpOf } from "./quota/next-use.js"
+import { providePacerChat } from "./pacer-cache.js"
 import { normalizeLegacyReasoning } from "./model-compatibility.js"
 import { registerWebTools } from "./web.js"
 
@@ -153,15 +153,21 @@ export default Plugin.define({
       }
     })().catch(() => {})
     // Percentages/catalogue are cached. The separate read-only chat view (the
-    // routing preview and the cache's warmth) uses Plus's existing capability
-    // and is coalesced across visible clients and the cache check.
+    // routing preview, the cache's warmth and whether the chat's account is used
+    // up) uses Plus's existing capability and is coalesced across visible clients,
+    // the cache check and the footer.
     const meter = new Meter()
     const chatView = createChatView({ read: (key) => ctx.storage.get(key), fetch, now: Date.now })
-    const disposeCache = providePacerCache(async (query) => {
+    const disposeChat = providePacerChat(async (query) => {
       await refresh()
       // Only the chats Pacer coordinates carry a capability (see `coordinated`).
       if (!controller.enabled(query.providerID) || !query.modelID.toLowerCase().startsWith("claude-")) return undefined
-      return cacheOf(await chatView(state.routes[query.providerID], query, query.after), query.modelID)
+      const read = await chatView(state.routes[query.providerID], query, query.after)
+      const cache = cacheOf(read, query.modelID)
+      return {
+        ...(cache === undefined ? {} : { cache }),
+        ...(usedUpOf(read, query.modelID, Date.now()) ? { usedUp: true as const } : {}),
+      }
     })
     await ctx.rpc.register(UsageDefinition, {
       enabled: async () => {
@@ -192,7 +198,7 @@ export default Plugin.define({
     })
     return () => {
       events.abort()
-      disposeCache()
+      disposeChat()
       return stop?.()
     }
   },

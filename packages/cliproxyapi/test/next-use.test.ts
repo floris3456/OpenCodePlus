@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { cacheOf, createChatView, createNextUse, nextUseOf } from "../src/quota/next-use.js"
+import { cacheOf, createChatView, createNextUse, nextUseOf, usedUpOf } from "../src/quota/next-use.js"
 
 test("Plus preview reuses its own private capability, coalesces reads and clears failures", async () => {
   let now = 1000
@@ -112,4 +112,47 @@ test("one read gives the preview and Pacer's cache warmth, on this clock; a newe
   } finally {
     server.stop(true)
   }
+})
+
+test("only Pacer's forced move now marks the chat's account used up", () => {
+  const now = 1_000_000
+  const read = (next: Record<string, unknown>) => ({
+    at: now,
+    view: {
+      view: "usage",
+      credentials: [],
+      next_use: {
+        v: 1,
+        at_ms: now,
+        expires_ms: now + 30_000,
+        mode: "active",
+        provider: "claude",
+        model: "claude-opus",
+        reason: "forced_move",
+        forced: true,
+        auth: "b",
+        alias: "B",
+        force_auth: "b",
+        force_alias: "B",
+        force_reason: "now",
+        ...next,
+      },
+    },
+  })
+  expect(usedUpOf(read({}), "claude-opus", now)).toBe(true)
+  // A meter near its floor still serves the next step.
+  expect(usedUpOf(read({ reason: "cold_stay", forced: false, auth: undefined, alias: undefined, force_reason: "soon" }), "claude-opus", now)).toBe(false)
+  // A dry-run Pacer moves nothing.
+  expect(usedUpOf(read({ mode: "dry-run" }), "claude-opus", now)).toBe(false)
+  // No other account can take the chat: Pacer names no move.
+  expect(
+    usedUpOf(
+      read({ reason: "no_eligible", forced: false, auth: undefined, alias: undefined, force_auth: undefined, force_alias: undefined, force_reason: undefined }),
+      "claude-opus",
+      now,
+    ),
+  ).toBe(false)
+  expect(usedUpOf(read({}), "claude-sonnet", now)).toBe(false)
+  expect(usedUpOf(read({}), "claude-opus", now + 30_000)).toBe(false)
+  expect(usedUpOf(undefined, "claude-opus", now)).toBe(false)
 })

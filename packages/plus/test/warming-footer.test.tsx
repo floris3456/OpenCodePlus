@@ -220,6 +220,63 @@ test("a compacted chat shows compacted in muted text and sends on the first subm
   }
 })
 
+// Pacer has decided the chat's account cannot serve its next step: that step compacts and moves to another
+// account, so the cache (cold here) no longer matters and nothing waits for a second submit.
+test("a used-up account shows out of usage in warning text, fits a narrow footer and sends on the first submit", async () => {
+  const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
+  const status = {
+    sessionID: "ses_out",
+    chat: "default",
+    active: false,
+    since: Date.now() - 40 * MINUTE,
+    expires: Date.now() - 5 * MINUTE,
+    interval: 4 * MINUTE,
+    accountUsedUp: true,
+    now: Date.now(),
+  }
+  await using fixture = await renderPlusFixture({
+    snapshots: [],
+    width: 40,
+    height: 4,
+    rpc: { "warming.status": async () => status },
+    render: (context) => {
+      warming.current = createWarming(context)
+      return <warming.current.Footer sessionID="ses_out" />
+    },
+  })
+  try {
+    await fixture.waitForFrame((frame) => frame.includes("out of usage · compacts to next account"))
+    const span = fixture
+      .captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((item) => item.text.startsWith("out of usage"))
+    expect(span?.fg.equals(createTestTheme().text.feedback.warning.base)).toBe(true)
+    expect(fixture.send({ sessionID: "ses_out", mode: "normal", delivery: "steer" })).toBe(true)
+    await fixture.flush()
+    expect(fixture.captureCharFrame()).not.toContain("again to send")
+  } finally {
+    warming.current?.dispose()
+  }
+})
+
+test("out of usage wins over the cache's own state; a compacted chat still says compacted", () => {
+  const now = Date.now()
+  const base = { sessionID: "ses_out", chat: "default" as const, compact: false, interval: 4 * MINUTE, now }
+  const out = { text: "out of usage · compacts to next account", tone: "warning", holds: false } as const
+  const states = [
+    { ...base, active: true, since: now - MINUTE, expires: now + 20 * MINUTE },
+    { ...base, active: true, since: now - MINUTE, expires: now + 20 * MINUTE, pingFailed: { at: now - 10_000 }, warmUntil: now + 30_000 },
+    { ...base, active: false, since: now - 40 * MINUTE, expires: now - 5 * MINUTE },
+    { ...base, active: false, coldModels: ["proxy/summary"], since: now - 40 * MINUTE, expires: now - 5 * MINUTE },
+    { ...base, active: false, chat: "off" as const },
+  ]
+  for (const status of states) {
+    expect(warmingLabel({ ...status, accountUsedUp: true }, now)).toEqual(out)
+    expect(warmingLabel(status, now)?.text).not.toContain("out of usage")
+  }
+  expect(warmingLabel({ ...base, active: false, compacted: true, accountUsedUp: true }, now)).toEqual({ text: "compacted", tone: "muted" })
+})
+
 test("compact before cold switches per chat to a single compact label with no separate marker", async () => {
   const warming = { current: undefined as ReturnType<typeof createWarming> | undefined }
   const state = { compact: false }

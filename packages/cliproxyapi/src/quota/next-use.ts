@@ -74,6 +74,14 @@ export function nextUseOf(read: ChatRead | undefined, modelID: string, now: numb
   }
 }
 
+/**
+ * Whether Pacer's preview says the chat's next step is a forced move off its account now (`force_reason`
+ * "now": the account cannot serve). "soon" (a meter near its floor) still serves the next step.
+ */
+export function usedUpOf(read: ChatRead | undefined, modelID: string, now: number): boolean {
+  return nextUseOf(read, modelID, now)?.force_reason === "now"
+}
+
 const CacheView = Schema.Struct({
   now_ms: Schema.Number,
   cache: Schema.Struct({
