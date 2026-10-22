@@ -37,6 +37,27 @@ The bundled code stays in the executable when removed from the enabled plugins.
   providers still contribute quota readings without receiving unsupported claims.
 - The explicit warming hook suppresses pings while a switch is pending.
 - Instructions UI, instructions storage and its compaction controls are unchanged.
+- **Web search** (`src/web.ts`): three tools in the `web` group, for every chat
+  model, on the `/connect` login's CPA with the models Pacer's catalogue lists.
+  They use the `websearch` permission, so the rules for web search apply to them.
+  A chat's searches run under its ID plus `-search`: they stay on one account, and
+  Pacer never counts them as the chat's own requests.
+  - `web.chatgpt_search` and `web.chatgpt_open`: ChatGPT's search engine through
+    CPA's `/v1/alpha/search` (the endpoint Codex clients use) on a Codex account.
+    Search returns the found pages' text with their titles and URLs; open returns
+    a page from the top as numbered lines with its total line count. `tokens`
+    caps the text (default 2000, about 8000 characters). The endpoint takes a
+    start line but ignores it, so a larger cap is how to read further down. The
+    model sent is `gpt-6-luna`, else the first chat model from Codex accounts.
+  - `web.claude_search`: Anthropic's server-side web search on `/v1/messages`.
+    Its results arrive encrypted for Claude, so a Claude model (`claude-haiku-5-5`,
+    else the first chat model from Claude accounts, never one served through
+    Antigravity) searches with thinking off and answers. The tool returns that
+    answer, the pages it cited and the queries it ran. One question costs that
+    Claude account roughly 10-20k input tokens.
+  - In Code Mode a script gets the declared output: `{ text, model, sources }` for
+    the ChatGPT tools, `{ answer, model, queries, sources, searches, tokens }` for
+    Claude.
 
 Summary preferences now live in the ordinary global `opencode.json`:
 

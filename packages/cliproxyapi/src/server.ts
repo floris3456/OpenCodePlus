@@ -13,6 +13,7 @@ import { pacerSnapshot } from "./quota/pacer-snapshot.js"
 import { cacheOf, createChatView, nextUseOf } from "./quota/next-use.js"
 import { providePacerCache } from "./pacer-cache.js"
 import { normalizeLegacyReasoning } from "./model-compatibility.js"
+import { registerWebTools } from "./web.js"
 
 export const ID = "opencode-pacer"
 
@@ -23,7 +24,8 @@ const Options = Schema.Struct({
 })
 
 /** The pinned Pacer plugin owns connection, catalogue and quota observations.
- * Plus replaces only stock v2's overflow workaround and adapts the Usage view.
+ * Plus replaces only stock v2's overflow workaround, adapts the Usage view and adds
+ * the web search tools on CPA's ChatGPT and Claude search backends.
  */
 export default Plugin.define({
   id: ID,
@@ -35,6 +37,7 @@ export default Plugin.define({
     // Config is registered later than Pacer and can reload independently. The
     // final phase makes compatibility part of every coherent model snapshot.
     await ctx.model.transform(normalizeLegacyReasoning, { phase: "final" })
+    await registerWebTools(ctx)
     const state = {
       routes: {} as Record<string, string>,
       pacer: false,
