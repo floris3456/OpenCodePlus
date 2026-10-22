@@ -32,7 +32,9 @@ The bundled code stays in the executable when removed from the enabled plugins.
   **LAST USED** until execution ends. Auxiliary replies only update percentages.
 - **NEXT USE** displays Pacer's per-chat proposal, explicitly labelled in dry-run.
   Plus uses its own existing claim capability for this read-only preview. Reads
-  are coalesced for 15 seconds per chat/model; they read Pacer's stored evidence,
+  are coalesced for 15 seconds per chat/model, with at most one in flight (10 s
+  timeout); after a failure the chat/model is not read again for 15 s, doubling
+  to 2 minutes, nor before Pacer's `Retry-After`. They read Pacer's stored evidence,
   never a provider quota endpoint. Expired previews and changed models clear the
   marker. The live Pacer server must support `next_use`; older servers omit it.
 - The same read answers Plus through `pacerCache` (the chat's cache warmth) and
