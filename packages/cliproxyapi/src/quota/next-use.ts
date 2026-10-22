@@ -13,42 +13,91 @@ export interface ChatRead {
 }
 
 const COALESCE_MS = 15_000
-const TIMEOUT_MS = 3_000
+// CPA cannot stop a read the client gave up on, so a short timeout only piles reads up on a slow Pacer.
+const TIMEOUT_MS = 10_000
+const BACKOFF_MS = 15_000
+const BACKOFF_MAX_MS = 120_000
+const RETRY_AFTER_MAX_MS = 15 * 60_000
+
+interface Entry {
+  readonly at: number
+  readonly result: Promise<ChatRead | undefined>
+  pending: boolean
+  /** Failed reads in a row; the next read waits until `retryAt`. */
+  failures: number
+  retryAt: number
+}
 
 /**
  * The chat's usage view (`view=usage&v=1`), read with Plus's own claim capability; stock switch handling
  * is disabled. Reads are coalesced for 15 seconds per chat and model, so the sidebar's preview and the
- * cache check share one request; a caller that needs an answer newer than `after` reads again. Reads
- * never enroll or wake a chat.
+ * cache check share one request; a caller that needs an answer newer than `after` reads again. At most
+ * one read per chat and model is in flight: a caller joins it, as its answer arrives after the caller
+ * asked. A failed read (an error status, a timeout, no connection) is not repeated for 15 seconds,
+ * doubling to 2 minutes, nor before the answer's `Retry-After`. Reads never enroll or wake a chat.
  */
 export function createChatView(io: IO) {
-  const cache = new Map<string, { at: number; result: Promise<ChatRead | undefined> }>()
+  const reads = new Map<string, Entry>()
   return (origin: string | undefined, input: Chat, after = 0): Promise<ChatRead | undefined> => {
     if (!origin || !input.sessionID) return Promise.resolve(undefined)
     const key = JSON.stringify([origin, input.sessionID, input.providerID, input.modelID])
-    const previous = cache.get(key)
+    const previous = reads.get(key)
+    if (previous?.pending || (previous && io.now() < previous.retryAt)) return previous.result
     if (previous && io.now() - previous.at < COALESCE_MS && previous.at >= after) return previous.result
-    cache.delete(key)
-    if (cache.size >= 256) cache.delete(cache.keys().next().value!)
-    const result = (async () => {
-      const stored = Schema.decodeUnknownOption(Stored)(
-        await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`),
-      )
-      if (Option.isNone(stored)) return
-      const url = new URL(originOf(origin) + "/v0/resource/plugins/pacer/events")
-      url.search = new URLSearchParams({ view: "usage", v: "1", model: `${input.providerID}/${input.modelID}` }).toString()
-      const response = await io.fetch(url.href, {
-        headers: { Accept: "application/json", Authorization: `Bearer ${stored.value.capability}` },
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        redirect: "error",
-      })
-      if (!response.ok) return
-      const view: unknown = await response.json()
-      return { at: io.now(), view }
-    })().catch(() => undefined)
-    cache.set(key, { at: io.now(), result })
-    return result
+    reads.delete(key)
+    if (reads.size >= 256) reads.delete(reads.keys().next().value!)
+    const entry: Entry = {
+      at: io.now(),
+      pending: true,
+      failures: previous?.failures ?? 0,
+      retryAt: 0,
+      result: readView(io, origin, input).catch(() => ({ failed: true as const, retryAfter: undefined })).then((outcome) => {
+        entry.pending = false
+        if (outcome.failed === false) {
+          entry.failures = 0
+          return outcome.read
+        }
+        entry.failures++
+        entry.retryAt =
+          io.now() +
+          Math.max(
+            Math.min(BACKOFF_MS * 2 ** (entry.failures - 1), BACKOFF_MAX_MS),
+            Math.min(outcome.retryAfter ?? 0, RETRY_AFTER_MAX_MS),
+          )
+        return undefined
+      }),
+    }
+    reads.set(key, entry)
+    return entry.result
   }
+}
+
+async function readView(
+  io: IO,
+  origin: string,
+  input: Chat,
+): Promise<{ failed: false; read?: ChatRead } | { failed: true; retryAfter?: number }> {
+  const stored = Schema.decodeUnknownOption(Stored)(await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`))
+  if (Option.isNone(stored)) return { failed: false }
+  const url = new URL(originOf(origin) + "/v0/resource/plugins/pacer/events")
+  url.search = new URLSearchParams({ view: "usage", v: "1", model: `${input.providerID}/${input.modelID}` }).toString()
+  const response = await io.fetch(url.href, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${stored.value.capability}` },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+    redirect: "error",
+  })
+  if (!response.ok) return { failed: true, retryAfter: retryAfterOf(response.headers.get("retry-after"), io.now()) }
+  const view: unknown = await response.json()
+  return { failed: false, read: { at: io.now(), view } }
+}
+
+/** `Retry-After` as delay-seconds or an HTTP date, in milliseconds from `now`. */
+function retryAfterOf(value: string | null, now: number) {
+  const text = value?.trim()
+  if (!text) return undefined
+  if (/^\d+$/.test(text)) return Number(text) * 1000
+  const at = Date.parse(text)
+  return Number.isNaN(at) ? undefined : Math.max(0, at - now)
 }
 
 /** Pacer's per-chat next-use preview, for the sidebar: dropped once expired or for another model. */
