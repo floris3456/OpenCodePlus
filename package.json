@@ -188,6 +188,7 @@
     "vite@8.2.2": "patches/vite@8.2.2.patch",
     "@modelcontextprotocol/client@2.0.0": "patches/@modelcontextprotocol%2Fclient@2.0.0.patch",
     "@corvu/drawer@0.2.4": "patches/@corvu%2Fdrawer@0.2.4.patch",
-    "@opentui/core@0.5.17": "patches/@opentui%2Fcore@0.5.17.patch"
+    "@opentui/core@0.5.17": "patches/@opentui%2Fcore@0.5.17.patch",
+    "opencode-pacer@github:floris3456/opencode-pacer#493706c": "patches/opencode-pacer@493706c.patch"
   }
 }

@@ -1,7 +1,10 @@
 # Pacer in OpenCodePlus
 
 The release loads **`opencode-pacer`**, pinned to the upstream commit in
-`package.json`, with the Plus adapter in `src/server.ts`. Its server and TUI
+`package.json` and patched by the root `patchedDependencies`
+(`patches/opencode-pacer@493706c.patch`, the usage watch of its local branch
+`gentle-watch`, until the pin moves to that work), with the Plus adapter in
+`src/server.ts`. Its server and TUI
 halves share that ID. Turn it off independently with
 `"plugins": ["-opencode-pacer"]`; re-enable it with `"plugins": ["opencode-pacer"]`.
 The bundled code stays in the executable when removed from the enabled plugins.
@@ -15,8 +18,10 @@ The bundled code stays in the executable when removed from the enabled plugins.
   the config file. Explicit OpenAI/custom packages keep their original bodies.
   Unknown `reasoning` shapes are left intact rather than silently discarded.
 - Replies update the meter immediately. A shared Pacer change subscription also
-  updates idle viewers when any caller uses the credential. Older servers fall
-  back to cached-view reads every five seconds; provider polling stays in Pacer.
+  updates idle viewers when any caller uses the credential: one held request per
+  process for a CPA and key, asked again 10-15 s after each answer, later after
+  errors, a 503 or 429 and its `Retry-After`. Older servers fall back to
+  cached-view reads at the same pace; provider polling stays in Pacer.
 - `/usage` opens a compact popup on the first Enter; `/usage --all` inspects all providers there.
   Left/right pages fit the terminal without scrolling; `a` changes scope and `d`
   shows reset details. The sidebar displays the selected model's providers from

@@ -1,0 +1,211 @@
+diff --git a/src/core/cpa.ts b/src/core/cpa.ts
+index e16ebe6..63306ba 100644
+--- a/src/core/cpa.ts
++++ b/src/core/cpa.ts
+@@ -34,11 +34,22 @@ export class HttpError extends Error {
+   constructor(
+     readonly status: number,
+     message: string,
++    /** The answer's `Retry-After`, in milliseconds from when it arrived. */
++    readonly retryAfterMs?: number,
+   ) {
+     super(message)
+   }
+ }
+ 
++/** `Retry-After` as delay-seconds or an HTTP date, in milliseconds from `now`; undefined when absent or unreadable. */
++export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
++  const text = value?.trim()
++  if (!text) return undefined
++  if (/^\d+$/.test(text)) return Number(text) * 1000
++  const at = Date.parse(text)
++  return Number.isNaN(at) ? undefined : Math.max(0, at - now)
++}
++
+ async function getJSON(fetchFn: Fetch, url: string, key: string | undefined, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
+   const controller = new AbortController()
+   const timer = setTimeout(() => controller.abort(), timeoutMs)
+@@ -46,7 +57,8 @@ async function getJSON(fetchFn: Fetch, url: string, key: string | undefined, tim
+     const headers: Record<string, string> = { Accept: "application/json" }
+     if (key) headers.Authorization = `Bearer ${key}`
+     const res = await fetchFn(url, { headers, signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal, redirect: "error" })
+-    if (!res.ok) throw new HttpError(res.status, `${new URL(url).pathname} answered HTTP ${res.status}`)
++    if (!res.ok)
++      throw new HttpError(res.status, `${new URL(url).pathname} answered HTTP ${res.status}`, parseRetryAfter(res.headers.get("retry-after")))
+     return await res.json()
+   } finally {
+     clearTimeout(timer)
+@@ -88,37 +100,112 @@ export async function usage(fetchFn: Fetch, conn: Connection, timeoutMs = 5000,
+   return view
+ }
+ 
+-/** One cancellable shared-credential subscription per OpenCode plugin instance.
++/** After an answer the watch asks again no sooner than this, plus up to REARM_JITTER_MS. Pacer answers
++ * every held watch on any quota change, so asking again at once turns a busy CPA into a request loop;
++ * a change in between is not lost: the next request carries the old cursor and is answered at once. */
++export const REARM_MS = 10_000
++export const REARM_JITTER_MS = 5_000
++/** The first read only fetches the view and its cursor; the held request follows it this soon. */
++const ARM_MS = 50
++const RETRY_MS = 1_000
++const RETRY_MAX_MS = 30_000
++/** A longer Retry-After is cut to this, so a misconfigured proxy cannot stop the meter for good. */
++const RETRY_AFTER_MAX_MS = 15 * 60_000
++
++export interface WatchTiming {
++  /** Waits `ms`, or until `signal` aborts. */
++  sleep?: (ms: number, signal: AbortSignal) => Promise<void>
++  /** In [0, 1): spreads the requests of many clients. */
++  random?: () => number
++}
++
++/** One cancellable shared-credential subscription; one request at a time.
+  * Pacer wakes the held GET when ANY caller contributes a quota observation.
+- * Older servers without cursors fall back to reads of their stored view only.
++ * The GET is held from right after the first read; after every later answer the
++ * watch waits 10-15 s. Older servers without cursors fall back to reads of their
++ * stored view at that pace.
++ * A failed request is retried after 1 s, doubling to 30 s; an overloaded Pacer
++ * (503, 429) is asked again no sooner than after an answer, and never before
++ * its Retry-After.
+  */
+-export async function watchUsage(fetchFn: Fetch, conn: Connection, onView: (view: UsageView) => void, signal: AbortSignal): Promise<void> {
++export async function watchUsage(
++  fetchFn: Fetch,
++  conn: Connection,
++  onView: (view: UsageView) => void,
++  signal: AbortSignal,
++  timing: WatchTiming = {},
++): Promise<void> {
++  const sleep = timing.sleep ?? abortableSleep
++  const random = timing.random ?? Math.random
+   let cursor: string | undefined
+-  let retry = 1000
++  let retry = RETRY_MS
+   while (!signal.aborted) {
+     let delay: number
+     try {
++      const held = cursor !== undefined
+       const view = await usage(fetchFn, conn, 30_000, { cursor, waitMs: 20_000, signal })
+       if (signal.aborted) return
+       onView(view)
+       cursor = view.cursor
+-      retry = 1000
+-      // Coalesce bursts without making inference wait for slow viewers.
+-      delay = cursor ? 50 : 5000
+-    } catch {
++      retry = RETRY_MS
++      delay = held || !cursor ? REARM_MS + random() * REARM_JITTER_MS : ARM_MS
++    } catch (error) {
+       if (signal.aborted) return
+-      delay = retry
+-      retry = Math.min(retry * 2, 30_000)
++      const overloaded = error instanceof HttpError && (error.status === 503 || error.status === 429)
++      const after = error instanceof HttpError ? error.retryAfterMs : undefined
++      delay = Math.max(
++        retry,
++        overloaded ? REARM_MS + random() * REARM_JITTER_MS : 0,
++        after === undefined ? 0 : Math.min(after, RETRY_AFTER_MAX_MS) + random() * REARM_JITTER_MS,
++      )
++      retry = Math.min(retry * 2, RETRY_MAX_MS)
+     }
+-    await new Promise<void>((resolve) => {
+-      const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve() }
+-      const timer = setTimeout(finish, delay)
+-      signal.addEventListener("abort", finish, { once: true })
+-      if (signal.aborted) finish()
+-    })
++    await sleep(delay, signal)
+   }
+ }
+ 
++function abortableSleep(ms: number, signal: AbortSignal) {
++  return new Promise<void>((resolve) => {
++    const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve() }
++    const timer = setTimeout(finish, ms)
++    signal.addEventListener("abort", finish, { once: true })
++    if (signal.aborted) finish()
++  })
++}
++
++interface Feed {
++  readonly listeners: Set<(view: UsageView) => void>
++  readonly stop: AbortController
++  last?: UsageView
++}
++
++const feeds = new Map<string, Feed>()
++
++/** The usage watch for one CPA and key, shared by every plugin instance in this process (OpenCode sets a
++ * plugin up once per location): one held request instead of one per open folder. A later subscriber gets
++ * the latest view at once. Returns the unsubscribe; the last one stops the watch. */
++export function shareUsage(fetchFn: Fetch, conn: Connection, onView: (view: UsageView) => void, timing?: WatchTiming): () => void {
++  const id = JSON.stringify([originOf(conn.baseURL), conn.key])
++  const feed = feeds.get(id) ?? startFeed(id, fetchFn, conn, timing)
++  feed.listeners.add(onView)
++  if (feed.last) onView(feed.last)
++  return () => {
++    if (!feed.listeners.delete(onView) || feed.listeners.size > 0) return
++    feed.stop.abort()
++    if (feeds.get(id) === feed) feeds.delete(id)
++  }
++}
++
++function startFeed(id: string, fetchFn: Fetch, conn: Connection, timing: WatchTiming | undefined): Feed {
++  const feed: Feed = { listeners: new Set(), stop: new AbortController() }
++  feeds.set(id, feed)
++  void watchUsage(fetchFn, conn, (view) => {
++    feed.last = view
++    for (const listener of feed.listeners) listener(view)
++  }, feed.stop.signal, timing)
++  return feed
++}
++
+ /** A chat capability authorizes its own preview; the CPA API key cannot select another chat. */
+ export async function chatUsage(fetchFn: Fetch, baseURL: string, capability: string, route: string, timeoutMs = 5000): Promise<UsageView> {
+   const url = new URL(originOf(baseURL) + EVENTS)
+diff --git a/src/v2/server.ts b/src/v2/server.ts
+index f591b4d..f5988ca 100644
+--- a/src/v2/server.ts
++++ b/src/v2/server.ts
+@@ -27,7 +27,7 @@ import {
+   normaliseBaseURL,
+   originOf,
+   prices as fetchPrices,
+-  watchUsage,
++  shareUsage,
+   type Connection,
+ } from "../core/cpa.js"
+ import { Meter } from "../core/meter.js"
+@@ -420,18 +420,15 @@ export async function setup(ctx: Context) {
+ 
+   /** Set by the returned cleanup: work still running then starts no loop. */
+   let disposed = false
+-  let usageFeed: { baseURL: string; key: string; controller: AbortController } | undefined
++  let usageFeed: { baseURL: string; key: string; stop: () => void } | undefined
+   const syncUsage = () => {
+     if (disposed) return
+     const route = state.route
+     if (route && state.pacer && usageFeed?.baseURL === route.baseURL && usageFeed.key === route.key) return
+-    usageFeed?.controller.abort()
++    usageFeed?.stop()
+     usageFeed = undefined
+-    if (route && state.pacer) {
+-      const controller = new AbortController()
+-      usageFeed = { baseURL: route.baseURL, key: route.key, controller }
+-      void watchUsage(fetch, route, (view) => meter.applyView(view), controller.signal)
+-    }
++    if (route && state.pacer)
++      usageFeed = { baseURL: route.baseURL, key: route.key, stop: shareUsage(fetch, route, (view) => meter.applyView(view)) }
+   }
+ 
+   // ---- loops: catalogue quickly until every route answers, then every five
+@@ -479,7 +476,7 @@ export async function setup(ctx: Context) {
+     disposed = true
+     controller.abort()
+     if (catalogueTimer) clearTimeout(catalogueTimer)
+-    usageFeed?.controller.abort()
++    usageFeed?.stop()
+     for (const entry of switches.values()) clearTimeout(entry.timer)
+   }
+ }
