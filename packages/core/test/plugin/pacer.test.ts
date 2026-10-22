@@ -72,6 +72,7 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
                             force_auth: "claude-next",
                             force_alias: "claude-next",
                             force_reason: "now",
+                            serves_at_ms: Date.now() + 8 * 60_000,
                           }
                         : {}),
                     },
@@ -285,14 +286,16 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         // cold move does, a forced move now does not.
         const usedUp = (after?: number) =>
           Effect.promise(() => pacerUsedUp({ sessionID, providerID: "cliproxyapi", modelID: ref.id, ...(after === undefined ? {} : { after }) }))
-        expect(yield* usedUp()).toBe(false)
+        expect(yield* usedUp()).toBeUndefined()
         expect(paths.length).toBe(requestsBeforeQuota + 1)
         reading.forcedMove = true
-        expect(yield* usedUp(Date.now())).toBe(true)
+        // With when the account serves again: the reset 8 minutes after the preview, on this clock.
+        const servesAt = (yield* usedUp(Date.now()))?.servesAt ?? 0
+        expect(Math.abs(servesAt - (Date.now() + 8 * 60_000))).toBeLessThan(5_000)
         reading.forcedMove = false
         // An answer from the same millisecond is not older than `after`, so it would be reused.
         yield* Effect.sleep("5 millis")
-        expect(yield* usedUp(Date.now())).toBe(false)
+        expect(yield* usedUp(Date.now())).toBeUndefined()
         yield* hooks.trigger("session", "http.response", {
           sessionID,
           agent,

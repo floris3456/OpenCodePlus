@@ -599,7 +599,7 @@ test("the footer's status says when Pacer has decided the account of the chat's 
   const asked: PacerCacheQuery[] = []
   const usedUp = async (query: PacerCacheQuery) => {
     asked.push(query)
-    return query.modelID === "claude-opus-5-5"
+    return query.modelID === "claude-opus-5-5" ? {} : undefined
   }
   const ledger = rowsLedger([requestRow(now - MINUTE, { sessionID, ended: now - MINUTE + 5_000 })], { req_last: fiveMinuteFingerprint() })
   const footer = await footerStatusFor(sessionID, { providerID: "cliproxyapi", id: "claude-opus-5-5" }, now, usedUp, ledger, noPacer)

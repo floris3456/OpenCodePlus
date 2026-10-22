@@ -17,14 +17,19 @@ export interface PacerCache {
   readonly at: number
 }
 
+/**
+ * Pacer has decided the chat's account cannot serve its next step (a meter at its floor, or CPA no longer
+ * offers the account): that step is a forced move to the other account Pacer names, after a compaction.
+ */
+export interface PacerUsedUp {
+  /** When the account serves again (its meters at their floor reset), on this process's clock, if Pacer says. */
+  readonly servesAt?: number
+}
+
 /** What one read of the chat's usage view says. */
 export interface PacerChat {
   readonly cache?: PacerCache
-  /**
-   * Pacer has decided the chat's account cannot serve its next step (a meter at its floor, or CPA no longer
-   * offers the account): that step is a forced move to the other account Pacer names, after a compaction.
-   */
-  readonly usedUp?: true
+  readonly usedUp?: PacerUsedUp
 }
 
 export interface PacerCacheQuery {
@@ -52,9 +57,9 @@ export function pacerCache(query: PacerCacheQuery): Promise<PacerCache | undefin
   return pacerChat(query).then((chat) => chat?.cache)
 }
 
-/** Whether Pacer has decided the chat's account cannot serve its next step (see `PacerChat.usedUp`). */
-export function pacerUsedUp(query: PacerCacheQuery): Promise<boolean> {
-  return pacerChat(query).then((chat) => chat?.usedUp === true)
+/** Pacer's decision that the chat's account cannot serve its next step, or undefined (see `PacerUsedUp`). */
+export function pacerUsedUp(query: PacerCacheQuery): Promise<PacerUsedUp | undefined> {
+  return pacerChat(query).then((chat) => chat?.usedUp)
 }
 
 function pacerChat(query: PacerCacheQuery): Promise<PacerChat | undefined> {

@@ -222,3 +222,50 @@ test("dead, superseded and reaped runs stop warming immediately", async () => {
     }
   })
 })
+
+// Pacer has decided the chat's account cannot serve its next step (it compacts and moves): keep-alives
+// would spend the account's last usage on a cache the move does not reuse.
+test("a keep-alive on an account Pacer gave up stops, unless the account serves again within 10 minutes", async () => {
+  await withIsolatedTeamsRoot(async () => {
+    const MINUTE = 60_000
+    const now = Date.now()
+    const sessionID = Session.ID.make("ses_used_up_warm")
+    const model = Model.Ref.make({ providerID: Provider.ID.make("cliproxyapi"), id: Model.ID.make("claude-opus-5-5") })
+    const ping = () => ({
+      sessionID,
+      agent: Agent.ID.make("build"),
+      model,
+      phase: "warm" as const,
+      since: now - MINUTE,
+      now,
+      settings: { prompt: "ping", interval: 4 * MINUTE, duration: 32 * MINUTE },
+    })
+    const ctx = context({ locations: { evict: () => Effect.void, loaded: () => Effect.succeed(true) } })
+    const state = { ...createState(), warmingCheckedAt: Date.now() }
+    const asked: unknown[] = []
+    const keepAlive = async (answer: { servesAt?: number } | undefined) => {
+      const event = ping()
+      await Effect.runPromise(
+        decideWarmingFor(ctx, state, event, async (query) => {
+          asked.push(query)
+          return answer
+        }),
+      )
+      return event.settings
+    }
+    await warmingStore.decide(ping(), {})
+    // Not used up, or serving again in 8 minutes: the chat keeps warming and may stay on its account.
+    expect(await keepAlive(undefined)).toBeDefined()
+    expect(await keepAlive({ servesAt: now + 8 * MINUTE })).toBeDefined()
+    expect(await keepAlive({ servesAt: now + 10 * MINUTE })).toBeDefined()
+    expect((await warmingStore.status(sessionID, now)).active).toBe(true)
+    expect(asked[0]).toEqual({ sessionID, providerID: "cliproxyapi", modelID: "claude-opus-5-5" })
+    // 11 minutes away: warming stops and its window ends.
+    expect(await keepAlive({ servesAt: now + 11 * MINUTE })).toBeUndefined()
+    expect((await warmingStore.status(sessionID, now + 1)).active).toBe(false)
+    // Pacer does not say when: it stops too.
+    await warmingStore.decide(ping(), {})
+    expect(await keepAlive({})).toBeUndefined()
+    expect((await warmingStore.status(sessionID, now + 1)).active).toBe(false)
+  })
+})
