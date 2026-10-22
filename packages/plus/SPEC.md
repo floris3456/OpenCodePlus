@@ -2866,6 +2866,8 @@ the shipped limits):
 | `search_tavily_search` | Queries (input `query`) · Search depth (value `search_depth`) · Topics (value `topic`) · Limits (Results per search 10, clamp) · Approval |
 | `search_tavily_extract` | Sites (input `urls[]`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Extract depth (value `extract_depth`) · Limits (Pages per call 5, refuse) · Approval |
 | `search_exa_code_search` | Queries (input `query`) · Search types (value `type`) · Parameters (`contents.text`, `contents.summary`) · Limits (Results per search 10, clamp) · Approval |
+| `web_chatgpt_search`, `web_claude_search` (CLIProxyAPI) | Queries (input `query`; `question` for Claude) · Approval |
+| `web_chatgpt_open` (CLIProxyAPI) | Sites (input `url`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Approval |
 | `browser_navigate`, `browser_tabs_open` | Sites (input `url`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) |
 | `browser_tabs_list` | Use (List this session's tabs) |
 | every other `browser_*` | Sites (the tab's current page) and, by tool: `files_upload`/`files_drop` Files (input `paths[]`, fallback: secret files) · Limits (Files per call 2, refuse); `network_get` Parameters (`includeBody`) · Limits (Largest body 5000 characters, clamp); `dialog` Actions (value `action`: get, accept, dismiss); `evaluate` Parameters (`frameID`) · Limits (Longest script 4000 characters, refuse); `screenshot` Parameters (`fullPage`); `fill`/`fill_form` Limits (Longest text typed 2000 characters, refuse); `trace_start` Limits (Longest trace 10000 ms, clamp) |

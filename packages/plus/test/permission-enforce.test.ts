@@ -180,6 +180,23 @@ test("an input category with a closed fallback lets through only its allow rows,
   )
 })
 
+test("CLIProxyAPI's web tools keep the search tools' query and site rows", () => {
+  const search = rowsFor("web_chatgpt_search", { off: ["queries.secrets"] })
+  expect(decide(search, call("web_chatgpt_search", { query: "why does token=abc123 fail" })).refuse).toBe(
+    messageOf(search, "queries.secrets"),
+  )
+  expect(decide(search, call("web_chatgpt_search", { query: "bun test default timeout" }))).toEqual({})
+  const claude = rowsFor("web_claude_search", { off: ["queries.paths"] })
+  expect(decide(claude, call("web_claude_search", { question: "what is in /home/me/notes.md" })).refuse).toBe(
+    messageOf(claude, "queries.paths"),
+  )
+  // The rows start on: nothing is refused until one is turned off.
+  expect(decide(rowsFor("web_claude_search"), call("web_claude_search", { question: "what is in /home/me/notes.md" }))).toEqual({})
+  const open = rowsFor("web_chatgpt_open", { off: ["sites.localhost"] })
+  expect(decide(open, call("web_chatgpt_open", { url: "http://localhost:4096/api" })).refuse).toContain("Localhost")
+  expect(decide(open, call("web_chatgpt_open", { url: "https://github.com/x" }))).toEqual({})
+})
+
 // ── value and param rows ───────────────────────────────────────────────────
 
 test("a value row that is off refuses its literal and nothing else", () => {

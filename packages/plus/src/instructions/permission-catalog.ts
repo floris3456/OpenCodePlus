@@ -1144,6 +1144,17 @@ const searchCatalog: Record<string, readonly CategorySpec[]> = {
   ],
 }
 
+// CLIProxyAPI's web tools (packages/cliproxyapi/src/web.ts) send queries and pages to OpenAI's and
+// Anthropic's search, so they keep the search tools' rows.
+const webCatalog: Record<string, readonly CategorySpec[]> = {
+  web_chatgpt_search: [queries("query"), approval()],
+  web_chatgpt_open: [
+    sites("url", "Pages ChatGPT's search may open. It opens them on OpenAI's side, so local and private addresses only leak their names."),
+    approval(),
+  ],
+  web_claude_search: [queries("question"), approval()],
+}
+
 // Browser tools come from the desktop plugin; their catalog follows what each
 // tool does to a page rather than listing 44 tables by hand. Neither they nor
 // core's opencode session tools pass through a permission check (they carry
@@ -1233,7 +1244,7 @@ export function catalogFor(tool: string, group?: Item["group"]): readonly Catego
   if (instructions !== undefined) return instructions
   const release = releaseCatalog[tool]
   if (release !== undefined) return release
-  const search = searchCatalog[tool]
+  const search = searchCatalog[tool] ?? webCatalog[tool]
   if (search !== undefined) return search
   if (tool.startsWith("browser_")) return browserCatalog(tool)
   if (group === "mcp" || group === "plus") return [approval()]
