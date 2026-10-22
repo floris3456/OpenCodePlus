@@ -1312,8 +1312,9 @@ export const WarmingCompactInput = Schema.Struct({
 }).annotate({ identifier: "Plus.WarmingCompactInput" })
 
 // Plus's global switches, the Settings › OpenCodePlus rows the server acts on.
-// `coldCompact`: a message sent into a cold chat is first summarized by the
-// cold-cache models its model resolves in Instructions. The `notice*` fields
+// `coldCompact`: a step into a cold cache (a new message, or a running agent's
+// next step) is first summarized by the cold-cache models its model resolves
+// in Instructions, for models whose own `coldFirst` leaves it to this switch. The `notice*` fields
 // shape the cache notices every TUI of this server shows.
 export const NoticeKinds = Schema.Literals(["misses-and-partials", "misses"])
 export const NoticeDismiss = Schema.Literals(["everywhere", "this-tui"])
