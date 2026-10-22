@@ -117,7 +117,11 @@ test("one read gives the preview and Pacer's cache warmth, on this clock; a newe
 /** A chat view whose Pacer answers when the test says, on a clock the test moves. */
 function scriptedView(start: number) {
   const clock = { now: start }
-  const requests: Array<{ url: URL; signal: AbortSignal | null | undefined; answer: (outcome: Response | Error) => void }> = []
+  const requests: Array<{
+    url: URL
+    signal: AbortSignal | null | undefined
+    answer: (outcome: Response | Error) => void
+  }> = []
   // A read starts with its binding lookup, synchronously, so `reads` counts the reads begun.
   const counts = { reads: 0 }
   const fake = Object.assign(
@@ -202,7 +206,13 @@ test("a failed read is not repeated for 15 s, doubling to 2 minutes, nor before 
   // A timeout or no connection counts as a failure; the backoff stops doubling at 2 minutes.
   await failAt(345_000, new DOMException("The operation timed out.", "TimeoutError"))
   expect(ask(464_999).started).toBe(false)
-  await failAt(465_000, new Response("slow down", { status: 429, headers: { "Retry-After": new Date(start + 465_000 + 600_000).toUTCString() } }))
+  await failAt(
+    465_000,
+    new Response("slow down", {
+      status: 429,
+      headers: { "Retry-After": new Date(start + 465_000 + 600_000).toUTCString() },
+    }),
+  )
   expect(ask(1_064_999).started).toBe(false)
   // A chat in backoff holds back no other chat.
   const other = pacer.view(ORIGIN, { ...chat, sessionID: "other" })

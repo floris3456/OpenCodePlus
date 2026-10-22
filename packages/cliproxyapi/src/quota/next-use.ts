@@ -51,21 +51,23 @@ export function createChatView(io: IO) {
       pending: true,
       failures: previous?.failures ?? 0,
       retryAt: 0,
-      result: readView(io, origin, input).catch(() => ({ failed: true as const, retryAfter: undefined })).then((outcome) => {
-        entry.pending = false
-        if (outcome.failed === false) {
-          entry.failures = 0
-          return outcome.read
-        }
-        entry.failures++
-        entry.retryAt =
-          io.now() +
-          Math.max(
-            Math.min(BACKOFF_MS * 2 ** (entry.failures - 1), BACKOFF_MAX_MS),
-            Math.min(outcome.retryAfter ?? 0, RETRY_AFTER_MAX_MS),
-          )
-        return undefined
-      }),
+      result: readView(io, origin, input)
+        .catch(() => ({ failed: true as const, retryAfter: undefined }))
+        .then((outcome) => {
+          entry.pending = false
+          if (outcome.failed === false) {
+            entry.failures = 0
+            return outcome.read
+          }
+          entry.failures++
+          entry.retryAt =
+            io.now() +
+            Math.max(
+              Math.min(BACKOFF_MS * 2 ** (entry.failures - 1), BACKOFF_MAX_MS),
+              Math.min(outcome.retryAfter ?? 0, RETRY_AFTER_MAX_MS),
+            )
+          return undefined
+        }),
     }
     reads.set(key, entry)
     return entry.result
@@ -77,7 +79,9 @@ async function readView(
   origin: string,
   input: Chat,
 ): Promise<{ failed: false; read?: ChatRead } | { failed: true; retryAfter?: number }> {
-  const stored = Schema.decodeUnknownOption(Stored)(await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`))
+  const stored = Schema.decodeUnknownOption(Stored)(
+    await io.read(`quota/${input.sessionID}/${input.providerID}/${input.modelID}`),
+  )
   if (Option.isNone(stored)) return { failed: false }
   const url = new URL(originOf(origin) + "/v0/resource/plugins/pacer/events")
   url.search = new URLSearchParams({ view: "usage", v: "1", model: `${input.providerID}/${input.modelID}` }).toString()
@@ -169,5 +173,6 @@ export function cacheOf(read: ChatRead | undefined, modelID: string): PacerCache
 /** The sidebar's preview on its own view reader (tests; the adapter shares one reader with the cache check). */
 export function createNextUse(io: IO) {
   const view = createChatView(io)
-  return (origin: string | undefined, input: Chat) => view(origin, input).then((read) => nextUseOf(read, input.modelID, io.now()))
+  return (origin: string | undefined, input: Chat) =>
+    view(origin, input).then((read) => nextUseOf(read, input.modelID, io.now()))
 }
