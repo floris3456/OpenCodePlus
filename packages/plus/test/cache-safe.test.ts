@@ -1078,6 +1078,50 @@ test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as 
   expect(unstored.system.map((part) => part.text)).toContain("Guide v2.")
 })
 
+test("a chat that comes back to a folder sends what the other folder last sent it", async () => {
+  const { storage } = memoryStorage()
+  const home = createHarness()
+  const away = createHarness()
+  const homeState = { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }
+  const awayState = { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }
+  await applyPublishParts(home.ctx, homeState, restartPlan("Guide v1.", "Be nice.", "read files"))
+  await Effect.runPromise(home.contextCallbacks.at(-1)!(restartRequest("Be nice.", "Guide v1.")))
+
+  // The chat moves away; a role section changes, and that folder rebuilds the chat's prompt (a compaction).
+  const changed = restartPlan("Guide v1.", "Speak like a pirate.", "read files")
+  await applyPublishParts(away.ctx, awayState, changed)
+  await Effect.runPromise(awayState.sessionPins.markRebuild("ses_restart"))
+  const there = restartRequest("Speak like a pirate.", "Guide v1.")
+  await Effect.runPromise(away.contextCallbacks.at(-1)!(there))
+  expect(there.system.map((part) => part.text)).toContain("You are helpful.\n\n## Rules\nSpeak like a pirate.")
+
+  // Back home, whose Plus has published the change too.
+  await applyPublishParts(home.ctx, homeState, changed)
+  const back = restartRequest("Speak like a pirate.", "Guide v1.")
+  await Effect.runPromise(home.contextCallbacks.at(-1)!(back))
+  expect(back.system, "the system prompt the other folder sent last").toEqual(there.system)
+  expect(home.synthetics, "the rebuilt prompt already holds the change").toHaveLength(0)
+})
+
+test("a folder's stale pin does not overwrite the pin another folder stored since", async () => {
+  const { storage } = memoryStorage()
+  const model = { providerID: "anthropic", id: "claude-3-5-sonnet" }
+  const plans = narrowingPlans(answering("now"))
+  const home = new SessionPinManager(storage)
+  await Effect.runPromise(home.save(home.pinSession("ses_stale", model, plans), "alpha"))
+  // The chat moves away; that folder rebuilds its prompt.
+  const away = new SessionPinManager(storage)
+  const restored = await Effect.runPromise(away.load("ses_stale", plans))
+  if (restored === undefined) throw new Error("expected the stored pin")
+  const rebuilt = away.repinSession("ses_stale", model, plans)
+  await Effect.runPromise(away.save(rebuilt, "alpha"))
+  // Every folder's Plus hears the chat's compaction.
+  await Effect.runPromise(home.markRebuild("ses_stale"))
+  const stored = await Effect.runPromise(new SessionPinManager(storage).load("ses_stale", plans))
+  expect(stored?.epoch).toBe(rebuilt.epoch)
+  expect(stored?.rebuildNeeded).toBe(true)
+})
+
 test("a team member's chat moved to a new folder gets no note that its role is removed, while that folder's first publish has not seen it", async () => {
   const { storage } = memoryStorage()
   const role = "# Team member\n\n## Runs\nAct on each Brief."

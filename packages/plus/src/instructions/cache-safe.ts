@@ -171,22 +171,47 @@ export class SessionPinManager {
     return this.pins.get(sessionID)
   }
 
-  /** The chat's pin in memory, else the one stored before a restart or a re-activation. */
+  /** The chat's pin in memory, else the one stored before a restart, a re-activation or a move. */
   load(sessionID: string, current: PlanSet): Effect.Effect<SessionPin | undefined> {
+    const store = this.store
+    return this.held(sessionID).pipe(
+      Effect.flatMap((pin) => {
+        if (pin !== undefined || store === undefined) return Effect.succeed(pin)
+        return restorePin(store, sessionID, current).pipe(
+          Effect.map((restored) => {
+            if (restored === undefined) return undefined
+            const raced = this.pins.get(sessionID)
+            if (raced !== undefined) return raced
+            this.pins.set(sessionID, restored.pin)
+            this.written.set(sessionID, restored.written)
+            return restored.pin
+          }),
+          Effect.catchCause((cause) =>
+            Effect.as(Effect.logWarning("plus could not restore a chat's pinned prompt", { sessionID, cause }), undefined),
+          ),
+        )
+      }),
+    )
+  }
+
+  // Each folder's Plus keeps its own pins in memory, but a chat that moves is served by
+  // the destination's, which stores what it sends from then on. A pin this instance
+  // holds is stale once the stored record is not the one it wrote last: the chat came
+  // back from another folder, which may have rebuilt its prompt. Sending the old pin
+  // missed the cache from the system prompt on, and saving it overwrote the newer one.
+  private held(sessionID: string): Effect.Effect<SessionPin | undefined> {
     const pin = this.pins.get(sessionID)
     const store = this.store
-    if (pin !== undefined || store === undefined) return Effect.succeed(pin)
-    return restorePin(store, sessionID, current).pipe(
-      Effect.map((restored) => {
-        if (restored === undefined) return undefined
-        const raced = this.pins.get(sessionID)
-        if (raced !== undefined) return raced
-        this.pins.set(sessionID, restored.pin)
-        this.written.set(sessionID, restored.written)
-        return restored.pin
+    if (pin === undefined || store === undefined) return Effect.succeed(pin)
+    return store.get(recordKey(sessionID)).pipe(
+      Effect.map((stored) => {
+        if (stored === undefined || stored === this.written.get(sessionID)?.record) return pin
+        this.pins.delete(sessionID)
+        this.written.delete(sessionID)
+        return undefined
       }),
       Effect.catchCause((cause) =>
-        Effect.as(Effect.logWarning("plus could not restore a chat's pinned prompt", { sessionID, cause }), undefined),
+        Effect.as(Effect.logWarning("plus could not read a chat's stored pin", { sessionID, cause }), pin),
       ),
     )
   }
@@ -278,17 +303,19 @@ export class SessionPinManager {
 
   /** The chat's next request pins the current plan set; kept across a restart too. */
   markRebuild(sessionID: string): Effect.Effect<void> {
-    return Effect.suspend(() => {
-      const pin = this.pins.get(sessionID)
-      if (pin !== undefined) {
-        pin.rebuildNeeded = true
-        return this.save(pin)
-      }
-      if (this.store === undefined) return Effect.void
-      return markStoredRebuild(this.store, sessionID).pipe(
-        Effect.catchCause((cause) => Effect.logWarning("plus could not mark a stored chat pin for rebuild", { sessionID, cause })),
-      )
-    })
+    const store = this.store
+    return this.held(sessionID).pipe(
+      Effect.flatMap((pin) => {
+        if (pin !== undefined) {
+          pin.rebuildNeeded = true
+          return this.save(pin)
+        }
+        if (store === undefined) return Effect.void
+        return markStoredRebuild(store, sessionID).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("plus could not mark a stored chat pin for rebuild", { sessionID, cause })),
+        )
+      }),
+    )
   }
 
   dropPin(sessionID: string): Effect.Effect<void> {
@@ -337,7 +364,8 @@ export function pinnedPermissions(pin: SessionPin, agent: string, table: Permiss
 }
 
 const restorePin = Effect.fnUntraced(function* (store: StorageDomain, sessionID: string, current: PlanSet) {
-  const record = Option.getOrUndefined(decodeRecord(yield* store.get(recordKey(sessionID))))
+  const value = yield* store.get(recordKey(sessionID))
+  const record = Option.getOrUndefined(decodeRecord(value))
   if (record === undefined) return undefined
   const stored = yield* Effect.forEach(record.agents, (agent) =>
     store.get(agentKey(sessionID, agent)).pipe(Effect.map((value) => [agent, Option.getOrUndefined(decodeAgent(value))] as const)),
@@ -362,6 +390,7 @@ const restorePin = Effect.fnUntraced(function* (store: StorageDomain, sessionID:
     ...(record.rebuildNeeded === true ? { rebuildNeeded: true } : {}),
   }
   const written: Written = {
+    ...(typeof value === "string" ? { record: value } : {}),
     agents: new Set(record.agents),
     parts: new Map([...parts.keys()].map((agent) => [agent, markOf(pin, agent)] as const)),
   }
