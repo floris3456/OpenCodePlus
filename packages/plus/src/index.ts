@@ -103,7 +103,7 @@ import { chooseImage } from "./image-settings.js"
 import { armedColdListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
-import type { SessionImage, SessionWarming } from "@opencode/plugin/effect/session"
+import type { SessionImage, SessionInstructionsUpdate, SessionWarming } from "@opencode/plugin/effect/session"
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
 import { handlePromptBoundary, isRebuildMoment, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 import { chatModelForAgent, currentSessionAgent, currentSessionModel, toHostModelRef } from "./session-model.js"
@@ -326,6 +326,7 @@ export default Plugin.define({
       )
       yield* ctx.session.hook("compaction", (event) => state.sessionPins.markRebuild(String(event.sessionID)))
       yield* ctx.session.hook("compaction.decide", (event) => decideCompactionFor(ctx, state, event))
+      yield* ctx.session.hook("instructions.update", (event) => rebaseInstructionsFor(state, event))
       // Instructions › a model › Images: how an image that arrives in a chat on that model is stored.
       yield* ctx.session.hook("image", (event) => chooseImageFor(ctx, state, event))
       // The monitor records every step and tool call this Location sees; a
@@ -4206,8 +4207,30 @@ export function decideCompactionFor(
   })
 }
 
+/**
+ * Plus's `instructions.update`: a cold chat gets no notice of a changed AGENTS.md or folder, only the changed
+ * files in its system prompt. Cold by the decide hook's own test (as the footer shows it, another model, after
+ * /refresh), which then finds the baseline current.
+ */
+export function rebaseInstructionsFor(
+  state: PlusState,
+  event: SessionInstructionsUpdate,
+  ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
+  pacer: typeof pacerCache = pacerCache,
+): Effect.Effect<void> {
+  return Effect.promise(async () => {
+    const now = Date.now()
+    const model = event.model
+    if (
+      isCold(coldStateOf({ status: await warmingStatusFor(event.sessionID, now, ledger, pacer), now })) ||
+      (model !== undefined && (await rebuildsPin(state, { sessionID: event.sessionID, model })))
+    )
+      event.rebase = true
+  })
+}
+
 /** Whether the chat's pinned prompt is rebuilt on its next request; a chat without a pin has none. */
-async function rebuildsPin(state: PlusState, event: SessionCompactionDecision) {
+async function rebuildsPin(state: PlusState, event: Pick<SessionCompactionDecision, "sessionID" | "model">) {
   if (state.currentPlanSet === undefined) return false
   const pin = await Effect.runPromise(state.sessionPins.load(String(event.sessionID), state.currentPlanSet))
   return pin !== undefined && (await isRebuildMoment(pin, event))

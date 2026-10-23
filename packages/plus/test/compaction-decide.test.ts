@@ -3,7 +3,7 @@
 // account-switch replacement and the team compactWith priority.
 import { expect, test } from "bun:test"
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
-import type { SessionDomain } from "@opencode/plugin/effect/session"
+import type { SessionDomain, SessionInstructionsUpdate } from "@opencode/plugin/effect/session"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
@@ -15,7 +15,7 @@ import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
 import { createPlanSet } from "../src/instructions/cache-safe.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
-import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, footerStatusFor, warmingStatusFor, type PlusState } from "../src/index.js"
+import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, footerStatusFor, rebaseInstructionsFor, warmingStatusFor, type PlusState } from "../src/index.js"
 import { warmingStore } from "../src/warming.js"
 import type { ModelRecord } from "../src/instructions/model.js"
 import { effectiveCompaction, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
@@ -470,6 +470,43 @@ test("a step that rebuilds the chat's pinned prompt has OpenCode rebase its inst
   const cold = fakeLedger(requestRow(Date.now() - 70 * MINUTE, { sessionID }), oneHourFingerprint())
   expect(await decide({}, cold)).toBe(true)
   expect(await Effect.runPromise(state.sessionPins.load(sessionID, plans))).toMatchObject({ rebuildNeeded: true })
+})
+
+test("a cold chat, another model or /refresh takes a changed AGENTS.md into the system prompt, unannounced", async () => {
+  const sessionID = "ses_instructions_update"
+  const plans = createPlanSet({
+    roles: new Map(),
+    base: [],
+    native: [],
+    instructions: [],
+    scrubByAgent: new Map(),
+    needsNarrowing: false,
+    permissions: { toolEnabled: () => true, rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
+    customByAgent: new Set(),
+  })
+  const state = { ...coldState([]), currentPlanSet: plans }
+  const warm = fakeLedger(requestRow(Date.now(), { sessionID }), oneHourFingerprint())
+  const update = async (model: string | undefined = "proxy/chat-model", ledger = warm) => {
+    const event: SessionInstructionsUpdate = {
+      sessionID: Session.ID.make(sessionID),
+      agent: Agent.ID.make("build"),
+      ...(model === undefined ? {} : { model: Model.Ref.parse(model) }),
+      sources: ["core/instructions/project/agents.md"],
+      rebase: false,
+    }
+    await Effect.runPromise(rebaseInstructionsFor(state, event, ledger, noPacer))
+    return event.rebase
+  }
+
+  expect(await update(), "a warm chat gets the notice").toBe(false)
+  state.sessionPins.pinSession(sessionID, Model.Ref.parse("proxy/chat-model"), plans)
+  expect(await update(), "its pinned prompt goes out as it is").toBe(false)
+  expect(await update("proxy/other-model"), "another model reads no cache").toBe(true)
+  expect(await update(undefined), "without a model, only the cold test").toBe(false)
+  await Effect.runPromise(state.sessionPins.markRebuild(sessionID))
+  expect(await update(), "after /refresh").toBe(true)
+  const cold = fakeLedger(requestRow(Date.now() - 70 * MINUTE, { sessionID }), oneHourFingerprint())
+  expect(await update(undefined, cold), "cold as the footer shows it").toBe(true)
 })
 
 test("with Compact cold chats first off, a cold chat does not arm", async () => {

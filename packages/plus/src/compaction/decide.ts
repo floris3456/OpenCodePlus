@@ -141,12 +141,13 @@ export function isCold(cold: ColdCompactionState): boolean {
  */
 export function coldStateOf(input: {
   readonly status: Pick<WarmingStatus, "active" | "compacted" | "expires" | "coldAt" | "warmUntil">
-  readonly boundary: SessionCompactionDecision["boundary"]
+  /** Core's boundary at a compaction decision; absent elsewhere. */
+  readonly boundary?: SessionCompactionDecision["boundary"]
   readonly now: number
 }): ColdCompactionState {
   const coldAt = input.status.active ? undefined : (input.status.coldAt ?? input.status.expires ?? input.status.warmUntil)
   return {
-    compacted: input.status.compacted === true || input.boundary.checkpoint !== undefined,
+    compacted: input.status.compacted === true || input.boundary?.checkpoint !== undefined,
     ...(coldAt === undefined ? {} : { coldAt }),
     now: input.now,
   }
