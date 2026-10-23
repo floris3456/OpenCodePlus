@@ -247,6 +247,22 @@ export interface SessionCatalog {
   tools: Record<string, { description: string; pinned: boolean; input?: JsonSchema.JsonSchema }>
 }
 
+/**
+ * The chat's instructions (its AGENTS.md files, its folder) changed since its last request. By default the next
+ * request announces the change in the history and keeps its system prompt, so the provider's cached prefix stays
+ * valid. Set `rebase` where nothing is read from cache anyway (a cold chat, another model): the change goes into the
+ * system prompt instead, unannounced, and the updates announced since the last baseline leave the history. OpenCode
+ * rebases by itself when no step went out since the last baseline (after a compaction).
+ */
+export interface SessionInstructionsUpdate {
+  readonly sessionID: Session.ID
+  readonly agent: Agent.ID
+  readonly model?: Model.Ref
+  /** The instruction sources that changed, were added or were removed. */
+  readonly sources: ReadonlyArray<string>
+  rebase: boolean
+}
+
 export interface SessionHooks {
   /** Destination-scoped, awaited after a committed folder move and before destination execution. */
   readonly moved: { readonly source: Session.Info; readonly destination: Session.Info }
@@ -260,6 +276,7 @@ export interface SessionHooks {
   readonly generated: SessionGenerated
   readonly title: SessionTitle
   readonly catalog: SessionCatalog
+  readonly "instructions.update": SessionInstructionsUpdate
   readonly "model.request": SessionModelRequest
   readonly "http.request": SessionHttpRequest
   readonly "http.response": SessionHttpResponse

@@ -1676,17 +1676,16 @@ describe("SessionRunnerLLM", () => {
       const continued = s.requests.at(-1)
       if (!continued) throw new Error("Expected continuation request")
       expect(continued.messages[0]).toEqual(replacement[0])
-      expect(continued.system.map((part) => part.text)).toContain("Checkpoint instructions")
-      expect(systemTexts(continued)).toEqual(["Newest instructions"])
+      // Nothing went out since the checkpoint: the change is in the system prompt, unannounced.
+      expect(continued.system.map((part) => part.text)).toContain("Newest instructions")
+      expect(systemTexts(continued)).toEqual([])
 
       const forked = yield* s.session.fork({ sessionID, before: after.id })
       yield* s.session.prompt({ sessionID: forked.id, text: "Fork prompt", resume: false })
       yield* s.session.resume(forked.id)
       expect(s.requests.at(-1)?.messages[0]).toEqual(replacement[0])
       expect(s.requests.at(-1)?.system.map((part) => part.text)).toContain("Newest instructions")
-      expect(s.requests.at(-1)?.messages.filter((message) => message.role === "system")).toEqual([
-        Message.system("Newest instructions"),
-      ])
+      expect(s.requests.at(-1)?.messages.filter((message) => message.role === "system")).toEqual([])
       expect(
         (yield* s.session.messages({ sessionID: forked.id })).find((message) => message.type === "compaction" && message.status === "completed"),
       ).toMatchObject({ providerContext })
@@ -1919,6 +1918,54 @@ describe("SessionRunnerLLM", () => {
     yield* replaySessionProjection(sessionID)
     yield* s.runPrompt("Fifth")
     expect(s.requests.at(-1)?.system.map((part) => part.text)).toEqual([defaultSystem, fakeIdentity, "Changed context"])
+    expect(messageRoles(s.requests.at(-1))).toEqual(["user", "user", "user", "user", "user"])
+  })
+
+  scenario("takes a change the instructions.update hook rebases into the system prompt, unannounced", function* (s) {
+    yield* s.runPrompt("First")
+    s.systemBaseline = "Changed context"
+    yield* s.runPrompt("Second")
+    const hooks = yield* PluginHooks.Service
+    const asked: ReadonlyArray<string>[] = []
+    yield* hooks.register("session", "instructions.update", (event) =>
+      Effect.sync(() => {
+        asked.push(event.sources)
+        event.rebase = true
+      }),
+    )
+    s.systemBaseline = "Latest context"
+    yield* s.runPrompt("Third")
+    yield* s.runPrompt("Fourth")
+
+    // Asked once, for the change that is not announced; Second's change was announced before the hook.
+    expect(asked).toEqual([["test/context"]])
+    expect(s.requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      [defaultSystem, fakeIdentity, "Initial context"],
+      [defaultSystem, fakeIdentity, "Initial context"],
+      [defaultSystem, fakeIdentity, "Latest context"],
+      [defaultSystem, fakeIdentity, "Latest context"],
+    ])
+    // The earlier notice leaves the model's history with it; the chat keeps that one and gets no new one.
+    expect(messageRoles(s.requests[2])).toEqual(["user", "user", "user"])
+    expect(
+      (yield* s.messages).flatMap((message) => (message.type === "system" ? [message.text] : [])),
+    ).toEqual(["Changed context"])
+    const updates = yield* s.db
+      .select({ data: EventTable.data })
+      .from(EventTable)
+      .where(eq(EventTable.type, "session.instructions.updated.2"))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(Effect.orDie)
+    expect(updates.map((update) => update.data).slice(1)).toEqual([
+      { sessionID, delta: { "test/context": Instructions.hash("Changed context") }, text: "Changed context" },
+      { sessionID, delta: { "test/context": Instructions.hash("Latest context") }, rebase: true },
+    ])
+
+    // A projection rebuilt from the log takes the same baseline.
+    yield* replaySessionProjection(sessionID)
+    yield* s.runPrompt("Fifth")
+    expect(s.requests.at(-1)?.system.map((part) => part.text)).toEqual([defaultSystem, fakeIdentity, "Latest context"])
     expect(messageRoles(s.requests.at(-1))).toEqual(["user", "user", "user", "user", "user"])
   })
 
@@ -2293,7 +2340,7 @@ describe("SessionRunnerLLM", () => {
     ])
   })
 
-  scenario("moves the epoch at compaction and narrates later changes", function* (s) {
+  scenario("takes a change into the system prompt after a compaction and narrates changes after an answer", function* (s) {
     yield* s.runPrompt("First")
     s.systemBaseline = "Changed before compaction"
     yield* s.llm.push(TestLLM.text("## Objective\n- summary", "epoch-summary"))
@@ -2302,22 +2349,32 @@ describe("SessionRunnerLLM", () => {
     expect(systemTexts(s.requests[1])).toEqual([])
     expect((yield* s.context).some((message) => message.type === "system")).toBe(false)
     s.systemBaseline = "Replacement context"
+    yield* s.llm.push(TestLLM.text("Answered", "epoch-answer"))
     yield* s.runPrompt("Second")
+    s.systemBaseline = "Latest context"
+    yield* s.runPrompt("Third")
 
     expect(s.requests.map((request) => request.system.map((part) => part.text))).toEqual([
       [defaultSystem, fakeIdentity, "Initial context"],
       [defaultSystem, fakeIdentity, "Initial context"],
-      [defaultSystem, fakeIdentity, "Initial context"],
+      [defaultSystem, fakeIdentity, "Replacement context"],
+      [defaultSystem, fakeIdentity, "Replacement context"],
     ])
-    expect(messageRoles(s.requests[2])).toEqual(["user", "system", "user"])
-    expect(s.requests[2]?.messages.at(1)?.content).toEqual([Expected.text("Replacement context")])
+    // Nothing was read from cache since the compaction: no notice, in the request or the chat.
+    expect(messageRoles(s.requests[2])).toEqual(["user", "user"])
+    expect(messageRoles(s.requests[3])).toEqual(["user", "user", "assistant", "system", "user"])
+    expect(systemTexts(s.requests[3])).toEqual(["Latest context"])
+    expect(
+      (yield* s.messages).flatMap((message) => (message.type === "system" ? [message.text] : [])),
+    ).toEqual(["Latest context"])
     yield* replaySessionProjection(sessionID)
-    const latest = yield* s.runPrompt("Third")
-    expect(systemTexts(s.requests[3])).toEqual(["Replacement context"])
+    const latest = yield* s.runPrompt("Fourth")
+    expect(s.requests[4]?.system.map((part) => part.text)).toEqual([defaultSystem, fakeIdentity, "Replacement context"])
+    expect(systemTexts(s.requests[4])).toEqual(["Latest context"])
     const fork = yield* s.session.fork({ sessionID, before: latest.id })
     expect(
       (yield* s.session.context(fork.id)).flatMap((message) => (message.type === "system" ? [message.text] : [])),
-    ).toEqual(["Replacement context"])
+    ).toEqual(["Latest context"])
   })
 
   for (const order of ["before", "between", "after"] as const) {
@@ -3767,12 +3824,13 @@ describe("SessionRunnerLLM", () => {
     expect(resolutions).toBe(2)
     expect(s.requests).toHaveLength(3)
     expect(s.requests[2]?.model).toBe(replacementModel)
+    // The retry rebuilds its prompt after the compaction anyway: the change is in it, unannounced.
     expect(s.requests[2]?.system.map((part) => part.text)).toEqual([
       defaultSystem,
       replacementIdentity,
-      "Initial context",
+      "Changed during compaction",
     ])
-    expect(systemTexts(s.requests[2])).toContain("Changed during compaction")
+    expect(systemTexts(s.requests[2])).toEqual([])
     expect(userTexts(s.requests[2])[0]).toContain("<summary>\n## Objective\n- Overflow summary\n</summary>")
     expect(userTexts(s.requests[2]).join("\n")).not.toContain("Queued during compaction")
     expect(userTexts(s.requests[2]).join("\n")).not.toContain("Steered during compaction")

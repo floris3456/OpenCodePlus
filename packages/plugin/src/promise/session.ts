@@ -1,6 +1,6 @@
 import type { SessionCompactionDecision } from "../compaction-decision.js"
-import type { SessionImage, SessionWarming } from "../effect/session.js"
-export type { SessionImage, SessionWarming, SessionWarmingSettings } from "../effect/session.js"
+import type { SessionImage, SessionInstructionsUpdate, SessionWarming } from "../effect/session.js"
+export type { SessionImage, SessionInstructionsUpdate, SessionWarming, SessionWarmingSettings } from "../effect/session.js"
 import type { SessionApi } from "@opencode/client/promise/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai"
 import type { Agent } from "@opencode/schema/agent"
@@ -166,6 +166,7 @@ export interface SessionHooks {
   readonly compaction: SessionCompaction
   readonly generate: SessionGenerate
   readonly title: SessionTitle
+  readonly "instructions.update": SessionInstructionsUpdate
   readonly "model.request": SessionModelRequest
   readonly "http.request": SessionHttpRequest
   readonly "http.response": SessionHttpResponse

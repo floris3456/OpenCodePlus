@@ -273,8 +273,8 @@ export const InstructionsUpdated = Event.durable({
      */
     text: Schema.String.pipe(optional),
     /**
-     * The baseline moved to the instructions the session holds now, without a compaction: the
-     * updates before it are part of it from here on. The delta is empty.
+     * The baseline moved to the instructions the session holds now, this delta applied, without a
+     * compaction: the updates before it are part of it from here on. Never announced, so no text.
      */
     rebase: Schema.Literal(true).pipe(optional),
   },

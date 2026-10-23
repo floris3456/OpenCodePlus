@@ -223,7 +223,17 @@ const layer = Layer.effect(
     const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
       const selected = yield* context.select(sessionID)
       // A blocked initial instruction baseline must leave admitted input pending.
-      yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
+      yield* InstructionState.prepare(db, bus, selected.instructions, sessionID, (sources) =>
+        context.hooks
+          .trigger("session", "instructions.update", {
+            sessionID,
+            agent: selected.agent.id,
+            ...(selected.session.model === undefined ? {} : { model: selected.session.model }),
+            sources,
+            rebase: false,
+          })
+          .pipe(Effect.map((event) => event.rebase)),
+      )
       return selected
     })
 

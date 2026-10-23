@@ -1,6 +1,6 @@
 export * as InstructionState from "./instruction-state.js"
 
-import { eq, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm"
 import { Effect, Option, Schema } from "effect"
 import type { Database } from "../database/database.js"
 import type { Bus } from "../bus.js"
@@ -8,7 +8,7 @@ import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Instructions } from "../instructions/index.js"
 import { SessionEvent } from "./event.js"
 import { SessionSchema } from "./schema.js"
-import { InstructionBlobTable, InstructionStateTable } from "./sql.js"
+import { InstructionBlobTable, InstructionStateTable, SessionMessageTable } from "./sql.js"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -37,22 +37,25 @@ export const observe = Effect.fn("InstructionState.observe")(function* (
   }
 })
 
+/** `rebase` takes a later change into the baseline unannounced: no notice, and the next request's system prompt has it. */
 export const commit = Effect.fn("InstructionState.commit")(function* (
   db: DatabaseService,
   bus: Bus.Interface,
   instructions: Instructions.List,
   observation: Observation,
+  rebase = false,
 ) {
   if (!observation.initial && Object.keys(observation.delta).length === 0) return
   // The rendered text is frozen into the durable event because re-rendering it
   // later would require the original Location-scoped instruction sources.
-  const text = observation.initial ? "" : yield* renderUpdateText(db, instructions, observation)
+  const text = observation.initial || rebase ? "" : yield* renderUpdateText(db, instructions, observation)
   yield* bus.publish(
     SessionEvent.InstructionsUpdated,
     {
       sessionID: observation.sessionID,
       delta: observation.delta,
       ...(text.length > 0 ? { text } : {}),
+      ...(rebase && !observation.initial ? { rebase: true as const } : {}),
     },
     {
       // Initial sync establishes the baseline; unlike later deltas it is not chronological history.
@@ -83,13 +86,47 @@ const renderUpdateText = Effect.fnUntraced(function* (
   )
 })
 
+/**
+ * Admits the instructions' changes before a step. A change is announced in the history, so the cached prefix
+ * stays valid, unless nothing is read from cache anyway: the chat was compacted and no step went out since,
+ * or `rebase` says so for the chat (a cold one).
+ */
 export const prepare = Effect.fn("InstructionState.prepare")(function* (
   db: DatabaseService,
   bus: Bus.Interface,
   instructions: Instructions.List,
   sessionID: SessionSchema.ID,
+  rebase: (sources: ReadonlyArray<string>) => Effect.Effect<boolean> = () => Effect.succeed(false),
 ) {
-  yield* commit(db, bus, instructions, yield* observe(db, instructions, sessionID))
+  const observation = yield* observe(db, instructions, sessionID)
+  const sources = Object.keys(observation.delta)
+  const absorbed =
+    !observation.initial && sources.length > 0 && ((yield* compactedSinceStep(db, sessionID)) || (yield* rebase(sources)))
+  yield* commit(db, bus, instructions, observation, absorbed)
+})
+
+/** Whether the chat's newest step or completed compaction is a compaction. A step is recorded once it gets an answer. */
+const compactedSinceStep = Effect.fnUntraced(function* (db: DatabaseService, sessionID: SessionSchema.ID) {
+  const newest = yield* db
+    .select({ type: SessionMessageTable.type })
+    .from(SessionMessageTable)
+    .where(
+      and(
+        eq(SessionMessageTable.session_id, sessionID),
+        or(
+          eq(SessionMessageTable.type, "assistant"),
+          and(
+            eq(SessionMessageTable.type, "compaction"),
+            sql`json_extract(${SessionMessageTable.data}, '$.status') = 'completed'`,
+          ),
+        ),
+      ),
+    )
+    .orderBy(desc(SessionMessageTable.seq))
+    .limit(1)
+    .get()
+    .pipe(Effect.orDie)
+  return newest?.type === "compaction"
 })
 
 export const apply = Effect.fn("InstructionState.apply")(function* (
