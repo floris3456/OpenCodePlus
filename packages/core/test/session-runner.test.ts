@@ -1874,6 +1874,54 @@ describe("SessionRunnerLLM", () => {
     expect(yield* s.messages).toHaveLength(3)
   })
 
+  scenario("rebases the instructions when the decision asks, without compacting", function* (s) {
+    yield* s.runPrompt("First")
+    s.systemBaseline = "Changed context"
+    yield* s.runPrompt("Second")
+    const hooks = yield* PluginHooks.Service
+    yield* hooks.register("session", "compaction.decide", (event) =>
+      Effect.sync(() => {
+        event.rebaseInstructions = true
+      }),
+    )
+    yield* s.runPrompt("Third")
+    yield* s.runPrompt("Fourth")
+
+    expect(s.requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      [defaultSystem, fakeIdentity, "Initial context"],
+      [defaultSystem, fakeIdentity, "Initial context"],
+      [defaultSystem, fakeIdentity, "Changed context"],
+      [defaultSystem, fakeIdentity, "Changed context"],
+    ])
+    // The baseline holds the update now, so the model no longer gets it as a message.
+    expect(messageRoles(s.requests[2])).toEqual(["user", "user", "user"])
+    expect(userTexts(s.requests[2]!)).toEqual(["First", "Second", "Third"])
+    expect(s.requests[3]?.messages.slice(0, 3)).toEqual([...s.requests[2]!.messages])
+    // The chat's own history keeps it.
+    expect((yield* s.messages).filter((message) => message.type === "system")).toHaveLength(1)
+    expect((yield* s.messages).some((message) => message.type === "compaction")).toBe(false)
+
+    // One rebase: the next steps find the baseline already current.
+    const updates = yield* s.db
+      .select({ data: EventTable.data })
+      .from(EventTable)
+      .where(eq(EventTable.type, "session.instructions.updated.2"))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(Effect.orDie)
+    expect(updates.map((update) => update.data)).toEqual([
+      expect.objectContaining({ delta: expect.objectContaining({ "test/context": Instructions.hash("Initial context") }) }),
+      expect.objectContaining({ text: "Changed context" }),
+      { sessionID, delta: {}, rebase: true },
+    ])
+
+    // A projection rebuilt from the log takes the same baseline.
+    yield* replaySessionProjection(sessionID)
+    yield* s.runPrompt("Fifth")
+    expect(s.requests.at(-1)?.system.map((part) => part.text)).toEqual([defaultSystem, fakeIdentity, "Changed context"])
+    expect(messageRoles(s.requests.at(-1))).toEqual(["user", "user", "user", "user", "user"])
+  })
+
   scenario("uses the selected model family prompt when the agent does not override it", function* (s) {
     s.currentModel = LanguageModel.make({ id: "gpt-5", provider: "openai", route: OpenAIChat.route })
     yield* s.admit("First")

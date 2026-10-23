@@ -272,6 +272,11 @@ export const InstructionsUpdated = Event.durable({
      * Absent for the initial baseline observation and for deltas that render empty.
      */
     text: Schema.String.pipe(optional),
+    /**
+     * The baseline moved to the instructions the session holds now, without a compaction: the
+     * updates before it are part of it from here on. The delta is empty.
+     */
+    rebase: Schema.Literal(true).pipe(optional),
   },
 })
 export type InstructionsUpdated = typeof InstructionsUpdated.Type

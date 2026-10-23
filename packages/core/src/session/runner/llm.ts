@@ -269,6 +269,8 @@ const layer = Layer.effect(
           assistantMessageID = SessionMessage.ID.create()
           continue
         }
+        // The context loaded above holds the previous baseline.
+        if (compacted.status === "rebased") continue
         const stepLimitReached = loaded.agent.info.steps !== undefined && step >= loaded.agent.info.steps
         const transcript = SessionModelRequest.baseTranscript({
           agent: loaded.agent.info,

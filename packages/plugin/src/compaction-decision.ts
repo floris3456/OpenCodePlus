@@ -78,6 +78,13 @@ export interface SessionCompactionDecision {
    * are still recorded). `manual` and `overflow` ignore it.
    */
   optional?: boolean
+  /**
+   * When an `auto` step does not compact, move the chat's instruction baseline to the instructions it
+   * holds now: the next request sends the current files in its system prompt, and the instruction
+   * updates announced since the last baseline leave the history. Ask for it only when the provider
+   * cache is gone anyway (a cold chat, another model); the rebuilt prefix is not read from cache.
+   */
+  rebaseInstructions?: boolean
   metadata?: Record<string, unknown>
   refusal?: SessionError.Error
 }

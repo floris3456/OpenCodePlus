@@ -691,6 +691,7 @@ export type SessionLogOutput =
             readonly sessionID: Session.ID
             readonly delta: { readonly [x: string]: Instruction.Hash | "removed" }
             readonly text?: string | undefined
+            readonly rebase?: true | undefined
           }
         }
       | {

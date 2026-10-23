@@ -34,6 +34,7 @@ import { Token } from "../util/token.js"
 import type { SessionContext } from "./context.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
+import { InstructionState } from "./instruction-state.js"
 import { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
 import { SessionModelObservation } from "./model-observation.js"
@@ -65,6 +66,8 @@ export type Trigger =
 export type Outcome =
   /** Only `auto` skips: the context fits, or automatic compaction is off. */
   | { readonly status: "skipped" }
+  /** Only `auto`, instead of skipping: the decision asked to rebase the instructions and the baseline moved. */
+  | { readonly status: "rebased" }
   | { readonly status: "completed" }
   | { readonly status: "failed"; readonly error: SessionError.Error }
 
@@ -294,8 +297,15 @@ export const layer = Layer.effect(
       const images = trigger.reason === "auto" && decision.images !== "leave-out" && !decision.compact &&
         !due(context, ceiling) && imagesFull(context)
       if (images && decision.images === "error") return { status: "failed", error: IMAGES_FULL_ERROR }
-      if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
-      if (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact && !images) return { status: "skipped" }
+      if (
+        (trigger.reason !== "manual" && !settings.auto) ||
+        (trigger.reason === "auto" && !due(context, ceiling) && !decision.compact && !images)
+      )
+        return trigger.reason === "auto" &&
+          decision.rebaseInstructions === true &&
+          (yield* InstructionState.rebase(db, bus, context.session.id))
+          ? { status: "rebased" }
+          : { status: "skipped" }
       // Opaque windows cannot be sized locally. The first primary request measures the rebuilt
       // checkpoint. If it was already full, do not keep recompressing it after every small tool call.
       // Oversized legacy readable tails get one repair; genuine subsequent growth gets a new attempt.

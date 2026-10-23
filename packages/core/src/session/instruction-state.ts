@@ -159,6 +159,21 @@ export const advanceEpoch = Effect.fn("InstructionState.advanceEpoch")(function*
     .pipe(Effect.orDie)
 })
 
+/**
+ * Moves the epoch baseline to the chat's current instructions without a compaction; the event's
+ * projection advances the epoch. False when the baseline already holds them.
+ */
+export const rebase = Effect.fn("InstructionState.rebase")(function* (
+  db: DatabaseService,
+  bus: Bus.Interface,
+  sessionID: SessionSchema.ID,
+) {
+  const stored = yield* find(db, sessionID)
+  if (!stored || sameValues(stored.initial_values, stored.current_values)) return false
+  yield* bus.publish(SessionEvent.InstructionsUpdated, { sessionID, delta: {}, rebase: true })
+  return true
+})
+
 export const reset = Effect.fn("InstructionState.reset")(function* (db: DatabaseService, sessionID: SessionSchema.ID) {
   yield* db
     .delete(InstructionStateTable)
@@ -180,6 +195,14 @@ export const initial = Effect.fn("InstructionState.initial")(function* (
     InstructionDiscovery.retain(instructions, Object.keys(values), values),
     values,
   )
+})
+
+/** The sequence the epoch baseline was taken at; every instruction update before it is part of it. */
+export const epochStart = Effect.fn("InstructionState.epochStart")(function* (
+  db: DatabaseService,
+  sessionID: SessionSchema.ID,
+) {
+  return (yield* find(db, sessionID))?.epoch_start
 })
 
 /** The current instruction values, used to seed a fork's baseline. */
@@ -263,6 +286,11 @@ const loadBlobs = Effect.fnUntraced(function* (db: DatabaseService, values: Read
   }
   return blobs
 })
+
+function sameValues(a: Instructions.Values, b: Instructions.Values) {
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key])
+}
 
 function dereference(
   values: Instructions.Values,
