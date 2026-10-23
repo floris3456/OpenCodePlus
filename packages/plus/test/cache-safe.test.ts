@@ -1050,10 +1050,11 @@ test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as 
   expect(first.system.map((part) => part.text)).toEqual(["You are helpful.\n\n## Rules\nBe nice.", "Guide v1."])
 
   // AGENTS.md, a role section and a tool description change; then Plus starts again
-  // (a release, or a re-activation) with nothing in memory.
+  // (a release, or a re-activation) with nothing in memory. OpenCode still sends the
+  // AGENTS.md its instruction baseline holds, and announces the edit itself.
   const changed = restartPlan("Guide v2.", "Speak like a pirate.", "read files, carefully")
   await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, changed)
-  const after = restartRequest("Speak like a pirate.", "Guide v2.")
+  const after = restartRequest("Speak like a pirate.", "Guide v1.")
   await Effect.runPromise(contextCallbacks.at(-1)!(after))
 
   expect(after.system, "the system prompt is the one the chat was sent").toEqual(first.system)
@@ -1066,16 +1067,34 @@ test("a restart keeps a chat's pinned prompt; what changed meanwhile arrives as 
 
   // The note was stored with the pin: another start does not announce it again.
   await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, changed)
-  const again = restartRequest("Speak like a pirate.", "Guide v2.")
+  const again = restartRequest("Speak like a pirate.", "Guide v1.")
   await Effect.runPromise(contextCallbacks.at(-1)!(again))
   expect(again.system).toEqual(first.system)
   expect(synthetics).toHaveLength(1)
 
   // Without a store, the same start pins the changed files: the miss this prevents.
   await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager() }, changed)
-  const unstored = restartRequest("Speak like a pirate.", "Guide v2.")
+  const unstored = restartRequest("Speak like a pirate.", "Guide v1.")
   await Effect.runPromise(contextCallbacks.at(-1)!(unstored))
-  expect(unstored.system.map((part) => part.text)).toContain("Guide v2.")
+  expect(unstored.system.map((part) => part.text)).toContain("You are helpful.\n\n## Rules\nSpeak like a pirate.")
+})
+
+test("an AGENTS.md Plus changes nothing in goes out as OpenCode sends it, after a rebuild too", async () => {
+  const { storage } = memoryStorage()
+  const { ctx, contextCallbacks } = createHarness()
+  const state = { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }
+  await applyPublishParts(ctx, state, restartPlan("Guide v1.", "Be nice.", "read files"))
+  await Effect.runPromise(contextCallbacks.at(-1)!(restartRequest("Be nice.", "Guide v1.")))
+
+  // The file is edited and the chat compacts: OpenCode's baseline holds the new text, while
+  // Plus, which has not published since, still plans the old one.
+  await Effect.runPromise(state.sessionPins.markRebuild("ses_restart"))
+  const rebuilt = restartRequest("Be nice.", "Guide v2.")
+  await Effect.runPromise(contextCallbacks.at(-1)!(rebuilt))
+  expect(rebuilt.system.map((part) => part.text)).toContain("Guide v2.")
+  const next = restartRequest("Be nice.", "Guide v2.")
+  await Effect.runPromise(contextCallbacks.at(-1)!(next))
+  expect(next.system).toEqual(rebuilt.system)
 })
 
 test("a chat that comes back to a folder sends what the other folder last sent it", async () => {

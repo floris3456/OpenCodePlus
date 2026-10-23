@@ -2071,6 +2071,12 @@ function applyInstructionsToSystem(
   plans: readonly InstructionPlan[],
 ): void {
   for (const plan of plans) {
+    // A file Plus changes nothing in is OpenCode's own part, sent from OpenCode's
+    // instruction baseline: Plus neither adds it nor rewrites it. Its text here is
+    // what Plus read when it last published, which can be older than what
+    // OpenCode reads before each request; rewriting the part put an edited
+    // AGENTS.md back to its old text after a compaction.
+    if (plan.asSource === true) continue
     const index = system.findIndex((part) => matchesPart(partPath(part), plan.path))
     if (!plan.enabled) {
       if (index !== -1) system.splice(index, 1)
@@ -2082,9 +2088,6 @@ function applyInstructionsToSystem(
       if (current.text !== plan.text) system[index] = { ...current, text: plan.text }
       continue
     }
-    // A file Plus changes nothing in is OpenCode's own part: where OpenCode
-    // does not send it, Plus does not add it either.
-    if (plan.asSource === true) continue
     const part = { type: "text" as const, text: plan.text, metadata: { instruction: { path: plan.path } } }
     if (plan.models === undefined) {
       system.push(part)
