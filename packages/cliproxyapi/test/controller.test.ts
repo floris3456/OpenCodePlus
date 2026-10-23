@@ -774,6 +774,29 @@ test("an account-switch refusal compacts once with the configured model, then th
   expect(later.compact).toBeUndefined()
 })
 
+test("the switch notice ends with the step that continued on the new account, not hours later with its run", async () => {
+  const f = fixture("proxy/cheap-model")
+  f.state.known = true
+  f.state.snapshot = { ...f.state.snapshot, mode: "shadow" }
+  await f.controller.activity("ses_test", true)
+  await f.controller.decide(f.event())
+  await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)
+  await f.controller.response("ses_test", "proxy", "model", switchRefusal(), "primary")
+  expect(await f.controller.retry("ses_test", "proxy", "model")).toBe(true)
+  await f.controller.decide({ ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new" } })
+  await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(2, "Large"), "primary")
+  expect((await f.controller.status("ses_test")).map((notice) => notice.text)).toEqual(["Continuing on Large after compacting."])
+
+  // The run goes on: an auxiliary answer leaves the notice, the next step's answer ends it.
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(2, "Large"), "title")
+  expect(await f.controller.status("ses_test")).toHaveLength(1)
+  await f.controller.decide(f.event())
+  await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href)
+  await f.controller.response("ses_test", "proxy", "model", ackResponse(2, "Large"), "primary")
+  expect(await f.controller.status("ses_test")).toEqual([])
+})
+
 test("a switch refused again after its compaction moves on from that checkpoint, a bounded number of times", async () => {
   const f = fixture("proxy/cheap-model")
   f.state.known = true

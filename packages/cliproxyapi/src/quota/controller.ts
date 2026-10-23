@@ -477,11 +477,15 @@ export class QuotaController {
         alias: binding.alias,
         previous: previousAlias,
       })
-    } else if (previousAlias !== undefined && previousAlias !== binding.alias) {
-      this.io.fact?.(session, "account_switch", {
-        alias: binding.alias,
-        previous: previousAlias,
-      })
+    } else {
+      // The step that continued on the new account is over: a long run would otherwise carry the
+      // notice until it ends, hours after the switch.
+      if (kind === "primary") route.notices = route.notices.filter((notice) => notice.kind !== "switched")
+      if (previousAlias !== undefined && previousAlias !== binding.alias)
+        this.io.fact?.(session, "account_switch", {
+          alias: binding.alias,
+          previous: previousAlias,
+        })
     }
     await this.save(route)
     // The stream must not wait on a coordination round trip: the next boundary's decide() polls
@@ -628,7 +632,8 @@ export class QuotaController {
       .forEach((route) => {
         route.active = active
         if (!active) route.budgetWaits = 0
-        // The switch notice is set during the run that continues on the new account; it ends with that run.
+        // The switch notice is set during the run that continues on the new account; it ends with that
+        // run, or at the run's next primary request (response()).
         route.notices = route.notices.filter((notice) => notice.kind !== "switched")
       })
   }

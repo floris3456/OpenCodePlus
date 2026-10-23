@@ -141,8 +141,8 @@ export default Plugin.define({
         if (kind === "compaction") await controller.compacting(event.sessionID, handoff)
       })
     }
-    // A chat's runs start and end its notices: "Continuing on … after compacting." lasts as long as
-    // the run that continues on the new account.
+    // A chat's runs start and end its notices: "Continuing on … after compacting." lasts for the
+    // step that continues on the new account, and no longer than its run.
     const events = new AbortController()
     void (async () => {
       for await (const event of ctx.event.subscribe({ signal: events.signal })) {
