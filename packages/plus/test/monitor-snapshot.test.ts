@@ -200,6 +200,29 @@ test.each([false, true])("warming private-tail replacement is not blamed for a l
   expect(request?.causeText).toBe(mutated ? "Sent content changed: messages[0].content[0].text" : "Unknown upstream loss; warming tail replaced")
 })
 
+test("a step after its cache expired keeps that cause when its prompt changed too (a cold instructions rebase)", async () => {
+  const db = await ledger()
+  for (const [id, at, read, folder] of [["warm", 10, 10000, "a"], ["cold", 400_000, 0, "b"]] as const) {
+    const sent = JSON.stringify({
+      model: "fixture",
+      system: [{ type: "text", text: `Instructions from: /project/${folder}/AGENTS.md`, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    })
+    db.session({ id: "chat" }, at)
+    db.requestStarted({ id, sessionID: "chat", kind: "step", started: at })
+    db.requestFingerprint({ requestID: id, sessionID: "chat", ...fingerprintWireBody(sent, { protocol: "anthropic-messages" }) })
+    await captureWire(db, id, sent)
+    db.requestEnded(id, { status: "completed", ended: at + 1 })
+    db.requestObserved(id, { version: 1, completeness: "final", inputTokens: 10020, cacheReadInputTokens: read, cacheWriteInputTokens: 10020 - read })
+    projectCacheResult(db, id)
+  }
+  expect(queryCacheResults(db, { scope: "all" }, { now: 500_000 }).requests?.at(-1)).toMatchObject({
+    verdict: "miss", cause: "cache-expired", causeText: "observed: cache expired",
+  })
+  const detail = queryCacheResults(db, { scope: "all", id: "cold" }, { now: 500_000 }).detail
+  expect(detail?.lines.join("\n")).toContain("Changed existing content: system[0].text")
+})
+
 test("linked Responses deltas are distinguished from rewritten full history", async () => {
   const db = await ledger()
   for (const [id, at, read] of [["a", 10, 10000], ["b", 20, 0]] as const) {

@@ -169,8 +169,12 @@ export function projectCacheResult(ledger: Ledger, id: string) {
   const historicalChange = !diff && detail.segments.find((segment) =>
     !(segment.kind === "message" && segment.change === "added") &&
     !["option max_tokens", "option max_output_tokens", "option max_completion_tokens", "cache markers"].includes(segment.name))?.name
+  // Nothing reads an expired cache: content that changed with it (a cold chat's instructions
+  // rebase, its rebuilt pin) is listed below, not blamed.
+  const expired = detail.request.cause === "cache-expired"
   const why = detail.request.verdict === "cold"
     ? latest ? "New history epoch or model; no reusable predecessor" : "First measured request in this history epoch"
+    : expired ? detail.request.causeText
     : divergence ? `Sent content changed: ${divergence}`
     : knownCause ? detail.request.causeText
     : linked ? miss ? "Unknown upstream loss; linked continuation" : "Linked continuation"
@@ -181,7 +185,7 @@ export function projectCacheResult(ledger: Ledger, id: string) {
     : "Sent-body archive unavailable"
   const request: MonitorRequest = {
     ...detail.request,
-    cause: divergence || historicalChange ? "prefix-changed" : knownCause || detail.request.verdict === "cold" ? detail.request.cause : "unknown",
+    cause: !expired && (divergence || historicalChange) ? "prefix-changed" : knownCause || detail.request.verdict === "cold" ? detail.request.cause : "unknown",
     causeText: why,
     confidence: "unknown",
     evidence: `Read ${measured?.read ?? "unknown"}; baseline ${detail.request.expected ?? "unknown"}; shortfall ${detail.request.missTokens ?? "unknown"}. ${why}`,
