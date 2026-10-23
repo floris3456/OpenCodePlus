@@ -246,6 +246,7 @@ it.effect(
       yield* s.prepare
       yield* s.bus.publish(SessionEvent.Compaction.Started, { sessionID, reason: "manual", recent: "" })
       const completed = yield* s.compact(providerContext)
+      // Nothing went out since the checkpoint: the change moves the baseline, unannounced.
       s.state.value = "newest instructions"
       yield* s.prepare
       yield* s.prompt("continue")
@@ -254,47 +255,39 @@ it.effect(
         expect(
           yield* s.db.select().from(InstructionStateTable).where(eq(InstructionStateTable.session_id, sessionID)).get(),
         ).toMatchObject({
-          epoch_start: completed.durable.seq,
-          initial_values: { "test/context": Instructions.hash("changed instructions") },
+          epoch_start: completed.durable.seq + 1,
+          initial_values: { "test/context": Instructions.hash("newest instructions") },
           current_values: { "test/context": Instructions.hash("newest instructions") },
         })
         const native = yield* s.load(target)
-        expect(native.initial.map((part) => part.text)).toEqual(["changed instructions"])
+        expect(native.initial.map((part) => part.text)).toEqual(["newest instructions"])
         expect(
           toLLMMessages(
             native.entries.map((entry) => entry.message),
             model.ref,
           ),
-        ).toEqual([
-          ...replacement,
-          Message.system("newest instructions"),
-          expect.objectContaining({ role: "user", content: [Message.text("continue")] }),
-        ])
+        ).toEqual([...replacement, expect.objectContaining({ role: "user", content: [Message.text("continue")] })])
         for (const incompatible of [
           "local" as const,
           { ...providerContext.provenance, modelID: "other" },
           { ...providerContext.provenance, provider: "other" },
         ]) {
           const expanded = yield* s.load(incompatible)
-          expect(expanded.initial.map((part) => part.text)).toEqual(["changed instructions"])
+          expect(expanded.initial.map((part) => part.text)).toEqual(["newest instructions"])
           expect(
             toLLMMessages(
               expanded.entries.map((entry) => entry.message),
               model.ref,
             ).map((message) => message.content),
-          ).toEqual([
-            [Message.text("original request")],
-            [Message.text("newest instructions")],
-            [Message.text("continue")],
-          ])
+          ).toEqual([[Message.text("original request")], [Message.text("continue")]])
         }
         const preview = yield* SessionHistory.preview(s.db, sessionID, s.instructions, target)
-        expect(preview.initial.map((part) => part.text)).toEqual(["changed instructions"])
+        expect(preview.initial.map((part) => part.text)).toEqual(["newest instructions"])
         expect(preview.messages).toEqual(native.entries.map((entry) => entry.message))
         const store = yield* SessionStore.Service
+        // Newest first: the notice from before the checkpoint stays in the chat; none after it.
         expect((yield* store.messages({ sessionID })).map((message) => message.type)).toEqual([
           "user",
-          "system",
           "compaction",
           "system",
           "user",
@@ -334,24 +327,25 @@ it.effect("falls back to an earlier compatible native or local checkpoint", () =
     yield* s.prompt("after local")
     yield* s.compact(providerContext)
     yield* s.prompt("after native")
+    // No step went out since either checkpoint: both changes move the baseline, unannounced.
     s.state.value = "new native baseline"
     yield* s.prepare
     yield* s.compact({ ...providerContext, provenance: { ...providerContext.provenance, modelID: "other" } })
     s.state.value = "post-epoch update"
     yield* s.prepare
     const native = yield* s.load(target)
-    expect(native.initial.map((part) => part.text)).toEqual(["new native baseline"])
-    expect(native.entries.map((entry) => entry.message.type)).toEqual(["compaction", "user", "system"])
+    expect(native.initial.map((part) => part.text)).toEqual(["post-epoch update"])
+    expect(native.entries.map((entry) => entry.message.type)).toEqual(["compaction", "user"])
     expect(native.entries[0]?.message).toMatchObject({ providerContext })
     expect(
       toLLMMessages(
         native.entries.map((entry) => entry.message),
         model.ref,
       ).filter((message) => message.role === "system"),
-    ).toEqual([Message.system("post-epoch update")])
+    ).toEqual([])
     const local = yield* s.load("local")
-    expect(local.initial.map((part) => part.text)).toEqual(["new native baseline"])
-    expect(local.entries.map((entry) => entry.message.type)).toEqual(["compaction", "user", "user", "system"])
+    expect(local.initial.map((part) => part.text)).toEqual(["post-epoch update"])
+    expect(local.entries.map((entry) => entry.message.type)).toEqual(["compaction", "user", "user"])
     expect(local.entries[0]?.message).toMatchObject({ summary: "local summary" })
   }),
 )
