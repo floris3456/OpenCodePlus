@@ -266,12 +266,24 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         })
         expect(live.snapshot?.current).toBe("claude")
         expect(live.snapshot?.active).toEqual(["claude"])
-        expect(live.snapshot?.next_use?.auth).toBe("claude-next")
-        // The public RPC envelope requires JSON, including omitted preview fields.
-        expect(Schema.is(Schema.Json)(live)).toBe(true)
+        // The meters answer at once; the chat's own read for NEXT USE runs in the background.
+        expect(live.snapshot?.next_use).toBeUndefined()
         expect(live.snapshot?.credentials[0]?.windows[0]?.remaining).toBe(37)
         expect(live.snapshot?.credentials[0]?.windows[0]?.state).toBe("current")
         expect(quotaResponse.bodyUsed).toBe(false)
+        const preview = yield* host
+          .rpc(UsageDefinition)
+          .read({ sessionID, providerID: "cliproxyapi", modelID: ref.id, all: false })
+          .pipe(
+            Effect.repeat({
+              while: (result) => result.snapshot?.next_use === undefined,
+              times: 100,
+              schedule: Schedule.spaced("20 millis"),
+            }),
+          )
+        expect(preview.snapshot?.next_use?.auth).toBe("claude-next")
+        // The public RPC envelope requires JSON, including omitted preview fields.
+        expect(Schema.is(Schema.Json)(preview)).toBe(true)
         expect(paths.length).toBe(requestsBeforeQuota + 1)
         yield* host.rpc(UsageDefinition).read({ sessionID, providerID: "cliproxyapi", modelID: ref.id, all: false })
         expect(paths.length).toBe(requestsBeforeQuota + 1)
