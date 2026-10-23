@@ -2,10 +2,11 @@
 // polling live in usage-view.tsx and usage-store.ts.
 import type { UsageSnapshot, UsageWindow } from "./usage.js"
 
+/** `/usage` shows every credential; `--model` only the selected model's providers. */
 export function usageArguments(input = "") {
   const value = input.trim()
-  if (value === "") return false
-  if (value === "--all") return true
+  if (value === "" || value === "--all") return true
+  if (value === "--model") return false
   return undefined
 }
 

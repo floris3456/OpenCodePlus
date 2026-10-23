@@ -348,27 +348,65 @@ test("provider credentials survive response completion and follow a model change
   expect(changed).not.toContain("Account 0")
 })
 
-test("usage opens a bounded popup with pages, and closing it keeps the sidebar compact", async () => {
+test("/usage shows every credential on one page in columns, and closing it keeps the sidebar compact", async () => {
   const f = fixture()
   const output = await mount(f)
   await frame(output)
-  await f.command("plus.usage.open").run("--all")
+  await f.command("plus.usage.open").run("")
   const text = await frame(output)
   expect(text).toContain("Credential usage")
   expect(text).toContain("All credentials")
-  expect(text).toContain("1/3")
-  expect(text).toContain("Account 3")
-  expect(text).not.toContain("Account 4")
-  await f.command("plus.usage.next").run()
-  const next = await frame(output)
-  expect(next).toContain("2/3")
-  expect(next).toContain("Account 4")
+  expect(f.state.reads.at(-1)?.input.all).toBe(true)
+  for (let index = 0; index < 10; index++) expect(text).toContain(`Account ${index}`)
+  expect(text).not.toMatch(/\d+\/\d+/)
+  // Two columns: the first and the sixth credential share a row.
+  expect(text.split("\n").some((line) => line.includes("Account 0") && line.includes("Account 5"))).toBe(true)
   await f.command("plus.usage.close").run()
   const closed = await frame(output)
   expect(closed).toContain("Account 0")
   expect(closed).not.toContain("Account 4")
   expect(closed).not.toContain("Credential usage")
   expect(f.state.reads.at(-1)?.input.all).toBe(false)
+  // --model opens on the selected model's providers; its toggle offers all.
+  await f.command("plus.usage.open").run("--model")
+  expect(await frame(output)).toContain("a all")
+  expect(f.state.reads.at(-1)?.input.all).toBe(false)
+})
+
+test("a terminal too short for every credential pages through full columns", async () => {
+  const f = fixture()
+  const output = await mount(f, 80, 16)
+  await frame(output)
+  await f.command("plus.usage.open").run("")
+  const first = await frame(output)
+  expect(first).toContain("1/3")
+  expect(first).toContain("Account 3")
+  expect(first).not.toContain("Account 4")
+  await f.command("plus.usage.next").run()
+  const next = await frame(output)
+  expect(next).toContain("2/3")
+  expect(next).toContain("Account 4")
+  expect(next).toContain("Account 7")
+})
+
+test("details take wider columns and may need a second page where the compact view fits one", async () => {
+  const f = fixture()
+  const output = await mount(f, 116, 30)
+  await frame(output)
+  await f.command("plus.usage.open").run("")
+  const compact = await frame(output)
+  for (let index = 0; index < 10; index++) expect(compact).toContain(`Account ${index}`)
+  expect(compact).not.toMatch(/\d+\/\d+/)
+  await f.command("plus.usage.details").run()
+  const details = await frame(output)
+  expect(details).toContain("1/2")
+  expect(details).toContain("5 hours · 61% left")
+  expect(details).toContain("Account 7")
+  expect(details).not.toContain("Account 8")
+  await f.command("plus.usage.next").run()
+  const second = await frame(output)
+  expect(second).toContain("2/2")
+  expect(second).toContain("Account 9")
 })
 
 test("usage opens a popup on the home screen too", async () => {
@@ -403,17 +441,20 @@ test.each([14, 24])("Antigravity quota windows stay paired by model in a %i-row 
   }
   const output = await mount(f, 80, height)
   await f.command("plus.usage.open").run("--all")
-  const first = await frame(output)
-  expect(first.indexOf("5h claude_gpt")).toBeGreaterThan(-1)
-  expect(first.indexOf("7d claude_gpt")).toBeGreaterThan(first.indexOf("5h claude_gpt"))
-  if (height === 14) {
-    expect(first).not.toContain("gemini")
-    await f.command("plus.usage.next").run()
+  const text = await frame(output)
+  const lines = text.split("\n")
+  const row = (label: string) => lines.findIndex((line) => line.includes(label))
+  const column = (label: string) => lines[row(label)]!.indexOf(label)
+  // Each model's 5h and 7d windows stay together, one above the other.
+  for (const scope of ["claude_gpt", "gemini"]) {
+    expect(row(`5h ${scope}`)).toBeGreaterThan(-1)
+    expect(row(`7d ${scope}`)).toBe(row(`5h ${scope}`) + 1)
+    expect(column(`7d ${scope}`)).toBe(column(`5h ${scope}`))
   }
-  const next = await frame(output)
-  expect(next.indexOf("5h gemini")).toBeGreaterThan(-1)
-  expect(next.indexOf("7d gemini")).toBeGreaterThan(next.indexOf("5h gemini"))
-  if (height === 24) expect(next.indexOf("5h gemini")).toBeGreaterThan(next.indexOf("7d claude_gpt"))
+  // Too short for one column, the Gemini pair continues beside the other on the same page.
+  if (height === 14) expect(row("5h gemini")).toBe(row("5h claude_gpt"))
+  if (height === 24) expect(row("5h gemini")).toBe(row("7d claude_gpt") + 1)
+  expect(text).not.toMatch(/\d+\/\d+/)
 })
 
 test("pushed percentages render without another RPC and survive an older pending read", async () => {

@@ -50,8 +50,9 @@ test("window state distinguishes stale readings, passed resets, dormant and unli
   expect(windowTail(window, "stale", 100000)).toBe("STALE")
 })
 
-test("slash arguments accept only an optional --all", () => {
+test("slash arguments: every credential by default or with --all, --model for the selected model", () => {
+  expect(usageArguments("")).toBe(true)
   expect(usageArguments(" --all ")).toBe(true)
-  expect(usageArguments("")).toBe(false)
+  expect(usageArguments(" --model ")).toBe(false)
   expect(usageArguments("--all trailing")).toBeUndefined()
 })

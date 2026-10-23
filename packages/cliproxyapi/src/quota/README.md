@@ -85,27 +85,19 @@ holds on Pacer, so a refresh never waits for the network: NEXT USE and FORCE USE
 come from the chat's own Pacer read, the last answered one, and a due read runs
 in the background and shows with the next refresh.
 
-- `/usage` shows every bridge credential belonging to the selected model's resolved
-  CPA provider, including general and applicable model-specific windows (five-hour,
-  seven-day Sonnet, OAuth-app and other returned windows). Before the selected
-  chat/model has made a request it shows all credentials, labelled
-  "no request from this chat yet". If the chat has made requests but CPA has no
-  binding for it (for example a credential the bridge does not track served it), the
-  label says CPA is not tracking this chat and that the credential in use is unknown.
-- `/usage --all` shows every configured bridge credential and every recorded
-  window, including other providers and model scopes. The section's
-  **● model / ○ all** control (clickable) and the palette's _Usage: show all
-  credentials_ switch scope.
-- `/usage` never opens a modal or changes the sidebar preference. With the sidebar
-  visible (docked, or opened as an overlay with Ctrl+X then B) it scrolls the
-  section into view and highlights its title. Otherwise — terminals narrower than
-  the 120-column docking width, a hidden sidebar, child chats or the home screen —
-  it opens a compact panel above the prompt (below the prompt on the home screen).
-  The panel has a fixed height (40% of the terminal, 6–16 rows), scrolls with the
-  mouse wheel, collapses to a one-line summary (click **▼ Usage** or _Usage: collapse
-  panel_) and closes with **✕** or _Usage: close panel_. It stands aside while the
-  sidebar is visible and returns when the terminal narrows again. Focus stays in the
-  prompt throughout; typing, submitting and drafts are unaffected.
+- `/usage` (also `/usage --all`, the palette's _Credential usage_ and a click on the
+  sidebar's **Usage** title) opens the **Credential usage** dialog on every configured
+  bridge credential and every recorded window, including other providers and model
+  scopes. `/usage --model` opens it on the credentials of the selected model's
+  resolved CPA provider, with their general and applicable model-specific windows
+  (five-hour, seven-day Sonnet, OAuth-app and other returned windows); **a** switches
+  between the two. Closing it (**esc**) leaves the sidebar on the selected model.
+- The dialog lays credentials out in columns across its width (three in a wide
+  terminal, two at 80 columns), so they all fit on one page whenever the terminal is
+  tall enough; **d** (details) uses wider columns with the notes wrapped and may need a
+  second page. Pages, when needed, turn with **←**/**→**. A credential taller than a
+  column continues in the next one, split between its windows of one scope (an
+  Antigravity model's 5h and 7d stay together).
 - **IN USE** (accent bar) identifies the exact credential CPA confirmed for this
   chat's running primary request. **LAST USED** identifies its most recent primary
   request while idle; CPA may choose another credential next time. Title

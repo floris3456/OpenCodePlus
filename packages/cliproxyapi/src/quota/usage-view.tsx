@@ -21,7 +21,7 @@ export function createUsage(context: Plugin.Context, options: { interval?: numbe
   const open = (input?: string) => {
     const all = usageArguments(input)
     if (all === undefined) {
-      context.ui.toast.show({ variant: "warning", message: "Usage: /usage [--all]" })
+      context.ui.toast.show({ variant: "warning", message: "Usage: /usage [--all | --model]" })
       return
     }
     context.ui.dialog.show(() => <UsageDialog context={context} store={store} all={all} />)
@@ -99,7 +99,7 @@ function SidebarUsage(props: { context: Plugin.Context; store: UsageStore }) {
 }
 
 function UsageDialog(props: { context: Plugin.Context; store: UsageStore; all: boolean }) {
-  props.context.ui.dialog.set({ size: "large", centered: true })
+  props.context.ui.dialog.set({ size: "xlarge", centered: true })
   props.store.setScope(props.all ? "all" : "model")
   onCleanup(props.store.view())
   onCleanup(() => {
@@ -107,37 +107,37 @@ function UsageDialog(props: { context: Plugin.Context; store: UsageStore; all: b
     props.store.setDetails(false)
   })
   const dimensions = useTerminalDimensions()
-  const [width, setWidth] = createSignal(70)
+  // Starts at the width the dialog gets, so the first frame already has its columns.
+  const [width, setWidth] = createSignal(Math.max(20, Math.min(DIALOG_WIDTH, dimensions().width - 2) - 4))
   const [page, setPage] = createSignal(0)
   const snapshot = () => props.store.reading()?.snapshot
-  // Page cards to fit the terminal; unusually large credentials continue on the next page.
-  const pages = createMemo(() => {
+  // Credentials fill columns across the dialog, so every one fits on one page where the terminal allows;
+  // details (wider columns, wrapped notes) may need a second. A credential taller than a column
+  // continues in the next one, split between its window groups.
+  const layout = createMemo(() => {
+    const details = props.store.details()
     const budget = Math.max(3, dimensions().height - 10)
-    return (snapshot()?.credentials ?? [])
-      .flatMap((credential) => {
-        const windows = credentialWindows(credential)
-        const header = 2 + (props.store.details() ? 1 + Number(credential.shared_with.length > 0) : 0)
-        const count = Math.max(1, Math.floor((budget - header) / (props.store.details() ? 2 : 1)))
-        return Array.from({ length: Math.max(1, Math.ceil(windows.length / count)) }, (_, index) => ({
-          ...credential,
-          windows: windows.slice(index * count, (index + 1) * count),
-        }))
-      })
-      .reduce<{ rows: Credential[]; height: number }[]>((pages, credential) => {
-        const height =
-          2 +
-          (props.store.details() ? 1 + Number(credential.shared_with.length > 0) : 0) +
-          credential.windows.length * (props.store.details() ? 2 : 1)
-        const last = pages.at(-1)
-        if (last && last.height + height <= budget) {
-          last.rows.push(credential)
-          last.height += height
-          return pages
-        }
-        pages.push({ rows: [credential], height })
-        return pages
-      }, [])
+    const columns = Math.max(1, Math.floor((width() + COLUMN_GAP) / ((details ? DETAILS_WIDTH : CARD_WIDTH) + COLUMN_GAP)))
+    const columnWidth = Math.floor((width() - COLUMN_GAP * (columns - 1)) / columns)
+    const value = snapshot()
+    const now = props.store.now()
+    const rows = (window: UsageWindow) =>
+      details && value ? 1 + wrappedLines(windowDetail(window, windowState(window, value, now), now), columnWidth) : 1
+    const cards = (value?.credentials ?? []).flatMap((credential) =>
+      splitCard(credential, details ? 2 + Number(credential.shared_with.length > 0) : 1, budget, rows),
+    )
+    const tallest = Math.max(0, ...cards.map((card) => card.height))
+    // The shortest columns that still fit one page, else full columns over several pages.
+    const packed =
+      Array.from({ length: Math.max(0, budget - tallest + 1) }, (_, index) => fillColumns(cards, tallest + index)).find(
+        (filled) => filled.length <= columns,
+      ) ?? fillColumns(cards, budget)
+    const pages = Array.from({ length: Math.ceil(packed.length / columns) }, (_, index) =>
+      packed.slice(index * columns, (index + 1) * columns),
+    )
+    return { columnWidth, pages }
   })
+  const pages = () => layout().pages
   const current = () => Math.min(page(), Math.max(0, pages().length - 1))
   const move = (delta: number) => setPage(Math.max(0, Math.min(pages().length - 1, current() + delta)))
   const scope = () => {
@@ -194,18 +194,26 @@ function UsageDialog(props: { context: Plugin.Context; store: UsageStore; all: b
           </text>
         }
       >
-        <Index each={pages()[current()]?.rows ?? []}>
-          {(credential) => (
-            <CredentialView
-              context={props.context}
-              store={props.store}
-              snapshot={snapshot()!}
-              credential={credential()}
-              width={width()}
-              details={props.store.details()}
-            />
-          )}
-        </Index>
+        <box flexDirection="row" gap={COLUMN_GAP}>
+          <Index each={pages()[current()] ?? []}>
+            {(column) => (
+              <box width={layout().columnWidth} flexShrink={0} gap={1}>
+                <Index each={column()}>
+                  {(card) => (
+                    <CredentialView
+                      context={props.context}
+                      store={props.store}
+                      snapshot={snapshot()!}
+                      credential={card().credential}
+                      width={layout().columnWidth}
+                      details={props.store.details()}
+                    />
+                  )}
+                </Index>
+              </box>
+            )}
+          </Index>
+        </box>
       </Show>
       <box flexDirection="row" gap={2}>
         <text fg={theme.text.action.secondary.base} onMouseUp={scope}>
@@ -339,7 +347,7 @@ function CredentialView(props: {
                   </span>
                 </text>
                 <Show when={props.details}>
-                  <text fg={theme.text.muted} wrapMode="none" truncate>
+                  <text fg={theme.text.muted} wrapMode="word">
                     {windowDetail(window(), state(), props.store.now())}
                   </text>
                 </Show>
@@ -360,4 +368,71 @@ function credentialWindows(credential: Credential) {
 
 function label(window: UsageWindow) {
   return `${windowShort(window)}${window.scope === "all" ? "" : ` ${window.scope}`}`
+}
+
+// The TUI's "xlarge" dialog; the terminal can make it narrower.
+const DIALOG_WIDTH = 116
+const COLUMN_GAP = 2
+// Room for "5h claude_gpt", an 8-cell bar, the percentage and the countdown.
+const CARD_WIDTH = 34
+// Detail notes wrap; wider columns keep most of them to one or two lines.
+const DETAILS_WIDTH = 50
+
+type Card = { credential: Credential; height: number }
+
+/** A credential as cards no taller than `budget` rows, split between its window groups (one scope each) first. */
+function splitCard(credential: Credential, header: number, budget: number, rows: (window: UsageWindow) => number): Card[] {
+  const windows = credentialWindows(credential)
+  if (!windows.length) return [{ credential, height: header + 1 }]
+  const height = (windows: UsageWindow[]) => windows.reduce((total, window) => total + rows(window), 0)
+  const groups = windows.reduce<UsageWindow[][]>((groups, window) => {
+    const last = groups.at(-1)
+    if (last?.[0]?.scope === window.scope) {
+      last.push(window)
+      return groups
+    }
+    groups.push([window])
+    return groups
+  }, [])
+  return groups
+    .flatMap((group) => (header + height(group) <= budget ? [group] : group.map((window) => [window])))
+    .reduce<{ windows: UsageWindow[]; height: number }[]>((chunks, piece) => {
+      const last = chunks.at(-1)
+      if (last && last.height + height(piece) <= budget) {
+        last.windows.push(...piece)
+        last.height += height(piece)
+        return chunks
+      }
+      chunks.push({ windows: [...piece], height: header + height(piece) })
+      return chunks
+    }, [])
+    .map((chunk) => ({ credential: { ...credential, windows: chunk.windows }, height: chunk.height }))
+}
+
+/** Cards in order down columns of at most `limit` rows, one blank row between cards. */
+function fillColumns(cards: Card[], limit: number) {
+  return cards
+    .reduce<{ cards: Card[]; height: number }[]>((columns, card) => {
+      const last = columns.at(-1)
+      if (last && last.height + 1 + card.height <= limit) {
+        last.cards.push(card)
+        last.height += 1 + card.height
+        return columns
+      }
+      columns.push({ cards: [card], height: card.height })
+      return columns
+    }, [])
+    .map((column) => column.cards)
+}
+
+/** Rows `text` takes word-wrapped at `width` columns, with one column to spare. */
+function wrappedLines(text: string, width: number) {
+  const room = Math.max(1, width - 1)
+  return text.split(" ").reduce(
+    (wrap, word) =>
+      wrap.used > 0 && wrap.used + 1 + word.length <= room
+        ? { lines: wrap.lines, used: wrap.used + 1 + word.length }
+        : { lines: wrap.lines + Math.max(1, Math.ceil(word.length / room)), used: word.length % room || room },
+    { lines: 0, used: 0 },
+  ).lines
 }
