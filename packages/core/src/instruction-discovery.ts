@@ -1,6 +1,6 @@
 export * as InstructionDiscovery from "./instruction-discovery.js"
 
-import { Context, Effect, Layer, Option, Schema, Types } from "effect"
+import { Context, Effect, Layer, Option, Schema, Scope, Types } from "effect"
 import { createHash } from "crypto"
 import { dirname } from "path"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -72,6 +72,11 @@ export interface Interface extends State.Transformable<Editor> {
   readonly global: boolean
   readonly list: () => Effect.Effect<File[] | Instructions.Unavailable>
   readonly load: () => Effect.Effect<Instructions.List>
+  /**
+   * Runs `check` at the start of every `load` while the calling scope is open: a source
+   * whose files are not watched reads them again there, so a change reaches the next request.
+   */
+  readonly beforeLoad: (check: Effect.Effect<void>) => Effect.Effect<void, never, Scope.Scope>
 }
 
 export const Options = Schema.Struct({
@@ -172,14 +177,22 @@ export const layer = (options?: Options) =>
         return Array.from(current.files.values())
       })
 
+      const checks = new Set<Effect.Effect<void>>()
+
       return Service.of({
         project: options?.project !== false,
         global: location?.workspaceID !== undefined ? false : options?.global !== false,
         transform: state.transform,
         reload: state.reload,
         list,
+        beforeLoad: (check) =>
+          Effect.acquireRelease(
+            Effect.sync(() => checks.add(check)),
+            () => Effect.sync(() => checks.delete(check)),
+          ).pipe(Effect.asVoid),
         load: Effect.fn("InstructionDiscovery.load")(function* () {
           if (environment?.placement.kind === "unplaceable") return yield* Effect.die(environment.placement.error)
+          yield* Effect.forEach(checks, (check) => check, { discard: true })
           const current = state.get()
           if (!current.available)
             return [

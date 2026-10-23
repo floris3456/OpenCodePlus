@@ -510,6 +510,57 @@ describe("ConfigInstructionPlugin.Plugin", () => {
     ),
   )
 
+  it.live("reads the project's files again on each load, without a watcher or a rescan", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) => {
+        const home = path.join(tmp.path, "home")
+        const project = path.join(home, "repo")
+        const directory = path.join(project, "core")
+        const projectFile = path.join(project, "AGENTS.md")
+        const packageFile = path.join(directory, "AGENTS.md")
+        return Effect.gen(function* () {
+          yield* Effect.promise(() => fs.mkdir(directory, { recursive: true }))
+          yield* Effect.promise(() => fs.writeFile(projectFile, "project"))
+          const discovery = yield* start()
+          const initialized = yield* readInitial(yield* discovery.load())
+          expect(initialized.text).toBe(`Instructions from: ${projectFile}\nproject`)
+
+          yield* Effect.promise(() => fs.writeFile(projectFile, "edited"))
+          yield* Effect.promise(() => fs.writeFile(packageFile, "package"))
+          const files = yield* discovery.list()
+          expect(files, "only a load reads them again").toEqual([file(projectFile, "project")])
+          const update = (yield* readUpdate(yield* discovery.load(), initialized)).text
+          expect(update).toContain(`Instructions from: ${packageFile}\npackage`)
+          expect(update).toContain(`The instructions changed:\nInstructions from: ${projectFile}\nedited`)
+          expect(yield* discovery.list()).toEqual([file(packageFile, "package"), file(projectFile, "edited")])
+
+          yield* Effect.promise(() => fs.rm(packageFile))
+          yield* discovery.load()
+          expect(yield* discovery.list()).toEqual([file(projectFile, "edited")])
+        }).pipe(
+          Effect.provide(
+            instructionLayer({
+              config: path.join(tmp.path, "global"),
+              home,
+              locationServiceLayer: Layer.succeed(
+                Location.Service,
+                Location.Service.of(
+                  location(
+                    { directory: AbsolutePath.make(directory) },
+                    { projectDirectory: AbsolutePath.make(project) },
+                  ),
+                ),
+              ),
+            }),
+          ),
+        )
+      }),
+    ),
+  )
+
   it.live("discovers a newly created instruction file above the project root", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

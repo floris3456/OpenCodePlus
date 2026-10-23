@@ -38,7 +38,10 @@ export const Plugin = define({
       const project = discovery.project && FSUtil.contains(root, start)
       const stop = FSUtil.contains(home, start) ? home : root
       const globalFile = yield* fs.resolve(join(global.config, "AGENTS.md"))
-      const loaded: { current: Loaded } = { current: { type: "available", files: [] } }
+      const loaded: { current: Loaded; project: readonly InstructionDiscovery.File[] } = {
+        current: { type: "available", files: [] },
+        project: [],
+      }
       const configured: { sources: string[]; remote: Map<string, InstructionDiscovery.File> } = {
         sources: [],
         remote: new Map(),
@@ -47,9 +50,10 @@ export const Plugin = define({
       const publish = (update: Watcher.Update) => PubSub.publish(changes, update.path).pipe(Effect.asVoid)
       // Service-wide sources only: the global file is watched, so global
       // edits still land in every loaded folder. A project's own AGENTS.md
-      // files load at boot and on demand (the next chat, or `/refresh`),
-      // never watched: one watch set per loaded folder is what scaled with
-      // the team. Configured `instructions` entries are watched below.
+      // files are never watched (one watch set per loaded folder is what
+      // scaled with the team): they load at boot, on demand (the next chat,
+      // or `/refresh`), and are read again before each request (`recheck`).
+      // Configured `instructions` entries are watched below.
       const candidates = [...(discovery.global ? [globalFile] : [])]
       for (const file of new Set(candidates)) {
         const updates = yield* watcher.subscribe({ path: file, type: "file" })
@@ -185,6 +189,7 @@ export const Plugin = define({
             Array.isArray(sources.global) && Array.isArray(sources.project) && Array.isArray(sources.configured)
               ? { type: "available", files: [...sources.global, ...sources.project, ...sources.configured] }
               : { type: "unavailable" }
+          if (Array.isArray(sources.project)) loaded.project = sources.project
           if (!file) return
           yield* Effect.logDebug("instructions rescanned", {
             file,
@@ -209,6 +214,21 @@ export const Plugin = define({
         Stream.runForEach(() => reconfigure().pipe(Effect.andThen(refresh()), Effect.andThen(discovery.reload()))),
         Effect.forkScoped({ startImmediately: true }),
       )
+      // The folder's AGENTS.md files, walked again before each request: an edit, a new file
+      // or a deleted one reaches the chats this folder serves at their next step, announced
+      // as an instructions update, instead of only a new chat or `/refresh` seeing it.
+      const recheck = Effect.fn("ConfigInstructionPlugin.recheck")(function* () {
+        if (!project) return
+        const files = yield* isolate("project", projectSource())
+        const unchanged = Array.isArray(files)
+          ? loaded.current.type === "available" && sameFiles(files, loaded.project)
+          : loaded.current.type === "unavailable"
+        if (unchanged) return
+        yield* refresh("AGENTS.md")
+        yield* discovery.reload()
+      })
+      yield* discovery.beforeLoad(recheck())
+
       yield* reconfigure()
       yield* refresh()
       yield* discovery.transform((editor) => {
@@ -228,6 +248,10 @@ export const Plugin = define({
     )
   }),
 })
+
+function sameFiles(a: readonly InstructionDiscovery.File[], b: readonly InstructionDiscovery.File[]) {
+  return a.length === b.length && a.every((file, index) => file.path === b[index]?.path && file.content === b[index]?.content)
+}
 
 function isUrl(source: string) {
   return URL.canParse(source) && /^https?:$/.test(new URL(source).protocol)
