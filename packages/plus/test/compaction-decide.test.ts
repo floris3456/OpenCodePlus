@@ -13,6 +13,7 @@ import { coldStateOf, decideCompaction, isCold, type ColdCompactionState } from 
 import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
+import { createPlanSet } from "../src/instructions/cache-safe.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
 import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, footerStatusFor, warmingStatusFor, type PlusState } from "../src/index.js"
 import { warmingStore } from "../src/warming.js"
@@ -434,6 +435,41 @@ test("Images › When image context is full reaches core's decision from the cha
   const other = decision({ sessionID: Session.ID.make("ses_images_other"), model: Model.Ref.parse("proxy/other-model"), boundary: { fresh: false, portable: true } })
   await Effect.runPromise(decideCompactionFor(wiringContext(), state, other, ledger))
   expect(other.images).toBe("error")
+})
+
+test("a step that rebuilds the chat's pinned prompt has OpenCode rebase its instructions too", async () => {
+  const sessionID = "ses_rebase"
+  const plans = createPlanSet({
+    roles: new Map(),
+    base: [],
+    native: [],
+    instructions: [],
+    scrubByAgent: new Map(),
+    needsNarrowing: false,
+    permissions: { toolEnabled: () => true, rows: () => [], toolRows: () => [], ruleRows: () => [], teamMembers: new Set(), describe: () => undefined },
+    customByAgent: new Set(),
+  })
+  const state = { ...coldState([]), currentPlanSet: plans }
+  const warm = fakeLedger(requestRow(Date.now(), { sessionID }), oneHourFingerprint())
+  const decide = async (overrides: Partial<SessionCompactionDecision> = {}, ledger = warm) => {
+    const event = decision({ sessionID: Session.ID.make(sessionID), ...overrides })
+    await Effect.runPromise(decideCompactionFor(wiringContext(), state, event, ledger, noPacer))
+    return event.rebaseInstructions
+  }
+
+  expect(await decide(), "no pin yet: the first request takes the current files anyway").toBeUndefined()
+  state.sessionPins.pinSession(sessionID, Model.Ref.parse("proxy/chat-model"), plans)
+  expect(await decide(), "the pinned prompt goes out as it is").toBeUndefined()
+  expect(await decide({ model: Model.Ref.parse("proxy/other-model") }), "another model reads no cache").toBe(true)
+  expect(await decide({ reason: "manual" }), "a manual compaction moves the baseline itself").toBeUndefined()
+  await Effect.runPromise(state.sessionPins.markRebuild(sessionID))
+  expect(await decide(), "after a compaction or /refresh").toBe(true)
+
+  // Cold as the footer shows it: the pin is rebuilt on the same request.
+  state.sessionPins.pinSession(sessionID, Model.Ref.parse("proxy/chat-model"), plans)
+  const cold = fakeLedger(requestRow(Date.now() - 70 * MINUTE, { sessionID }), oneHourFingerprint())
+  expect(await decide({}, cold)).toBe(true)
+  expect(await Effect.runPromise(state.sessionPins.load(sessionID, plans))).toMatchObject({ rebuildNeeded: true })
 })
 
 test("with Compact cold chats first off, a cold chat does not arm", async () => {

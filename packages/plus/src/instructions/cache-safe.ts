@@ -515,7 +515,7 @@ function sha256(input: string): string {
 
 export async function isRebuildMoment(
   pin: SessionPin,
-  event: SessionContext,
+  event: Pick<SessionContext, "model">,
   now = Date.now(),
 ): Promise<boolean> {
   if (pin.rebuildNeeded === true) return true

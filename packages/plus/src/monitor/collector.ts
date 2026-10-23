@@ -454,6 +454,12 @@ export function createCollector(options: CollectorOptions): Collector {
       if (event.type === "session.compaction.failed") return compacted(sessionID, data, event.metadata, true)
       if (event.type === "session.compaction.started") return ledger.contextFact({ sessionID, at: now(), kind: "compaction_started" })
       if (event.type === "session.instructions.updated") {
+        // A rebase changes nothing: it moves the baseline only where the prompt is rebuilt
+        // anyway, so a miss after it keeps its own cause (cold, another model).
+        if (data.rebase === true) {
+          track(sessionID).dirty = true
+          return
+        }
         const delta = data.delta as Record<string, unknown> | undefined
         const keys = delta
           ? Object.keys(delta)

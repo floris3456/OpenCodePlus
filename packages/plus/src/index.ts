@@ -94,7 +94,7 @@ import { warmingStore, type ChatCompactionDefaults, type WarmingRows, type Warmi
 import { cacheLifetime } from "./monitor/cache.js"
 import { monitorCache, monitorDismiss, monitorFact, monitorMark, monitorNotices, monitorPrompt, monitorQuery, monitorSessions, monitorStep, watchMonitor } from "./monitor/plugin.js"
 import { ledgerAt, type Ledger, type RequestRow } from "./monitor/ledger.js"
-import { coldStateOf, decideCompaction } from "./compaction/decide.js"
+import { coldStateOf, decideCompaction, isCold } from "./compaction/decide.js"
 import { plusSettings } from "./plus-settings.js"
 import { agentAttention, mergeAttention, type AttentionRow } from "./attention-settings.js"
 import { attentionStore } from "./attention.js"
@@ -105,7 +105,7 @@ import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionWarming } from "@opencode/plugin/effect/session"
 import type { SessionCompactionDecision } from "@opencode/plugin/compaction-decision"
-import { handlePromptBoundary, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
+import { handlePromptBoundary, isRebuildMoment, SessionPinManager, type PlanSet } from "./instructions/cache-safe.js"
 import { chatModelForAgent, currentSessionAgent, currentSessionModel, toHostModelRef } from "./session-model.js"
 
 export interface TeamOwnership {
@@ -4166,6 +4166,17 @@ export function decideCompactionFor(
     const settings = await plusSettings.read()
     const modelRow = settingsFor(state.cachedModelSettings, { providerID: event.model.providerID, modelID: event.model.id })
     const everyRow = everySettings(state.cachedModelSettings)
+    // A step whose prompt is rebuilt anyway (its cache went cold, as the footer shows it, another
+    // model, after /refresh) sends OpenCode's current instructions in its system prompt too: an
+    // AGENTS.md edited, or brought in by a move, takes full effect where nothing is read from cache.
+    // A cold chat's pinned prompt is rebuilt on that request with it.
+    const cold = event.reason === "auto" ? await coldFor(event, ledger, pacer) : undefined
+    if (cold !== undefined && isCold(cold)) {
+      event.rebaseInstructions = true
+      await Effect.runPromise(state.sessionPins.markRebuild(String(event.sessionID)))
+    }
+    if (event.reason === "auto" && event.rebaseInstructions !== true && (await rebuildsPin(state, event)))
+      event.rebaseInstructions = true
     // Instructions › this model › Images › When image context is full; built-in leaves core's own choice (compact).
     const imagesFull = imagesOf(state, event.agent, event.model).imagesFull
     if (imagesFull.from !== "built-in") event.images = imagesFull.value === "error" || imagesFull.value === "leave-out" ? imagesFull.value : "compact"
@@ -4184,16 +4195,22 @@ export function decideCompactionFor(
     // and the model has a cold-cache list to compact with.
     const consulted =
       event.reason === "auto" && armedColdListOf(state, event.agent, event.model, settings.coldCompact).length > 0
-    const cold = consulted ? await coldFor(event, ledger, pacer) : undefined
     const agentWide = await compactionDefaultsOf(ctx, event.agent)
     decideCompaction(event, {
       rows: compactionRowsOf(state, event.agent, event.model),
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),
       ...(agentWide === undefined ? {} : { agent: agentWide }),
-      ...(cold === undefined ? {} : { cold }),
+      ...(consulted && cold !== undefined ? { cold } : {}),
     })
   })
+}
+
+/** Whether the chat's pinned prompt is rebuilt on its next request; a chat without a pin has none. */
+async function rebuildsPin(state: PlusState, event: SessionCompactionDecision) {
+  if (state.currentPlanSet === undefined) return false
+  const pin = await Effect.runPromise(state.sessionPins.load(String(event.sessionID), state.currentPlanSet))
+  return pin !== undefined && (await isRebuildMoment(pin, event))
 }
 
 /** The Images settings an agent on a model resolves: its model rows, then Defaults › Models › that model, then Every model. */

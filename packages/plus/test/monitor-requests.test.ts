@@ -653,6 +653,13 @@ test("context facts recorded and idempotent across multiple observations", async
   expect(instrFact?.detail?.keys).toEqual(["AGENTS.md", "guidance"])
 })
 
+test("an instructions rebase is no instruction change: a miss after it keeps its own cause", async () => {
+  const db = await ledger()
+  const collector = collect(db, { now: 1_000 })
+  collector.observe({ type: "session.instructions.updated", data: { sessionID: "ses_rebase", delta: {}, rebase: true }, created: 1_010 })
+  expect(db.getContextFacts("ses_rebase").filter((fact) => fact.kind === "instruction_update")).toEqual([])
+})
+
 test("hook path and event ordering in both orders yields exactly one row per request, and retries retire earlier open requests", async () => {
   await dataHome()
   const { hooks, hookFn } = makeHookRegistry()
