@@ -190,7 +190,9 @@ export default Plugin.define({
             ? (state.providers.get(input.modelID) ?? [])
             : []
         const snapshot = pacerSnapshot(meter, input, Date.now(), providers)
-        const next = nextUseOf(await chatView(state.routes[input.providerID], input), input.modelID, Date.now())
+        // The meters are already here (Pacer's shared watch); only NEXT USE needs the chat's own read,
+        // so it comes from the last answered one and a due read runs in the background.
+        const next = nextUseOf(chatView.latest(state.routes[input.providerID], input), input.modelID, Date.now())
         return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }
       },
     })

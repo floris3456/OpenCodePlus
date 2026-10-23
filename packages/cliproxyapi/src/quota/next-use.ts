@@ -26,6 +26,8 @@ interface Entry {
   /** Failed reads in a row; the next read waits until `retryAt`. */
   failures: number
   retryAt: number
+  /** The last answered read, kept through later reads and failures. */
+  last?: ChatRead
 }
 
 /**
@@ -35,12 +37,15 @@ interface Entry {
  * one read per chat and model is in flight: a caller joins it, as its answer arrives after the caller
  * asked. A failed read (an error status, a timeout, no connection) is not repeated for 15 seconds,
  * doubling to 2 minutes, nor before the answer's `Retry-After`. Reads never enroll or wake a chat.
+ * `latest` answers at once with the last answered read and starts a read when one is due.
  */
 export function createChatView(io: IO) {
   const reads = new Map<string, Entry>()
-  return (origin: string | undefined, input: Chat, after = 0): Promise<ChatRead | undefined> => {
+  const keyOf = (origin: string, input: Chat) =>
+    JSON.stringify([origin, input.sessionID, input.providerID, input.modelID])
+  const read = (origin: string | undefined, input: Chat, after = 0): Promise<ChatRead | undefined> => {
     if (!origin || !input.sessionID) return Promise.resolve(undefined)
-    const key = JSON.stringify([origin, input.sessionID, input.providerID, input.modelID])
+    const key = keyOf(origin, input)
     const previous = reads.get(key)
     if (previous?.pending || (previous && io.now() < previous.retryAt)) return previous.result
     if (previous && io.now() - previous.at < COALESCE_MS && previous.at >= after) return previous.result
@@ -51,12 +56,14 @@ export function createChatView(io: IO) {
       pending: true,
       failures: previous?.failures ?? 0,
       retryAt: 0,
+      last: previous?.last,
       result: readView(io, origin, input)
         .catch(() => ({ failed: true as const, retryAfter: undefined }))
         .then((outcome) => {
           entry.pending = false
           if (outcome.failed === false) {
             entry.failures = 0
+            entry.last = outcome.read
             return outcome.read
           }
           entry.failures++
@@ -72,6 +79,11 @@ export function createChatView(io: IO) {
     reads.set(key, entry)
     return entry.result
   }
+  const latest = (origin: string | undefined, input: Chat) => {
+    void read(origin, input)
+    return origin ? reads.get(keyOf(origin, input))?.last : undefined
+  }
+  return Object.assign(read, { latest })
 }
 
 async function readView(

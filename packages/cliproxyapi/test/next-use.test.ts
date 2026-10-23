@@ -180,6 +180,33 @@ test("one read per chat and model is in flight; a caller that needs a newer answ
   await Promise.all([other, fresh])
 })
 
+test("latest answers at once with the last answered read, starts a due read and keeps the answer through a failure", async () => {
+  const pacer = scriptedView(1_000_000)
+  const answer = { view: "usage", next_use: { reason: "first" } }
+  // Nothing answered yet: no wait, and the read starts.
+  expect(pacer.view.latest(ORIGIN, chat)).toBeUndefined()
+  expect(pacer.counts.reads).toBe(1)
+  // While it is pending, nothing waits and no second read starts.
+  expect(pacer.view.latest(ORIGIN, chat)).toBeUndefined()
+  expect(pacer.counts.reads).toBe(1)
+  ;(await pacer.requested(1)).answer(Response.json(answer))
+  expect(await pacer.view(ORIGIN, chat)).toEqual({ at: 1_000_000, view: answer })
+  expect(pacer.view.latest(ORIGIN, chat)).toEqual({ at: 1_000_000, view: answer })
+  expect(pacer.counts.reads).toBe(1)
+  // Past the coalescing window a new read starts; until it answers, and after it fails, the last answer stays.
+  pacer.clock.now += 15_000
+  expect(pacer.view.latest(ORIGIN, chat)).toEqual({ at: 1_000_000, view: answer })
+  expect(pacer.counts.reads).toBe(2)
+  ;(await pacer.requested(2)).answer(new Response("busy", { status: 503 }))
+  expect(await pacer.view(ORIGIN, chat)).toBeUndefined()
+  expect(pacer.view.latest(ORIGIN, chat)).toEqual({ at: 1_000_000, view: answer })
+  expect(pacer.counts.reads).toBe(2)
+  // No route or no chat: nothing to read.
+  expect(pacer.view.latest(undefined, chat)).toBeUndefined()
+  expect(pacer.view.latest(ORIGIN, { ...chat, sessionID: undefined })).toBeUndefined()
+  expect(pacer.counts.reads).toBe(2)
+})
+
 test("a failed read is not repeated for 15 s, doubling to 2 minutes, nor before Retry-After; an answer resets it", async () => {
   const start = 1_000_000
   const pacer = scriptedView(start)

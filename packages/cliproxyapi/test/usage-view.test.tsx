@@ -469,6 +469,57 @@ test("changing models aborts and discards an older selection's read", async () =
   expect(await frame(output)).not.toContain("Account 0")
 })
 
+test("switching back to a model shows its last reading at once, before its read answers", async () => {
+  const f = fixture({ manual: true })
+  const output = await mount(f)
+  await frame(output)
+  f.state.reads[0]!.resolve(f.state.result)
+  expect(await frame(output)).toContain("61%")
+  // A model never read before has no known providers yet: nothing of the other model's reading shows.
+  f.setModel({ providerID: "cliproxyapi", modelID: "gpt-5" })
+  expect(await frame(output)).not.toContain("Account 0")
+  f.setModel({ providerID: "cliproxyapi", modelID: "claude-sonnet" })
+  const back = await frame(output)
+  expect(back).toContain("Account 0")
+  expect(back).toContain("61%")
+  expect(f.state.reads).toHaveLength(3)
+})
+
+test("another chat on a known model shows the pushed meters of its providers at once, without the first chat's identity", async () => {
+  const f = fixture({ manual: true })
+  const output = await mount(f, 80, 40)
+  await frame(output)
+  const now = Date.now()
+  const credential = (id: string, provider: string, left: number) => ({
+    id,
+    alias: id === "account-0" ? "Account 0" : "Account 1",
+    provider,
+    shared_with: [],
+    at_ms: now,
+    windows: [
+      { scope: "all", seconds: 18000, left, reset_ms: now + 3600000, read_ms: now, state: "current", applies: true },
+    ],
+  })
+  const data: PacerMeterEvent = {
+    snapshot: {
+      v: 1,
+      served: { ses_a: { auth: "account-0", at_ms: now } },
+      credentials: [credential("account-0", "claude", 37), credential("account-1", "codex", 55)],
+    },
+  }
+  f.state.listeners.forEach((listener) => listener({ data }))
+  f.state.reads[0]!.resolve({ status: "ready", snapshot: { ...snapshot(), providers: ["claude"] } })
+  const first = (await frame(output)).split("\n")
+  expect(first.find((line) => line.includes("Account 0"))).toContain("LAST USED")
+  f.setRoute({ type: "session", sessionID: "ses_b" })
+  const other = await frame(output)
+  expect(f.state.reads.at(-1)!.input.sessionID).toBe("ses_b")
+  expect(other).toContain("Account 0")
+  expect(other).toContain("37%")
+  expect(other).not.toContain("Account 1")
+  expect(other).not.toContain("LAST USED")
+})
+
 // Pacer owns its own command category: the Usage command is listed under
 // "Pacer", not under the Plus plugin's "OpenCodePlus".
 test("the usage command is grouped under Pacer", () => {

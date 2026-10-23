@@ -80,6 +80,10 @@ failure ends the turn with the model error; the new account still receives nothi
 Usage is a compact **Usage** section of the session sidebar, below its other
 sections. It appears whenever the sidebar is visible and refreshes every five
 seconds while it is shown; nothing polls while no usage view is mounted.
+Every account's meters come from the one usage watch this OpenCodePlus server
+holds on Pacer, so a refresh never waits for the network: NEXT USE and FORCE USE
+come from the chat's own Pacer read, the last answered one, and a due read runs
+in the background and shows with the next refresh.
 
 - `/usage` shows every bridge credential belonging to the selected model's resolved
   CPA provider, including general and applicable model-specific windows (five-hour,
@@ -131,8 +135,10 @@ seconds while it is shown; nothing polls while no usage view is mounted.
   longer leaves such a chat paused once the bridge answers again.
 - A failed refresh keeps the last reading for the same chat/model/scope, marks the
   header `retrying` and explains the error; readings recover automatically. A
-  changed chat, model or scope starts empty and discards late responses from the
-  previous selection.
+  changed chat, model or scope (switching model, `/usage`) shows at once its own
+  last reading, or else the pushed meters of the model's providers once this
+  terminal has read that model, never another chat's IN USE or LAST USED; it
+  discards late responses from the previous selection.
 
 Requires CPA's `quota-handoff` plugin **0.1.2 or newer** and the existing host quota
 configuration. An existing chat/model uses its private route capability. Before

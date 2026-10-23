@@ -23,6 +23,8 @@ export interface UsageReading {
  * Pacer pushes response readings directly into visible views. One cached-RPC
  * polling loop seeds/reconciles the sidebar and popup. It follows the current
  * route/model/scope and discards responses that belong to an older selection.
+ * A new selection shows at once what this process already has: its own last
+ * reading, else every account's pushed meters for the model's known providers.
  */
 export function createUsageStore(context: Plugin.Context, options: { interval?: number } = {}) {
   const rpc = context.client.rpc(UsageDefinition)
@@ -33,6 +35,24 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
     const [views, setViews] = createSignal(0)
     const [reading, setReading] = createSignal<UsageReading>()
     const [clock, setClock] = createSignal(Date.now())
+    // Pushed meters of every account, kept across selections; IN USE and LAST USED stay per chat
+    // (pacerSnapshot reads them for the selected session only).
+    const meter = new Meter()
+    const providers = new Map<string, readonly string[]>()
+    const readings = new Map<string, UsageReading>()
+    createEffect(() => {
+      const value = reading()
+      if (!value?.snapshot) return
+      readings.delete(value.key)
+      readings.set(value.key, value)
+      if (readings.size > 64) readings.delete(readings.keys().next().value!)
+    })
+    const instant = (key: string, value: UsageInput): UsageReading | undefined => {
+      const serving = providers.get(modelKey(value))
+      if (!meter.rows().length || (!value.all && !serving)) return
+      const now = Date.now()
+      return { key, result: { status: "ready" }, snapshot: pacerSnapshot(meter, value, now, serving), received: now }
+    }
     const input = createMemo<UsageInput | undefined>(
       () => {
         const model = context.ui.model.current()
@@ -61,13 +81,12 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
       if (views() === 0 || !value) return
       const location = directory()
       const key = selectionKey(value)
-      // A changed selection starts empty instead of showing another chat's identity.
+      // A changed selection never shows another chat's identity or another model's providers.
       untrack(() => {
-        if (reading()?.key !== key) setReading({ key, received: 0 })
+        if (reading()?.key !== key) setReading(readings.get(key) ?? instant(key, value) ?? { key, received: 0 })
       })
       const controller = new AbortController()
       const state = { pushed: 0, pending: false }
-      const meter = new Meter()
       const off = context.client.rpc(PacerRpc).events.on("meter", (event) => {
         const snapshot = (event.data as unknown as PacerMeterEvent).snapshot
         meter.restore(snapshot, true)
@@ -79,7 +98,7 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
             key,
             result: { status: "ready" },
             snapshot: {
-              ...pacerSnapshot(meter, value, now, reading()?.snapshot?.providers),
+              ...pacerSnapshot(meter, value, now, reading()?.snapshot?.providers ?? providers.get(modelKey(value))),
               next_use: reading()?.snapshot?.next_use,
             },
             received: now,
@@ -98,6 +117,7 @@ export function createUsageStore(context: Plugin.Context, options: { interval?: 
           )
         state.pending = false
         if (controller.signal.aborted) return
+        if (next.result?.snapshot?.providers) providers.set(modelKey(value), next.result.snapshot.providers)
         const now = Date.now()
         // Keep response percentages that arrived during this read, while adopting
         // the catalogue's selected-model provider mapping from the cached RPC.
@@ -164,6 +184,10 @@ export type UsageStore = ReturnType<typeof createUsageStore>
 function selectionKey(input: UsageInput | undefined) {
   if (!input) return ""
   return JSON.stringify([input.sessionID ?? "", input.providerID, input.modelID, input.all])
+}
+
+function modelKey(input: UsageInput) {
+  return JSON.stringify([input.providerID, input.modelID])
 }
 
 /** Keeps the last usable snapshot through transient failures of the same selection. */
