@@ -2133,6 +2133,64 @@ test("team activation tool reports exactly the teams it disables", async () => {
   expect(await runOk(set, { id: "team:global:two", state: "off" })).toMatchObject({ disabledTeams: [] })
 })
 
+test("read, set, edit, reset and delete take a list of ids or a find filter, one result per row", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const [find, read, set, edit, reset, remove] = ["find", "read", "set", "edit", "reset", "delete"].map((name) => need(tools, `instructions_${name}`))
+  type Many = { total: number; failed: number; results: { id: string; output?: { status?: string; enabled?: boolean; replacements?: number }; error?: string }[] }
+  const alphas = rowIds((await runOk(find, { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] })
+  const push = alphas.find((id) => id.endsWith(":perm:shell:git-push"))
+  const sudo = alphas.find((id) => id.endsWith(":perm:shell:sudo"))
+  if (push === undefined || sudo === undefined) throw new Error("expected alpha's git-push and sudo rows")
+
+  // A list: each row is saved even though another refuses.
+  const switched = (await runOk(set, { id: [push, "item:project:alpha:perm:shell:nope", sudo], state: "on" })) as Many
+  expect(switched).toMatchObject({ total: 3, failed: 1 })
+  expect(switched.results.map((result) => [result.id, result.error === undefined])).toEqual([[push, true], ["item:project:alpha:perm:shell:nope", false], [sudo, true]])
+  const shown = (await runOk(read, { id: [push, sudo] })) as Many
+  expect(shown.results.map((result) => result.output?.enabled)).toEqual([true, true])
+  // A single id still answers as before.
+  expect(await runOk(read, { id: push })).toMatchObject({ enabled: true, patterns: ["git push *"] })
+
+  // find picks the rows: here the two edits alpha holds.
+  const undone = (await runOk(reset, { find: { agent: "alpha", type: "rule", is: "changed" } })) as Many
+  expect(undone.results.map((result) => result.id).toSorted()).toEqual([push, sudo].toSorted())
+  expect(undone.failed).toBe(0)
+  expect((await snapshotOf(api)).records.some((record) => record.type === "customization" && record.item.startsWith("perm:"))).toBe(false)
+
+  // Without agent, find reaches every agent's copy, the shared Defaults row first.
+  const everyone = (await runOk(set, { find: { type: "rule", name: "git-push" }, state: "on" })) as Many
+  expect(everyone.failed).toBe(0)
+  expect(everyone.results[0]?.id).toBe("item:defaults::perm:shell:git-push")
+  const copies = rowIds((await runOk(find, { agent: "*", type: "rule", name: "git-push", fields: ["id", "badges"] })) as { rows: readonly string[] })
+  const states = (await runOk(read, { id: copies.filter((id) => id.includes(":alpha:") || id.includes(":beta:")) })) as Many
+  expect(states.results.length).toBe(2)
+  expect(states.results.every((result) => result.output?.enabled === true)).toBe(true)
+
+  // edit takes a list too.
+  const shells = rowIds((await runOk(find, { agent: "*", type: "tool", name: "shell" })) as { rows: readonly string[] }).filter((id) => id.includes(":alpha:") || id.includes(":beta:"))
+  expect(shells).toHaveLength(2)
+  const reworded = (await runOk(edit, { id: shells, oldString: "Run shell.", newString: "Runs one shell command." })) as Many
+  expect(reworded.results.map((result) => result.output?.replacements)).toEqual([1, 1])
+
+  // Exactly one of id and find: the input schema refuses both and neither.
+  expect(Exit.isFailure(Schema.decodeUnknownExit(set.input as Schema.Codec<unknown>)({ id: push, find: { agent: "alpha" }, state: "on" }))).toBe(true)
+  expect(Exit.isFailure(Schema.decodeUnknownExit(set.input as Schema.Codec<unknown>)({ state: "on" }))).toBe(true)
+  expect(Exit.isSuccess(Schema.decodeUnknownExit(set.input as Schema.Codec<unknown>)({ id: [push, sudo], state: "on" }))).toBe(true)
+  // delete asks for confirm once, before any row.
+  expect((await runFail(remove, { find: { agent: "alpha", type: "rule" } })).message).toContain("delete.unconfirmed")
+  // find takes at most 200 rows.
+  expect((await runFail(read, { find: {} })).message).toMatch(/^find matches \d+ rows; one call takes at most 200/)
+})
+
 test("perm rules toggle, show, list by item:perm and tool, create custom, and delete only customs", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({

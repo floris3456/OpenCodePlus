@@ -128,6 +128,8 @@ export const INSTRUCTION_DISABLED =
   "instruction.disabled: creating and deleting AGENTS.md files from OpenCodePlus is off until the Context catalogue. The files OpenCode sends are listed under System › AGENTS.md files, each switched off or edited per agent."
 const origin = { type: "plugin", name: "opencode.plus" } as const
 const options = { namespace, codemode: true, permission: "instructions" } as const
+// The most rows one read, set, edit, reset or delete takes through find.
+const maxRows = 200
 
 const FindDescription =
   "Find instruction rows: one \"id | badges | from\" line per thing; every parameter given must match.\n" +
@@ -139,7 +141,8 @@ const ReadDescription =
   "Read one row: its text and where it comes from (view resolved, the default).\n" +
   "On an agent, group or root, resolved lists the rows under it. assembled appears only when what reaches the model differs from text.\n" +
   "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt).\n" +
-  "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source."
+  "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source.\n" +
+  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] }."
 
 const SetDescription =
   "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
@@ -147,12 +150,14 @@ const SetDescription =
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
   "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
   "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldFirst (Compact cold chats first for this model, over the Settings switch), coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
-  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools."
+  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools.\n" +
+  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
 
 const EditDescription =
   "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
   "oldString must match the row's current text (read's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
-  "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }."
+  "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }.\n" +
+  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
 
 const MoveDescription =
   "Move a row, folder or section before or after a sibling, or a row or folder into a folder or a tab's top level.\n" +
@@ -161,7 +166,8 @@ const MoveDescription =
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
-  "Agent and member rows reset their settings and compaction controls; model rows clear only this level's active flag; a Defaults › Models row clears its values."
+  "Agent and member rows reset their settings and compaction controls; model rows clear only this level's active flag; a Defaults › Models row clears its values.\n" +
+  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
 
 const SplitDescription =
   "Set manual sections or append one (TUI `s` / `a` on an item).\n" +
@@ -177,7 +183,8 @@ const CreateDescription =
 
 const DeleteDescription =
   "Delete a user-owned row: agent, team, member, file, Defaults entry, user preset, custom rule or folder.\n" +
-  "Needs confirm:true. A model row deletes its candidate at this level (the active model refuses: activate another first); a Defaults › Models row clears its values. A preset still linked is refused (preset.inUse names the rows); force:true overrides links only other projects hold."
+  "Needs confirm:true. A model row deletes its candidate at this level (the active model refuses: activate another first); a Defaults › Models row clears its values. A preset still linked is refused (preset.inUse names the rows); force:true overrides links only other projects hold.\n" +
+  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
 
 const LogDescription =
   "Change history (who/what/when).\n" +
@@ -220,7 +227,7 @@ const Sort = Schema.Union([
   Schema.Literal("-id"),
 ])
 
-const FindInput = Schema.Struct({
+const FindFilter = Schema.Struct({
   agent: Schema.optionalKey(Schema.String).annotate({
     description: "An agent or team member by name, ignoring case; * stands for any text.",
   }),
@@ -242,14 +249,39 @@ const FindInput = Schema.Struct({
       "held-back: rows and sections that are on, but the agent does not get them because their \"shown when\" does not hold.",
   }),
   where: Schema.optionalKey(Schema.String).annotate({ description: "More key:value terms (skill instructions-tools)." }),
+})
+
+const FindInput = Schema.Struct({
+  ...FindFilter.fields,
   fields: Schema.optionalKey(Schema.Array(Field)),
   sort: Schema.optionalKey(Sort),
   limit: Schema.optionalKey(Schema.Number),
   offset: Schema.optionalKey(Schema.Number),
 })
 
+// The rows read, set, edit, reset and delete act on: one id, a list, or what a
+// find filter matches (eachRow).
+const Rows = {
+  id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({
+    description: "A row id, or a list of row ids: a list answers one result per row.",
+  }),
+  find: Schema.optionalKey(FindFilter).annotate({
+    description:
+      "Instead of id: the rows find lists with these filters (every page; without agent or team, each agent's copy). " +
+      `One result per row; at most ${maxRows} rows.`,
+  }),
+}
+// Exactly one of id and find names the rows.
+const oneSelection = Schema.makeFilter<{ readonly id?: unknown; readonly find?: unknown }>((input) =>
+  input.id === undefined && input.find === undefined
+    ? "Pass id (a row id or a list of them) or find (find's filters)"
+    : input.id !== undefined && input.find !== undefined
+      ? "Pass id or find, not both"
+      : true,
+)
+
 const ReadInput = Schema.Struct({
-  id: Schema.String,
+  ...Rows,
   view: Schema.optionalKey(
     Schema.Union([
       Schema.Literal("resolved"),
@@ -261,10 +293,10 @@ const ReadInput = Schema.Struct({
       Schema.Literal("assembled"),
     ]),
   ),
-})
+}).check(oneSelection)
 
 const SetInput = Schema.Struct({
-  id: Schema.String,
+  ...Rows,
   mode: Schema.optionalKey(Schema.Literals(["primary", "subagent", "all"])),
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
@@ -315,16 +347,16 @@ const SetInput = Schema.Struct({
       "Everything that names it follows in one store revision; built-ins, shipped Defaults rows, " +
       "ancestor-backed agents and Protected agents (tool actor) refuse.",
   }),
-})
+}).check(oneSelection)
 
 const EditInput = Schema.Struct({
-  id: Schema.String,
+  ...Rows,
   oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (read's text)" }),
   newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
   replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
     description: "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
   }),
-})
+}).check(oneSelection)
 
 const MoveInput = Schema.Struct({
   id: Schema.String,
@@ -334,8 +366,8 @@ const MoveInput = Schema.Struct({
 })
 
 const ResetInput = Schema.Struct({
-  id: Schema.String,
-})
+  ...Rows,
+}).check(oneSelection)
 
 const SplitInput = Schema.Struct({
   id: Schema.String,
@@ -394,10 +426,10 @@ const CreateInput = Schema.Struct({
 })
 
 const DeleteInput = Schema.Struct({
-  id: Schema.String,
+  ...Rows,
   confirm: Schema.optionalKey(Schema.Boolean),
   force: Schema.optionalKey(Schema.Boolean),
-})
+}).check(oneSelection)
 
 const LogInput = Schema.Struct({
   where: Schema.optionalKey(Schema.String),
@@ -535,14 +567,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
           const columns = ["id" as const, ...(input.fields ?? lineFields).filter((field) => field !== "id")]
-          // The parameters are the filter terms the TUI and CLI type, each value quoted whole.
-          const where = [
-            ...(["agent", "team", "level", "type", "name", "in", "state", "is", "text"] as const).flatMap((key) => {
-              const value = input[key]
-              return value === undefined || value === "" ? [] : [`${key}:"${value.replace(/[\\"]/g, "\\$&")}"`]
-            }),
-            input.where ?? "",
-          ].join(" ")
+          const where = findWhere(input)
           const queried = yield* Effect.try({
             try: () =>
               query(memo, {
@@ -578,11 +603,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input) =>
-        Effect.gen(function* () {
-          const view = input.view ?? "resolved"
-          if (view === "assembled") return yield* showAssembled(api, input.id)
-          return yield* showRow(api, input.id, view)
-        }),
+        eachRow(api, input, (input) =>
+          Effect.gen(function* () {
+            const view = input.view ?? "resolved"
+            if (view === "assembled") return yield* showAssembled(api, input.id)
+            return yield* showRow(api, input.id, view)
+          }),
+        ),
     })
     editor.add({
       name: "set",
@@ -592,56 +619,58 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        Effect.gen(function* () {
-          const actor = actorFrom(context)
-          const snapshot = yield* snapshotOrFail(api)
-          const memo = memoFromSnapshot(snapshot)
-          const treeMemo = buildTreeMemo(memo)
-          const node = findRow(memo, input.id, treeMemo)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
-          const protectedAgent = protectedOf(snapshot, node)
-          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          const folderId = folderIdOfRef(rowToken(node) ?? "")
-          if (folderId !== undefined) {
-            if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
-            const owner = node.id.split(":folder:")[0]!
-            const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString(), owner, tabLayout(treeMemo, owner).inherited), actor)
-            return { output: { id: input.id, ...applied } }
-          }
-          // A tab whose own layout is to review settles with keep or take.
-          if (node.badges.reviewOf?.includes("layout") === true && (input.resolve === "keep" || input.resolve === "take")) {
-            const applied = yield* applyLayout(api, snapshot, planLayoutReview(memo, layoutOf(snapshot), input.id, input.resolve, new Date().toISOString(), treeMemo), actor)
-            return { output: { id: input.id, ...applied } }
-          }
-          if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
-          if (input.models !== undefined) return yield* setModels(api, node, input, actor)
-          if (isModelFieldRowId(input.id)) return yield* setModelField(api, snapshot, memo, input.id, actor, input)
-          if (isModelSettingRowId(input.id)) {
-            const field = settingOf(node)?.field
-            if (field === undefined) return yield* Effect.fail(unknownError(input.id))
-            if (input.text === undefined)
-              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes text: its value, or "" to inherit` }))
-            return yield* setModelDefaults(api, node, actor, { [field]: input.text })
-          }
-          if (isModelDefaultRowId(input.id)) return yield* setModelDefaults(api, node, actor, input)
-          if (input.effort !== undefined)
-            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no effort; effort is set on a Defaults › Models row` }))
-          if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
-          if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
-          if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
-          if (input.compactWarm !== undefined || input.coldFirst !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined || input.compactionInput !== undefined || input.compactionOutput !== undefined || input.imageConvert !== undefined || input.imageShrink !== undefined || input.imagesFull !== undefined)
-            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; compaction fields are set on model or Defaults › Models rows` }))
-          if (input.warming !== undefined)
-            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
-          if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
-          if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
-          if (input.include !== undefined && input.resolve !== "merge")
-            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
-          const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => protectedForActor(snapshot, agent))
-          if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-          const applied = yield* mutateOp(api, memo, op, actor)
-          return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
-        }),
+        eachRow(api, input, (input) =>
+          Effect.gen(function* () {
+            const actor = actorFrom(context)
+            const snapshot = yield* snapshotOrFail(api)
+            const memo = memoFromSnapshot(snapshot)
+            const treeMemo = buildTreeMemo(memo)
+            const node = findRow(memo, input.id, treeMemo)
+            if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+            const protectedAgent = protectedOf(snapshot, node)
+            if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+            const folderId = folderIdOfRef(rowToken(node) ?? "")
+            if (folderId !== undefined) {
+              if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
+              const owner = node.id.split(":folder:")[0]!
+              const applied = yield* applyLayout(api, snapshot, planFolderRename(layoutOf(snapshot), folderId, input.rename, new Date().toISOString(), owner, tabLayout(treeMemo, owner).inherited), actor)
+              return { output: { id: input.id, ...applied } }
+            }
+            // A tab whose own layout is to review settles with keep or take.
+            if (node.badges.reviewOf?.includes("layout") === true && (input.resolve === "keep" || input.resolve === "take")) {
+              const applied = yield* applyLayout(api, snapshot, planLayoutReview(memo, layoutOf(snapshot), input.id, input.resolve, new Date().toISOString(), treeMemo), actor)
+              return { output: { id: input.id, ...applied } }
+            }
+            if (input.rename !== undefined) return yield* renameRow(api, snapshot, node, input.rename, actor)
+            if (input.models !== undefined) return yield* setModels(api, node, input, actor)
+            if (isModelFieldRowId(input.id)) return yield* setModelField(api, snapshot, memo, input.id, actor, input)
+            if (isModelSettingRowId(input.id)) {
+              const field = settingOf(node)?.field
+              if (field === undefined) return yield* Effect.fail(unknownError(input.id))
+              if (input.text === undefined)
+                return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes text: its value, or "" to inherit` }))
+              return yield* setModelDefaults(api, node, actor, { [field]: input.text })
+            }
+            if (isModelDefaultRowId(input.id)) return yield* setModelDefaults(api, node, actor, input)
+            if (input.effort !== undefined)
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no effort; effort is set on a Defaults › Models row` }))
+            if (input.preset !== undefined) return yield* setLink(api, snapshot, node, input.preset, actor)
+            if (node.kind === "team" && node.depth === 2) return yield* setTeam(api, memo, input.id, actor, input)
+            if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* setModel(api, snapshot, memo, input.id, actor, input)
+            if (input.compactWarm !== undefined || input.coldFirst !== undefined || input.coldCompact !== undefined || input.coldModels !== undefined || input.compactionStrategy !== undefined || input.compactionModel !== undefined || input.compactionInstructions !== undefined || input.compactionInput !== undefined || input.compactionOutput !== undefined || input.imageConvert !== undefined || input.imageShrink !== undefined || input.imagesFull !== undefined)
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; compaction fields are set on model or Defaults › Models rows` }))
+            if (input.warming !== undefined)
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is not a model row; warming is set on model rows` }))
+            if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* setPerm(api, snapshot, memo, input.id, actor, input, treeMemo)
+            if (node.kind === "group") return yield* setGroup(api, snapshot, memo, input.id, actor, input)
+            if (input.include !== undefined && input.resolve !== "merge")
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}": include applies only with resolve merge` }))
+            const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => protectedForActor(snapshot, agent))
+            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+            const applied = yield* mutateOp(api, memo, op, actor)
+            return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          }),
+        ),
     })
     editor.add({
       name: "edit",
@@ -651,25 +680,27 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        Effect.gen(function* () {
-          const snapshot = yield* snapshotOrFail(api)
-          const memo = memoFromSnapshot(snapshot)
-          const treeMemo = buildTreeMemo(memo)
-          const node = findRow(memo, input.id, treeMemo)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
-          const protectedAgent = protectedOf(snapshot, node)
-          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (!holdsText(input.id, node))
-            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no text to edit: change it with set` }))
-          const current = editableText(memo, input.id, treeMemo)
-          if ("refusal" in current) return yield* Effect.fail(new Tool.Error({ message: current.refusal }))
-          const replaced = replaceText(current.text, input, current.label)
-          if ("refusal" in replaced) return yield* Effect.fail(new Tool.Error({ message: replaced.refusal }))
-          const op = computeSet(memo, { id: input.id, text: replaced.text }, treeMemo, (agent) => protectedForActor(snapshot, agent))
-          if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-          const applied = yield* mutateOp(api, memo, op, actorFrom(context))
-          return { output: { id: input.id, status: applied.status, replacements: replaced.replacements } }
-        }),
+        eachRow(api, input, (input) =>
+          Effect.gen(function* () {
+            const snapshot = yield* snapshotOrFail(api)
+            const memo = memoFromSnapshot(snapshot)
+            const treeMemo = buildTreeMemo(memo)
+            const node = findRow(memo, input.id, treeMemo)
+            if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+            const protectedAgent = protectedOf(snapshot, node)
+            if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+            if (!holdsText(input.id, node))
+              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no text to edit: change it with set` }))
+            const current = editableText(memo, input.id, treeMemo)
+            if ("refusal" in current) return yield* Effect.fail(new Tool.Error({ message: current.refusal }))
+            const replaced = replaceText(current.text, input, current.label)
+            if ("refusal" in replaced) return yield* Effect.fail(new Tool.Error({ message: replaced.refusal }))
+            const op = computeSet(memo, { id: input.id, text: replaced.text }, treeMemo, (agent) => protectedForActor(snapshot, agent))
+            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+            const applied = yield* mutateOp(api, memo, op, actorFrom(context))
+            return { output: { id: input.id, status: applied.status, replacements: replaced.replacements } }
+          }),
+        ),
     })
     editor.add({
       name: "move",
@@ -706,28 +737,30 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        Effect.gen(function* () {
-          const actor = actorFrom(context)
-          const snapshot = yield* snapshotOrFail(api)
-          const memo = memoFromSnapshot(snapshot)
-          const treeMemo = buildTreeMemo(memo)
-          const node = findRow(memo, input.id, treeMemo)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
-          const protectedAgent = protectedOf(snapshot, node)
-          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (isModelFieldRowId(input.id)) return yield* resetModelField(api, snapshot, memo, input.id, actor)
-          if (isModelSettingRowId(input.id)) {
-            const field = settingOf(node)?.field
-            if (field === undefined) return yield* Effect.fail(unknownError(input.id))
-            return yield* clearModelDefaults(api, node, actor, "reset", [field])
-          }
-          if (isModelDefaultRowId(input.id)) return yield* clearModelDefaults(api, node, actor, "reset")
-          if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* resetModel(api, snapshot, memo, input.id, actor)
-          const op = reset(memo, input.id, treeMemo)
-          if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-          const applied = yield* mutateOp(api, memo, op, actor)
-          return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
-        }),
+        eachRow(api, input, (input) =>
+          Effect.gen(function* () {
+            const actor = actorFrom(context)
+            const snapshot = yield* snapshotOrFail(api)
+            const memo = memoFromSnapshot(snapshot)
+            const treeMemo = buildTreeMemo(memo)
+            const node = findRow(memo, input.id, treeMemo)
+            if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+            const protectedAgent = protectedOf(snapshot, node)
+            if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+            if (isModelFieldRowId(input.id)) return yield* resetModelField(api, snapshot, memo, input.id, actor)
+            if (isModelSettingRowId(input.id)) {
+              const field = settingOf(node)?.field
+              if (field === undefined) return yield* Effect.fail(unknownError(input.id))
+              return yield* clearModelDefaults(api, node, actor, "reset", [field])
+            }
+            if (isModelDefaultRowId(input.id)) return yield* clearModelDefaults(api, node, actor, "reset")
+            if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* resetModel(api, snapshot, memo, input.id, actor)
+            const op = reset(memo, input.id, treeMemo)
+            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+            const applied = yield* mutateOp(api, memo, op, actor)
+            return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+          }),
+        ),
     })
     editor.add({
       name: "split",
@@ -773,36 +806,38 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        Effect.gen(function* () {
-          if (input.confirm !== true)
-            return yield* Effect.fail(new Tool.Error({ message: "delete.unconfirmed: delete requires confirm:true" }))
-          const actor = actorFrom(context)
-          const snapshot = yield* snapshotOrFail(api)
-          const memo = memoFromSnapshot(snapshot)
-          const folderId = folderIdOfInput(memo, input.id)
-          if (folderId !== undefined) {
-            const owner = input.id.includes(":folder:") ? input.id.split(":folder:")[0] : snapshot.folders?.find((folder) => folder.id === folderId)?.owner
-            const from = owner === undefined ? undefined : tabLayout(buildTreeMemo(memo), owner).inherited
-            const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner, from), actor)
-            return { output: { id: input.id, ...applied } }
-          }
-          const node = findRow(memo, input.id)
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
-          const protectedAgent = protectedOf(snapshot, node)
-          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (isModelSettingRowId(input.id) || isModelFieldRowId(input.id))
-            return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a field of its model row: reset clears it` }))
-          if (isModelDefaultRowId(input.id)) {
-            if (node.actions?.remove !== true)
-              return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no Defaults › Models values to clear` }))
-            return yield* clearModelDefaults(api, node, actor, "remove")
-          }
-          if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* deleteModelRow(api, snapshot, memo, input.id, actor)
-          if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* deleteRuleRow(api, snapshot, memo, input.id, actor)
-          const plan = removalPlan(memo, input.id)
-          if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
-          return yield* deletePlan(api, plan, actor, input.force === true)
-        }),
+        input.confirm !== true
+          ? Effect.fail(new Tool.Error({ message: "delete.unconfirmed: delete requires confirm:true" }))
+          : eachRow(api, input, (input) =>
+              Effect.gen(function* () {
+                const actor = actorFrom(context)
+                const snapshot = yield* snapshotOrFail(api)
+                const memo = memoFromSnapshot(snapshot)
+                const folderId = folderIdOfInput(memo, input.id)
+                if (folderId !== undefined) {
+                  const owner = input.id.includes(":folder:") ? input.id.split(":folder:")[0] : snapshot.folders?.find((folder) => folder.id === folderId)?.owner
+                  const from = owner === undefined ? undefined : tabLayout(buildTreeMemo(memo), owner).inherited
+                  const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner, from), actor)
+                  return { output: { id: input.id, ...applied } }
+                }
+                const node = findRow(memo, input.id)
+                if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+                const protectedAgent = protectedOf(snapshot, node)
+                if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+                if (isModelSettingRowId(input.id) || isModelFieldRowId(input.id))
+                  return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a field of its model row: reset clears it` }))
+                if (isModelDefaultRowId(input.id)) {
+                  if (node.actions?.remove !== true)
+                    return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" has no Defaults › Models values to clear` }))
+                  return yield* clearModelDefaults(api, node, actor, "remove")
+                }
+                if (isModelRowId(input.id) || node.address?.item.startsWith("model:")) return yield* deleteModelRow(api, snapshot, memo, input.id, actor)
+                if (isPermRowId(input.id) || node.address?.item.startsWith("perm:")) return yield* deleteRuleRow(api, snapshot, memo, input.id, actor)
+                const plan = removalPlan(memo, input.id)
+                if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
+                return yield* deletePlan(api, plan, actor, input.force === true)
+              }),
+            ),
     })
     editor.add({
       name: "log",
@@ -867,6 +902,65 @@ function holdsText(id: string, node: TreeNode): boolean {
   if (item === undefined || node.kind === "team" || node.kind === "group") return false
   if (isModelRowId(id) || item.startsWith("model:") || isModelFieldRowId(id) || isModelSettingRowId(id) || isModelDefaultRowId(id)) return false
   return !isPermRowId(id) && !item.startsWith("perm:")
+}
+
+// A find filter as the terms the TUI and CLI type, each value quoted whole.
+function findWhere(filter: typeof FindFilter.Type): string {
+  return [
+    ...(["agent", "team", "level", "type", "name", "in", "state", "is", "text"] as const).flatMap((key) => {
+      const value = filter[key]
+      return value === undefined || value === "" ? [] : [`${key}:"${value.replace(/[\\"]/g, "\\$&")}"`]
+    }),
+    filter.where ?? "",
+  ].join(" ")
+}
+
+// The rows one call acts on (the input names them with exactly one of id and
+// find, oneSelection). A single id answers exactly as before. A list of ids,
+// or the rows a find filter matches, runs the operation once per row in order
+// and answers one result per row: a row that refuses does not stop the rest,
+// and each one that succeeds stays saved.
+function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof FindFilter.Type }>(
+  api: PlusApi,
+  input: Input,
+  one: (input: Omit<Input, "id" | "find"> & { readonly id: string }) => Effect.Effect<{ output: unknown }, Tool.Error>,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const { id, find, ...rest } = input
+    if (typeof id === "string") return yield* one({ ...rest, id })
+    const ids = find === undefined ? [...new Set(id ?? [])] : yield* foundRows(api, find)
+    const results = yield* Effect.forEach(ids, (row) =>
+      one({ ...rest, id: row }).pipe(
+        Effect.match({
+          onSuccess: (done) => ({ id: row, output: done.output }),
+          onFailure: (error) => ({ id: row, error: error.message }),
+        }),
+      ),
+    )
+    return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
+  })
+}
+
+// The rows a find filter selects: every row find lists (all pages), with each
+// agent's copy rather than one row standing for them, and the shared Defaults
+// rows first, so an agent's copy changed after its shared row inherits the
+// change instead of storing its own.
+function foundRows(api: PlusApi, filter: typeof FindFilter.Type): Effect.Effect<string[], Tool.Error> {
+  return Effect.gen(function* () {
+    const memo = memoFromSnapshot(yield* snapshotOrFail(api))
+    const where = findWhere(filter)
+    const queried = yield* Effect.try({
+      try: () => query(memo, { where, fields: ["id"], withoutAliases: true, collapse: { ...findCollapse(where), copies: false } }),
+      catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
+    })
+    if (queried.total > maxRows)
+      return yield* Effect.fail(
+        new Tool.Error({ message: `find matches ${queried.total} rows; one call takes at most ${maxRows}: narrow it (agent, type, name, where) or pass ids` }),
+      )
+    const treeMemo = buildTreeMemo(memo)
+    const shared = (id: string) => findRow(memo, id, treeMemo)?.address?.agent === null
+    return queried.rows.map((row) => row.id).toSorted((left, right) => Number(!shared(left)) - Number(!shared(right)))
+  })
 }
 
 function snapshotOrFail(api: PlusApi): Effect.Effect<Plus.Snapshot, Tool.Error> {

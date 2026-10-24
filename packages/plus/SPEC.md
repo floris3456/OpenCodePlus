@@ -2413,7 +2413,7 @@ export type ToolResolve = "keep" | "take" | "edit"
 // query.ts rowTypes, the filter's `type:` values.
 export type RowType = "agent" | "team" | "member" | "preset" | "entry" | "tool" | "param" | "rule" | "skill" | "system" | "base" | "model" | "setting" | "compaction" | "mcp" | "section" | "group"
 // find's parameters compile to filter terms (each value quoted whole) before where's own.
-export interface FindInput {
+export interface FindFilter {
   readonly agent?: string
   readonly team?: string
   readonly level?: Level
@@ -2424,17 +2424,21 @@ export interface FindInput {
   readonly text?: string
   readonly is?: "review" | "changed" | "hidden" | "orphaned"
   readonly where?: string
+}
+export interface FindInput extends FindFilter {
   readonly fields?: readonly Field[]
   readonly sort?: Sort
   readonly limit?: number
   readonly offset?: number
 }
-export interface ReadInput { readonly id: string; readonly view?: ToolView }
-export interface EditInput { readonly id: string; readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
+// The rows an operation acts on (eachRow): one id, a list, or what a filter matches; never both.
+export interface Rows { readonly id?: string | readonly string[]; readonly find?: FindFilter }
+export interface ReadInput extends Rows { readonly view?: ToolView }
+export interface EditInput extends Rows { readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
 // A preset as tools name it: "<id>" (agent preset), "<team>/<member>" (member preset), or the RPC PresetRef.
 export type PresetInput = string | PresetRef
-export interface SetInput { readonly id: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
-export interface ResetInput { readonly id: string }
+export interface SetInput extends Rows { readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
+export interface ResetInput extends Rows {}
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
   | { readonly kind: "agent"; readonly id: string; readonly scope?: "project" | "global"; readonly preset?: PresetInput }
@@ -2457,7 +2461,7 @@ export type CreateInput =
 // beside them. A create whose written row is not in the tree fails with
 // create.failed and never returns a hand-formatted id.
 export interface CreatedRow { readonly id: string; readonly item: string }
-export interface DeleteInput { readonly id: string; readonly confirm: true }
+export interface DeleteInput extends Rows { readonly confirm: true }
 ```
 
 - `find` returns `{ total, columns, rows }`, one `id | badges | from` line
@@ -2471,6 +2475,18 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
 - `edit` replaces `oldString` with `newString` in the row's current text
   (exactly once unless `replaceAll`) and saves like `set({ id, text })`,
   governed by `set`'s permission rows.
+- `read`, `set`, `edit`, `reset` and `delete` take the rows as `id` (one row
+  id, answered exactly as before, or a list) or as `find` (`find`'s filter
+  parameters, no paging), never both (`tools.ts` `eachRow`). A list or a
+  filter runs the operation once per row, in order, each against the store
+  as the previous one left it, and answers `{ total, failed, results }` with
+  one `{ id, output }` or `{ id, error }` per row: a row that refuses does not
+  stop the rest, and every row that succeeded stays saved. A filter selects
+  what `find` lists, over every page, except that agents' copies are not
+  folded (`foundRows`): without `agent` or `team` it reaches each agent's copy
+  and the shared Defaults rows, the shared rows first, so a copy changed after
+  its shared row inherits the change and stores nothing. More than 200 rows is
+  refused before anything runs; `delete` asks for `confirm: true` once.
 - `read` defaults to view
   `resolved`. On a perm row every view but `record` returns the rule view
   (`tool`, `rule`, `label`, `patterns`, `keywords`, `custom`,

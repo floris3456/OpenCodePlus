@@ -37,6 +37,7 @@ export const teachingSkillContent = `# instructions-tools
 - Change part of a text: \`edit({ id, oldString, newString })\`, like the edit tool for a file.
 - Replace a whole text: \`set({ id, text })\`. Switch a row: \`set({ id, state: "off" })\`. Undo at this level: \`reset({ id })\`.
 - Pass ids exactly as \`find\`, \`read\` or \`create\` returned them.
+- Several rows in one call: \`id\` takes a list (\`set({ id: [a, b], state: "off" })\`), or \`find\` takes find's filters instead of \`id\` (\`set({ find: { agent: "alpha", type: "rule", where: "tool:edit" }, state: "off" })\`). \`read\`, \`set\`, \`edit\`, \`reset\` and \`delete\` then answer \`{ total, failed, results }\` with one \`{ id, output }\` or \`{ id, error }\` per row, and every row that succeeded stays saved. Without \`agent\` or \`team\`, \`find\` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
 
 ## Row ids
 
@@ -83,7 +84,7 @@ The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and sh
 
 ## set and reset
 
-\`set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, subagent?, prompt?, effort? })\` changes one row; several calls can run in one \`execute\`.
+\`set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, subagent?, prompt?, effort? })\` changes one row, or several (Quick start).
 
 - \`text\` replaces the row's text (a whole row or one section; saving a whole row replaces this level's section texts inside it). \`state\` is \`on\`|\`off\`; a bare \`set({ id })\` toggles. \`pin\` (\`true\`|\`false\`) pins a Code Mode tool. When a more specific level hides the write, \`status\` names that row.
 - Agent and member rows: \`set({ id, state: "off" })\` (the agent stays editable but cannot run) and \`set({ id, mode: "primary" })\` / \`"subagent"\` / \`"all"\`. \`set({ id, rename })\` renames a Project/Global user agent, team member or team; every record that names it follows.

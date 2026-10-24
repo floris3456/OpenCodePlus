@@ -186,6 +186,8 @@ Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` 
 | `delete` | `{ id, confirm: true }` (refused without `confirm: true`; on a model row deletes the candidate at that level — a local record is removed, an inherited or upstream row is hidden with a tombstone, and the effective model refuses with `activate another model first`; only user-created rules can be deleted) |
 | `log` | `{ where?, limit?, offset? }` → `{ entries, total }`, both log files merged newest-first |
 
+`read`, `set`, `edit`, `reset` and `delete` also take several rows: `id` as a list (`set({ id: [a, b], state: "off" })`), or `find` with `find`'s filters instead of `id` (`set({ find: { agent: "alpha", type: "rule", where: "tool:edit" }, state: "off" })`). They then answer `{ total, failed, results }`, one `{ id, output }` or `{ id, error }` per row, and every row that succeeded stays saved. Without `agent` or `team`, `find` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
+
 `read` views: `resolved` (default), `upstream` (text above the override), `mine` (stored text), `record` (raw override), `sections` (section ids), `diff` (original→mine and original→upstream unified diffs plus a one-line summary), `assembled` (full effective prompt, agent row ids only). `set` with `resolve: "keep"` acks upstream keeping text, `"take"` drops stored text and follows upstream, `"edit"` stores `text` against current upstream.
 
 Row ids name one row everywhere: the TUI filter, tool calls, log targets, and error messages all use the same string:
