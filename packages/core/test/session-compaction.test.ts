@@ -829,11 +829,12 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
   }),
 )
 
-it.effect("compaction lowers the output limit when it sends a request it could not shrink", () =>
+it.effect("compaction keeps the output limit for a request past the window it could not shrink", () =>
   Effect.gen(function* () {
     requests = []
     const session = yield* insertSession(Session.ID.make("ses_unshrinkable_compaction"))
-    // One exchange estimated at 250k tokens, past the 200k window, so no older exchange can be dropped.
+    // One exchange estimated at 250k tokens, past the 200k window, so no older exchange can be dropped. A window that
+    // holds rejects it as too long; one the catalog understates serves it, and 1,024 tokens could not hold a summary.
     const messages = [
       SessionMessage.User.make({
         id: SessionMessage.ID.create(),
@@ -845,7 +846,29 @@ it.effect("compaction lowers the output limit when it sends a request it could n
 
     expect(yield* compactManually(session, messages)).toEqual({ status: "completed" })
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.generation).toEqual(GenerationOptions.make({ maxTokens: 1_024 }))
+    expect(requests[0]?.generation).toEqual(GenerationOptions.make({ maxTokens: 20_000 }))
+  }),
+)
+
+it.effect("compaction lowers the output limit to the room a request past its target leaves in the window", () =>
+  Effect.gen(function* () {
+    requests = []
+    const session = yield* insertSession(Session.ID.make("ses_tight_compaction"))
+    // About 190k estimated tokens: past the 180k target, inside the 200k window.
+    const messages = [
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: "x".repeat(760_000),
+        time: { created: DateTime.makeUnsafe(0) },
+      }),
+    ]
+
+    expect(yield* compactManually(session, messages)).toEqual({ status: "completed" })
+    expect(requests).toHaveLength(1)
+    const maxTokens = requests[0]?.generation?.maxTokens ?? 0
+    expect(maxTokens).toBeGreaterThan(1_024)
+    expect(maxTokens).toBeLessThan(20_000)
   }),
 )
 

@@ -1524,14 +1524,17 @@ const hasMeasuredPrompt = (message: SessionMessage.Info, model: SessionContext.L
  *
  * Like `budget` in `prepare`, the estimate counts as measured, without the margin primary requests add for estimates:
  * `deliver` aims at about 90% of the window, so that margin would cut every summary near its target to the minimum.
+ *
+ * A request whose input alone is past the window keeps the limit `prepare` gave it. A window that holds rejects it as
+ * too long either way, and `deliver` then shrinks it; a window the catalog understates serves it, and the minimum
+ * would only make the summary end at the output limit, a failed compaction.
  */
 const fitOutput = (request: LLMRequest, limit: SessionContext.Loaded["model"]["limit"]) => {
   const current = request.generation?.maxTokens
   if (current === undefined) return request
-  const maxTokens = Math.min(
-    current,
-    SessionModelRequest.outputLimit(limit, "compaction", { measured: estimateRequest(request), estimated: 0 }),
-  )
+  const measured = estimateRequest(request)
+  if (limit.context > 0 && measured >= limit.context) return request
+  const maxTokens = Math.min(current, SessionModelRequest.outputLimit(limit, "compaction", { measured, estimated: 0 }))
   if (maxTokens === current) return request
   return LLMRequest.update(request, { generation: { ...request.generation, maxTokens } })
 }
