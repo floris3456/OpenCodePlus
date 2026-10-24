@@ -1662,7 +1662,6 @@ test("a zero-parameter native tool lists its Description and owner-scoped editab
       ruleId: "git-push",
       patterns: ["git push *"],
       keywords: ["git push"],
-      provenance: ["tool:shell"],
     }),
     makeItem({
       id: "perm:shell:custom",
@@ -1674,7 +1673,6 @@ test("a zero-parameter native tool lists its Description and owner-scoped editab
       ruleId: "custom",
       patterns: ["custom *"],
       keywords: ["custom"],
-      provenance: [],
       custom: true,
     }),
   ]
@@ -1894,54 +1892,6 @@ test("empty rule sets emit no perm rows but the tool still offers the add choice
   expect(toolRow.add).toBeUndefined()
   expect(childrenOf(nodes, toolRow.id).some((node) => node.address?.item.startsWith("perm:"))).toBe(false)
   expect(nodes.some((node) => node.label === "Permissions")).toBe(false)
-})
-
-test("mined rows list under Mentioned in instructions, most-mentioned first, not title order", () => {
-  const shellText = "shell tool"
-  const all = [
-    makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: shellText }),
-    makeItem({
-      id: "perm:shell:aaa-mentioned",
-      kind: "perm",
-      group: "none",
-      title: "Aaa mentioned",
-      text: "Aaa mentioned\naaa *",
-      order: 1,
-      permTool: "shell",
-      ruleId: "aaa-mentioned",
-      patterns: ["aaa *"],
-      keywords: ["aaa"],
-      provenance: ["tool:shell"],
-    }),
-    makeItem({
-      id: "perm:shell:zzz-mentioned",
-      kind: "perm",
-      group: "none",
-      title: "Zzz mentioned",
-      text: "Zzz mentioned\nzzz *",
-      order: 0,
-      permTool: "shell",
-      ruleId: "zzz-mentioned",
-      patterns: ["zzz *"],
-      keywords: ["zzz"],
-      provenance: ["tool:shell", "skill:notes", "base:general"],
-    }),
-    makeItem({
-      id: "perm:shell:git-push",
-      kind: "perm",
-      group: "none",
-      title: "Git push",
-      text: "Git push\ngit push *",
-      permTool: "shell",
-      ruleId: "git-push",
-      patterns: ["git push *"],
-      keywords: ["git push"],
-      provenance: ["tool:shell"],
-    }),
-  ]
-  const nodes = expandAll({ items: all, records: [], agents: agents() })
-  // Category ordering remains stable after removing the category wrappers.
-  expect(childrenOf(nodes, "item:project:Implementer:tool:shell").map((node) => node.label)).toEqual(["Description", "Git push", "Zzz mentioned", "Aaa mentioned"])
 })
 
 test("nested agent id and team member group ids never collide", async () => {

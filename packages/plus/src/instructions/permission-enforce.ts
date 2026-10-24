@@ -766,7 +766,6 @@ const identityKeys = new Set([
   "updated",
   "tokens",
   "keywords",
-  "provenance",
   "sections",
 ])
 

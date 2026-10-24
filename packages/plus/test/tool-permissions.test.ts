@@ -4,13 +4,10 @@ import { expect, test } from "bun:test"
 // apply.test.ts reads core's prompt sources. No src file may do this.
 import { match } from "../../core/src/util/wildcard.js"
 import {
-  commandHeads,
   curatedRuleMessage,
   curatedRules,
   idRules,
   keywordsForPattern,
-  mergeRules,
-  mineDiscoveredRules,
   validateRuleInput,
   type CuratedRule,
 } from "../src/instructions/tool-permissions.js"
@@ -62,7 +59,7 @@ test("every curated rule ships a one-line refusal message", () => {
     expect(message.includes("\n")).toBe(false)
   }
   expect(curatedRuleMessage("shell", "git-push")).toBe("pushing is not allowed here")
-  expect(curatedRuleMessage("shell", "mined-only")).toBeUndefined()
+  expect(curatedRuleMessage("shell", "not-shipped")).toBeUndefined()
 })
 
 test("keywordsForPattern keeps head plus subcommands, stopping at wildcards and flags", () => {
@@ -98,32 +95,6 @@ test("head-only patterns match bare and extended commands under the real matcher
   expect(match("docker compose up", "docker *")).toBe(true)
 })
 
-test("mergeRules lets the curated label win on a pattern-set collision", () => {
-  const curated: CuratedRule[] = [
-    { tool: "shell", id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], message: "pushing is not allowed here" },
-  ]
-  const merged = mergeRules(curated, [
-    { id: "mined", label: "Mined push", patterns: ["git push *"], keywords: ["git"], provenance: ["alpha", "beta"] },
-  ])
-  expect(merged).toEqual([
-    { id: "git-push", label: "Git push", patterns: ["git push *"], keywords: ["git push"], provenance: ["alpha", "beta"], message: "pushing is not allowed here" },
-  ])
-})
-
-test("mergeRules matches pattern sets regardless of order and sorts most-mentioned first", () => {
-  const curated: CuratedRule[] = [
-    { tool: "shell", id: "pair", label: "Pair", patterns: ["a *", "b *"], keywords: ["a"] },
-    { tool: "shell", id: "generic", label: "Generic", patterns: ["g *"], keywords: ["g"] },
-  ]
-  const merged = mergeRules(curated, [
-    { id: "once", label: "Once", patterns: ["z *"], keywords: ["z"], provenance: ["alpha"] },
-    { id: "often", label: "Often", patterns: ["b *", "a *"], keywords: ["b"], provenance: ["alpha", "beta", "gamma"] },
-  ])
-  expect(merged.map((entry) => entry.id)).toEqual(["pair", "once", "generic"])
-  expect(merged[0]).toMatchObject({ label: "Pair", provenance: ["alpha", "beta", "gamma"] })
-  expect(merged[2]).toMatchObject({ label: "Generic", provenance: [] })
-})
-
 test("validateRuleInput trims a message and drops a blank one", () => {
   const withMessage = validateRuleInput({
     tool: "shell",
@@ -140,17 +111,6 @@ test("validateRuleInput trims a message and drops a blank one", () => {
   const absent = validateRuleInput({ tool: "shell", id: "no-push", label: "No pushes", patterns: ["git push --force *"] })
   if (!absent.ok) throw new Error(absent.reason)
   expect(absent.message).toBeUndefined()
-})
-
-test("command-head table has the planned heads at the planned depths", () => {
-  expect(commandHeads["git"]).toBe(2)
-  expect(commandHeads["bun"]).toBe(2)
-  expect(commandHeads["npm"]).toBe(2)
-  expect(commandHeads["pnpm"]).toBe(2)
-  expect(commandHeads["yarn"]).toBe(2)
-  expect(commandHeads["rm"]).toBe(1)
-  expect(commandHeads["docker"]).toBe(2)
-  expect(commandHeads["kubectl"]).toBe(2)
 })
 
 test("idRules builds one exact rule per discovered id", () => {
@@ -209,82 +169,4 @@ test("curated file patterns match what core FileAccess actually emits, root and 
   expect(sshDenied(".ssh")).toBe(true)
   expect(sshDenied("sub/.ssh/id_ed25519")).toBe(true)
   expect(match("/home/user/.ssh/id_rsa", "~/.ssh/**")).toBe(false)
-})
-
-test("mined ssh candidates carry the same root-relative coverage", () => {
-  const mined = mineDiscoveredRules({ texts: [{ item: "tool:read", text: "read ~/.ssh/id_ed25519" }] })
-  const ssh = mined.find((entry) => entry.tool === "read" && entry.id === "ssh")
-  if (ssh === undefined) throw new Error("expected mined read:ssh")
-  expect(ssh.patterns).toEqual(["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"])
-  expect(ssh.patterns.some((pattern) => match(".ssh/id_ed25519", pattern))).toBe(true)
-})
-
-test("mineGenericPaths rejects slash-separated prose as paths", () => {
-  const noise = [
-    "4xx/5xx",
-    "Add/Delete/Update",
-    "./agent",
-    "agent/skill",
-    "AGENTS.md/skill",
-    "alert/confirm/prompt",
-    "and/or",
-    "***ANY***",
-    "/api/config",
-    "/api/example",
-  ]
-  for (const token of noise) {
-    const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please edit ${token} today` }] })
-    const patterns = mined.flatMap((entry) => entry.patterns)
-    expect(patterns).not.toContain(token)
-  }
-  const combined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: noise.join(" ") }] })
-  const combinedPatterns = combined.flatMap((entry) => entry.patterns)
-  for (const token of noise) expect(combinedPatterns).not.toContain(token)
-})
-
-test("mineGenericPaths keeps real file paths and globs", () => {
-  const kept = ["src/index.ts", "packages/core/src/tool/plugin/grep.ts", "*.env*", "**/*.lock", "src/**/*.tsx"]
-  for (const token of kept) {
-    const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please edit ${token} today` }] })
-    const patterns = mined.flatMap((entry) => entry.patterns)
-    expect(patterns).toContain(token)
-  }
-})
-
-test("mineGenericPaths strips trailing source-location references", () => {
-  const mined = mineDiscoveredRules({
-    texts: [
-      {
-        item: "tool:edit",
-        text: "inspect src/services/process.ts:712 and src/main.py:10:4. Also see src/services/process.ts:712. and src/main.py:10:4.",
-      },
-    ],
-  })
-  const patterns = mined.flatMap((entry) => entry.patterns)
-  expect(patterns).toContain("src/services/process.ts")
-  expect(patterns).toContain("src/main.py")
-  expect(patterns).not.toContain("src/services/process.ts:712")
-  expect(patterns).not.toContain("src/services/process.ts:712.")
-  expect(patterns).not.toContain("src/main.py:10:4")
-  expect(patterns).not.toContain("src/main.py:10:4.")
-})
-
-test("mineGenericPaths rejects bare line references and invalid paths after stripping", () => {
-  const rejected = [":712", ":10:4", ":712.", ":10:4.", "/api/config:42", "/api/config:42.", "and/or:12", "and/or:12."]
-  for (const token of rejected) {
-    const mined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: `please check ${token} today` }] })
-    const patterns = mined.flatMap((entry) => entry.patterns)
-    expect(patterns).toEqual([])
-  }
-  const combined = mineDiscoveredRules({ texts: [{ item: "tool:edit", text: rejected.join(" ") }] })
-  const combinedPatterns = combined.flatMap((entry) => entry.patterns)
-  expect(combinedPatterns).toEqual([])
-})
-
-test("mineGenericPaths deduplicates paths mentioned with and without line references", () => {
-  const mined = mineDiscoveredRules({
-    texts: [{ item: "tool:edit", text: "update src/index.ts and check src/index.ts:42 or see src/index.ts:42." }],
-  })
-  const patterns = mined.flatMap((entry) => entry.patterns)
-  expect(patterns).toEqual(["src/index.ts"])
 })

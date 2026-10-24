@@ -298,9 +298,8 @@ test("catalogItems turns every category into unique perm rows with the tool's ac
     expect(item.kind).toBe("perm")
     expect(item.id).toBe(permItemId(item.permTool ?? "", item.ruleId ?? ""))
     expect(item.ruleId?.startsWith(`${item.category}.`)).toBe(true)
-    // Catalog rows never scrub prompt lines and are mentioned by nothing.
+    // Catalog rows never scrub prompt lines.
     expect(item.keywords).toEqual([])
-    expect(item.provenance).toEqual([])
     expect(item.fingerprint).toBe(fingerprint(item.text))
     expect(item.permKind).toBeDefined()
   }
@@ -379,31 +378,29 @@ test("catalogItems turns every category into unique perm rows with the tool's ac
   expect(byId.get("perm:shell:commands.git-changes")?.enabled).toBe(true)
 })
 
-test("categoryOfRow lists catalog, team, mined, curated and custom rows where they belong", () => {
+test("categoryOfRow lists catalog, team, curated and custom rows where they belong", () => {
   // A catalog or team row carries its own category.
-  expect(categoryOfRow({ category: "files", permTool: "grep" }, false)).toBe("files")
-  expect(categoryOfRow({ category: "to", permTool: "team_delegate", policy: { on: [], off: [] } }, false)).toBe("to")
+  expect(categoryOfRow({ category: "files", permTool: "grep" })).toBe("files")
+  expect(categoryOfRow({ category: "to", permTool: "team_delegate", policy: { on: [], off: [] } })).toBe("to")
   // A team policy row without one is the member's role.
-  expect(categoryOfRow({ permTool: "shell", policy: { on: [], off: [] } }, false)).toBe("role")
-  // A mined row (provenance, nothing curated behind it) is a suggestion.
-  expect(categoryOfRow({ permTool: "shell", provenance: ["tool:shell"], ruleId: "docker-build" }, false)).toBe("suggested")
+  expect(categoryOfRow({ permTool: "shell", policy: { on: [], off: [] } })).toBe("role")
   // Curated and user rows take their tool's legacy category.
-  expect(categoryOfRow({ permTool: "shell", provenance: ["tool:shell"], ruleId: "git-push" }, true)).toBe("commands")
-  expect(categoryOfRow({ permTool: "shell", provenance: ["base:gpt"], custom: true, ruleId: "mine" }, false)).toBe("commands")
-  expect(categoryOfRow({ permTool: "edit", ruleId: "env" }, true)).toBe("files")
-  expect(categoryOfRow({ permTool: "write", ruleId: "env" }, true)).toBe("files")
-  expect(categoryOfRow({ permTool: "patch", ruleId: "env" }, true)).toBe("files")
-  expect(categoryOfRow({ permTool: "read", ruleId: "env" }, true)).toBe("files")
-  expect(categoryOfRow({ permTool: "webfetch", ruleId: "github" }, true)).toBe("sites")
-  expect(categoryOfRow({ permTool: "glob", ruleId: "git" }, true)).toBe("patterns")
-  expect(categoryOfRow({ permTool: "grep", ruleId: "git" }, true)).toBe("patterns")
-  expect(categoryOfRow({ permTool: "subagent", ruleId: "explore" }, true)).toBe("agents")
+  expect(categoryOfRow({ permTool: "shell", ruleId: "git-push" })).toBe("commands")
+  expect(categoryOfRow({ permTool: "shell", custom: true, ruleId: "mine" })).toBe("commands")
+  expect(categoryOfRow({ permTool: "edit", ruleId: "env" })).toBe("files")
+  expect(categoryOfRow({ permTool: "write", ruleId: "env" })).toBe("files")
+  expect(categoryOfRow({ permTool: "patch", ruleId: "env" })).toBe("files")
+  expect(categoryOfRow({ permTool: "read", ruleId: "env" })).toBe("files")
+  expect(categoryOfRow({ permTool: "webfetch", ruleId: "github" })).toBe("sites")
+  expect(categoryOfRow({ permTool: "glob", ruleId: "git" })).toBe("patterns")
+  expect(categoryOfRow({ permTool: "grep", ruleId: "git" })).toBe("patterns")
+  expect(categoryOfRow({ permTool: "subagent", ruleId: "explore" })).toBe("agents")
   // Skills are not rule rows (each skill is its own switch under the skill
   // tool), so a user rule on the skill tool lists under Rules.
-  expect(categoryOfRow({ permTool: "skill", ruleId: "notes" }, true)).toBe("rules")
+  expect(categoryOfRow({ permTool: "skill", ruleId: "notes" })).toBe("rules")
   // A tool with no legacy category lists its rows under Rules.
-  expect(categoryOfRow({ permTool: "mcp_weather_forecast", custom: true, ruleId: "x" }, false)).toBe("rules")
-  expect(categoryOfRow({ custom: true, ruleId: "x" }, false)).toBe("rules")
+  expect(categoryOfRow({ permTool: "mcp_weather_forecast", custom: true, ruleId: "x" })).toBe("rules")
+  expect(categoryOfRow({ custom: true, ruleId: "x" })).toBe("rules")
 })
 
 test("categoryLabel reads the catalog, then the host tool, then the fixed labels", () => {
@@ -421,7 +418,6 @@ test("categoryLabel reads the catalog, then the host tool, then the fixed labels
   expect(categoryLabel("webfetch", "sites")).toBe("Sites")
   expect(categoryLabel("subagent", "agents")).toBe("Agents")
   expect(categoryLabel("skill", "skills")).toBe("Skills")
-  expect(categoryLabel("shell", "suggested")).toBe("Mentioned in instructions")
   expect(categoryLabel("shell", "role")).toBe("Team role")
   expect(categoryLabel("team_delegate", "to")).toBe("Delegate to")
   expect(categoryLabel("team_status", "runs")).toBe("Runs")
@@ -431,13 +427,13 @@ test("categoryLabel reads the catalog, then the host tool, then the fixed labels
   expect(categoryLabel("mcp_weather_forecast", "odd-one")).toBe("Odd-one")
 })
 
-test("categoryOrder puts team rows first, then the legacy category, the catalog, rules and suggestions", () => {
+test("categoryOrder puts team rows first, then the legacy category, the catalog, approval and rules", () => {
   const head = ["to", "runs", "access", "role"]
-  expect(categoryOrder("shell")).toEqual([...head, "commands", "removals", "directories", "parameters", "environment", "limits", "approval", "rules", "suggested"])
-  expect(categoryOrder("grep")).toEqual([...head, "patterns", "files", "include", "roots", "limits", "approval", "rules", "suggested"])
-  expect(categoryOrder("read")).toEqual([...head, "files", "where", "content", "limits", "approval", "rules", "suggested"])
-  expect(categoryOrder("team_status")).toEqual([...head, "approval", "rules", "suggested"])
-  expect(categoryOrder("mcp_weather_forecast")).toEqual([...head, "approval", "rules", "suggested"])
+  expect(categoryOrder("shell")).toEqual([...head, "commands", "removals", "directories", "parameters", "environment", "limits", "approval", "rules"])
+  expect(categoryOrder("grep")).toEqual([...head, "patterns", "files", "include", "roots", "limits", "approval", "rules"])
+  expect(categoryOrder("read")).toEqual([...head, "files", "where", "content", "limits", "approval", "rules"])
+  expect(categoryOrder("team_status")).toEqual([...head, "approval", "rules"])
+  expect(categoryOrder("mcp_weather_forecast")).toEqual([...head, "approval", "rules"])
 })
 
 test("hostOf maps the rows with no tool of their own", () => {

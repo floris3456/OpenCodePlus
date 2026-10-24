@@ -1353,7 +1353,7 @@ test("a perm rule off installs a core deny proved by Permission.evaluate (not a 
   const permText = "Git push\ngit push *"
   const items = [
     { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: shellText, enabled: true, fingerprint: fingerprint(shellText) },
-    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"], provenance: [] as string[] },
+    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"] },
   ]
   const records = [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })]
   const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }))
@@ -1393,7 +1393,6 @@ test("a user rule's own message reaches Permission.evaluate through apply", asyn
       ruleId: "no-push",
       patterns: ["git push --force *"],
       keywords: ["git push"],
-      provenance: [] as string[],
       custom: true,
     },
   ]
@@ -1435,7 +1434,6 @@ test("a user rule's own message reaches Permission.evaluate through apply", asyn
       ruleId: "git-push",
       patterns: ["git push *"],
       keywords: ["git push"],
-      provenance: [] as string[],
       custom: true,
     },
   ]
@@ -1477,7 +1475,6 @@ function permScopeItems(): ApplyInput["items"] {
       ruleId: "git-push",
       patterns: ["git push *"],
       keywords: ["git push"],
-      provenance: [] as string[],
     },
   ]
 }
@@ -1735,7 +1732,7 @@ test("a perm rule off scrubs whole-word lines, keeping head-only lines", async (
   const permText = "Git push\ngit push *"
   const items = [
     { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: "shell tool", enabled: true, fingerprint: fingerprint("shell tool") },
-    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"], provenance: [] as string[] },
+    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"] },
   ]
   const records = [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })]
   const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }] }))
@@ -1765,7 +1762,7 @@ test("a broad scrub keyword never empties a tool description or system text", as
   const permText = "Git push\ngit push *"
   const items = [
     { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: "shell tool", enabled: true, fingerprint: fingerprint("shell tool") },
-    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"], provenance: [] as string[] },
+    { id: "perm:shell:git-push", kind: "perm" as const, group: "none" as const, title: "Git push", text: permText, enabled: true, fingerprint: fingerprint(permText), permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"] },
   ]
   const records = [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })]
   const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }] }))

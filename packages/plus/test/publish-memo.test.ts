@@ -8,7 +8,6 @@ import {
   type CustomizationRecord,
   type Item,
 } from "../src/instructions/model.js"
-import { mineDiscoveredRules } from "../src/instructions/tool-permissions.js"
 
 const UPDATED = new Date().toISOString()
 
@@ -108,22 +107,5 @@ describe("pure work memoization", () => {
     }
     const wholeDifferentScopes = resolveWhole(inputDifferentScopes)
     expect(wholeDifferentScopes).toBeDefined()
-  })
-
-  test("mined permission rules returns identical results across repeated calls", () => {
-    const texts = [
-      {
-        item: "tool:shell",
-        text: "Run `git status` or `npm test` before commit.\nAlso check `https://github.com/example/repo`.",
-      },
-      {
-        item: "instruction:general",
-        text: "Do not edit `.env` or `package.json` directly without confirmation.\nRun `cargo build`.",
-      },
-    ]
-    const mined1 = mineDiscoveredRules({ texts, agents: ["build", "plan"] })
-    const mined2 = mineDiscoveredRules({ texts, agents: ["build", "plan"] })
-    expect(mined1).toEqual(mined2)
-    expect(mined1.length).toBeGreaterThan(0)
   })
 })

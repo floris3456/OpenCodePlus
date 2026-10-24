@@ -62,7 +62,7 @@ import { activateModel, addModelRecord, catalogueField, catalogueMatches, finger
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
-import { deltaRows, keyIdentity, recordIdentity, recordTarget } from "./instructions/delta.js"
+import { deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
 import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -5784,8 +5784,29 @@ export function activate(ctx: Context, state: PlusState): Effect.Effect<void, ne
     const directory = yield* Effect.promise(() => activationDirectory(ctx.location.directory))
     yield* ensureTooling(ctx, state)
     const stored = yield* Effect.promise(() => loadCurrent(directory))
-    yield* publishFresh(ctx, state, stored)
+    const discovered = yield* publishFresh(ctx, state, stored)
+    yield* keepSwitchedOffMinedRules(ctx, state, discovered)
   })
+}
+
+// Up to plus-1.3.26 rule rows were generated from prompt text. Each one
+// someone switched off is stored once as their own rule with the patterns it
+// had (mined-legacy.ts), so it keeps refusing; the write republishes.
+function keepSwitchedOffMinedRules(ctx: Context, state: PlusState, discovered: Discovered): Effect.Effect<void> {
+  const updated = new Date().toISOString()
+  const upsert = (discovered.minedRules ?? []).flatMap((rule) => {
+    const row = snapshotRecordOf({ ...rule, updated })
+    return row === undefined ? [] : [row]
+  })
+  if (upsert.length === 0) return Effect.void
+  return Effect.promise(() => createPlusApi(ctx, state).mutate({ changes: { upsert, remove: [] } })).pipe(
+    Effect.flatMap((result) =>
+      result.ok
+        ? Effect.logInfo("plus kept switched-off generated rules as user rules", { rules: upsert.length })
+        : Effect.logWarning("plus could not keep switched-off generated rules", { error: result.error.message }),
+    ),
+    Effect.catchCause((cause) => Effect.logWarning("plus could not keep switched-off generated rules", { cause })),
+  )
 }
 
 // The directory a Location activates against: the project directory recorded by
@@ -6104,7 +6125,7 @@ function publishFresh(
       state.cachedAgents = publishAgents.map((agent) => ({ ...agent }))
       state.cachedScopes = publishScopes
       const fingerprint = JSON.stringify({
-        // Mined perm rows are view-time only and stay out, but team policy
+        // Perm rows are view-time only and stay out, but team policy
         // rows are derived state that must move the fingerprint: a run
         // starting or settling changes what a member may edit.
         items: view.items.filter((item) => item.kind !== "perm" || item.policy !== undefined || item.agents !== undefined),
@@ -6519,9 +6540,8 @@ function sameTeamOwnership(
 // dispose/reinstall loop. An enable/disable toggle changes nothing in apply's
 // own inputs, so only the resolved team winners (with their markdown bodies,
 // file-backed or built-in) make the toggle change the fingerprint. Perm items
-// are view-time data like sections (curated ∪ mined, most-mentioned first):
-// they are derived from upstream text Plus already holds, so including them
-// would unmask Plus's own scrubbed output into a dispose/reinstall loop.
+// are view-time data like sections (the shipped rules and the catalog), so
+// they stay out.
 // Only user-toggled (CustomizationRecord off) or user-added (RuleRecord)
 // rules enter the fingerprint via `records`.
 //
@@ -7399,7 +7419,6 @@ function toSnapshot(
         ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
         ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
         ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
-        ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
         ...(item.custom === undefined ? {} : { custom: item.custom }),
         ...(item.ownedBy === undefined ? {} : { ownedBy: item.ownedBy }),
         ...(item.policy === undefined

@@ -226,7 +226,6 @@ export function permDetail(
   rule: string
   patterns: readonly string[]
   keywords: readonly string[]
-  provenance: readonly string[]
   custom: boolean
   message?: string
   enforcement: string
@@ -240,8 +239,8 @@ export function permDetail(
   if (parsed === undefined) return undefined
   const tool = upstream.permTool ?? parsed.tool
   const rule = upstream.ruleId ?? parsed.ruleId
-  // A user rule's own stored message wins; a curated row ships one; a mined
-  // row has none and keeps core's generic refusal.
+  // A user rule's own stored message wins; a curated row ships one; a
+  // subagent row has none and keeps core's generic refusal.
   const message =
     upstream.custom === true
       ? upstream.message
@@ -252,7 +251,6 @@ export function permDetail(
     rule,
     patterns: upstream.patterns === undefined ? [] : [...upstream.patterns],
     keywords: upstream.keywords === undefined ? [] : [...upstream.keywords],
-    provenance: upstream.provenance === undefined ? [] : [...upstream.provenance],
     custom: upstream.custom === true,
     ...(message === undefined ? {} : { message }),
   }

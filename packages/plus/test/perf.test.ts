@@ -172,7 +172,6 @@ function makeLargeSnapshot(revision = 1): Snapshot {
       ruleId: `rule-${i}`,
       patterns: [`pattern-${i} *`],
       keywords: i % 10 === 0 ? [`keyword-${i}`] : [],
-      provenance: [],
       category: "rules",
       permKind: "input",
       field: "command",

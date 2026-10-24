@@ -263,7 +263,6 @@ test("a on a tool row offers Section or Permission rule and creates without scop
         ruleId: "git-push",
         patterns: ["git push *"],
         keywords: ["git push"],
-        provenance: [],
       },
     ],
   })
@@ -344,7 +343,6 @@ test("zero-parameter permission rows list directly, and enter opens the rule edi
         ruleId: "git-push",
         patterns: ["git push *"],
         keywords: ["git push"],
-        provenance: [],
       },
     ],
   })
@@ -474,7 +472,6 @@ test("enter on a Defaults Teams perm row sends the Teams catalogue with rule.upd
         ruleId: "git-push",
         patterns: ["git push *"],
         keywords: ["git push"],
-        provenance: [],
       },
     ],
   })
@@ -563,7 +560,6 @@ test("e starts text editing on a tool row but not on a permission rule", async (
         ruleId: "git-push",
         patterns: ["git push *"],
         keywords: ["git push"],
-        provenance: [],
       },
     ],
   })
@@ -620,7 +616,6 @@ test("inspector shows a rule's refusal message, curated or user-set", async () =
         ruleId: "git-push",
         patterns: ["git push *"],
         keywords: ["git push"],
-        provenance: [],
       },
       {
         id: "perm:shell:my-rule",
@@ -634,7 +629,6 @@ test("inspector shows a rule's refusal message, curated or user-set", async () =
         ruleId: "my-rule",
         patterns: ["mine *"],
         keywords: ["mine"],
-        provenance: [],
         custom: true,
       },
     ],

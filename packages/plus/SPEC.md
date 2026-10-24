@@ -485,12 +485,11 @@ Mode and MCP included, expands into Description and Permissions.
   Delegate to, Runs, Access, Team role, the tool's legacy category, the
   categories shared into it (under write and patch: edit's Files, Protected
   files and Where, with edit's labels), the catalog's categories in catalog
-  order, Approval, Rules, Mentioned in instructions, then any other category
-  by id (Run edit scopes).
+  order, Approval, Rules, then any other category by id (Run edit scopes).
   Inside a category the fallback
-  ("Everything else") row comes first, then `byOrderTitle` (mined rows keep the
-  miner's most-mentioned-first rank; catalog rows carry `1000 + categoryIndex *
-  100 + rowIndex`, so they follow curated rows). Building the groups resolves
+  ("Everything else") row comes first, then `byOrderTitle` (curated rows keep
+  their registry order; catalog rows carry `1000 + categoryIndex * 100 +
+  rowIndex`, so they follow curated rows). Building the groups resolves
   nothing; `toolPermRows` returns the same rows flat.
 - **Other permissions** (`group:<level>:<owner>:tools:policy`, the id the old
   `Policy` group had) sits last in the `Tools` group of an owner with team role
@@ -523,7 +522,7 @@ tool's legacy category (below), else in Rules.
   message, each prefilled; tool and rule id come from the snapshot item's
   `permTool`/`ruleId`, the message from the rule record, level and agent from
   the row address), persisting through `rule.update`, which upserts a
-  `RuleRecord` by `tool` + `id` — so editing a curated, mined or catalog row
+  `RuleRecord` by `tool` + `id` — so editing a curated or catalog row
   materialises a custom override of the same identity.
 
 The hint line says `enter edit number`, `space switch` or `enter edit rule`
@@ -666,8 +665,6 @@ export interface Item {
   readonly patterns?: readonly string[]
   /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern. Only discovery ever sets it. */
   readonly keywords?: readonly string[]
-  /** Perm rule rows only: item ids whose text mentioned this rule, most-mentioned first. Only discovery ever sets it. */
-  readonly provenance?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
   /** Perm rows only: the Permissions category of the tool the row is listed under (e.g. "commands", "files", "to"). */
@@ -1290,7 +1287,7 @@ being active) in one revision and one log line. `rule.add` derives `keywords` th
 `keywordsForPattern` when omitted and matches existing rules by `(tool, id)`
 globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
 `level`/`agent` are carried but not part of the lookup. `rule.update`
-upserts a `RuleRecord` by `(tool, id)`, so editing a curated or mined row
+upserts a `RuleRecord` by `(tool, id)`, so editing a curated or catalog row
 materialises a custom override of the same identity; blank `keywords`
 derive server-side via `keywordsForPattern` like `rule.add`. `message` is
 trimmed, a blank one clears the stored text, and an omitted one on
@@ -1384,7 +1381,7 @@ chat with warming off or never warmed send at once.
 
 New optional keys: `SnapshotItem` carries `codemode`, `namespace`,
 `pinned`, `execute`, `permTool`, `ruleId`, `patterns`, `keywords`,
-`provenance`, `custom`, `policy?` (`{ on, off }`, each an array of
+`custom`, `policy?` (`{ on, off }`, each an array of
 `{ action, resource, effect: "allow" | "deny" | "ask" }`) and `runID?`, the two
 fields that make a team policy row read as a policy row on the client side,
 and the per-tool permission fields `category?`, `permKind?`
@@ -2041,10 +2038,10 @@ Tool permission rules carry the same field:
   is <n>; this call has <m>`).
 - `apply.ts` prefers the user record's message for a custom row and falls back
   to the curated message, then the catalog row's own, for a shipped row
-  (`curatedRuleMessage(tool, rule) ?? item.message`); a mined row has none and
-  keeps the generic refusal.
+  (`curatedRuleMessage(tool, rule) ?? item.message`); a subagent row has none
+  and keeps the generic refusal.
 - `instructions_read` on a perm row returns `message` when the row has one
-  (the same fallback), and the TUI inspector prints it under `provenance`.
+  (the same fallback), and the TUI inspector prints it under `message`.
 - Two whole-set resubmissions carry the same optional fields. A state-only
   write — `set` with `state` alone — goes through `tools.ts`
   `toSnapshotRecords`; every TUI write (`persist` in
@@ -2476,7 +2473,7 @@ export interface DeleteInput { readonly id: string; readonly confirm: true }
   governed by `set`'s permission rows.
 - `read` defaults to view
   `resolved`. On a perm row every view but `record` returns the rule view
-  (`tool`, `rule`, `label`, `patterns`, `keywords`, `provenance`, `custom`,
+  (`tool`, `rule`, `label`, `patterns`, `keywords`, `custom`,
   `enabled`, `source`, `category`, `kind` — the row's `permKind`, `rule` when
   absent — plus `field` and `value` when the row has them and `limit` — the
   resolved number, `null` when the text holds none — on a limit or bound row;
@@ -2615,20 +2612,27 @@ path is skipped.
 - Rows come from four sources. The per-tool catalog (`permission-catalog.ts`,
   below) gives every tool, Code Mode and MCP included, its categories of
   rows. Team rows come from `team-policy-rows.ts` (Team rules are instructions
-  rows). Two view-time sources are merged by `mergeRules` (curated
-  label wins on a pattern-set collision; most-mentioned discovered first,
-  then unmentioned curated generics): the curated registry (shell, edit,
-  write, read, webfetch, glob, grep entries, plus one `idRules` row per
-  discovered agent id for `subagent`; skills are not rule rows — each skill
-  item is its own switch, listed under the skill tool's Permissions › Skills
-  category), and candidates mined
-  from text Plus already holds (tool/base/skill/role/file/teaching rows,
-  with `provenance` naming the mentioning item ids). The merged rank carries
-  through as `Item.order` so the tree shows most-mentioned first. User
+  rows). The curated registry (shell, edit, write, read, webfetch, glob, grep
+  entries, plus one `idRules` row per discovered agent id for `subagent`;
+  skills are not rule rows — each skill item is its own switch, listed under
+  the skill tool's Permissions › Skills category) lists for native and Plus
+  tools outside Code Mode and `execute`, in registry order. User
   `RuleRecord` customs overlay as `custom: true` rows; a record whose
   `tool` + `id` is a catalog row's keeps what that row is (its category, kind,
   input field, fallback or allow role) and replaces only its label, patterns,
-  keywords and message (`discover.ts` `permItems`). Mined and catalog rows are
+  keywords and message (`discover.ts` `permItems`). Nothing is generated from
+  prompt text. Up to plus-1.3.26 rows were mined from the commands, paths and
+  sites tool, base, skill, role, file and teaching texts mention ("Mentioned
+  in instructions"); most were examples, rows that could never match (`~`,
+  `$VAR`, folders) or copies of shipped rules, and one with a shipped rule's
+  id replaced it (`env *` for Environment inspection). `mined-legacy.ts` keeps
+  a frozen copy of that generator for one job: discovery reports, as
+  `Discovered.minedRules`, a `RuleRecord` for each `off` record on a `perm:`
+  row it no longer lists whose rule the generator still finds in those texts
+  (same ranking, a set equal to a shipped rule's is that rule), at the
+  record's own level, agent, team and catalogue; `activate` stores them once
+  through a delta `mutate`, so a rule someone switched off keeps refusing as
+  their own rule. Curated and catalog rows are
   view-time only: never persisted, and never part of the publish fingerprint
   (`fingerprintPublish` and the publish snapshot keep only the perm items
   carrying `policy` or `agents` — team rows, so a run starting or settling
@@ -2817,9 +2821,8 @@ Location directory (`~` expands), and the opencode session tools' Other
 sessions row a `sessionID` other than the caller's.
 
 Where a row lists (`categoryOfRow`, `categoryLabel`, `categoryOrder`,
-`hostOf`): a catalog or team row carries its own `category`; a mined row goes
-to `suggested`, "Mentioned in instructions"; curated, `idRules` and user rows
-take their tool's legacy category — shell Commands, edit/write/patch/read
+`hostOf`): a catalog or team row carries its own `category`; curated,
+`idRules` and user rows take their tool's legacy category — shell Commands, edit/write/patch/read
 Files, webfetch Sites, glob/grep Search patterns, subagent Agents, skill
 Skills — else Rules. Shell's and read's legacy categories share the catalog's
 ids (`commands`, `files`), so their curated and catalog rows list together;

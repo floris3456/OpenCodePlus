@@ -95,8 +95,7 @@ const curated: readonly Item[] = curatedRules
       ruleId: rule.id,
       patterns: [...rule.patterns],
       keywords: [...rule.keywords],
-      provenance: [],
-      category: categoryOfRow({ permTool: rule.tool, provenance: [], ruleId: rule.id }, true),
+      category: categoryOfRow({ permTool: rule.tool, ruleId: rule.id }),
     }
   })
 

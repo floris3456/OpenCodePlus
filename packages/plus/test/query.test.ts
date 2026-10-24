@@ -914,7 +914,6 @@ function permSnap() {
         ruleId: "git-push",
         patterns: ["git push *"],
         keywords: ["git push"],
-        provenance: [],
       }),
     ],
     records: [],

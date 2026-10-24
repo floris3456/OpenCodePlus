@@ -136,8 +136,6 @@ export interface Item {
   readonly patterns?: readonly string[]
   /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern. Only discovery ever sets it. */
   readonly keywords?: readonly string[]
-  /** Perm rule rows only: item ids whose text mentioned this rule, most-mentioned first. Only discovery ever sets it. */
-  readonly provenance?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
   /**
@@ -1046,7 +1044,7 @@ export interface ModelRecord {
   readonly updated: string
 }
 
-// One curated or mined tool permission rule. On/off reuses
+// One user-defined tool permission rule (or a user's edit of a shipped one). On/off reuses
 // CustomizationRecord.state on a `perm:<tool>:<rule>` item address, so
 // resolve() already yields `enabled` with no new logic here.
 export interface RuleRecord {

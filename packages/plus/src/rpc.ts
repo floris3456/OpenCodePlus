@@ -130,7 +130,6 @@ export const SnapshotItem = Schema.Struct({
   ruleId: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
   keywords: Schema.optionalKey(Schema.Array(Schema.String)),
-  provenance: Schema.optionalKey(Schema.Array(Schema.String)),
   custom: Schema.optionalKey(Schema.Boolean),
   ownedBy: Schema.optionalKey(Schema.String),
   policy: Schema.optionalKey(PolicyEffects),
@@ -2423,8 +2422,8 @@ export const ModelPickOutput = Schema.Struct({
   changed: Schema.Boolean,
 }).annotate({ identifier: "Plus.ModelPickOutput" })
 
-// Tool-specific permission rules (phase 3). A RuleRecord defines a user-added
-// rule; toggling any rule (curated, mined, or custom) is a CustomizationRecord
+// Tool-specific permission rules. A RuleRecord defines a user-added rule;
+// toggling any rule (curated, catalog or custom) is a CustomizationRecord
 // with state on/off on the perm item address. Patterns are CORE RESOURCE
 // WILDCARDS over the parsed command text, NOT regex: `*` spans any run, `?`
 // matches one character. For shell the resource is the parsed command text,
@@ -2432,7 +2431,7 @@ export const ModelPickOutput = Schema.Struct({
 // text the model reads in place of the generic denial; blank clears it.
 // `catalogue` on `rule.add` picks where a new shared (`agent: null`) rule
 // lands; on `rule.update` it names the addressed row's catalogue, which a
-// first write (a curated/mined override) materialises into. A matched
+// first write (a curated or catalog override) materialises into. A matched
 // existing rule keeps the catalogue and team it was stored with, so editing
 // a message never moves a Teams rule into the Agents catalogue.
 export interface RuleAddInput extends Schema.Schema.Type<typeof RuleAddInput> {}

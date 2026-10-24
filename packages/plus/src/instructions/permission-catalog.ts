@@ -1251,8 +1251,8 @@ export function catalogFor(tool: string, group?: Item["group"]): readonly Catego
   return []
 }
 
-// Categories of rows that predate the catalog (curated, mined, user rules and
-// team role rows), keyed by the tool they belong to. Their ids never change,
+// Categories of rows that predate the catalog (curated, user rules and team
+// role rows), keyed by the tool they belong to. Their ids never change,
 // so stored overrides keep resolving; only where they are listed moved.
 const legacyCategories: Record<string, { readonly id: string; readonly label: string }> = {
   shell: { id: "commands", label: "Commands" },
@@ -1266,17 +1266,14 @@ const legacyCategories: Record<string, { readonly id: string; readonly label: st
   subagent: { id: "agents", label: "Agents" },
 }
 
-export const suggestedCategory = { id: "suggested", label: "Mentioned in instructions" } as const
 export const roleCategory = { id: "role", label: "Team role" } as const
 
 // Which category a row is listed under, whether or not it came from the
-// catalog: a catalog or team row carries its own, a mined row (with
-// provenance and no curated message) goes to "Mentioned in instructions",
-// and every other legacy row takes its tool's category.
-export function categoryOfRow(item: Pick<Item, "category" | "permTool" | "provenance" | "custom" | "policy" | "ruleId">, curated: boolean): string {
+// catalog: a catalog or team row carries its own, and every other legacy row
+// takes its tool's category.
+export function categoryOfRow(item: Pick<Item, "category" | "permTool" | "custom" | "policy" | "ruleId">): string {
   if (item.category !== undefined) return item.category
   if (item.policy !== undefined) return roleCategory.id
-  if (!curated && item.custom !== true && (item.provenance?.length ?? 0) > 0) return suggestedCategory.id
   return legacyCategories[item.permTool ?? ""]?.id ?? "rules"
 }
 
@@ -1294,7 +1291,6 @@ export function categoryLabel(tool: string, category: string): string {
     sharedInto(tool).find((entry) => entry.id === category) ??
     catalogFor(hostOf(tool)).find((entry) => entry.id === category)
   if (spec !== undefined) return spec.label
-  if (category === suggestedCategory.id) return suggestedCategory.label
   if (category === roleCategory.id) return roleCategory.label
   const legacy = Object.values(legacyCategories).find((entry) => entry.id === category)
   if (legacy !== undefined) return legacy.label
@@ -1313,8 +1309,6 @@ export function categorySummary(tool: string, category: string): string | undefi
     sharedInto(tool).find((entry) => entry.id === category) ??
     catalogFor(hostOf(tool)).find((entry) => entry.id === category)
   if (spec !== undefined) return spec.summary
-  if (category === suggestedCategory.id)
-    return "Rules suggested by paths, commands and sites the instructions mention. They refuse what they match while off."
   if (category === roleCategory.id) return "Rows that install their own core rules for this member. Changing a row here changes the rules."
   if (category === "to") return "Members this member may delegate to. Each row is one member of the team."
   if (category === "runs") return "Which runs this member may address with this tool, besides its own run and its direct children."
@@ -1324,13 +1318,13 @@ export function categorySummary(tool: string, category: string): string | undefi
 }
 
 // Categories listed first to last for a tool: catalog order, then the legacy
-// category of its curated rows, then role and suggestions.
+// category of its curated rows, then approval and rules.
 export function categoryOrder(tool: string): readonly string[] {
   const legacy = legacyCategories[tool]?.id
   const shared = sharedInto(tool).map((entry) => entry.id)
   const catalog = catalogFor(tool).map((entry) => entry.id)
   const head = ["to", "runs", "access", roleCategory.id]
-  return [...new Set([...head, ...(legacy === undefined ? [] : [legacy]), ...shared, ...catalog, "approval", "rules", suggestedCategory.id])]
+  return [...new Set([...head, ...(legacy === undefined ? [] : [legacy]), ...shared, ...catalog, "approval", "rules"])]
 }
 
 // Rows with no tool of their own list under the tool they govern:
@@ -1373,7 +1367,6 @@ export function catalogItems(tools: readonly Item[], actionOf: (tool: string) =>
           // words (cp, touch, tee) that a derived keyword would strip from
           // unrelated guidance. A user who wants a scrub adds keywords.
           keywords: [],
-          provenance: [],
           category: category.id,
           permKind: row.kind ?? category.kind,
           ...(row.field !== undefined ? { field: row.field } : category.field !== undefined ? { field: category.field } : {}),

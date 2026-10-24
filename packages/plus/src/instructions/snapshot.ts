@@ -59,7 +59,6 @@ export function itemOf(item: Plus.SnapshotItem): Item {
     ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
     ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
     ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
-    ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
     ...(item.custom === undefined ? {} : { custom: item.custom }),
     ...(item.ownedBy === undefined ? {} : { ownedBy: item.ownedBy }),
     ...(item.policy === undefined

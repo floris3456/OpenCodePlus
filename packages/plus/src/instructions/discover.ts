@@ -31,7 +31,8 @@ import {
 import { catalogItems, categoryOfRow, parameterApprovals } from "./permission-catalog.js"
 import { toolModeItem } from "./tool-mode.js"
 import { chainContext, type ContextInput, type PresetState } from "./presets.js"
-import { curatedRules, idRules, mergeRules, mineDiscoveredRules } from "./tool-permissions.js"
+import { curatedRules, idRules } from "./tool-permissions.js"
+import { switchedOffMinedRules } from "./mined-legacy.js"
 import { globalConfigDir, guidanceItemId, teachingFilePath, teachingItemId, teachingSkillId } from "./paths.js"
 import { guidanceContent, guidanceTitle } from "./guidance.js"
 import { pendingMcpTools, type KnownMcpTools } from "./mcp-tools.js"
@@ -53,6 +54,8 @@ export interface Discovered {
   readonly hosts: readonly Agent.Info[]
   /** Every catalog model with its variants and the host's opencode.json warming, for Defaults › Models. */
   readonly hostModels: readonly HostModel[]
+  /** Rules generated from prompt text up to plus-1.3.26 that a record switches off, to store as the user's own (mined-legacy.ts). */
+  readonly minedRules?: readonly Omit<RuleRecord, "updated">[]
 }
 
 
@@ -181,18 +184,12 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
   const userSystemRows = userSystemItems(instructions.length + teachingRows.length + guidanceRows.length)
   const opencodeRows = opencodePartItems(instructions.length + teachingRows.length + guidanceRows.length + userSystemRows.length)
   const modelRows = modelItems(modelRecords, upstream)
-  const permRows = permItems({
-    tools,
-    toolRows,
-    paramRows,
-    baseRows,
-    skillRows,
-    roleRows,
-    fileRows: [...fileRows, ...userSystemRows],
-    teachingRows,
-    agents,
-    skills,
-    ruleRecords,
+  const permRows = permItems({ tools, toolRows, paramRows, agents, ruleRecords })
+  const minedRules = switchedOffMinedRules({
+    records: input.records,
+    rows: permRows,
+    tools: ruleTools(toolRows),
+    texts: [...toolRows, ...baseRows, ...skillRows, ...roleRows, ...fileRows, ...userSystemRows, ...teachingRows].map((item) => item.text),
   })
   const items = [
     ...toolRows,
@@ -220,6 +217,7 @@ export async function discover(input: DiscoverInput): Promise<Discovered> {
     modelUpstream: upstream,
     hosts: agents,
     hostModels: input.hostModels ?? (await hostModelsOf(input.ctx)),
+    ...(minedRules.length === 0 ? {} : { minedRules }),
   }
 }
 
@@ -1014,8 +1012,7 @@ function teachingItems(teaching: { path: string; text: string } | undefined, ord
 }
 
 // The Tools and rules row (guidance.ts): shipped with Plus, so every host has
-// it. Its sections depend on rows (requires.ts); it is not mined for rule
-// rows, since it only names tools it already depends on.
+// it. Its sections depend on rows (requires.ts).
 function guidanceItems(order: number): Item[] {
   return [
     {
@@ -1051,7 +1048,7 @@ function userSystemItems(order: number): Item[] {
 
 // OpenCode's own system parts, read-only: the rows let the System list show
 // and move every part the model receives. Their text says what OpenCode puts
-// there; apply plans nothing for them and rules never mine them.
+// there; apply plans nothing for them.
 function opencodePartItems(order: number): Item[] {
   return [toolsPart, ...opencodeParts].map((part, index): Item => ({
     id: opencodePartItemId(part.name),
@@ -1066,88 +1063,48 @@ function opencodePartItems(order: number): Item[] {
   }))
 }
 
-// Tool-specific permission rules as view-time perm items. Curated defaults
-// (plus subagent/skill idRules from discovered ids) merge with mined
-// candidates by pattern via mergeRules (curated label wins, most-mentioned
-// first). User RuleRecords overlay as custom rows. Only native/plus,
-// non-Code-Mode, non-execute tools get a subgroup: MCP resources are always
-// "*" and Code Mode denies are whole-tool, so per-resource rules there would
-// never match core evaluation.
+// Tool-specific permission rules as view-time perm items: the curated
+// defaults plus one subagent rule per discovered agent id, the catalog rows,
+// and the user's RuleRecords as custom rows. Only native/plus, non-Code-Mode,
+// non-execute tools get curated rows: MCP resources are always "*" and Code
+// Mode denies are whole-tool, so per-resource rules there would never match
+// core evaluation.
 function permItems(input: {
   readonly tools: readonly (Tool.Info & { readonly id: string })[]
   readonly toolRows: readonly Item[]
   readonly paramRows: readonly Item[]
-  readonly baseRows: readonly Item[]
-  readonly skillRows: readonly Item[]
-  readonly roleRows: readonly Item[]
-  readonly fileRows: readonly Item[]
-  readonly teachingRows: readonly Item[]
   readonly agents: readonly Agent.Info[]
-  readonly skills: readonly Skill.Info[]
   readonly ruleRecords: readonly RuleRecord[]
 }): Item[] {
-  const eligible = new Set(
-    input.toolRows
-      .filter((item) => (item.group === "native" || item.group === "plus") && item.codemode !== true && item.execute !== true)
-      .map((item) => item.id),
-  )
+  const eligible = ruleTools(input.toolRows)
   // Every tool, Code Mode and MCP included, lists its catalog categories.
   const catalog = catalogItems(input.toolRows, (tool) => permActionForTool(input.tools, tool))
   if (eligible.size === 0 && input.ruleRecords.length === 0) return catalog
   const agentIds = [...new Set(input.agents.map((agent) => String(agent.id)))].toSorted()
-  const texts: { item: string; text: string }[] = [
-    ...input.toolRows.map((item) => ({ item: item.id, text: item.text })),
-    ...input.baseRows.map((item) => ({ item: item.id, text: item.text })),
-    ...input.skillRows.map((item) => ({ item: item.id, text: item.text })),
-    ...input.roleRows.map((item) => ({ item: item.id, text: item.text })),
-    ...input.fileRows.map((item) => ({ item: item.id, text: item.text })),
-    ...input.teachingRows.map((item) => ({ item: item.id, text: item.text })),
-  ]
-  // Skills are not rule rows: each skill item is its own on/off, listed in the
-  // owner's Skills tab (tree.ts lazySkills).
-  const mined = mineDiscoveredRules({ texts, agents: agentIds })
   const byId = new Map<string, Item>()
-  for (const row of input.toolRows) {
-    if (!eligible.has(row.id)) continue
-    const toolId = row.id.startsWith("tool:") ? row.id.slice("tool:".length) : row.id
-    if (toolId.length === 0) continue
-    const curated = [
-      ...curatedRules.filter((rule) => rule.tool === toolId),
-      ...(toolId === "subagent" ? idRules("subagent", agentIds) : []),
-    ]
-    const discovered = mined.filter((entry) => entry.tool === toolId)
-    if (curated.length === 0 && discovered.length === 0) continue
-    const ranked = mergeRules(curated, discovered)
+  for (const toolId of eligible) {
     const toolAction = permActionForTool(input.tools, toolId)
-    ranked.forEach((merged, order) => {
-      const id = permItemId(toolId, merged.id)
-      if (byId.has(id)) {
-        const current = byId.get(id)
-        if (current === undefined) return
-        const combined = [...new Set([...(current.provenance ?? []), ...merged.provenance])].toSorted()
-        byId.set(id, { ...current, provenance: combined })
-        return
-      }
-      const text = `${merged.label}\n${merged.patterns.join("\n")}`
-      const isCurated = curated.some((rule) => rule.id === merged.id)
+    const rules = [...curatedRules.filter((rule) => rule.tool === toolId), ...(toolId === "subagent" ? idRules("subagent", agentIds) : [])]
+    rules.forEach((rule, order) => {
+      const id = permItemId(toolId, rule.id)
+      const text = `${rule.label}\n${rule.patterns.join("\n")}`
       byId.set(id, {
         id,
         kind: "perm",
         group: "none",
-        title: merged.label,
+        title: rule.label,
         text,
         enabled: upstreamEnabled(),
         fingerprint: fingerprint(text),
         order,
         permTool: toolId,
-        ruleId: merged.id,
-        patterns: [...merged.patterns],
-        keywords: [...merged.keywords],
-        provenance: [...merged.provenance],
-        category: categoryOfRow({ permTool: toolId, provenance: merged.provenance, ruleId: merged.id }, isCurated),
+        ruleId: rule.id,
+        patterns: [...rule.patterns],
+        keywords: [...rule.keywords],
+        category: categoryOfRow({ permTool: toolId, ruleId: rule.id }),
         // edit's curated file rows guard patch too (one "edit" action), so
         // patch lists them; write keeps its own curated copies.
-        ...(toolId === "edit" && isCurated ? { alsoUnder: ["patch"] } : {}),
+        ...(toolId === "edit" ? { alsoUnder: ["patch"] } : {}),
         ...(toolAction === undefined ? {} : { permAction: toolAction }),
       })
     })
@@ -1177,16 +1134,26 @@ function permItems(input: {
       ruleId: record.id,
       patterns: [],
       keywords: [],
-      provenance: [],
       custom: true,
       // The agent the rule was created for owns it (§3.3 fallback: upstream).
-      category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }, false),
+      category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }),
       ...(action === undefined ? {} : { permAction: action }),
     })
   }
   const legacy = [...byId.values()]
   const taken = new Set(legacy.map((item) => item.id))
   return [...legacy, ...catalog.filter((item) => !taken.has(item.id))].toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+}
+
+// The tools that get curated rule rows: native and Plus tools outside Code
+// Mode and execute.
+function ruleTools(toolRows: readonly Item[]): Set<string> {
+  return new Set(
+    toolRows
+      .filter((item) => (item.group === "native" || item.group === "plus") && item.codemode !== true && item.execute !== true)
+      .map((item) => (item.id.startsWith("tool:") ? item.id.slice("tool:".length) : item.id))
+      .filter((toolId) => toolId.length > 0),
+  )
 }
 
 function permActionForTool(tools: readonly (Tool.Info & { readonly id: string })[], toolId: string): string | undefined {

@@ -221,7 +221,6 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
     facts.push(["enforced by", perm.enforcement])
     facts.push(["patterns", perm.patterns.join(", ") || "(none)"])
     if (perm.keywords.length > 0) facts.push(["keywords", perm.keywords.join(", ")])
-    facts.push(["provenance", perm.provenance.join(", ") || "curated"])
     if (perm.message !== undefined) facts.push(["message", perm.message])
   }
   const scrub = scrubInfo(node, snapshot, memo)

@@ -22,6 +22,7 @@ import { seedSystemInstruction, teachingContent } from "../src/instructions/teac
 import { captureBaselines, createState } from "../src/index.js"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, resolve, scopesOf, type CustomizationRecord, type Level } from "../src/instructions/model.js"
+import { curatedRules } from "../src/instructions/tool-permissions.js"
 import { chainContext } from "../src/instructions/presets.js"
 import { agentHarness, modelHarness, context, modelInfo, modelRef, promptHarness, skillHarness, type PromptClassificationTable } from "./harness.js"
 
@@ -843,6 +844,32 @@ test("a shared off record through discover -> apply installs a real skill denial
   ])
 })
 
+test("a command mentioned in a prompt never replaces a shipped rule's patterns", async () => {
+  const directory = await tempDir("plus-discover-")
+  const records = [sharedRecord("perm:shell:env", "off")]
+  const discovered = await discover({
+    ctx: fullContext({
+      directory,
+      tools: [{ ...tool("shell", "Runs a command.\n`env *` lists the environment.\nkill the old server first."), options: { codemode: false } }],
+    }),
+    records,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const env = discovered.items.find((entry) => entry.id === "perm:shell:env")
+  const kill = discovered.items.find((entry) => entry.id === "perm:shell:kill")
+  if (env === undefined || kill === undefined) throw new Error("expected perm:shell:env and perm:shell:kill")
+  expect(env.title).toBe("Environment inspection")
+  expect(env.patterns).toEqual(["env", "env *", "printenv", "printenv *", "export", "export *"])
+  expect(kill.patterns).toEqual(["kill *", "pkill *"])
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  await apply(
+    context({ agent: agents.domain }),
+    makeInput({ items: [env], records, scopes: scopesOf(discovered.agents), agents: [{ id: "alpha", level: "project" }] }),
+  )
+  expect(agents.state.get("alpha")?.permissions.map((rule) => rule.resource)).toContain("printenv *")
+})
+
 test("a shared off record through discover -> apply removes a native tool", async () => {
   const directory = await tempDir("plus-discover-")
   const records = [sharedRecord("tool:reader", "off")]
@@ -1194,29 +1221,61 @@ test("discovery emits model candidates with agent scoping plus file-backed upstr
   expect(discovered.modelUpstream.get("alpha")).toEqual({ providerID: "acme", modelID: "nova-1" })
 })
 
-test("discovery mines perm candidates with provenance, merging curated labels first", async () => {
+test("discovery lists the shipped rules, never the commands, paths and sites a prompt mentions", async () => {
   const directory = await tempDir("plus-discover-")
-  const shellDesc = "Run `git push --force origin` and `bun run test`. See package.json and https://github.com/acme/repo."
-  const editEntry = nativeTool("edit", "Edit files like package.json.")
+  const shellDesc = "Run `git push --force origin` and `bun run test`. See package.json, src/foo.c and https://docs.example.org/guide."
   const discovered = await discover({
     ctx: fullContext({
       directory,
-      tools: [nativeTool("shell", shellDesc), editEntry, nativeTool("webfetch", "Fetch URLs.")],
+      tools: [nativeTool("shell", shellDesc), nativeTool("edit", "Edit files like src/app.py."), nativeTool("webfetch", "Fetch https://example.com/x.")],
       skills: [skill("notes", "Use `rm -rf /tmp/work` to clean.", path.join(directory, "skills", "notes", "SKILL.md"))],
     }),
     records: [],
-    baseTemplates: [{ id: "general", title: "General.txt", text: "Use git status here." }],
+    baseTemplates: [{ id: "general", title: "General.txt", text: "Use git rebase here." }],
     activeBase: noBase,
   })
-  const perms = new Map(discovered.items.filter((item) => item.kind === "perm").map((item) => [item.id, item]))
-  expect(perms.get("perm:shell:git-push")).toMatchObject({ permTool: "shell", ruleId: "git-push", patterns: ["git push *"], keywords: ["git push"] })
-  expect(perms.get("perm:shell:git-push-force")).toMatchObject({ patterns: ["git push --force *"] })
-  expect(perms.get("perm:shell:git-push-force")?.provenance?.length ?? 0).toBeGreaterThan(0)
-  expect(perms.get("perm:edit:package-json")).toMatchObject({ patterns: ["package.json", "*/package.json"] })
-  expect(perms.get("perm:edit:package-json")?.provenance?.length ?? 0).toBeGreaterThan(0)
-  expect(perms.get("perm:webfetch:github")).toMatchObject({ patterns: ["*github.com*"] })
-  expect(perms.get("perm:webfetch:github")?.provenance?.length ?? 0).toBeGreaterThan(0)
-  expect([...perms.keys()].some((id) => id.startsWith("perm:mcp:"))).toBe(false)
+  // Catalog rows carry "<category>.<row>" ids; every other rule row is a shipped one.
+  const rules = discovered.items.filter((item) => item.kind === "perm" && item.ruleId?.includes(".") === false && ["shell", "edit", "webfetch"].includes(item.permTool ?? ""))
+  const shipped = curatedRules.filter((rule) => ["shell", "edit", "webfetch"].includes(rule.tool)).map((rule) => `perm:${rule.tool}:${rule.id}`)
+  expect(rules.map((item) => item.id).toSorted()).toEqual(shipped.toSorted())
+  expect(rules.find((item) => item.id === "perm:shell:git-push")).toMatchObject({ patterns: ["git push *"], keywords: ["git push"], category: "commands" })
+  expect(rules.find((item) => item.id === "perm:edit:package-json")).toMatchObject({ patterns: ["package.json", "*/package.json"], alsoUnder: ["patch"] })
+  expect(discovered.minedRules).toBeUndefined()
+})
+
+test("a generated rule someone switched off is kept as their own rule and still refuses", async () => {
+  const directory = await tempDir("plus-discover-")
+  const records = [sharedRecord("perm:edit:src-foo-c", "off"), sharedRecord("perm:shell:git-rebase", "off")]
+  const tools = [nativeTool("shell", "Never `git rebase main` here."), nativeTool("edit", "Edits files such as src/foo.c.")]
+  const first = await discover({ ctx: fullContext({ directory, tools }), records, baseTemplates: noTemplates, activeBase: noBase })
+  expect(first.items.some((item) => item.id === "perm:edit:src-foo-c" || item.id === "perm:shell:git-rebase")).toBe(false)
+  expect(first.minedRules).toEqual([
+    { type: "rule", level: "defaults", agent: null, tool: "edit", id: "src-foo-c", label: "src/foo.c", patterns: ["src/foo.c"], keywords: ["src/foo.c"] },
+    { type: "rule", level: "defaults", agent: null, tool: "shell", id: "git-rebase", label: "git rebase", patterns: ["git rebase *"], keywords: ["git rebase"] },
+  ])
+  // Stored, the rules list as the user's own and the mention no longer matters.
+  const rules = (first.minedRules ?? []).map((rule) => ({ ...rule, updated: UPDATED }))
+  const stored = await discover({
+    ctx: fullContext({ directory, tools: [nativeTool("shell", "Runs a command."), nativeTool("edit", "Edits a file.")] }),
+    records,
+    ruleRecords: rules,
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  expect(stored.minedRules).toBeUndefined()
+  const items = stored.items.filter((item) => item.id === "perm:edit:src-foo-c" || item.id === "perm:shell:git-rebase")
+  expect(items.map((item) => [item.id, item.custom])).toEqual([["perm:edit:src-foo-c", true], ["perm:shell:git-rebase", true]])
+  const agents = agentHarness([agentInfo("alpha", "upstream")])
+  await apply(
+    context({ agent: agents.domain }),
+    makeInput({ items, records, rules, scopes: scopesOf(stored.agents), agents: [{ id: "alpha", level: "project" }] }),
+  )
+  expect(agents.state.get("alpha")?.permissions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ action: "edit", resource: "src/foo.c", effect: "deny" }),
+      expect.objectContaining({ action: "shell", resource: "git rebase *", effect: "deny" }),
+    ]),
+  )
 })
 
 test("a model-less project file falls through to the defining file and host models", async () => {

@@ -185,7 +185,6 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       ...(item.ruleId === undefined ? {} : { ruleId: item.ruleId }),
       ...(item.patterns === undefined ? {} : { patterns: [...item.patterns] }),
       ...(item.keywords === undefined ? {} : { keywords: [...item.keywords] }),
-      ...(item.provenance === undefined ? {} : { provenance: [...item.provenance] }),
       ...(item.custom === undefined ? {} : { custom: item.custom }),
       ...(item.permAction === undefined ? {} : { permAction: item.permAction }),
     })),
@@ -2155,10 +2154,10 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(rowIds(listed)).not.toContain(row.id)
   const alphas = (await runOk(need(tools, "instructions_find"), { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] }
   expect(rowIds(alphas)).toContain(row.id)
-  const shown = (await runOk(need(tools, "instructions_read"), { id: row.id })) as { patterns: string[]; keywords: string[]; provenance: string[]; scrub: { hidden: number }; message?: string }
+  const shown = (await runOk(need(tools, "instructions_read"), { id: row.id })) as { patterns: string[]; keywords: string[]; scrub: { hidden: number }; message?: string }
   expect(shown.patterns).toEqual(["git push *"])
   expect(shown.keywords).toContain("git push")
-  expect(Array.isArray(shown.provenance)).toBe(true)
+  expect("provenance" in shown).toBe(false)
   // A shipped curated rule carries a short refusal message, and show reads it.
   expect(shown.message).toBe("pushing is not allowed here")
   // alpha inherits the rule off, so on is the edit that is stored…

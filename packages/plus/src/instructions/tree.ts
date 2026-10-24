@@ -117,7 +117,6 @@ import { ownBody, wrappingSection, type Section, type Split } from "./sections.j
 import type { TeamLevel } from "./teams.js"
 import { categoryOfRow, categoryOrder, hostOf } from "./permission-catalog.js"
 import { toolModes } from "./tool-mode.js"
-import { curatedRuleMessage } from "./tool-permissions.js"
 
 export type { Memo }
 export { buildMemo }
@@ -3805,7 +3804,7 @@ export function toolPermissionRows(
   )
   const byCategory = new Map<string, ListedRow[]>()
   for (const row of rows) {
-    const category = categoryOfRow(row.item, row.item.ruleId !== undefined && curatedRuleMessage(row.item.permTool ?? "", row.item.ruleId) !== undefined)
+    const category = categoryOfRow(row.item)
     byCategory.set(category, [...(byCategory.get(category) ?? []), row])
   }
   const order = categoryOrder(toolId)

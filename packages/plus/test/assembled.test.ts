@@ -837,7 +837,6 @@ test("an all-matching scrub preserves the original in assembled, matching the li
       ruleId: "git-push",
       patterns: ["git push *"],
       keywords: ["git push"],
-      provenance: [] as string[],
     },
   ]
   const records = [

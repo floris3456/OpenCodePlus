@@ -667,7 +667,7 @@ core's `edit` action (`packages/plus/src/instructions/apply.ts:385`,
   through the rule store and the snapshot serializer
   (`packages/plus/src/tools.ts:516`).
 - `instructions_read` on a perm row returns the effective message: the user
-  rule's own stored message wins, a curated row ships one, a mined row has none
+  rule's own stored message wins, a curated row ships one, a subagent row has none
   (`packages/plus/src/tools.ts:973`, `packages/plus/src/tools.ts:1035`).
 - The TUI rule dialog prompts `Message shown on refusal (optional)` and writes
   it through `rule.update`; the detail pane renders `message:` when present

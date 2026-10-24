@@ -1890,7 +1890,7 @@ function updateRuleRow(
         level: address.level,
         agent: address.agent,
         // The row's own address decides where a first write (an override of
-        // this curated/mined row) materialises: a Teams-catalogue row must
+        // this curated or catalog row) materialises: a Teams-catalogue row must
         // create a Teams rule, not an Agents one. A matched record keeps its
         // stored catalogue server-side, so this only matters for a new one.
         ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
@@ -2125,7 +2125,6 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const resolved = resolve(chain)
       const patterns = upstream.patterns === undefined ? [] : [...upstream.patterns]
       const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
-      const provenance = upstream.provenance === undefined ? [] : [...upstream.provenance]
       const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
       const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
       const message = upstream.custom === true ? upstream.message : curatedRuleMessage(upstream.permTool ?? "", upstream.ruleId ?? "") ?? upstream.message
@@ -2138,7 +2137,6 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           label: upstream.title,
           patterns,
           keywords,
-          provenance,
           custom: upstream.custom === true,
           enabled: resolved.enabled,
           source: resolved.source,

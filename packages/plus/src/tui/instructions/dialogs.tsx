@@ -1312,7 +1312,7 @@ export function createInstructionsDialogs(
       return
     }
     // The row's own catalogue rides along for the upsert path: editing a
-    // curated or mined Teams row materialises its override in the Teams
+    // curated or catalog Teams row materialises its override in the Teams
     // catalogue. A matched record keeps its stored identity server-side, and
     // an agent-qualified row never gains a catalogue.
     const catalogue = address.agent === null ? address.catalogue : undefined

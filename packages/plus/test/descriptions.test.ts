@@ -42,17 +42,6 @@ const items: Item[] = [
     permTool: "shell",
     ruleId: "git-push",
     patterns: ["git push *"],
-    provenance: ["tool:shell"],
-  }),
-  item("perm:shell:mined", {
-    kind: "perm",
-    group: "none",
-    title: "Push from instructions",
-    text: "Push\ngit push origin *",
-    permTool: "shell",
-    ruleId: "push-origin",
-    patterns: ["git push origin *"],
-    provenance: ["instruction:AGENTS.md"],
   }),
   // A tool with no legacy category carries its own rules in "Rules".
   item("perm:coder:custom", {
@@ -240,9 +229,6 @@ test("a tool's Description group, a team's Special group and permission categori
   )
   expect(detail("group:project:alice:tool:shell:permissions:commands")).toBe(
     "Command families. The shell's permission resource is each parsed command's text, so these are wildcard patterns over it. With Every other command off, only the allowed rows run, each command of a pipeline or list checked on its own.",
-  )
-  expect(detail("group:project:alice:tool:shell:permissions:suggested")).toBe(
-    "Rules suggested by paths, commands and sites the instructions mention. They refuse what they match while off.",
   )
   // A category without a catalog summary still answers with its own line.
   expect(detail("group:project:alice:tool:coder:permissions:rules")).toBe(

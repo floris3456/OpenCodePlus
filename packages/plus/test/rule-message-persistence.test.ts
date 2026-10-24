@@ -674,7 +674,6 @@ describe("rule message persistence across boundaries", () => {
           ruleId: "no-push",
           patterns: ["git push --force *"],
           keywords: ["git push"],
-          provenance: [] as string[],
           custom: true,
         },
       ]
