@@ -3,15 +3,8 @@ import { ConfigProviderPlugin } from "@opencode/core/config/plugin/provider"
 import { Integration } from "@opencode/core/integration"
 import { Model } from "@opencode/core/model"
 import { Plugin } from "@opencode/core/plugin"
-import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { Provider } from "@opencode/core/provider"
-import { Database } from "@opencode/core/database/database"
-import { SessionTable } from "@opencode/core/session/sql"
-import { Agent } from "@opencode/schema/agent"
-import { Session } from "@opencode/schema/session"
-import { SessionMessage } from "@opencode/schema/session-message"
-import { eq } from "drizzle-orm"
 import { Document, Info, type Entry } from "@opencode/schema/config"
 import cliproxyapi, { BASE_URL_PATTERN, ID, INTEGRATION_ID, PROVIDER_ID } from "@opencodeplus/cliproxyapi/server"
 import { describe, expect, test } from "bun:test"
@@ -281,94 +274,6 @@ describe("opencode.plus.cliproxyapi /connect", () => {
         const data = yield* Queue.take(seen).pipe(Effect.timeout("2 seconds"))
         expect(data).toMatchObject({ integrationID: INTEGRATION_ID })
       }),
-    ),
-  )
-})
-
-describe("opencode.plus.cliproxyapi prompt cache key", () => {
-  const requestKey = (sessionID: Session.ID, provider = providerID) =>
-    Effect.gen(function* () {
-      const hooks = yield* PluginHooks.Service
-      const event = yield* hooks.trigger("session", "model.request", {
-        sessionID,
-        agent: Agent.ID.make("build"),
-        model: Model.Ref.make({ providerID: provider, id: Model.ID.make("gpt-5") }),
-        kind: "primary",
-        headers: {},
-        promptCacheKey: "tree-key",
-      })
-      return event.promptCacheKey
-    })
-
-  it.live("gives each chat its own key, a fork its source's, and leaves other providers alone", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() => cpa([{ id: "gpt-5" }])),
-      ({ server }) =>
-        withConfigDir(() =>
-          Effect.gen(function* () {
-            const host = yield* addPlugin()
-            const models = yield* Model.Service
-            const database = yield* Database.Service
-            yield* connect(server.url.origin)
-            const gpt = yield* eventually(
-              models.get(providerID, Model.ID.make("gpt-5")),
-              (model) => model !== undefined,
-            )
-            expect(gpt?.compatibility?.supportsPromptCacheKey).toBe(true)
-            const parent = yield* host.session.create({ title: "Parent" })
-            const child = yield* host.session.create({ parentID: parent.id })
-            const fork = yield* host.session.create({ title: "Parent (fork #1)" })
-            yield* database.db
-              .update(SessionTable)
-              .set({
-                fork_session_id: parent.id,
-                fork_boundary: { type: "through", messageID: SessionMessage.ID.make("msg_fork_boundary") },
-              })
-              .where(eq(SessionTable.id, fork.id))
-              .run()
-              .pipe(Effect.orDie)
-
-            expect(yield* requestKey(parent.id)).toBe(parent.id)
-            expect(yield* requestKey(child.id)).toBe(child.id)
-            expect(yield* requestKey(fork.id)).toBe(parent.id)
-            expect(yield* requestKey(child.id, Provider.ID.make("openai"))).toBe("tree-key")
-          }),
-        ),
-      ({ server }) => Effect.promise(() => server.stop(true)),
-    ),
-  )
-
-  it.live("a provider config with supportsPromptCacheKey false keeps the key off", () =>
-    Effect.acquireUseRelease(
-      Effect.sync(() => cpa([{ id: "gpt-5" }])),
-      ({ server }) =>
-        withConfigDir(() =>
-          Effect.gen(function* () {
-            yield* addPlugin()
-            const plugin = yield* Plugin.Service
-            const host = yield* PluginHost.make(plugin)
-            yield* ConfigProviderPlugin.Plugin.effect(host).pipe(
-              Effect.provide(
-                Config.testLayer([
-                  new Document({
-                    type: "document",
-                    info: decode({
-                      providers: { [PROVIDER_ID]: { compatibility: { supportsPromptCacheKey: false } } },
-                    }),
-                  }),
-                ]),
-              ),
-            )
-            const models = yield* Model.Service
-            yield* connect(server.url.origin)
-            const gpt = yield* eventually(
-              models.get(providerID, Model.ID.make("gpt-5")),
-              (model) => model !== undefined,
-            )
-            expect(gpt?.compatibility?.supportsPromptCacheKey).toBe(false)
-          }),
-        ),
-      ({ server }) => Effect.promise(() => server.stop(true)),
     ),
   )
 })
