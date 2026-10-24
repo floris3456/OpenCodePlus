@@ -94,6 +94,8 @@ export interface SessionModelRequest {
   readonly kind: SessionRequestKind
   baseURL?: string
   headers: Record<string, string>
+  /** Provider cache key, sent where the protocol supports one. Defaults to the session's cache affinity: children share the parent's. */
+  promptCacheKey?: string
 }
 
 export interface SessionHttpRequest {

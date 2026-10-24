@@ -1461,6 +1461,20 @@ await ctx.session.hook(
 )
 ```
 
+`event.promptCacheKey` is the cache key sent to protocols that accept one, such as OpenAI Chat and Responses. It
+defaults to the session's cache affinity, so a child session shares its parent's key. Set it to give each session its
+own key, or delete it to send none.
+
+```ts
+await ctx.session.hook(
+  "model.request",
+  (event) => {
+    event.promptCacheKey = event.sessionID
+  },
+  { providerID: "openai" },
+)
+```
+
 #### Native HTTP
 
 Modify native provider requests or responses. Their bodies are one-shot streams; clone or replace a body before reading
