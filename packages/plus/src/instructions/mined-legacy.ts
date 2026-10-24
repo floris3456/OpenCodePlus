@@ -25,7 +25,11 @@ export function switchedOffMinedRules(input: {
 }): Omit<RuleRecord, "updated">[] {
   const listed = new Set(input.rows.map((row) => row.id))
   const orphans = input.records.filter(
-    (record) => record.state === "off" && record.section === null && !listed.has(record.item) && input.tools.has(parsePermItemId(record.item)?.tool ?? ""),
+    (record) =>
+      record.state === "off" &&
+      record.section === null &&
+      !listed.has(record.item) &&
+      input.tools.has(parsePermItemId(record.item)?.tool ?? ""),
   )
   if (orphans.length === 0) return []
   const generated = generatedRules(input.texts)
@@ -125,10 +129,17 @@ function mineCommands(text: string): Generated[] {
   const out: Generated[] = []
   const seen = new Set<string>()
   const pushLine = (line: string) => {
-    const cleaned = line.trim().replace(/^[$>\s\-*`'"]+/, "").replace(/[`'"]+$/, "").trim()
+    const cleaned = line
+      .trim()
+      .replace(/^[$>\s\-*`'"]+/, "")
+      .replace(/[`'"]+$/, "")
+      .trim()
     if (cleaned.length === 0) return
     const tokens = cleaned.split(/\s+/).filter((token) => token.length > 0)
-    const head = (tokens[0] ?? "").toLowerCase().replace(/[^a-z0-9]+$/g, "").replace(/^[^a-z0-9]+/g, "")
+    const head = (tokens[0] ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+$/g, "")
+      .replace(/^[^a-z0-9]+/g, "")
     const depth = commandHeads[head]
     if (depth === undefined) return
     const rest = tokens.slice(1).map((token) => token.replace(/[`'";,]+$/g, ""))
@@ -151,7 +162,9 @@ function mineCommands(text: string): Generated[] {
 }
 
 function codeSpans(text: string): string[] {
-  const fenced = (text.match(/```[\s\S]*?```/g) ?? []).map((block) => block.replace(/^```[^\n]*\n/, "").replace(/```$/g, ""))
+  const fenced = (text.match(/```[\s\S]*?```/g) ?? []).map((block) =>
+    block.replace(/^```[^\n]*\n/, "").replace(/```$/g, ""),
+  )
   const inline = (text.match(/`[^`\n]+`/g) ?? []).map((code) => code.slice(1, -1))
   return [...fenced, ...inline]
 }
@@ -194,7 +207,14 @@ function isPath(token: string): boolean {
 function mineSites(text: string): Generated[] {
   const hosts = new Set<string>()
   for (const raw of text.match(/https?:\/\/[^\s`"'<>]+/g) ?? []) {
-    const host = raw.replace(/[.,)\]]+$/g, "").replace(/^https?:\/\//, "").split("/")[0]?.split(":")[0]?.split("?")[0]?.toLowerCase() ?? ""
+    const host =
+      raw
+        .replace(/[.,)\]]+$/g, "")
+        .replace(/^https?:\/\//, "")
+        .split("/")[0]
+        ?.split(":")[0]
+        ?.split("?")[0]
+        ?.toLowerCase() ?? ""
     if (!host.includes(".") || host.includes("github.com") || host === "127.0.0.1") continue
     hosts.add(host)
   }
