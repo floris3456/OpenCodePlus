@@ -156,6 +156,35 @@ describe("SessionModelRequest HTTP hooks", () => {
   )
 })
 
+describe("SessionModelRequest model.request hook", () => {
+  const child = Session.Info.make({ ...session, id: Session.ID.make("ses_hook_child"), parentID: session.id })
+
+  it.effect("offers the parent's cache key to a child's request and sends the key the hook leaves", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const offered: Array<string | undefined> = []
+      yield* hooks.register("session", "model.request", (event) =>
+        Effect.sync(() => {
+          offered.push(event.promptCacheKey)
+          if (event.kind === "primary") event.promptCacheKey = event.sessionID
+          if (event.kind === "title") delete event.promptCacheKey
+        }),
+      )
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const input = { session: child, agent: Agent.ID.make("build"), model, system: [], messages: [] }
+
+      const primary = yield* requests.primary(input)
+      const generate = yield* requests.generate(input)
+      const title = yield* requests.title(input)
+
+      expect(offered).toEqual([session.id, session.id, session.id])
+      expect(primary.request.promptCacheKey).toBe(child.id)
+      expect(generate.request.promptCacheKey).toBe(session.id)
+      expect(title.request.promptCacheKey).toBeUndefined()
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+})
+
 describe("SessionModelRequest hook message boundary", () => {
   it.effect("normalizes string content and drops undecodable hook messages", () =>
     Effect.gen(function* () {

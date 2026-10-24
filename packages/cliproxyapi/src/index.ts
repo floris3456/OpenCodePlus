@@ -200,6 +200,31 @@ export default Plugin.define({
           if (!provider.package) provider.package = DEFAULT_PACKAGE
         })
       })
+      // CPA keys the upstream prompt cache on the body's `prompt_cache_key` (for Codex also the
+      // `Session-Id` it sends); without one it uses one key for every request on the API key. Each
+      // chat sends its own key, so ChatGPT moving one cache group no longer costs a whole subagent
+      // tree its cache at once. A fork keeps its source's key, whose history it starts with. Account
+      // affinity stays on the session headers. `compatibility.supportsPromptCacheKey: false` in the
+      // provider's config turns the key off.
+      yield* ctx.provider.transform((providers) => {
+        for (const providerID of new Set([PROVIDER_ID, ...Object.keys(routes())]))
+          if (providers.get(providerID))
+            providers.update(providerID, (provider) => {
+              provider.compatibility = {
+                ...provider.compatibility,
+                supportsPromptCacheKey: provider.compatibility?.supportsPromptCacheKey ?? true,
+              }
+            })
+      })
+      yield* ctx.session.hook("model.request", (event) =>
+        Effect.gen(function* () {
+          if (event.model.providerID !== PROVIDER_ID && !Object.hasOwn(routes(), event.model.providerID)) return
+          const session = yield* ctx.session
+            .get({ sessionID: event.sessionID })
+            .pipe(Effect.orElseSucceed(() => undefined))
+          event.promptCacheKey = session?.fork?.sessionID ?? event.sessionID
+        }),
+      )
       // The model transform runs after provider transforms, so it reaches models
       // that config creates later (legacy quota-handoff routes, catalogue off).
       yield* ctx.model.transform((models) => {

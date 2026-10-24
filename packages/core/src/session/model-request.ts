@@ -476,6 +476,7 @@ export const layer = Layer.effect(
         ...scope,
         baseURL: typeof baseURL === "string" ? baseURL : undefined,
         headers: { ...base.http?.headers },
+        promptCacheKey: base.promptCacheKey,
       })
       const route =
         modelHook.baseURL !== undefined && modelHook.baseURL !== baseURL
@@ -487,6 +488,7 @@ export const layer = Layer.effect(
           ...base.http,
           headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
         }),
+        promptCacheKey: modelHook.promptCacheKey,
       })
       const prior = completed.get(session.id)
       const reusable = kind === "compaction" && prior && prior.epoch === input.historyEpoch &&
@@ -497,6 +499,7 @@ export const layer = Layer.effect(
       const request = pinned ? LLMRequest.update(pinned, {
         // Keep authentication/session routing current; prompt content remains pinned.
         http: fresh.http,
+        promptCacheKey: fresh.promptCacheKey,
         generation: new GenerationOptions({ ...pinned.generation, maxTokens: fresh.generation?.maxTokens }),
         messages: [...pinned.messages, ...fresh.messages.slice(pinned.messages.length)],
       }) : fresh
