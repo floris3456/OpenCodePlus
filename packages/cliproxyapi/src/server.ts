@@ -1,4 +1,4 @@
-import Pacer from "opencode-pacer/v2/server"
+import Pacer, { PROVIDER_ID } from "opencode-pacer/v2/server"
 import { Meter, type MeterSnapshot } from "opencode-pacer/core"
 import { PacerRpc } from "opencode-pacer/rpc"
 import { Plugin } from "@opencode/plugin"
@@ -37,6 +37,28 @@ export default Plugin.define({
     // Config is registered later than Pacer and can reload independently. The
     // final phase makes compatibility part of every coherent model snapshot.
     await ctx.model.transform(normalizeLegacyReasoning, { phase: "final" })
+    // CPA keys the upstream prompt cache on the body's `prompt_cache_key` (for Codex also the
+    // `Session-Id` it sends); without one it uses one key for every request on the API key, and
+    // Core's default key is the parent's. Each chat sends its own key, so ChatGPT moving one cache
+    // group no longer costs a whole subagent tree its cache at once. A fork keeps its source's key,
+    // whose history it starts with. Account affinity stays on the session headers.
+    // `compatibility.supportsPromptCacheKey: false` on the provider in config turns the key off.
+    await ctx.provider.transform((providers) => {
+      providers.update(PROVIDER_ID, (provider) => {
+        provider.compatibility = {
+          ...provider.compatibility,
+          supportsPromptCacheKey: provider.compatibility?.supportsPromptCacheKey ?? true,
+        }
+      })
+    })
+    await ctx.session.hook(
+      "model.request",
+      async (event) => {
+        const session = await ctx.session.get({ sessionID: event.sessionID }).catch(() => undefined)
+        event.promptCacheKey = session?.fork?.sessionID ?? event.sessionID
+      },
+      { providerID: PROVIDER_ID },
+    )
     await registerWebTools(ctx)
     const state = {
       routes: {} as Record<string, string>,

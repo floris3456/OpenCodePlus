@@ -49,6 +49,17 @@ The bundled code stays in the executable when removed from the enabled plugins.
   As in upstream Pacer, handoff claims apply to Claude relay models; other
   providers still contribute quota readings without receiving unsupported claims.
 - The explicit warming hook suppresses pings while a switch is pending.
+- One prompt cache key per chat: requests to the `cliproxyapi` provider carry
+  `prompt_cache_key` set to the chat's own session ID (a fork: the session it was
+  forked from, whose history it starts with), on Chat Completions as well as
+  Responses. CPA makes that key the upstream cache key; for Codex it is also the
+  `Session-Id` ChatGPT groups its prompt cache by. Without a body key CPA used one
+  key for every request on the API key, and Core's default gives subagents their
+  parent's key, so a whole subagent tree shared one cache group and lost its cache
+  together whenever ChatGPT moved that group. Account affinity is unchanged: the
+  `X-Session-Id` / `x-session-affinity` headers still carry the parent's ID.
+  `"compatibility": { "supportsPromptCacheKey": false }` on the provider in
+  `opencode.json` stops sending the key.
 - Instructions UI, instructions storage and its compaction controls are unchanged.
 - **Web search** (`src/web.ts`): three tools in the `web` group, for every chat
   model, on the `/connect` login's CPA with the models Pacer's catalogue lists.
@@ -189,17 +200,6 @@ Hosts that do not use CPA see nothing from it.
   by the relay's post-config pass, so a user's per-model `package` or
   `settings.compaction` in `opencode.json` always wins. Warming pings, usage, cost,
   cache accounting, and quota handoff continue to work over the Anthropic relay.
-- **One prompt cache key per chat.** Requests to every provider routed to CPA carry
-  `prompt_cache_key` set to the chat's own session ID (a fork: the session it was
-  forked from, whose history it starts with), on Chat Completions as well as
-  Responses. CPA makes that key the upstream cache key; for Codex it is also the
-  `Session-Id` ChatGPT groups its prompt cache by. Without a body key CPA used one
-  key for every request on the API key, and Core's default gives subagents their
-  parent's key, so a whole subagent tree shared one cache group and lost its cache
-  together whenever ChatGPT moved that group. Account affinity is unchanged: the
-  `X-Session-Id` / `x-session-affinity` headers still carry the parent's ID.
-  `"compatibility": { "supportsPromptCacheKey": false }` on the provider in
-  `opencode.json` stops sending the key.
 - **Image models.** CPA serves `gpt-image-…` models only on `/v1/images/generations`.
   They are listed as "(images)" with image output, and the `image.generate` tool
   creates an image with them and saves a PNG in the project (default
