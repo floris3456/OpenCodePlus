@@ -111,7 +111,7 @@ test("remembered message hashes give the same fingerprint, and only after the sa
   const messages = Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `turn ${i}` }))
   const first = fp({ messages })
   expect(fp({ messages })).toEqual(first)
-  expect(fp({ messages: [...messages, { role: "user", content: "next" }] }).messagePrefixes.slice(0, 6)).toEqual(first.messagePrefixes)
+  expect(fp({ messages: [...messages, { role: "user", content: "next" }] }).messagePrefixes.slice(0, 6)).toEqual([...first.messagePrefixes])
   const edited = fp({ messages: [{ role: "user", content: "other start" }, ...messages.slice(1)] })
   expect(edited.messagePrefixes.slice(1).map((m) => m.contentHash)).toEqual(first.messagePrefixes.slice(1).map((m) => m.contentHash))
   expect(edited.messagePrefixes.slice(1).filter((m, i) => m.prefixHash === first.messagePrefixes[i + 1]!.prefixHash)).toEqual([])
