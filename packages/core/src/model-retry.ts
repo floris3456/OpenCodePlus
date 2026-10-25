@@ -47,9 +47,10 @@ export const policy = Effect.gen(function* () {
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
       const next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
-      if (!next) return undefined
-      const [, duration] = next
       attempt++
+      // The schedule is used up: no retry of its own, though a session's retry hook may still ask for one.
+      if (!next) return { attempt, delay: 0, retry: false }
+      const [, duration] = next
       if (input.cause.reason._tag === "Transport" && input.cause.reason.code === "Timeout") timeouts++
       return {
         attempt,

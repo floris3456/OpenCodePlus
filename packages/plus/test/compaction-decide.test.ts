@@ -666,6 +666,29 @@ test("failed requests do not keep a cache warm: an agent whose steps fail is col
     expect((await warmingStatusFor(sessionID, now, counted, noPacer)).warmUntil).toBe(now + 4 * MINUTE)
   }))
 
+test("a step retried after CPA stopped answering compacts first when its cache goes cold within a minute", () =>
+  withColdSwitch(async () => {
+    const sessionID = "ses_outage_retry"
+    const now = Date.now()
+    // Its last answer's 5-minute cache goes cold `coldIn` from now.
+    const retry = async (coldIn: number, metadata?: Record<string, unknown>) => {
+      const started = now + coldIn - 5 * MINUTE
+      const ledger = rowsLedger([requestRow(started, { id: "req_ok", sessionID, ended: started + 10_000 })], {
+        req_ok: fiveMinuteFingerprint(),
+      })
+      const event = decision({
+        sessionID: Session.ID.make(sessionID),
+        boundary: { fresh: false, portable: true },
+        ...(metadata === undefined ? {} : { metadata }),
+      })
+      await Effect.runPromise(decideCompactionFor(wiringContext(), coldState(["proxy/one"]), event, ledger, noPacer))
+      return event.compact
+    }
+    expect(await retry(30_000), "an ordinary retry reads the warm cache").toBeUndefined()
+    expect(await retry(30_000, { "cpa.outage": true }), "after an outage, cold within the minute").toBe(true)
+    expect(await retry(2 * MINUTE, { "cpa.outage": true }), "warm for two more minutes").toBeUndefined()
+  }))
+
 test("the footer's status says when Pacer has decided the account of the chat's current model cannot serve", async () => {
   const sessionID = "ses_used_up"
   const now = Date.now()

@@ -1374,9 +1374,23 @@ effect: (ctx) =>
 ```
 
 The initial `decision` is OpenCode's policy, so hooks may make a normally terminal provider failure retryable or veto a
-proposed retry. Multiple hooks run in registration order and later hooks see the current decision. The built-in maximum
-attempt count remains a hard limit. `attempt` is the physical attempt being proposed; the initial request is attempt `1`,
-so the first retry is attempt `2`. Invalid delays (`NaN`, infinity, or negative values) fall back to the computed delay.
+proposed retry. Multiple hooks run in registration order and later hooks see the current decision. `attempt` is the
+physical attempt being proposed; the initial request is attempt `1`, so the first retry is attempt `2`. Invalid delays
+(`NaN`, infinity, or negative values) fall back to the computed delay.
+
+Once OpenCode's own retries are used up, the hook runs once more for each failure with `{ retry: false }`. Leave it so to
+end the step. A hook that sets a retry there keeps the step going, so it must bound those retries itself:
+
+```ts
+yield* ctx.session.hook("retry", (event) =>
+  Effect.sync(() => {
+    // Ride out a proxy restart: keep retrying a refused connection every 15 s, up to attempt 100.
+    if (!event.decision.retry && event.error.type === "provider.transport" && event.attempt < 100)
+      event.decision = { retry: true, delay: 15_000 }
+  }),
+)
+```
+
 Context-overflow recovery remains separate because it compacts the conversation instead of retrying the same request.
 
 Decide [session warming](/warming) per Session. The hook runs when a non-warming request starts the warming window

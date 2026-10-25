@@ -13,6 +13,7 @@ import { pacerSnapshot } from "./quota/pacer-snapshot.js"
 import { cacheOf, createChatView, nextUseOf, usedUpOf } from "./quota/next-use.js"
 import { providePacerChat } from "./pacer-cache.js"
 import { normalizeLegacyReasoning } from "./model-compatibility.js"
+import { OUTAGE_MARK, createOutageRetry } from "./outage.js"
 import { registerWebTools } from "./web.js"
 
 export const ID = "opencode-pacer"
@@ -114,7 +115,10 @@ export default Plugin.define({
     const coordinated = (model: Model.Ref) =>
       controller.enabled(model.providerID) && model.id.toLowerCase().startsWith("claude-")
     await ctx.rpc.register(Definition, { status: (input) => controller.status(input.sessionID) })
+    const outage = createOutageRetry(Date.now)
     await ctx.session.hook("compaction.decide", async (event) => {
+      if (event.reason === "auto" && outage.retried(event.sessionID))
+        event.metadata = { ...event.metadata, [OUTAGE_MARK]: true }
       await refresh()
       controller.observe(event)
       if (!coordinated(event.model)) return
@@ -142,6 +146,15 @@ export default Plugin.define({
               ? { retry: true, delay: 0 }
               : { retry: false }
     })
+    // After the quota decision above, so a refusal CPA explained keeps its own handling.
+    await ctx.session.hook("retry", async (event) => outage.retry(event), { providerID: PROVIDER_ID })
+    await ctx.session.hook(
+      "http.response",
+      async (event) => {
+        if (event.response.ok) outage.answered(event.sessionID)
+      },
+      { providerID: PROVIDER_ID },
+    )
     await ctx.session.hook("warming", async (event) => {
       if (
         coordinated(event.model) &&

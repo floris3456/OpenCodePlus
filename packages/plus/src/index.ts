@@ -4171,7 +4171,10 @@ export function decideCompactionFor(
     // model, after /refresh) sends OpenCode's current instructions in its system prompt too: an
     // AGENTS.md edited, or brought in by a move, takes full effect where nothing is read from cache.
     // A cold chat's pinned prompt is rebuilt on that request with it.
-    const cold = event.reason === "auto" ? await coldFor(event, ledger, pacer) : undefined
+    // A step retried after CPA stopped answering (the CPA plugin marks it) treats a cache that goes cold within
+    // a minute as cold: by the time the retry gets through, it would be.
+    const margin = event.metadata?.["cpa.outage"] === true ? OUTAGE_COLD_MARGIN : 0
+    const cold = event.reason === "auto" ? await coldFor(event, ledger, pacer, margin) : undefined
     if (cold !== undefined && isCold(cold)) {
       event.rebaseInstructions = true
       await Effect.runPromise(state.sessionPins.markRebuild(String(event.sessionID)))
@@ -4281,10 +4284,18 @@ async function coldFor(
   event: SessionCompactionDecision,
   ledger: Pick<Ledger, "getRequests" | "getFingerprint">,
   pacer: typeof pacerCache,
+  margin = 0,
 ) {
   const now = Date.now()
-  return coldStateOf({ status: await warmingStatusFor(event.sessionID, now, ledger, pacer), boundary: event.boundary, now })
+  return coldStateOf({
+    status: await warmingStatusFor(event.sessionID, now, ledger, pacer, margin),
+    boundary: event.boundary,
+    now: now + margin,
+  })
 }
+
+/** On a step retried after an outage, a cache that goes cold within this long counts as cold. */
+const OUTAGE_COLD_MARGIN = 60_000
 
 /**
  * A chat's warming status as the footer and cold compaction read it, with
@@ -4299,14 +4310,16 @@ export async function warmingStatusFor(
   now: number,
   ledger: Pick<Ledger, "getRequests" | "getFingerprint"> = ledgerAt(),
   pacer: typeof pacerCache = pacerCache,
+  /** Read the status as it will be this much later; the cache's own lifetime is read as of now. */
+  margin = 0,
 ): Promise<WarmingStatus> {
-  const status = await warmingStore.status(sessionID, now)
+  const status = await warmingStore.status(sessionID, now + margin)
   if (status.compacted === true) return status
   const warm = await warmUntilOf(sessionID, status, now, ledger, pacer)
   if (warm === undefined) return status
   const known: WarmingStatus = { ...status, warmUntil: warm.until, warmBy: warm.by }
   if (status.active && status.expires !== undefined) {
-    if (warm.until > now) return known
+    if (warm.until > now + margin) return known
     // Its summary would no longer read a warm cache: no compact before cold.
     const { compactAt: _cancelled, ...cut } = known
     return { ...cut, active: false, expires: Math.max(status.since ?? warm.until, warm.until) }

@@ -353,6 +353,33 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         )
         expect(ended).toEqual([])
 
+        // CPA stops answering: once Core's own retries are used up the step keeps retrying, and the decision
+        // before that retry is marked, so Plus compacts first when the cache is about to go cold.
+        const refused = (decision: { retry: false } | { retry: true; delay: number }) =>
+          hooks.trigger("session", "retry", {
+            sessionID,
+            agent,
+            model: ref,
+            attempt: 12,
+            decision,
+            error: { type: "provider.transport", message: "Unable to connect" },
+          })
+        expect((yield* refused({ retry: false })).decision).toEqual({ retry: true, delay: 15_000 })
+        const marked = yield* hooks.trigger("session", "compaction.decide", { ...boundary, metadata: undefined })
+        expect(marked.metadata?.["cpa.outage"]).toBe(true)
+        const unmarked = yield* hooks.trigger("session", "compaction.decide", { ...boundary, metadata: undefined })
+        expect(unmarked.metadata?.["cpa.outage"]).toBeUndefined()
+        // Another provider's outage is left to Core.
+        const other = yield* hooks.trigger("session", "retry", {
+          sessionID,
+          agent,
+          model: Model.Ref.parse("elsewhere/model"),
+          attempt: 12,
+          decision: { retry: false },
+          error: { type: "provider.transport", message: "Unable to connect" },
+        })
+        expect(other.decision).toEqual({ retry: false })
+
         // A different caller's quota observation wakes the held subscription. An idle
         // viewer sees it through the cached RPC without acquiring a serving identity.
         reading.left = 19

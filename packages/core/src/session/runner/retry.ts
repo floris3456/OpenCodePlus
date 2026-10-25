@@ -34,8 +34,8 @@ export const policy = (sessionID: SessionSchema.ID) =>
     const decide = yield* ModelRetry.policy
     return (input: Input) =>
       Effect.gen(function* () {
+        // Also once the schedule is used up: a plugin may keep a step retrying, through a proxy restart say.
         const next = yield* decide(input)
-        if (!next) return { retry: false as const }
         const event: PluginHooks.Domains["session"]["retry"] = {
           sessionID,
           agent: input.agent,

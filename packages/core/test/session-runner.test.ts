@@ -3134,12 +3134,12 @@ describe("SessionRunnerLLM", () => {
     yield* s.runPrompt("Earlier question")
     s.requests.length = 0
     const hooks = yield* PluginHooks.Service
-    const attempts: number[] = []
+    const decisions: { attempt: number; retry: boolean }[] = []
+    // Shortens Core's own retries only; the hook is consulted once more after they are used up.
     yield* hooks.register("session", "retry", (event) =>
       Effect.sync(() => {
-        attempts.push(event.attempt)
-        expect(event.decision).toMatchObject({ retry: true })
-        event.decision = { retry: true, delay: 0 }
+        decisions.push({ attempt: event.attempt, retry: event.decision.retry })
+        if (event.decision.retry) event.decision = { retry: true, delay: 0 }
       }),
     )
     yield* s.llm.push(Stream.fail(providerUnavailable()), TestLLM.text("Not a summary", "invalid"))
@@ -3147,7 +3147,10 @@ describe("SessionRunnerLLM", () => {
     const compaction = yield* s.session.compact({ sessionID })
     yield* s.resume
 
-    expect(attempts).toEqual(RETRY_ATTEMPTS)
+    expect(decisions).toEqual([
+      ...RETRY_ATTEMPTS.map((attempt) => ({ attempt, retry: true })),
+      { attempt: RETRY_ATTEMPTS.length + 2, retry: false },
+    ])
     expect(s.requests).toHaveLength(RETRY_ATTEMPTS.length + 2)
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
       status: "failed",

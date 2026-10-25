@@ -49,6 +49,17 @@ The bundled code stays in the executable when removed from the enabled plugins.
   As in upstream Pacer, handoff claims apply to Claude relay models; other
   providers still contribute quota readings without receiving unsupported claims.
 - The explicit warming hook suppresses pings while a switch is pending.
+- Every handoff claim names the chat's newest checkpoint, native (Anthropic's own
+  compaction) or local, also after replies follow it, so Pacer places the chat again
+  at the first request after each compaction, manual or automatic, and only then.
+- **CPA outages** (`src/outage.ts`): a request to the `cliproxyapi` provider that is
+  refused, reset, timed out or answered 502/503/504 keeps retrying every 15 s once
+  Core's own retries (about 84 s) are used up, for up to 30 minutes from the first
+  failure. Agents and their subagents wait out a CPA restart (CT104's `cpa-watch`
+  restarts a CPA that stops answering) instead of stopping. Each retry runs the
+  compaction decision first, marked `cpa.outage`: with Compact cold chats first on,
+  Plus then counts a cache that goes cold within a minute as cold and summarizes
+  with the cold-cache models before the step continues.
 - One prompt cache key per chat: requests to the `cliproxyapi` provider carry
   `prompt_cache_key` set to the chat's own session ID (a fork: the session it was
   forked from, whose history it starts with), on Chat Completions as well as

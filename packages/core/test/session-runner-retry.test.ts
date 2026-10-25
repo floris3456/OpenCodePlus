@@ -44,4 +44,29 @@ describe("SessionRunnerRetry.policy", () => {
       expect(yield* decisions(internal, 11)).toEqual([...Array(10).fill(true), false])
     }),
   )
+
+  it.effect("asks the retry hook once the schedule is used up, and follows it", () =>
+    Effect.gen(function* () {
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      const asked: { attempt: number; retry: boolean }[] = []
+      const results = []
+      for (let i = 0; i < 12; i++)
+        results.push(
+          yield* policy({
+            ...input(internal),
+            hook: (event) =>
+              Effect.sync(() => {
+                asked.push({ attempt: event.attempt, retry: event.decision.retry })
+                if (!event.decision.retry) event.decision = { retry: true, delay: 15_000 }
+              }),
+          }),
+        )
+      expect(asked.map((entry) => entry.retry)).toEqual([...Array(10).fill(true), false, false])
+      expect(asked.at(-1)?.attempt).toBe(13)
+      expect(results.slice(10)).toEqual([
+        { retry: true, attempt: 12, delay: 15_000 },
+        { retry: true, attempt: 13, delay: 15_000 },
+      ])
+    }),
+  )
 })
