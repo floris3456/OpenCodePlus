@@ -7,7 +7,10 @@ import { PluginHost } from "@opencode/core/plugin/host"
 import { PluginPromise } from "@opencode/core/plugin/promise"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Agent } from "@opencode/schema/agent"
+import { Session } from "@opencode/schema/session"
+import { SessionMessage } from "@opencode/schema/session-message"
 import { Provider } from "@opencode/core/provider"
+import { Tool } from "@opencode/core/tool"
 import Pacer from "@opencodeplus/cliproxyapi/pacer"
 import { pacerCache, pacerUsedUp } from "@opencodeplus/cliproxyapi/server"
 import { UsageDefinition } from "../../../cliproxyapi/src/quota/usage"
@@ -173,6 +176,27 @@ it.live("Pacer loads without cliproxyapi.json and serves all-provider usage from
         expect(selected.snapshot?.credentials.map((row) => row.provider)).toEqual(["claude"])
         expect(selected.snapshot?.current).toBe("")
         expect(selected.snapshot?.all).toBe(false)
+        // Agents read the same view themselves, from Code Mode.
+        const tools = yield* Tool.Service
+        const snapshot = yield* tools.snapshot()
+        const execution = yield* snapshot.execute({
+          sessionID: Session.ID.make("ses_usage_tool"),
+          agent: Agent.ID.make("build"),
+          messageID: SessionMessage.ID.make("msg_usage_tool"),
+          call: {
+            type: "tool-call",
+            id: "call_usage_tool",
+            name: "execute",
+            input: { code: 'return await tools.pacer.usage({ model: "cliproxyapi/claude-sonnet-4-6" })' },
+          },
+        })
+        const read = JSON.parse(execution.output.output)
+        expect(read).toMatchObject({
+          model: "cliproxyapi/claude-sonnet-4-6",
+          accounts: [{ alias: "claude", provider: "claude", in_use: false, windows: [{ window: "5h", left: 73, state: "current" }] }],
+        })
+        expect(read.accounts[0].windows[0].resets_in).toMatch(/^(59m|1h 0m)$/)
+        expect(read.text).toStartWith("Credential usage for cliproxyapi/claude-sonnet-4-6:\n- claude (claude): 5h 73% left, resets in ")
         const unknown = yield* host.rpc(UsageDefinition).read({
           providerID: "cliproxyapi",
           modelID: "unknown-model",

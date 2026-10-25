@@ -71,6 +71,11 @@ The bundled code stays in the executable when removed from the enabled plugins.
   `X-Session-Id` / `x-session-affinity` headers still carry the parent's ID.
   `"compatibility": { "supportsPromptCacheKey": false }` on the provider in
   `opencode.json` stops sending the key.
+- **Usage for agents** (`src/usage-tool.ts`): the `pacer.usage` tool (Code Mode
+  `tools.pacer.usage({ model?, all? })`) returns what the Usage sidebar shows: each account's
+  windows (percent left, when they reset), the account serving the chat (IN USE, else LAST
+  USED), NEXT USE and FORCE USE, as structured output plus a short text. `model` defaults to
+  the chat's model; `all` lists every account Pacer meters. Read-only: no model request.
 - Instructions UI, instructions storage and its compaction controls are unchanged.
 - **Web search** (`src/web.ts`): three tools in the `web` group, for every chat
   model, on the `/connect` login's CPA with the models Pacer's catalogue lists.

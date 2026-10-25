@@ -8,12 +8,13 @@ import { randomBytes } from "node:crypto"
 import { QuotaController } from "./quota/controller.js"
 import { portableMessages } from "./quota/portable.js"
 import { Definition } from "./quota/rpc.js"
-import { UsageDefinition } from "./quota/usage.js"
+import { UsageDefinition, type UsageInput, type UsageResult } from "./quota/usage.js"
 import { pacerSnapshot } from "./quota/pacer-snapshot.js"
 import { cacheOf, createChatView, nextUseOf, usedUpOf } from "./quota/next-use.js"
 import { providePacerChat } from "./pacer-cache.js"
 import { normalizeLegacyReasoning } from "./model-compatibility.js"
 import { OUTAGE_MARK, createOutageRetry } from "./outage.js"
+import { registerUsageTool } from "./usage-tool.js"
 import { registerWebTools } from "./web.js"
 
 export const ID = "opencode-pacer"
@@ -202,35 +203,38 @@ export default Plugin.define({
       const usedUp = usedUpOf(read, query.modelID, Date.now())
       return { ...(cache === undefined ? {} : { cache }), ...(usedUp === undefined ? {} : { usedUp }) }
     })
+    // The Usage sidebar, `/usage` and the agents' `pacer.usage` tool read the same view.
+    const readUsage = async (input: UsageInput): Promise<UsageResult> => {
+      await refresh()
+      if (!state.pacer)
+        return {
+          status: "disabled" as const,
+          message: "Connect CLIProxyAPI with Pacer through /connect to inspect credential usage.",
+        }
+      const cached = (await ctx.rpc(PacerRpc).usage({ providerID: input.providerID, modelID: input.modelID })) as {
+        snapshot: MeterSnapshot
+        providers: string[]
+      }
+      meter.restore(cached.snapshot, true)
+      const providers = cached.providers.length
+        ? cached.providers
+        : input.providerID === "cliproxyapi"
+          ? (state.providers.get(input.modelID) ?? [])
+          : []
+      const snapshot = pacerSnapshot(meter, input, Date.now(), providers)
+      // The meters are already here (Pacer's shared watch); only NEXT USE needs the chat's own read,
+      // so it comes from the last answered one and a due read runs in the background.
+      const next = nextUseOf(chatView.latest(state.routes[input.providerID], input), input.modelID, Date.now())
+      return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }
+    }
     await ctx.rpc.register(UsageDefinition, {
       enabled: async () => {
         await refresh()
         return { enabled: state.pacer }
       },
-      read: async (input) => {
-        await refresh()
-        if (!state.pacer)
-          return {
-            status: "disabled" as const,
-            message: "Connect CLIProxyAPI with Pacer through /connect to inspect credential usage.",
-          }
-        const cached = (await ctx.rpc(PacerRpc).usage({ providerID: input.providerID, modelID: input.modelID })) as {
-          snapshot: MeterSnapshot
-          providers: string[]
-        }
-        meter.restore(cached.snapshot, true)
-        const providers = cached.providers.length
-          ? cached.providers
-          : input.providerID === "cliproxyapi"
-            ? (state.providers.get(input.modelID) ?? [])
-            : []
-        const snapshot = pacerSnapshot(meter, input, Date.now(), providers)
-        // The meters are already here (Pacer's shared watch); only NEXT USE needs the chat's own read,
-        // so it comes from the last answered one and a due read runs in the background.
-        const next = nextUseOf(chatView.latest(state.routes[input.providerID], input), input.modelID, Date.now())
-        return { status: "ready" as const, snapshot: { ...snapshot, ...(next ? { next_use: next } : {}) } }
-      },
+      read: readUsage,
     })
+    await registerUsageTool(ctx, readUsage)
     return () => {
       events.abort()
       disposeChat()
