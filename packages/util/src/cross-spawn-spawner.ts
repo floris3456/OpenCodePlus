@@ -229,6 +229,12 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
     Effect.suspend(() => {
       let sink: Sink.Sink<void, unknown, never, PlatformError.PlatformError> = Sink.drain
       if (Predicate.isNotNull(proc.stdin)) {
+        // A process that exits before reading all its input (git with a broken config) closes the pipe:
+        // the write's EPIPE can arrive after the sink let go of the stream, where it would be uncaught.
+        // The process's exit code and stderr report that failure.
+        proc.stdin.on("error", (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EPIPE") throw error
+        })
         sink = NodeSink.fromWritable({
           evaluate: () => proc.stdin!,
           onError: (err) => toPlatformError("fromWritable(stdin)", toError(err), command),

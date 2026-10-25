@@ -261,6 +261,19 @@ describe("AppProcess", () => {
     )
 
     it.live(
+      "reports the exit of a process that stops before reading its input",
+      Effect.gen(function* () {
+        const svc = yield* AppProcess.Service
+        // As git does with a broken config: it exits before reading, and the writer meets a closed pipe.
+        const result = yield* svc.run(ChildProcess.make("sh", ["-c", "echo 'bad config' >&2; exit 128"]), {
+          stdin: "scope/allowed.txt\0scope/ignored name.txt\0",
+        })
+        expect(result.exitCode).toBe(128)
+        expect(result.stderr.toString("utf8")).toBe("bad config\n")
+      }),
+    )
+
+    it.live(
       "completes correctly with empty input",
       Effect.gen(function* () {
         const svc = yield* AppProcess.Service
