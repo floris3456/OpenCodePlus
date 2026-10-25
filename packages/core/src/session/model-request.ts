@@ -50,6 +50,9 @@ const IMAGE_BYTES_BUDGET = 25 * 1024 * 1024
 // The attached image that brings the chat to this share of the limits tells the model, once, how full it is.
 const IMAGE_WARNING_SHARE = 0.9
 const GENERATION_KEYS = new Set(Object.keys(GenerationOptions.fields))
+// Completed requests kept for compaction to pin, one per session: each holds the session's whole context (often
+// several MB), and a long-running service sees hundreds of sessions.
+const COMPLETED_REQUESTS_MAX = 32
 // Used when the catalog has no output limit for the model.
 const OUTPUT_TOKEN_FALLBACK = 32_000
 // No reply needs more, however much the model allows.
@@ -621,7 +624,13 @@ export const layer = Layer.effect(
       const observer = SessionModelObservation.make(hooks, { ...scope, historyEpoch: input.historyEpoch }, model.cost, cacheColdCause)
       const remember: SessionModelObservation.Observer = (effect, identity) => observer(effect.pipe(Effect.tap(() => Effect.sync(() => {
           if (kind !== "primary") return
+          // Most recently completed last; a session past the bound compacts without a pinned prefix.
+          completed.delete(session.id)
           completed.set(session.id, { request, model: model.ref, epoch: input.historyEpoch })
+          for (const oldest of completed.keys()) {
+            if (completed.size <= COMPLETED_REQUESTS_MAX) break
+            completed.delete(oldest)
+          }
         }))), identity)
       return {
         observer: remember,

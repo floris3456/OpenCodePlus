@@ -72,8 +72,8 @@ export const make = Effect.gen(function* () {
   const toolOutput = yield* ToolOutput.Service
 
   const attempt = Effect.fn("SessionStep.attempt")(function* (input: Input) {
-    // The start snapshot only has to exist before local tools run, which cannot happen before Step.Started,
-    // so it is captured while the provider request is in flight instead of delaying it.
+    // The start snapshot only has to exist before local tools run, so it is captured while the provider request
+    // is in flight and output streams without waiting for it; each local tool waits for it instead.
     const pendingStartSnapshot = yield* snapshots.capture().pipe(Effect.forkScoped)
     const publisher = createLLMEventPublisher(bus, {
       sessionID: input.sessionID,
@@ -81,7 +81,7 @@ export const make = Effect.gen(function* () {
       agent: input.agent,
       model: input.model.ref,
       providerMetadataKey: input.model.model.route.providerMetadataKey ?? input.model.model.provider,
-      pendingSnapshot: Fiber.join(pendingStartSnapshot),
+      startSnapshot: pendingStartSnapshot,
       started: yield* Clock.currentTimeMillis,
     })
     const toolRuns: Array<{
@@ -92,13 +92,17 @@ export const make = Effect.gen(function* () {
     const executeTool = (call: ToolCall) => {
       if (input.prepared.request.toolChoice?.type === "none")
         return new Tool.Error({ message: "Tools are disabled after the maximum agent steps" })
-      return input.prepared.executeTool({
-        sessionID: input.sessionID,
-        agent: input.agent,
-        messageID: input.assistantMessageID,
-        call,
-        progress: (update) => publisher.progress(call.id, update),
-      })
+      return publisher.recordStartSnapshot().pipe(
+        Effect.andThen(
+          input.prepared.executeTool({
+            sessionID: input.sessionID,
+            agent: input.agent,
+            messageID: input.assistantMessageID,
+            call,
+            progress: (update) => publisher.progress(call.id, update),
+          }),
+        ),
+      )
     }
 
     // Provider and tool fibers retain per-source order without a shared writer queue.
@@ -112,8 +116,6 @@ export const make = Effect.gen(function* () {
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             if (overflowFailure || publisher.hasProviderError()) return
-            // Wait while cancellation still works, before uninterruptible publication.
-            if (!publisher.hasStarted()) yield* Fiber.join(pendingStartSnapshot)
             if (
               LLMEvent.is.providerError(event) &&
               isContextOverflowFailure(event) &&
@@ -240,7 +242,9 @@ export const make = Effect.gen(function* () {
         const record = publisher.record()
         if (record.finish || record.failure) {
           const startSnapshot = yield* Fiber.join(pendingStartSnapshot)
-          const snapshot = yield* snapshots.capture()
+          yield* publisher.recordStartSnapshot()
+          // A step that ran no local tool changed no file, so its end is its start.
+          const snapshot = toolRuns.length === 0 ? startSnapshot : yield* snapshots.capture()
           const files =
             startSnapshot && snapshot
               ? startSnapshot === snapshot

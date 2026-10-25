@@ -9,6 +9,7 @@ import { Location } from "@opencode/core/location"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Project } from "@opencode/core/project"
 import { AbsolutePath } from "@opencode/core/schema"
+import { SessionModelObservation } from "@opencode/core/session/model-observation"
 import { SessionModelRequest } from "@opencode/core/session/model-request"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
@@ -234,6 +235,51 @@ describe("SessionModelRequest hook message boundary", () => {
       expect(prepared.request.messages).toEqual(input)
       expect(prepared.event.messages).toEqual(input)
       expect(prepared.event.messages[0]).toBe(input[0])
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+})
+
+describe("SessionModelRequest completed requests", () => {
+  it.effect("keeps the recent sessions' requests for compaction to pin and drops the oldest", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      const causes = new Map<string, string | undefined>()
+      yield* hooks.register("session", "model.observed", (event) =>
+        Effect.sync(() => {
+          if (event.kind === "compaction") causes.set(event.sessionID, event.compaction?.cacheColdCause ?? "pinned")
+        }),
+      )
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const sessions = Array.from({ length: 33 }, (_, index) =>
+        Session.Info.make({ ...session, id: Session.ID.make(`ses_completed_${String(index).padStart(2, "0")}`) }),
+      )
+      const input = (chat: Session.Info) => ({
+        session: chat,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: [Message.user("history")],
+      })
+      for (const chat of sessions) {
+        const primary = yield* requests.primary(input(chat))
+        yield* primary.observer!(Effect.void)
+      }
+      for (const chat of [sessions[0]!, sessions[32]!]) {
+        const compaction = yield* requests.compaction(input(chat))
+        yield* compaction.observer!(Effect.void).pipe(
+          Effect.provideService(SessionModelObservation.Compaction, {
+            version: 1,
+            trigger: "manual",
+            configuredStrategy: "local",
+            strategySource: "built-in",
+            selectedStrategy: "text-summary",
+            selectionReason: "explicit-local",
+          }),
+        )
+      }
+
+      expect(causes.get(sessions[32]!.id)).toBe("pinned")
+      expect(causes.get(sessions[0]!.id)).toBe("snapshot-unavailable")
     }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
   )
 })

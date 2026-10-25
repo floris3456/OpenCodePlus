@@ -918,6 +918,11 @@ export function createData(config: CreateDataInput) {
           assistant.time.streamed = event.created
         })
         return
+      case "session.step.snapshotted":
+        message.editAssistant(event.data.sessionID, event.data.assistantMessageID, (assistant) => {
+          assistant.snapshot = { ...assistant.snapshot, start: event.data.snapshot }
+        })
+        return
       case "session.step.ended": {
         message.editAssistant(event.data.sessionID, event.data.assistantMessageID, (assistant) => {
           assistant.time.completed = event.created

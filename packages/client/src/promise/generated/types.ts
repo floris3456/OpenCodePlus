@@ -1221,6 +1221,16 @@ export type SessionStepStreamed = {
   data: { sessionID: SessionID; assistantMessageID: SessionMessageID }
 }
 
+export type SessionStepSnapshotted = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.step.snapshotted"
+  durable: { aggregateID: string; seq: EventSeq; version: 1 }
+  location?: LocationRef
+  data: { sessionID: SessionID; assistantMessageID: SessionMessageID; snapshot: SnapshotID }
+}
+
 export type SessionStepEnded = {
   id: EventID
   created: number
@@ -2552,6 +2562,7 @@ export type SessionEventDurable =
   | SessionShellEnded
   | SessionStepStarted
   | SessionStepStreamed
+  | SessionStepSnapshotted
   | SessionStepEnded
   | SessionStepFailed
   | SessionTextStarted
@@ -2616,6 +2627,7 @@ export type V2Event =
   | SessionShellEnded
   | SessionStepStarted
   | SessionStepStreamed
+  | SessionStepSnapshotted
   | SessionStepEnded
   | SessionStepFailed
   | SessionTextStarted

@@ -357,6 +357,21 @@ export namespace Step {
   })
   export type Streamed = typeof Streamed.Type
 
+  /**
+   * The step's start snapshot, when `Started` was published before its capture finished. Always recorded before
+   * the step's first local tool runs, so no tool change is in it.
+   */
+  export const Snapshotted = Event.durable({
+    type: "session.step.snapshotted",
+    ...options,
+    schema: {
+      ...Base,
+      assistantMessageID: SessionMessage.ID,
+      snapshot: Snapshot.ID,
+    },
+  })
+  export type Snapshotted = typeof Snapshotted.Type
+
   export const Ended = Event.durable({
     type: "session.step.ended",
     ...options,
@@ -682,6 +697,7 @@ export const Definitions = Event.inventory(
   Shell.Ended,
   Step.Started,
   Step.Streamed,
+  Step.Snapshotted,
   Step.Ended,
   Step.Failed,
   Text.Started,

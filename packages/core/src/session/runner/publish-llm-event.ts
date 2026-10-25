@@ -3,7 +3,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { RelativePath } from "@opencode/schema/schema"
 import type { Snapshot } from "@opencode/schema/snapshot"
-import { Effect, Fiber, Iterable } from "effect"
+import { Effect, Exit, Fiber, Iterable } from "effect"
 import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { Bus } from "../../bus.js"
 import { SessionEvent } from "../event.js"
@@ -20,8 +20,8 @@ type Input = {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly providerMetadataKey: string
-  /** The start snapshot, awaited before `Step.Started` so its capture can overlap the provider request. */
-  readonly pendingSnapshot?: Effect.Effect<Snapshot.ID | undefined>
+  /** The start snapshot's capture, which overlaps the provider request; see `recordStartSnapshot`. */
+  readonly startSnapshot?: Fiber.Fiber<Snapshot.ID | undefined>
   readonly started: number
   readonly assistantMessageID: SessionMessage.ID
 }
@@ -124,6 +124,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
   }
   const assistantMessageID = input.assistantMessageID
   let stepStarted = false
+  let startSnapshotRecorded = false
   let providerFailed = false
   let outputStarted = false
   let stepFailure: SessionError.Error | undefined
@@ -131,9 +132,11 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
 
   const startAssistant = Effect.fnUntraced(function* () {
     if (stepStarted) return assistantMessageID
-    const snapshot = input.pendingSnapshot ? yield* input.pendingSnapshot : undefined
-    // Check again after the await, so the check and the mark below never straddle a yield.
-    if (stepStarted) return assistantMessageID
+    // The first output never waits for the start snapshot: a capture still running (it queues behind every
+    // other chat's in the same project) is recorded by `recordStartSnapshot` instead.
+    const captured = input.startSnapshot?.pollUnsafe()
+    const snapshot = captured !== undefined && Exit.isSuccess(captured) ? captured.value : undefined
+    startSnapshotRecorded = captured !== undefined
     stepStarted = true
     yield* bus.publish(SessionEvent.Step.Started, {
       sessionID: input.sessionID,
@@ -144,6 +147,19 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       started: input.started,
     })
     return assistantMessageID
+  })
+  /**
+   * Records the start snapshot when `Step.Started` went out before its capture finished. A local tool runs only
+   * after this, so the snapshot holds none of the step's own changes.
+   */
+  const recordStartSnapshot = Effect.fnUntraced(function* () {
+    if (startSnapshotRecorded || input.startSnapshot === undefined) return
+    const snapshot = yield* Fiber.join(input.startSnapshot)
+    // Not started yet: `Step.Started` carries the finished capture itself.
+    if (!stepStarted || startSnapshotRecorded) return
+    startSnapshotRecorded = true
+    if (snapshot === undefined) return
+    yield* bus.publish(SessionEvent.Step.Snapshotted, { sessionID: input.sessionID, assistantMessageID, snapshot })
   })
   const currentAssistantMessageID = () =>
     stepStarted ? Effect.succeed(assistantMessageID) : Effect.die(new Error("Tool event before assistant step start"))
@@ -649,6 +665,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     failAssistant,
     failTool,
     publishStepFailure,
+    recordStartSnapshot,
     failUnsettledTools,
     failIncompleteTools,
     hasProviderError: () => providerFailed,
