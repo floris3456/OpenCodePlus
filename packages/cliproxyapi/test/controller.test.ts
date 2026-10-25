@@ -145,6 +145,24 @@ test("Pacer keeps opaque checkpoints local and a warming refusal blocks further 
   )
   expect(f.state.reads).toBe(0)
 })
+test("Pacer hears of every new checkpoint once, a native one too, and it stays signed", async () => {
+  const f = fixture(undefined, undefined, true)
+  const claim = async (boundary: SessionCompactionDecision["boundary"]) => {
+    const event = { ...f.event(), boundary }
+    await f.controller.decide(event)
+    expect(event.compact).toBeUndefined()
+    const sent = claimOf(await f.controller.headers("ses_test", "proxy", "model", "primary", f.server.url.href))
+    await f.controller.response("ses_test", "proxy", "model", ackResponse(1), "primary")
+    return sent.checkpoint
+  }
+  expect(await claim({ fresh: true, portable: true })).toBe("")
+  // A manual compaction on Anthropic's own endpoint: Pacer places the chat again from it.
+  expect(await claim({ fresh: false, portable: false, latest: "cmp_native" })).toBe("cmp_native")
+  expect(await f.controller.requiresPortable("ses_test", "proxy", "model", "context")).toBe(false)
+  // After a reply the claim still names the local summary, so Pacer sees one change per compaction.
+  expect(await claim({ fresh: false, portable: true, checkpoint: "cmp_local", latest: "cmp_local" })).toBe("cmp_local")
+  expect(await claim({ fresh: false, portable: true, latest: "cmp_local" })).toBe("cmp_local")
+})
 test("a restart keeps a chat Pacer already served on its signed history", async () => {
   const f = fixture(undefined, undefined, true)
   await f.controller.decide({ ...f.event(), boundary: { fresh: true, portable: true } })
@@ -560,7 +578,7 @@ test("checkpoint handoff does not claim a stale source checkpoint or alter prima
   await f.controller.decide({
     ...f.event(),
     model: Model.Ref.parse("proxy/source"),
-    boundary: { fresh: true, portable: true, checkpoint: "stale-source-checkpoint" },
+    boundary: { fresh: true, portable: true, checkpoint: "stale-source-checkpoint", latest: "stale-source-checkpoint" },
   })
   await f.controller.decide(f.event())
   expect(await f.controller.requiresPortable("ses_test", "proxy", "source", "compaction", true)).toBe(false)
@@ -746,7 +764,7 @@ test("an account-switch refusal compacts once with the configured model, then th
   expect(retried).toMatchObject({ compact: true, portable: true, strategy: "local", metadata: { "quota.switch": true } })
   expect(retried.compactionModel).toEqual(Model.Ref.parse("proxy/cheap-model#high"))
   // The completed checkpoint needs no second compaction and is what CPA receives next.
-  const compacted = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new" } }
+  const compacted = { ...f.event(), boundary: { fresh: false, portable: true, checkpoint: "cmp_new", latest: "cmp_new" } }
   await f.controller.decide(compacted)
   expect(compacted.compact).toBeUndefined()
   expect(compacted.compactionModel).toBeUndefined()

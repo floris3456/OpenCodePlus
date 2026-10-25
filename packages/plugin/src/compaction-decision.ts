@@ -25,6 +25,8 @@ export interface SessionCompactionDecision {
     readonly portable: boolean
     /** Only a persisted completed checkpoint with no subsequent primary output. */
     readonly checkpoint?: string
+    /** The newest completed checkpoint, native or local, also after primary output followed it. */
+    readonly latest?: string
   }
   /** Request compaction below the context threshold; never overrides auto:false. */
   compact?: boolean

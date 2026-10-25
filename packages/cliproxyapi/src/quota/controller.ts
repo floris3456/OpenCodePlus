@@ -377,7 +377,10 @@ export class QuotaController {
       auto: event?.auto ?? true,
       fresh: checkpointHandoff ? false : (event?.boundary.fresh ?? false),
       portable: checkpointHandoff ? false : (event?.boundary.portable ?? true),
-      checkpoint: checkpointHandoff ? "" : (event?.boundary.checkpoint ?? ""),
+      // Pacer places a chat again at its first request from a new checkpoint. A native one counts too (its
+      // cold moves replay it on the new account), and the claim keeps naming it after output follows, so one
+      // compaction is one change.
+      checkpoint: checkpointHandoff ? "" : (event?.boundary.latest ?? ""),
       generation: route.stored.generation,
       intent: route.snapshot?.intent ?? "",
       // This client compacts when CPA refuses an account switch with quota_compact_required.

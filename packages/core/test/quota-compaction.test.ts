@@ -646,6 +646,39 @@ it.effect("an empty assistant held for a retry does not move the chat past its c
   }),
 )
 
+it.effect("the newest checkpoint stays named after a reply, a native one too", () =>
+  Effect.sync(() => {
+    const local = summarized()
+    const reply: SessionMessage.Info = {
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      agent: Agent.defaultID,
+      model: resolved.ref,
+      content: [{ type: "text", text: "Done" }],
+      time: { created: DateTime.makeUnsafe(0), completed: DateTime.makeUnsafe(1) },
+    }
+    expect(compactionBoundary([local, said("continue"), reply])).toEqual({ fresh: false, portable: true, latest: local.id })
+    // Anthropic's own compaction is not portable, yet it is a new checkpoint for account routing.
+    const native = SessionMessage.CompactionCompleted.make({
+      ...summarized(),
+      providerContext: {
+        version: 1,
+        provenance: {
+          providerID: Provider.ID.make("cliproxyapi"),
+          provider: "cliproxyapi",
+          modelID: "claude",
+          route: "anthropic-compatible-messages",
+          protocol: "anthropic-messages",
+          endpoint: "digest",
+        },
+        messages: [],
+      },
+    })
+    expect(compactionBoundary([native, said("continue")])).toEqual({ fresh: false, portable: false, latest: native.id })
+    expect(compactionBoundary([said("hello")])).toEqual({ fresh: true, portable: true })
+  }),
+)
+
 it.effect("an account switch reissues a recent summary instead of writing another", () =>
   Effect.gen(function* () {
     const hooks = yield* PluginHooks.Service

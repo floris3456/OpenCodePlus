@@ -19,5 +19,6 @@ export function compactionBoundary(messages: ReadonlyArray<SessionMessage.Info>)
     fresh: index < 0 && !advanced,
     portable,
     ...(portable && !advanced && checkpoint ? { checkpoint: checkpoint.id } : {}),
+    ...(checkpoint ? { latest: checkpoint.id } : {}),
   }
 }
