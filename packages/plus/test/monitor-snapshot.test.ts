@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { existsSync, statSync } from "node:fs"
-import { backfillCacheBatch, captureWire, compareWire, projectCacheResult, queryCacheResults } from "../src/monitor/snapshot.js"
-import { wireBody } from "../src/monitor/wire.js"
+import { backfillCacheBatch, captureWire, compareWire, compareWireValues, projectCacheResult, queryCacheResults } from "../src/monitor/snapshot.js"
+import { comparableWire, wireBody } from "../src/monitor/wire.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 import { CACHE_COLUMNS, createLedger } from "../src/monitor/ledger.js"
 import { Schema } from "effect"
@@ -29,6 +29,34 @@ test("wire comparison distinguishes append, rewritten history, and output budget
   const marked = JSON.stringify({ messages: [{ role: "user", content: [{ type: "text", text: "same", cache_control: { type: "ephemeral" } }] }] })
   const moved = JSON.stringify({ messages: [{ role: "user", content: [{ type: "text", text: "same" }] }, { role: "user", content: [{ type: "text", text: "new", cache_control: { type: "ephemeral" } }] }] })
   expect(compareWire(marked, moved)).toMatchObject({ append: true, changed: [], markers: ["messages[0].content[0].cache_control"] })
+})
+
+test("two stored bodies compare as their full text does without decoding what they share", async () => {
+  const db = await ledger()
+  const before = body()
+  const inserted = JSON.stringify({ ...JSON.parse(before), tools: [{ name: "new", parameters: {} }, ...JSON.parse(before).tools] })
+  const chat = (messages: unknown[]) => JSON.stringify({ model: "fixture", max_tokens: 10, messages, stream: true })
+  const turn = (text: string, marked = false) => ({ role: "user", content: [{ type: "text", text, ...(marked ? { cache_control: { type: "ephemeral" } } : {}) }] })
+  const pairs = [
+    [before, JSON.stringify({ ...JSON.parse(body("original", 200)), input: [{ role: "user", content: "original" }, { role: "assistant", content: "new" }] })],
+    [before, body("rewritten")],
+    [before, JSON.stringify({ ...JSON.parse(before), tools: [] })],
+    [before, inserted],
+    [inserted, JSON.stringify({ ...JSON.parse(inserted), tools: JSON.parse(inserted).tools.toReversed() })],
+    [chat([turn("a"), turn("b", true)]), chat([turn("a"), turn("b"), turn("c", true)])],
+    [chat([turn("a"), turn("b"), turn("c")]), chat([turn("a"), turn("edited"), turn("c")])],
+    [chat([turn("a"), turn("b")]), JSON.stringify({ ...JSON.parse(chat([turn("a"), turn("b")])), compaction: { type: "summarize" }, context_management: null })],
+  ]
+  for (const [index, [a, b]] of pairs.entries()) {
+    await captureWire(db, `a${index}`, a!, { sessionID: `s${index}`, at: 1 })
+    await captureWire(db, `b${index}`, b!, { sessionID: `s${index}`, at: 2 })
+    const values = comparableWire(db, `a${index}`, `b${index}`)!
+    expect(compareWireValues(values.before, values.after)).toEqual(compareWire(a!, b!))
+  }
+  // The message both appended bodies share is not decoded; the one that lost its hint is.
+  const appended = comparableWire(db, "a5", "b5")!
+  expect((appended.after.messages as unknown[]).map((message) => typeof message)).toEqual(["string", "object", "object"])
+  expect(comparableWire(db, "a0", "missing")).toBeUndefined()
 })
 
 test("saved results survive reopening; reads never load fingerprints or full transcripts", async () => {

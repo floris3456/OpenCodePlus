@@ -113,6 +113,72 @@ test("an invocation shares its final exchange's body, and retention removes item
   expect(wireStore(db).query<{ n: number }, []>("select count(*) n from element").get()!.n).toBe(8)
 })
 
+// A chat whose request `i` sends messages 0..i with the cache hint on the last.
+async function chat(db: Awaited<ReturnType<typeof ledger>>, count: number, sessionID = "chat") {
+  const history = Array.from({ length: count }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: `message ${i}` }] }))
+  const bodies = history.map((_, i) => anthropic(history.slice(0, i + 1), i))
+  for (const [i, body] of bodies.entries()) {
+    db.requestStarted({ id: `r${i}`, sessionID, kind: "step", started: 10 + i })
+    await captureWire(db, `r${i}`, body, { sessionID, at: 10 + i })
+  }
+  return bodies
+}
+
+const count = (db: Awaited<ReturnType<typeof ledger>>, table: string) =>
+  wireStore(db).query<{ n: number }, []>(`select count(*) n from ${table}`).get()!.n
+
+test("a request stores only the rows it does not share with the chat's previous request", async () => {
+  const db = await ledger()
+  const bodies = await chat(db, 12)
+  bodies.forEach((body, i) => expect(wireBody(db, `r${i}`)).toBe(body))
+  // r0 stores model, max_tokens, system, tools, its message and stream. Each later
+  // request shares the four options and every message but the one that lost its
+  // cache hint, and stores that message, its new one and stream.
+  expect(count(db, "wire_row")).toBe(6 + 11 * 3)
+  expect(queryPrompt(db, { requestID: "r11" }).rows?.map((row) => row.change)).toEqual([
+    ...Array(14).fill("same"), "marker", "new", "same",
+  ])
+})
+
+test("every 64th request of a chain stores its list in full", async () => {
+  const db = await ledger()
+  const bodies = await chat(db, 70)
+  expect(wireStore(db).query("select source from wire where source not in (select source from wire_base) order by at").all())
+    .toEqual([{ source: "r0" }, { source: "r64" }])
+  expect(wireStore(db).query<{ depth: number }, []>("select max(depth) depth from wire_base").get()!.depth).toBe(63)
+  bodies.forEach((body, i) => expect(wireBody(db, `r${i}`)).toBe(body))
+})
+
+test("storing a request again keeps the requests that share its old rows intact", async () => {
+  const db = await ledger()
+  const bodies = await chat(db, 3)
+  await captureWire(db, "r1", bodies[1]!, { sessionID: "chat", at: 11 })
+  expect(count(db, "wire_row")).toBe(6 + 2 * 3)
+  const replaced = anthropic([{ role: "user", content: [{ type: "text", text: "replaced" }] }], 0)
+  await captureWire(db, "r1", replaced, { sessionID: "chat", at: 11 })
+  expect(wireBody(db, "r1")).toBe(replaced)
+  expect(wireBody(db, "r0")).toBe(bodies[0])
+  expect(wireBody(db, "r2")).toBe(bodies[2])
+})
+
+test("retention keeps a full copy of a request whose shared rows expire", async () => {
+  const db = await ledger()
+  const bodies = await chat(db, 3)
+  pruneWire(db, 11)
+  expect(wireBody(db, "r0")).toBeUndefined()
+  expect(wireBody(db, "r1")).toBe(bodies[1])
+  expect(wireBody(db, "r2")).toBe(bodies[2])
+  expect(wireStore(db).query("select source, base from wire_base").all()).toEqual([{ source: "r2", base: "r1" }])
+})
+
+test("a request whose shared rows another version removed reads as unavailable", async () => {
+  const db = await ledger()
+  await chat(db, 2)
+  wireStore(db).query("delete from wire_row where source = 'r0'").run()
+  expect(wireBody(db, "r1")).toBeUndefined()
+  expect(queryPrompt(db, { requestID: "r1" }).rows).toEqual([])
+})
+
 test("a body that cannot be rebuilt exactly keeps its compressed copy", async () => {
   const db = await ledger()
   const pretty = JSON.stringify({ model: "fixture", messages: [{ role: "user", content: "hi" }] }, null, 2)

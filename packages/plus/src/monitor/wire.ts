@@ -6,6 +6,11 @@
 // and a request's rows, its changes against the previous request and any
 // single item are indexed lookups.
 //
+// A request's list is stored as a delta: the rows it shares at its start with
+// a recent request of the same chat stay with that request (`wire_base`), and
+// only the rest are written. Every 64th link in a chain is a full list, so a
+// read follows at most 64 short range queries.
+//
 // The store holds full prompt text, so it lives in the private transcript
 // directory (0700, file 0600), never in monitor.db.
 import { Database } from "bun:sqlite"
@@ -70,7 +75,19 @@ create table if not exists wire_row (
   primary key (source, position)
 ) without rowid;
 create index if not exists wire_row_hash on wire_row(hash);
+create table if not exists wire_base (
+  source text primary key,
+  base text not null,
+  shared integer not null,
+  depth integer not null
+) without rowid;
+create index if not exists wire_base_base on wire_base(base);
 `
+/** Chain length after which a request's list is stored in full again. */
+const KEYFRAME = 64
+/** The most recent requests of a chat a new list may share its start with. */
+const CANDIDATES = 3
+const END = 2 ** 31
 
 export function wireStore(ledger: Ledger) {
   const existing = stores.get(ledger)
@@ -108,18 +125,23 @@ export function storeWire(ledger: Ledger, input: { requestID: string; sessionID:
   const parts = split(body)
   const exact = rebuild(parts) === input.body
   const db = wireStore(ledger)
+  const rows = parts.map((part) => ({ path: part.path, hash: partHash(part) }))
   const known = db.query<{ found: number }, [string]>("select 1 found from element where hash = ?")
   const addElement = db.query("insert or ignore into element (hash, content, body, blocks) values (?, ?, ?, ?)")
-  const addRow = db.query("insert into wire_row (source, position, path, hash) values (?, ?, ?, ?)")
   db.transaction(() => {
-    db.query("delete from wire_row where source = ?").run(input.requestID)
-    parts.forEach((part, position) => {
-      const hash = sha256(`${part.context}\0${part.json}`)
-      if (!known.get(hash)) {
+    // A repeated capture of the same list (a retried send) writes nothing again.
+    const stored = rowsOf(db, input.requestID)
+    if (stored === undefined || !sameRows(stored, rows)) {
+      // Requests that share this one's old list keep their own copy of it first.
+      if (stored?.length) dependents(db, input.requestID).forEach((source) => materialize(db, source))
+      const base = closestBase(db, input.sessionID, input.requestID, rows)
+      writeRows(db, input.requestID, rows, base)
+      parts.forEach((part, position) => {
+        const hash = rows[position]!.hash
+        if (position < (base?.shared ?? 0) || known.get(hash)) return
         addElement.run(hash, sha256(`${part.context}\0${JSON.stringify(stripMarkers(part.value))}`), part.json, JSON.stringify(describe(part)))
-      }
-      addRow.run(input.requestID, position, part.path, hash)
-    })
+      })
+    }
     db.query(`insert into wire (request_id, source, session_id, at, protocol, bytes, exact) values (?, ?, ?, ?, ?, ?, ?)
       on conflict(request_id) do update set source = excluded.source, session_id = excluded.session_id, at = excluded.at,
         protocol = excluded.protocol, bytes = excluded.bytes, exact = excluded.exact`)
@@ -137,17 +159,64 @@ export function aliasWire(ledger: Ledger, requestID: string, from: string) {
 /** The sent body rebuilt from its items, or undefined when it is not stored. */
 export function wireBody(ledger: Ledger, requestID: string) {
   const db = wireStore(ledger)
-  const source = db.query<{ source: string }, [string]>("select source from wire where request_id = ?").get(requestID)?.source
-  if (!source) return
-  const rows = db.query<{ path: string; body: string }, [string]>(`select r.path, e.body from wire_row r join element e on e.hash = r.hash
-    where r.source = ? order by r.position`).all(source)
-  return rebuild(rows.map((row) => ({ path: row.path, key: topKey(row.path), json: row.body })))
+  const rows = storedRows(db, requestID)
+  if (!rows) return
+  const body = db.query<{ body: string }, [string]>("select body from element where hash = ?")
+  const parts = rows.map((row) => ({ path: row.path, key: topKey(row.path), json: body.get(row.hash)?.body }))
+  if (parts.some((part) => part.json === undefined)) return
+  return rebuild(parts as { path: string; key: string; json: string }[])
+}
+
+/** Whether a request's sent body can be rebuilt from the store. */
+export function hasWire(ledger: Ledger, requestID: string) {
+  return storedRows(wireStore(ledger), requestID) !== undefined
+}
+
+/**
+ * Two stored bodies as values to compare, decoding only what differs: an
+ * element stored under the same hash at the same place in both is the same
+ * placeholder string in each. Tools are always decoded, because they compare by
+ * name. Undefined when either body is not stored.
+ */
+export function comparableWire(ledger: Ledger, beforeID: string, afterID: string) {
+  const db = wireStore(ledger)
+  const before = storedRows(db, beforeID)
+  const after = storedRows(db, afterID)
+  if (!before || !after) return
+  const at = new Map(before.map((row) => [row.path, row.hash]))
+  const same = new Set(after
+    .filter((row) => row.path !== topKey(row.path) && topKey(row.path) !== "tools" && at.get(row.path) === row.hash)
+    .map((row) => row.path))
+  const body = db.query<{ body: string }, [string]>("select body from element where hash = ?")
+  const value = (rows: readonly Row[]) => {
+    const out: Record<string, Json> = {}
+    for (const row of rows) {
+      const key = topKey(row.path)
+      const json = same.has(row.path) ? undefined : body.get(row.hash)?.body
+      if (json === undefined && !same.has(row.path)) return
+      const item = json === undefined ? `\0same\0${row.hash}` : (JSON.parse(json) as Json)
+      const list = out[key]
+      if (row.path === key) out[key] = item
+      else if (Array.isArray(list)) list.push(item)
+      else out[key] = [item]
+    }
+    return out
+  }
+  const a = value(before)
+  const b = value(after)
+  return a && b ? { before: a, after: b } : undefined
 }
 
 export function pruneWire(ledger: Ledger, before: number) {
   const db = wireStore(ledger)
   db.transaction(() => {
-    db.query("delete from wire where at < ?").run(before)
+    // Nothing expired: skip the scans of every stored row.
+    if (db.query("delete from wire where at < ?").run(before).changes === 0) return
+    // A kept request whose list starts in a removed one keeps a full copy first.
+    db.query<{ source: string }, []>(`select source from wire_base
+      where source in (select source from wire) and base not in (select source from wire)`).all()
+      .forEach((row) => materialize(db, row.source))
+    db.query("delete from wire_base where source not in (select source from wire)").run()
     db.query("delete from wire_row where source not in (select source from wire)").run()
     db.query("delete from element where hash not in (select hash from wire_row)").run()
   })()
@@ -230,10 +299,106 @@ function resolve(db: Database, input: MonitorPromptInput) {
 }
 
 function elements(db: Database, source: string) {
-  return db.query<{ path: string; hash: string; content: string; blocks: string }, [string]>(`
-    select r.path, r.hash, e.content, e.blocks from wire_row r join element e on e.hash = r.hash
-    where r.source = ? order by r.position`).all(source)
-    .map((row) => ({ path: row.path, hash: row.hash, content: row.content, blocks: JSON.parse(row.blocks) as Block[] }))
+  const element = db.query<{ content: string; blocks: string }, [string]>("select content, blocks from element where hash = ?")
+  return (rowsOf(db, source) ?? []).flatMap((row) => {
+    const found = element.get(row.hash)
+    return found ? [{ path: row.path, hash: row.hash, content: found.content, blocks: JSON.parse(found.blocks) as Block[] }] : []
+  })
+}
+
+interface Row {
+  readonly path: string
+  readonly hash: string
+}
+
+function storedRows(db: Database, requestID: string) {
+  const source = db.query<{ source: string }, [string]>("select source from wire where request_id = ?").get(requestID)?.source
+  return source === undefined ? undefined : rowsOf(db, source)
+}
+
+/**
+ * A stored list in position order, following its chain of shared starts.
+ * Empty for a source never stored; undefined when a link is missing rows (a
+ * chain an older Plus pruned), so a caller reports the body as unavailable.
+ */
+function rowsOf(db: Database, source: string): Row[] | undefined {
+  const link = db.query<{ base: string; shared: number }, [string]>("select base, shared from wire_base where source = ?")
+  const range = db.query<Row, [string, number, number]>(
+    "select path, hash from wire_row where source = ? and position >= ? and position < ? order by position")
+  const segments: Row[][] = []
+  const walk = { source, end: END }
+  for (let depth = 0; depth <= KEYFRAME; depth++) {
+    const base = link.get(walk.source)
+    const start = base?.shared ?? 0
+    const rows = range.all(walk.source, start, walk.end)
+    if (walk.end !== END && rows.length !== walk.end - start) return
+    segments.push(rows)
+    if (!base) return segments.reverse().flat()
+    walk.source = base.base
+    walk.end = start
+  }
+  return
+}
+
+function sameRows(a: readonly Row[], b: readonly Row[]) {
+  return a.length === b.length && a.every((row, index) => row.path === b[index]!.path && row.hash === b[index]!.hash)
+}
+
+function sharedStart(a: readonly Row[], b: readonly Row[]) {
+  const limit = Math.min(a.length, b.length)
+  const index = a.findIndex((row, position) => position >= limit || row.path !== b[position]!.path || row.hash !== b[position]!.hash)
+  return index === -1 ? limit : index
+}
+
+function dependents(db: Database, source: string) {
+  return db.query<{ source: string }, [string]>("select source from wire_base where base = ?").all(source).map((row) => row.source)
+}
+
+/** Store a source's whole list itself, so nothing it shares can be lost under it. */
+function materialize(db: Database, source: string) {
+  const rows = rowsOf(db, source)
+  if (rows) writeRows(db, source, rows, undefined)
+}
+
+/** The recent request of the chat that shares the longest start with `rows`, when a delta may chain on it. */
+function closestBase(db: Database, sessionID: string, requestID: string, rows: readonly Row[]) {
+  const recent = db.query<{ source: string }, [string, string, number]>(
+    "select source from wire where session_id = ? and source != ? order by at desc, request_id desc limit ?")
+    .all(sessionID, requestID, CANDIDATES * 2)
+  const depth = db.query<{ depth: number }, [string]>("select depth from wire_base where source = ?")
+  const best = [...new Set(recent.map((row) => row.source))].slice(0, CANDIDATES)
+    .flatMap((source) => {
+      const list = rowsOf(db, source)
+      return list ? [{ source, shared: sharedStart(list, rows), depth: depth.get(source)?.depth ?? 0 }] : []
+    })
+    .reduce<{ source: string; shared: number; depth: number } | undefined>((top, next) => (next.shared > (top?.shared ?? 0) ? next : top), undefined)
+  if (!best || best.depth + 1 >= KEYFRAME) return
+  return best
+}
+
+function writeRows(db: Database, source: string, rows: readonly Row[], base: { source: string; shared: number; depth: number } | undefined) {
+  db.query("delete from wire_row where source = ?").run(source)
+  db.query("delete from wire_base where source = ?").run(source)
+  if (base) db.query("insert into wire_base (source, base, shared, depth) values (?, ?, ?, ?)").run(source, base.source, base.shared, base.depth + 1)
+  const add = db.query("insert into wire_row (source, position, path, hash) values (?, ?, ?, ?)")
+  rows.forEach((row, position) => {
+    if (position >= (base?.shared ?? 0)) add.run(source, position, row.path, row.hash)
+  })
+}
+
+// Hash of each sent item by a fast fingerprint of its text, so an item every
+// request repeats is SHA-256 hashed once per process, not once per request.
+const partHashes = new Map<string, string>()
+const PART_HASHES = 65_536
+
+function partHash(part: Part) {
+  const key = `${part.context}\0${part.json.length}\0${Bun.hash(part.json)}`
+  const known = partHashes.get(key)
+  partHashes.delete(key)
+  const hash = known ?? sha256(`${part.context}\0${part.json}`)
+  partHashes.set(key, hash)
+  if (partHashes.size > PART_HASHES) partHashes.delete(partHashes.keys().next().value!)
+  return hash
 }
 
 function detailOf(db: Database, hash: string, block: Block, row: number, at: string) {

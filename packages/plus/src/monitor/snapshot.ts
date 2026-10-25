@@ -7,7 +7,7 @@ import { foldSession, markedMessageBoundary } from "./cache.js"
 import { sha256 } from "./fingerprint.js"
 import { CACHE_COLUMNS, cacheColumnValues, type ContextFactRow, type Ledger } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
-import { storeWire, wireBody } from "./wire.js"
+import { comparableWire, hasWire, storeWire, wireBody } from "./wire.js"
 
 const decodeWire = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))
 type WireDiff = { append: boolean; addedMessages: number; addedChars: number; changed: string[]; first?: string; options: string[]; markers: string[] }
@@ -27,8 +27,11 @@ function toolName(value: Schema.Json) {
  * key order is JSON noise; array order and string bytes are never normalized.
  */
 export function compareWire(before: string, after: string): WireDiff {
-  const a = decodeWire(before)
-  const b = decodeWire(after)
+  return compareWireValues(decodeWire(before), decodeWire(after))
+}
+
+/** compareWire for decoded bodies, such as the values `comparableWire` gives. */
+export function compareWireValues(a: Schema.JsonObject, b: Schema.JsonObject): WireDiff {
   const changed: string[] = []
   const options: string[] = []
   const markers: string[] = []
@@ -98,11 +101,11 @@ export async function captureWire(ledger: Ledger, id: string, body: string, opti
   ledger.db.query("insert into cache_wire values (?, ?) on conflict(request_id) do update set path = excluded.path").run(id, file)
 }
 
+/** Where a request's sent body is kept: an exact compressed copy, or the item store. */
 function transcript(ledger: Ledger, id: string) {
   const stored = ledger.db.query<{ path: string }, [string]>("select path from cache_wire where request_id = ?").get(id)
-  if (stored && fs.existsSync(stored.path)) return { body: gunzipSync(fs.readFileSync(stored.path)).toString() }
-  const body = wireBody(ledger, id)
-  return body === undefined ? undefined : { body }
+  if (stored && fs.existsSync(stored.path)) return { archive: stored.path }
+  return hasWire(ledger, id) ? {} : undefined
 }
 
 function compareTranscripts(ledger: Ledger, previous: string | undefined, id: string) {
@@ -110,7 +113,15 @@ function compareTranscripts(ledger: Ledger, previous: string | undefined, id: st
   try {
     const before = previous ? transcript(ledger, previous) : undefined
     const after = transcript(ledger, id)
-    return { before, after, diff: before && after ? compareWire(before.body, after.body) : undefined }
+    if (!previous || !before || !after) return { before, after, diff: undefined }
+    // Two stored bodies compare without decoding the items they share.
+    const values = before.archive || after.archive ? undefined : comparableWire(ledger, previous, id)
+    if (values) return { before, after, diff: compareWireValues(values.before, values.after) }
+    const text = (target: { archive?: string }, request: string) =>
+      target.archive ? gunzipSync(fs.readFileSync(target.archive)).toString() : wireBody(ledger, request)
+    const a = text(before, previous)
+    const b = text(after, id)
+    return { before, after, diff: a !== undefined && b !== undefined ? compareWire(a, b) : undefined }
   } catch {
     return { before: undefined, after: undefined, diff: undefined }
   }

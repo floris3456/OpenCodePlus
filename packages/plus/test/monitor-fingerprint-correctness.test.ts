@@ -107,6 +107,16 @@ test("one early message edit changes its own identity, not the independently unc
   expect(prefixDiff(a, fp({ messages: [...messages, { role: "assistant", content: "append" }] })).reusable).toBe(true)
 })
 
+test("remembered message hashes give the same fingerprint, and only after the same prefix", () => {
+  const messages = Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: `turn ${i}` }))
+  const first = fp({ messages })
+  expect(fp({ messages })).toEqual(first)
+  expect(fp({ messages: [...messages, { role: "user", content: "next" }] }).messagePrefixes.slice(0, 6)).toEqual(first.messagePrefixes)
+  const edited = fp({ messages: [{ role: "user", content: "other start" }, ...messages.slice(1)] })
+  expect(edited.messagePrefixes.slice(1).map((m) => m.contentHash)).toEqual(first.messagePrefixes.slice(1).map((m) => m.contentHash))
+  expect(edited.messagePrefixes.slice(1).filter((m, i) => m.prefixHash === first.messagePrefixes[i + 1]!.prefixHash)).toEqual([])
+})
+
 test("rolling breakpoint is a marker change, not a message content edit", () => {
   const a = fp({ max_tokens: 64, messages: [{ role: "user", content: [{ type: "text", text: "same", cache_control: { type: "ephemeral" } }] }] }, "anthropic-messages")
   const b = fp({ max_tokens: 64, messages: [{ role: "user", content: [{ type: "text", text: "same" }] }] }, "anthropic-messages")
