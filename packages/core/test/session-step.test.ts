@@ -24,7 +24,7 @@ import type { SessionModelObserved } from "@opencode/plugin/effect/session"
 import { Money } from "@opencode/schema/money"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { asc, eq } from "drizzle-orm"
-import { Effect, Exit, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { testEffect } from "./lib/effect"
 import { createLedger } from "../../plus/src/monitor/ledger.js"
 import { watchMonitor } from "../../plus/src/monitor/plugin.js"
@@ -178,3 +178,92 @@ for (const fixture of [
     }),
   )
 }
+
+it.effect("streams before the start snapshot exists and runs a local tool only after it is recorded", () =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    const llm = yield* TestLLM.Test
+    const sessionID = Session.ID.create()
+    const assistantMessageID = SessionMessage.ID.create()
+    const start = Snapshot.ID.make("before")
+    const end = Snapshot.ID.make("after")
+    const captured = yield* Deferred.make<void>()
+    let captures = 0
+    const steps = yield* SessionStep.make.pipe(
+      Effect.provide(
+        Layer.mock(Snapshot.Service)({
+          capture: () => (captures++ === 0 ? Deferred.await(captured).pipe(Effect.as(start)) : Effect.succeed(end)),
+          files: () => Effect.succeed([RelativePath.make("changed.ts")]),
+        }),
+      ),
+    )
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .run()
+    yield* db
+      .insert(SessionTable)
+      .values({ id: sessionID, project_id: Project.ID.global, slug: "step", directory: "/project", version: "test" })
+      .run()
+    const model = SessionRunnerModel.resolved(
+      LanguageModel.make({ id: "test-model", provider: "test", route: OpenAIChat.route }),
+      { capabilities: { tools: true, input: ["text"], output: ["text"] }, limit: { context: 100_000, output: 1_000 }, cost: [] },
+    )
+    const hooks = yield* PluginHooks.Service
+    const types = () =>
+      db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, sessionID))
+        .orderBy(asc(EventTable.seq))
+        .all()
+        .pipe(Effect.map((rows) => rows.map((row) => row.type)))
+    const atExecution: string[][] = []
+    yield* llm.push(
+      TestLLM.complete({ reason: { normalized: "stop" } }, LLMEvent.toolCall({ id: "call-test", name: "test", input: {} })),
+    )
+    const attempt = yield* steps
+      .attempt({
+        isLocationClosed: () => false,
+        sessionID,
+        assistantMessageID,
+        agent: Agent.defaultID,
+        model,
+        prepared: {
+          observer: SessionModelObservation.make(hooks, { sessionID, agent: Agent.defaultID, model: model.ref, kind: "primary" }, model.cost),
+          retry: () => Effect.void,
+          request: LLM.request({ model: model.model, prompt: "Run one tool" }),
+          options: {},
+          executeTool: () =>
+            types().pipe(
+              Effect.orDie,
+              Effect.map((seen) => {
+                atExecution.push(seen)
+                return { content: [{ type: "text" as const, text: "Completed tool" }] }
+              }),
+            ),
+        },
+        retry: () => Effect.succeed({ retry: false }),
+        recoverContinuation: true,
+        recoverOverflow: Effect.succeed(false),
+      })
+      .pipe(Effect.forkChild({ startImmediately: true }))
+
+    // The step starts while the start capture is still running, and its tool waits for it.
+    let seen: string[] = []
+    for (let tries = 0; tries < 1_000 && !seen.includes("session.step.started.1"); tries++) {
+      yield* Effect.yieldNow
+      seen = yield* types()
+    }
+    expect(seen).toContain("session.step.started.1")
+    expect(seen).not.toContain("session.step.snapshotted.1")
+    expect(atExecution).toEqual([])
+
+    yield* Deferred.succeed(captured, undefined)
+    expect(Exit.isSuccess(yield* Fiber.await(attempt))).toBe(true)
+    expect(atExecution).toHaveLength(1)
+    expect(atExecution[0]).toContain("session.step.snapshotted.1")
+    const message = yield* db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, assistantMessageID)).get()
+    expect(message?.data).toMatchObject({ snapshot: { start, end } })
+  }),
+)

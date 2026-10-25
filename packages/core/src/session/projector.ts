@@ -698,6 +698,7 @@ const layer = Layer.effectDiscard(
       }),
     )
     yield* bus.project(SessionEvent.Step.Streamed, (event) => run(db, event))
+    yield* bus.project(SessionEvent.Step.Snapshotted, (event) => run(db, event))
     yield* bus.project(SessionEvent.Step.Ended, (event) =>
       Effect.gen(function* () {
         yield* run(db, event)

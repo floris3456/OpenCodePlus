@@ -260,6 +260,11 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
           draft.time.streamed = created
         })
       },
+      "session.step.snapshotted": (event) => {
+        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+          draft.snapshot = { ...draft.snapshot, start: event.data.snapshot }
+        })
+      },
       "session.step.ended": (event) => {
         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
           draft.time.completed = created
