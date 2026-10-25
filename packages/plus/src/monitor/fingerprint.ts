@@ -103,6 +103,26 @@ export function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16)
 }
 
+// A chat's next request repeats its history, so each message's hashes are kept
+// by a fast fingerprint of its JSON text and of the prefix before it: only new
+// or changed messages are canonicalized and SHA-256 hashed again.
+const messageHashes = new Map<string, { prefixHash: string; contentHash: string }>()
+const MESSAGE_HASHES = 65_536
+
+function messageHashesOf(prevHash: string, message: unknown) {
+  const json = JSON.stringify(message)
+  const key = `${prevHash}\0${json.length}\0${Bun.hash(json)}`
+  const known = messageHashes.get(key)
+  messageHashes.delete(key)
+  const hashes = known ?? (() => {
+    const canonical = contentJson(message)
+    return { prefixHash: sha256(`${prevHash}:${canonical}`), contentHash: sha256(canonical) }
+  })()
+  messageHashes.set(key, hashes)
+  if (messageHashes.size > MESSAGE_HASHES) messageHashes.delete(messageHashes.keys().next().value!)
+  return { ...hashes, chars: json.length }
+}
+
 /** Provider errors may echo prompts, URLs or credentials. Never persist their text. */
 export function errorFingerprint(error: unknown): string {
   const value = error !== null && typeof error === "object" ? error as Record<string, unknown> : {}
@@ -279,15 +299,18 @@ export function fingerprintWireBody(
     (json.tools !== undefined && (!Array.isArray(json.tools) || json.tools.some((tool) => !tool || typeof tool !== "object" || Array.isArray(tool)))))
     return fallbackFingerprint(text, bodyHash)
 
+  // Bodies are JSON.stringify output, which never escapes the letters of a key:
+  // a body without this text has no cache markers to walk for.
+  const marked = text.includes("cache_control")
   if (protocol === "anthropic-messages") {
-    return fingerprintAnthropic(json, bodyHash, options.namedSystemParts)
+    return fingerprintAnthropic(json, bodyHash, options.namedSystemParts, marked)
   }
 
   if (protocol === "openai-responses") {
     return fingerprintOpenAIResponses(json, bodyHash, options.namedSystemParts)
   }
 
-  return fingerprintOpenAIChat(json, bodyHash, options.namedSystemParts)
+  return fingerprintOpenAIChat(json, bodyHash, options.namedSystemParts, marked)
 }
 
 function fallbackFingerprint(bodyText: string, bodyHash: string): WireFingerprint {
@@ -323,7 +346,8 @@ function fallbackFingerprint(bodyText: string, bodyHash: string): WireFingerprin
 function fingerprintAnthropic(
   body: Record<string, unknown>,
   bodyHash: string,
-  namedParts?: ReadonlyArray<NamedSystemPart>,
+  namedParts: ReadonlyArray<NamedSystemPart> | undefined,
+  marked: boolean,
 ): WireFingerprint {
   const systemParts: SystemPartFingerprint[] = []
 
@@ -380,20 +404,18 @@ function fingerprintAnthropic(
         ? "text"
         : undefined
     const messageId = typeof m.id === "string" ? m.id : undefined
-    const canonical = contentJson(msg)
-    const prefixHash = sha256(`${prevHash}:${canonical}`)
-    prevHash = prefixHash
-    const chars = JSON.stringify(msg).length
+    const hashes = messageHashesOf(prevHash, msg)
+    prevHash = hashes.prefixHash
 
     messagePrefixes.push({
       idx,
       role,
       ...(kind ? { kind } : {}),
       ...(messageId ? { messageId } : {}),
-      prefixHash,
-      contentHash: sha256(canonical),
-      chars,
-      estimatedTokens: estimateTokens(chars),
+      prefixHash: hashes.prefixHash,
+      contentHash: hashes.contentHash,
+      chars: hashes.chars,
+      estimatedTokens: estimateTokens(hashes.chars),
     })
   })
 
@@ -407,7 +429,7 @@ function fingerprintAnthropic(
     optionsHash,
     optionsKeys,
     messagePrefixes,
-    cacheControl: cacheMarkers(body),
+    cacheControl: marked ? cacheMarkers(body) : [],
     bodyHash,
   }
 }
@@ -457,19 +479,17 @@ function fingerprintOpenAIResponses(
     const role = String(m.role ?? m.type ?? "user")
     const kind = typeof m.type === "string" ? m.type : undefined
     const messageId = typeof m.id === "string" ? m.id : typeof m.call_id === "string" ? m.call_id : undefined
-    const canonical = contentJson(item)
-    const prefixHash = sha256(`${prevHash}:${canonical}`)
-    prevHash = prefixHash
-    const chars = JSON.stringify(item).length
+    const hashes = messageHashesOf(prevHash, item)
+    prevHash = hashes.prefixHash
     messagePrefixes.push({
       idx,
       role,
       ...(kind ? { kind } : {}),
       ...(messageId ? { messageId } : {}),
-      prefixHash,
-      contentHash: sha256(canonical),
-      chars,
-      estimatedTokens: estimateTokens(chars),
+      prefixHash: hashes.prefixHash,
+      contentHash: hashes.contentHash,
+      chars: hashes.chars,
+      estimatedTokens: estimateTokens(hashes.chars),
     })
   })
 
@@ -494,7 +514,8 @@ function fingerprintOpenAIResponses(
 function fingerprintOpenAIChat(
   body: Record<string, unknown>,
   bodyHash: string,
-  namedParts?: ReadonlyArray<NamedSystemPart>,
+  namedParts: ReadonlyArray<NamedSystemPart> | undefined,
+  marked: boolean,
 ): WireFingerprint {
   const systemParts: SystemPartFingerprint[] = []
   const rawMessages = Array.isArray(body.messages) ? body.messages : []
@@ -548,19 +569,17 @@ function fingerprintOpenAIChat(
     const role = String(m.role ?? "user")
     const kind = Array.isArray(m.tool_calls) ? "tool_calls" : typeof m.tool_call_id === "string" ? "tool_result" : "text"
     const messageId = typeof m.id === "string" ? m.id : typeof m.tool_call_id === "string" ? m.tool_call_id : undefined
-    const canonical = contentJson(msg)
-    const prefixHash = sha256(`${prevHash}:${canonical}`)
-    prevHash = prefixHash
-    const chars = JSON.stringify(msg).length
+    const hashes = messageHashesOf(prevHash, msg)
+    prevHash = hashes.prefixHash
     messagePrefixes.push({
       idx,
       role,
       kind,
       ...(messageId ? { messageId } : {}),
-      prefixHash,
-      contentHash: sha256(canonical),
-      chars,
-      estimatedTokens: estimateTokens(chars),
+      prefixHash: hashes.prefixHash,
+      contentHash: hashes.contentHash,
+      chars: hashes.chars,
+      estimatedTokens: estimateTokens(hashes.chars),
     })
   })
 
@@ -574,7 +593,7 @@ function fingerprintOpenAIChat(
       return m.role === "system" || m.role === "developer" ? [{ idx, messageHash: sha256(contentJson(m)) }] : []
     }))),
     protocol: "openai-chat",
-    cacheControl: cacheMarkers(body),
+    cacheControl: marked ? cacheMarkers(body) : [],
     systemParts,
     tools,
     optionsHash,

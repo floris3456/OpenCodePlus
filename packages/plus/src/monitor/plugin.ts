@@ -159,9 +159,10 @@ export function watchMonitor(
         const requestID = event.requestID ?? `req_${sessionID}_${started}_${Math.random().toString(36).slice(2, 8)}`
 
         const wireBody = await event.request.clone().text().catch(() => "")
+        const url = event.request.url
         const parts = namedSystemParts.get(sessionID)
         const fp = fingerprintWireBody(wireBody, {
-          url: event.request.url,
+          url,
           namedSystemParts: parts,
         })
 
@@ -194,7 +195,9 @@ export function watchMonitor(
         event.observers.push((request) => Effect.promise(async () => {
           httpRequests.set(request, requestID)
           const body = await request.clone().text()
-          l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(body, { url: request.url, namedSystemParts: parts }) })
+          // No transform changed the body: the fingerprint stored above already describes it.
+          if (body !== wireBody || request.url !== url)
+            l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(body, { url: request.url, namedSystemParts: parts }) })
           await captureWire(l, requestID, body, { sessionID, url: request.url, at: started })
         }).pipe(Effect.catchCause(() => failedHook("http.request"))))
         await pricing(l, sessionID, provider, model, started)
@@ -241,8 +244,10 @@ export function watchMonitor(
         })
         wsRequests.set(sessionID, requestID)
         event.observers ??= []
+        const sent = event.frame
         event.observers.push((frame) => Effect.promise(async () => {
-          l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(frame, { namedSystemParts: parts }) })
+          if (typeof frame !== "string" || frame !== sent)
+            l.requestFingerprint({ requestID, sessionID, ...fingerprintWireBody(frame, { namedSystemParts: parts }) })
           await captureWire(l, requestID, typeof frame === "string" ? frame : JSON.stringify(frame), { sessionID, at: started })
         }).pipe(Effect.catchCause(() => failedHook("experimental.ws.send"))))
         await pricing(l, sessionID, provider, model, started)
