@@ -10,7 +10,7 @@ import { Config } from "@opencode/schema/config"
 import { Model } from "@opencode/schema/model"
 import { Session } from "@opencode/schema/session"
 import { Skill } from "@opencode/schema/skill"
-import { DateTime, Duration, Effect, Option, Queue, Scope, Schema, Semaphore, Stream } from "effect"
+import { DateTime, Duration, Effect, Fiber, Option, Queue, Scope, Schema, Semaphore, Stream } from "effect"
 import fs from "node:fs/promises"
 import fsSync from "node:fs"
 import path from "node:path"
@@ -146,6 +146,8 @@ export interface PlusState {
   readonly running: Set<string>
   refreshTimer?: ReturnType<typeof setTimeout>
   activeRefresh?: Promise<void>
+  /** The refresh behind activeRefresh: it holds the location lock, which deactivate needs too. */
+  activeRefreshFiber?: Fiber.Fiber<void>
   /**
    * The last built snapshot for the current (projectRevision,
    * globalRevision, snapshotGeneration) key. The generation is bumped
@@ -6991,12 +6993,16 @@ export function watchSharedStore(ctx: Context, state: PlusState): Effect.Effect<
     }
     const unsubscribe = onSharedStoreChanged(trigger)
     yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         unsubscribe()
         if (state.refreshTimer !== undefined) {
           clearTimeout(state.refreshTimer)
           state.refreshTimer = undefined
         }
+        // Runs before deactivate (registered earlier), which waits for the location lock. A refresh
+        // still publishing holds that lock, and its host reads may never answer once the location
+        // closes: without this, closing waited for the refresh to give up a minute later.
+        if (state.activeRefreshFiber !== undefined) yield* Fiber.interrupt(state.activeRefreshFiber)
       }),
     )
     yield* watchSharedStoreFile(trigger)
@@ -7274,16 +7280,20 @@ export function flushPendingRefresh(ctx: Context, state: PlusState): Effect.Effe
     }
     if (!state.pendingRefresh) return
     state.pendingRefresh = false
-    const promise = Effect.runPromise(
+    const fiber = Effect.runFork(
       refreshFromHost(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus flush refresh failed", { cause })),
       ),
     )
+    // Settles also when the location's teardown interrupts it.
+    const promise = Effect.runPromise(Fiber.await(fiber)).then(() => {})
+    state.activeRefreshFiber = fiber
     state.activeRefresh = promise
     try {
       await promise
     } finally {
       state.activeRefresh = undefined
+      state.activeRefreshFiber = undefined
     }
   })
 }
