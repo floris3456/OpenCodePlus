@@ -965,8 +965,8 @@ export function modelDefaultKeys(input: {
   readonly models: readonly { readonly providerID: string; readonly modelID: string }[]
   readonly agents: readonly { readonly model?: { readonly providerID: string; readonly modelID: string } }[]
   readonly hostModels: readonly HostModel[]
-}): ModelSettingsKey[] {
-  const keys = new Map<string, ModelSettingsKey>()
+}): { readonly providerID: string; readonly modelID: string }[] {
+  const keys = new Map<string, { readonly providerID: string; readonly modelID: string }>()
   const add = (providerID: string, modelID: string) => {
     keys.set(`${providerID}/${modelID}`, { providerID, modelID })
   }
@@ -976,8 +976,8 @@ export function modelDefaultKeys(input: {
   for (const agent of input.agents) if (agent.model !== undefined) add(agent.model.providerID, agent.model.modelID)
   for (const host of input.hostModels) add(host.providerID, host.modelID)
   return [...keys.values()].toSorted((left, right) => {
-    if (left.providerID !== right.providerID) return left.providerID! < right.providerID! ? -1 : 1
-    if (left.modelID !== right.modelID) return left.modelID! < right.modelID! ? -1 : 1
+    if (left.providerID !== right.providerID) return left.providerID < right.providerID ? -1 : 1
+    if (left.modelID !== right.modelID) return left.modelID < right.modelID ? -1 : 1
     return 0
   })
 }

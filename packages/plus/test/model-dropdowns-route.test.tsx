@@ -19,9 +19,11 @@ const agentModel = (providerID: string, modelID: string, fields: { coldCompact?:
 const titles = (options: readonly { readonly title: string }[]) => options.map((option) => option.title)
 
 // Open a row, open its group, and leave the cursor on the group's first field
-// and then on `field` (a group named like its field starts on the group).
+// and then on `field` (a group named like its field starts on the group). A
+// model row sits in its provider › lab groups, where a narrow list shortens its
+// `provider/model` label in the middle: its model id is what stays readable.
 async function reachField(fixture: TestFixture, row: string, group: string, field: string): Promise<void> {
-  await reach(fixture, row, row.endsWith(":*") ? "Every model" : row.split(":").at(-1))
+  await reach(fixture, row, row.endsWith(":*") ? "Every model" : row.split("/").at(-1))
   dispatch(fixture, "return")
   await sleep(80)
   await moveTo(fixture, group)

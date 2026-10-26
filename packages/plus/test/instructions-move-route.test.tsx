@@ -5,7 +5,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { fingerprint } from "../src/instructions/model.js"
 import { createSnapshot, renderInstructionsRoute, type TestFixture } from "./tui.js"
-import { category, dispatch, footer, gotoLevel, levelOf, moveTo, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
+import { category, dispatch, expand, footer, gotoLevel, levelOf, moveTo, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
 
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
@@ -51,17 +51,23 @@ async function goto(fixture: TestFixture, id: string, label: string): Promise<vo
   await until(fixture, () => !footer(fixture.captureCharFrame()).includes("esc clear filter") && selectedRow(fixture.captureCharFrame()).includes(label))
 }
 
+// The Models tab, with its openai › ChatGPT group opened: its two model rows
+// are siblings there.
 async function openModels(fixture: TestFixture): Promise<void> {
   await goto(fixture, "agent:project:Implementer", "Implementer")
   dispatch(fixture, "right")
   await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
   await category(fixture, "Models")
+  await moveTo(fixture, "ChatGPT")
+  await expand(fixture)
 }
 
 const MODELS = [
   { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "openai", modelID: "gpt-4o", active: true as const, updated: UPDATED },
-  { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "anthropic", modelID: "claude-sonnet", updated: UPDATED },
+  { type: "model" as const, level: "project" as const, agent: "Implementer", providerID: "openai", modelID: "gpt-5", updated: UPDATED },
 ]
+
+const CHATGPT = "group:project:Implementer:models:provider=openai:lab=chatgpt"
 
 test("section arrows preview; Esc restores with zero writes and Enter uses one text mutation", async () => {
   const middleLine = (frame: string, label: string) => frame.split("\n").findIndex((line) => line.split("│")[1]?.includes(label))
@@ -107,9 +113,9 @@ test("m picks a model row up: arrows preview with no write, Enter drops once, Es
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await openModels(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("gpt-4o") && frame.includes("claude-sonnet"))
-    const first = firstOf(fixture.captureCharFrame(), "gpt-4o", "claude-sonnet")
-    const second = first === "gpt-4o" ? "claude-sonnet" : "gpt-4o"
+    await fixture.waitForFrame((frame) => frame.includes("gpt-4o") && frame.includes("gpt-5"))
+    const first = firstOf(fixture.captureCharFrame(), "gpt-4o", "gpt-5")
+    const second = first === "gpt-4o" ? "gpt-5" : "gpt-4o"
     await moveTo(fixture, second)
 
     expect(dispatch(fixture, "m")).toBe(true)
@@ -118,15 +124,15 @@ test("m picks a model row up: arrows preview with no write, Enter drops once, Es
     expect(fixture.captureCharFrame()).toContain("↕")
 
     dispatch(fixture, "up")
-    await fixture.waitForFrame((frame) => firstOf(frame, "gpt-4o", "claude-sonnet") === second)
+    await fixture.waitForFrame((frame) => firstOf(frame, "gpt-4o", "gpt-5") === second)
     expect(fixture.fake.layoutWrites.length).toBe(0)
-    expect(firstOf(fixture.captureCharFrame(), "gpt-4o", "claude-sonnet")).toBe(second)
+    expect(firstOf(fixture.captureCharFrame(), "gpt-4o", "gpt-5")).toBe(second)
 
     // A second row card: Esc restores the original order and writes nothing.
     dispatch(fixture, "escape")
-    await fixture.waitForFrame((frame) => !footer(frame).includes("drop") && firstOf(frame, "gpt-4o", "claude-sonnet") === first)
+    await fixture.waitForFrame((frame) => !footer(frame).includes("drop") && firstOf(frame, "gpt-4o", "gpt-5") === first)
     expect(fixture.fake.layoutWrites.length).toBe(0)
-    expect(firstOf(fixture.captureCharFrame(), "gpt-4o", "claude-sonnet")).toBe(first)
+    expect(firstOf(fixture.captureCharFrame(), "gpt-4o", "gpt-5")).toBe(first)
   } finally {
     fixture.destroy()
   }
@@ -138,21 +144,22 @@ test("Enter drops the previewed order as one layout write over an order record",
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     await openModels(fixture)
-    await fixture.waitForFrame((frame) => frame.includes("gpt-4o") && frame.includes("claude-sonnet"))
-    const first = firstOf(fixture.captureCharFrame(), "gpt-4o", "claude-sonnet")
-    const second = first === "gpt-4o" ? "claude-sonnet" : "gpt-4o"
-    const moved = second === "gpt-4o" ? "model:openai/gpt-4o" : "model:anthropic/claude-sonnet"
-    const other = first === "gpt-4o" ? "model:openai/gpt-4o" : "model:anthropic/claude-sonnet"
+    await fixture.waitForFrame((frame) => frame.includes("gpt-4o") && frame.includes("gpt-5"))
+    const first = firstOf(fixture.captureCharFrame(), "gpt-4o", "gpt-5")
+    const second = first === "gpt-4o" ? "gpt-5" : "gpt-4o"
+    const moved = second === "gpt-4o" ? "model:openai/gpt-4o" : "model:openai/gpt-5"
+    const other = first === "gpt-4o" ? "model:openai/gpt-4o" : "model:openai/gpt-5"
     await moveTo(fixture, second)
     dispatch(fixture, "m")
     await fixture.waitForFrame((frame) => footer(frame).includes("drop"))
     dispatch(fixture, "up")
-    await fixture.waitForFrame((frame) => firstOf(frame, "gpt-4o", "claude-sonnet") === second)
+    await fixture.waitForFrame((frame) => firstOf(frame, "gpt-4o", "gpt-5") === second)
 
     dispatch(fixture, "return")
     await until(fixture, () => fixture.fake.layoutWrites.length === 1)
     const write = fixture.fake.layoutWrites[0]
-    expect(write?.orders.find((record) => record.scope === "group:group:project:Implementer:models")?.items).toEqual([moved, other])
+    // The rows reorder inside their lab group, as Tools › OpenCode rows do.
+    expect(write?.orders.find((record) => record.scope === `group:${CHATGPT}`)?.items).toEqual([moved, other])
     expect(write?.folders).toEqual([])
     // Cursor stays on the moved row after the write.
     await fixture.waitForFrame((frame) => !footer(frame).includes("drop") && selectedRow(frame).includes(second))

@@ -2,6 +2,7 @@
 // so a second pass over the same memo and a pass on a fresh memo with the same
 // store read the same views, and a store write shows on the row it changed.
 import { expect, test } from "bun:test"
+import { parseModelGroupId } from "../src/instructions/model-labs.js"
 import { MODELS_GROUP_ID, type HostModel, type ModelSettingsRecord } from "../src/instructions/model-settings.js"
 import { buildTreeMemo, collectSkeleton, skeletonOf, treeOf, type MemoInput } from "../src/instructions/tree.js"
 import { toolCountOf } from "../src/tui/instructions/workspace.js"
@@ -32,9 +33,11 @@ function inputWith(modelSettings: ModelSettingsRecord[]): MemoInput {
   }
 }
 
-// The Defaults › Models rows: the Models group opened, so each model row is emitted.
+// The Defaults › Models rows: the Models group and its provider and lab groups
+// opened, so each model row is emitted.
 function modelRowsOf(memo: ReturnType<typeof buildTreeMemo>) {
-  const open = new Set(["root:defaults", MODELS_GROUP_ID])
+  const groups = collectSkeleton(skeletonOf(memo)).filter((node) => parseModelGroupId(node.id)?.models === MODELS_GROUP_ID)
+  const open = new Set(["root:defaults", MODELS_GROUP_ID, ...groups.map((node) => node.id)])
   return treeOf(memo, open).filter((row) => row.id.startsWith("item:defaults:/models:modeldefault:"))
 }
 
@@ -81,7 +84,8 @@ test("every Defaults › Models row has Compact cold chats first after Compact b
     ])
     const coldFirst = rows[at + 1]
     expect(coldFirst?.label).toBe("Compact cold chats first")
-    expect(coldFirst?.depth).toBe(4)
+    // Every model sits right under Models; a model row in its provider › lab groups.
+    expect(coldFirst?.depth).toBe(key === "*" ? 4 : 6)
     expect(coldFirst?.badges.value).toBe("as in Settings")
     expect(coldFirst?.badges.modified).toBeUndefined()
     expect(coldFirst?.actions).toEqual({ toggle: true, edit: false, reset: false, remove: false, split: false, pin: false })

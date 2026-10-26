@@ -98,6 +98,7 @@ import {
   type ModelSettingsRecord,
 } from "./model-settings.js"
 import { IMAGE_FIELDS, imageWord, type ImageField } from "../image-settings.js"
+import { compareLabs, modelLab, modelLabGroupId, modelProviderGroupId, parseModelGroupId } from "./model-labs.js"
 import { linkOf, presetOfAddress, type PresetEntry } from "./presets.js"
 import {
   buildMemo,
@@ -472,7 +473,7 @@ export function lazyPath(memo: Memo, rowId: string): readonly Lazy[] {
   return path
 }
 
-function canDescend(node: Lazy, rowId: string): boolean {
+function canDescend(node: Pick<Lazy, "id" | "kind" | "depth" | "address">, rowId: string): boolean {
   if (node.id.endsWith(":system") && rowId === node.id.replace(/:system$/, ":base")) return true
   if (rowId.startsWith(node.id + ":") || rowId.startsWith(node.id + "/")) return true
   if (node.kind === "section" && node.id.endsWith(":description")) {
@@ -488,6 +489,11 @@ function canDescend(node: Lazy, rowId: string): boolean {
   }
 
   if (node.kind === "group") {
+    // A Models tab's provider and lab groups hold what their tab holds, for
+    // their provider: every row under them names it as `:<provider>/<model>`.
+    const models = parseModelGroupId(node.id)
+    if (models !== undefined)
+      return rowId.includes(`:${models.providerID}/`) && canDescend({ id: models.models, kind: "group", depth: node.depth - (models.lab === undefined ? 1 : 2) }, rowId)
     // A tool's Description and Permissions groups (and the Permissions
     // categories): group:<level>:<owner>:tool:<id>:description|permissions[:<category>].
     const toolGroup = node.id.match(/^group:(.+):(tool:[^:]+):(description|permissions)(?::.*)?$/)
@@ -930,10 +936,11 @@ function lazyRoot(ctx: BuildContext, memo: Memo, level: Level): Lazy {
 }
 
 // Defaults › Models (model-settings.ts): the model settings every agent falls
-// back to when its own row does not set them. One "Every model" row and one
+// back to when its own row does not set them. One "Every model" row, then one
 // row per model the host catalog offers, plus any stored rows and agent
-// models. Listing a model writes nothing. Rows edit through modelSettings.set,
-// not the inventory mutate: they are their own surface, not agent rows.
+// models, in provider › lab groups (modelGroups). Listing a model writes
+// nothing. Rows edit through modelSettings.set, not the inventory mutate: they
+// are their own surface, not agent rows.
 function lazyModelsSection(ctx: BuildContext, memo: Memo): Lazy {
   return branch(memo, {
     kind: "group",
@@ -941,16 +948,56 @@ function lazyModelsSection(ctx: BuildContext, memo: Memo): Lazy {
     label: "Models",
     depth: 1,
     actions: noActions(),
-    children: () =>
-      [
-        {} as ModelSettingsKey,
-        ...modelDefaultKeys({
-          modelSettings: ctx.modelSettings,
-          models: ctx.models,
-          agents: ctx.agents,
-          hostModels: ctx.hostModels,
-        }),
-      ].map((key) => lazyModelDefault(ctx, memo, key)),
+    children: () => [
+      lazyModelDefault(ctx, memo, {}, 2),
+      ...modelGroups(
+        ctx,
+        memo,
+        MODELS_GROUP_ID,
+        2,
+        modelDefaultKeys({ modelSettings: ctx.modelSettings, models: ctx.models, agents: ctx.agents, hostModels: ctx.hostModels }),
+        (key, depth) => lazyModelDefault(ctx, memo, key, depth),
+      ),
+    ],
+  })
+}
+
+// The model rows of a Models tab or of Defaults › Models, grouped like the
+// Tools tab's origins: one built-in group per provider, by id, and in it one
+// per AI lab (model-labs.ts), by name with Other last. The groups are derived
+// from the rows, never stored, and carry no actions; rows keep their order.
+function modelGroups<Key extends { readonly providerID: string; readonly modelID: string }>(
+  ctx: BuildContext,
+  memo: Memo,
+  models: string,
+  depth: number,
+  keys: readonly Key[],
+  row: (key: Key, depth: number) => Lazy,
+): Lazy[] {
+  const providers = [...new Set(keys.map((key) => key.providerID))].toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+  return providers.map((providerID) => {
+    const id = modelProviderGroupId(models, providerID)
+    const labs = new Map(
+      keys.filter((key) => key.providerID === providerID).map((key) => [key, modelLab(key.modelID, hostModelOf(ctx.hostModels, key)?.name)] as const),
+    )
+    return branch(memo, {
+      kind: "group",
+      id,
+      label: providerID,
+      depth,
+      actions: noActions(),
+      children: () =>
+        [...new Set(labs.values())].toSorted(compareLabs).map((lab) =>
+          branch(memo, {
+            kind: "group",
+            id: modelLabGroupId(id, lab),
+            label: lab,
+            depth: depth + 1,
+            actions: noActions(),
+            children: () => [...labs].filter((entry) => entry[1] === lab).map((entry) => row(entry[0], depth + 2)),
+          }),
+        ),
+    })
   })
 }
 
@@ -958,7 +1005,7 @@ function modelDefaultLabel(key: ModelSettingsKey): string {
   return key.providerID === undefined || key.modelID === undefined ? "Every model" : `${key.providerID}/${key.modelID}`
 }
 
-function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey): Lazy {
+function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey, depth: number): Lazy {
   const item = modelDefaultItemId(key)
   const record = settingsFor(ctx.modelSettings, key)
   const address: Address = { level: "defaults", agent: null, item, section: null }
@@ -970,7 +1017,7 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
     id: modelDefaultRowId(key),
     kind: "item",
     label: modelDefaultLabel(key),
-    depth: 2,
+    depth,
     address,
     actions: { toggle: false, edit: false, reset: record !== undefined, remove: record !== undefined, split: false, pin: false },
     selfReview: () => false,
@@ -981,42 +1028,42 @@ function lazyModelDefault(ctx: BuildContext, memo: Memo, key: ModelSettingsKey):
     // waiting, Warm as subagent, Keep-alive prompt, Compact before cold, Compact
     // cold chats first and the cold-cache list) and Compaction.
     children: () => [
-      lazyModelDefaultField(ctx, memo, key, record, "effort", 3),
+      lazyModelDefaultField(ctx, memo, key, record, "effort", depth + 1),
       modelGroup(memo, {
         id: defaultGroupRowId(key, "warming"),
         label: "Warming",
-        depth: 3,
+        depth: depth + 1,
         summary: () => defaultsWarmingSummary(ctx, memo, key, record),
         children: [
-          () => lazyModelDefaultField(ctx, memo, key, record, "warming", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "interval", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "waiting", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "subagent", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "prompt", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "compactWarm", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "coldFirst", 4),
-          () => lazyDefaultColdGroup(ctx, memo, key, record, 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "warming", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "interval", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "waiting", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "subagent", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "prompt", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactWarm", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "coldFirst", depth + 2),
+          () => lazyDefaultColdGroup(ctx, memo, key, record, depth + 2),
         ],
       }),
       modelGroup(memo, {
         id: defaultGroupRowId(key, "compaction"),
         label: "Compaction",
-        depth: 3,
+        depth: depth + 1,
         summary: () => compactionStrategyWord(defaultsCompaction(ctx, key, record).strategy.value),
         children: [
-          () => lazyModelDefaultField(ctx, memo, key, record, "compactionStrategy", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInput", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "compactionOutput", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "compactionModel", 4),
-          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInstructions", 4),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionStrategy", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInput", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionOutput", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionModel", depth + 2),
+          () => lazyModelDefaultField(ctx, memo, key, record, "compactionInstructions", depth + 2),
         ],
       }),
       modelGroup(memo, {
         id: defaultGroupRowId(key, "images"),
         label: "Images",
-        depth: 3,
+        depth: depth + 1,
         summary: () => imagesSummary(defaultsImages(ctx, key, record)),
-        children: IMAGE_FIELDS.map((field) => () => lazyModelDefaultField(ctx, memo, key, record, field, 4)),
+        children: IMAGE_FIELDS.map((field) => () => lazyModelDefaultField(ctx, memo, key, record, field, depth + 2)),
       }),
     ],
   }
@@ -1445,7 +1492,10 @@ function arrangeTab(memo: Memo, group: Lazy): Lazy {
             }),
         })
       const topFolders = folders.filter((folder) => !referenced.has(folder.id)).map((folder) => folderRow(folder, group.depth + 1, new Set([folder.id])))
-      const kept = home.filter((child) => assignedItem(child, byItem) === undefined).map((child) => dropAssigned(child, byItem))
+      const kept = home
+        .filter((child) => assignedItem(child, byItem) === undefined)
+        .map((child) => dropAssigned(child, byItem))
+        .filter((child) => !emptiedModelGroup(child))
       const defaults = [...topFolders, ...kept]
       return [
         ...listed.flatMap((ref) => defaults.filter((lazy) => tokenOf(lazy) === ref)),
@@ -1478,8 +1528,15 @@ function dropAssigned(lazy: Lazy, byItem: ReadonlyMap<string, string>): Lazy {
       lazy
         .children()
         .filter((child) => assignedItem(child, byItem) === undefined)
-        .map((child) => dropAssigned(child, byItem)),
+        .map((child) => dropAssigned(child, byItem))
+        .filter((child) => !emptiedModelGroup(child)),
   }
+}
+
+// A provider or lab group whose every row a folder holds: it is derived from
+// its rows, so with none left it is not shown.
+function emptiedModelGroup(lazy: Lazy): boolean {
+  return parseModelGroupId(lazy.id) !== undefined && lazy.children().length === 0
 }
 
 // The held rows by item id, in home tree order (the first one found wins).
@@ -2215,8 +2272,9 @@ function withAgentControls(
 // Models group, the first tab of each agent subtree and shared Defaults
 // inventory. Rows are the union down the chain (deduplicated) plus the
 // agent's upstream model, each carrying a source badge naming the level it
-// came from. Toggle activates exclusively at this level, remove hides or
-// deletes the row at this level only; edit replaces it; no split or pin.
+// came from, in provider › lab groups (modelGroups). Toggle activates
+// exclusively at this level, remove hides or deletes the row at this level
+// only; edit replaces it; no split or pin.
 // Active marks the agent's effective model: the runtime chain's winner (a
 // native built-in's Defaults row runs at Project), which may sit at another
 // level than the row's own — then the badge reads `active (<level>)` and the
@@ -2254,15 +2312,16 @@ function lazyModels(
         cachedKids(memo, prefix, () => {
           const state = cachedModelsState(memo, prefix, () => lazyModelsState(ctx, level, owner, agent, teamRef, catalogue))
           const effective = effectiveUnlisted(memo, prefix, ctx, level, owner, agent, teamRef, catalogue)
-          return state.candidates
-            .toSorted((left, right) => {
-              const leftId = modelItemId(left)
-              const rightId = modelItemId(right)
-              if (leftId < rightId) return -1
-              if (leftId > rightId) return 1
-              return 0
-            })
-            .map((candidate) => lazyModelItem(memo, ctx, level, owner, candidate, state.active, depth + 1, teamRef, catalogue, ownerPath, effective))
+          const candidates = state.candidates.toSorted((left, right) => {
+            const leftId = modelItemId(left)
+            const rightId = modelItemId(right)
+            if (leftId < rightId) return -1
+            if (leftId > rightId) return 1
+            return 0
+          })
+          return modelGroups(ctx, memo, prefix, depth + 1, candidates, (candidate, at) =>
+            lazyModelItem(memo, ctx, level, owner, candidate, state.active, at, teamRef, catalogue, ownerPath, effective),
+          )
         }) as readonly Lazy[],
     },
   )

@@ -47,6 +47,7 @@ export const teachingSkillContent = `# instructions-tools
 - \`group:…\`: a group of rows (Tools, Models, Skills, Settings…); \`set({ id, state })\` on it switches every row in it.
 - \`<level>\` is \`project\`, \`global\`, \`defaults\` or \`preset\` (the Presets root). \`<owner>\` is the agent id, \`<team>/:<member>\` for a team member's row, \`''\` for the Agents catalogue's shared Defaults row (\`item:defaults::tool:reader\`) and \`/teams\` for the Teams one (\`item:defaults:/teams:tool:reader\`).
 - Defaults › Models rows: \`item:defaults:/models:modeldefault:*\` (every model) and \`…:modeldefault:<provider>/<model>\`; their fields are \`item:defaults:/models:modelsetting:<field>:<* or provider/model>\`. A model row's fields are the \`modelfield:<field>:<provider>/<model>[@variant]\` rows under it.
+- Model rows sit in built-in groups per provider and AI lab: \`<Models group id>:provider=<provider>\` and \`…:provider=<provider>:lab=<lab>\`, e.g. \`group:project:build:models:provider=opencode:lab=claude\` (\`find({ type: "group", in: "group:project:build:models" })\` lists them); row ids do not change.
 
 ## Where a value comes from
 

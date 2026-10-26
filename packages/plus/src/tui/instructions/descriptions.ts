@@ -1,4 +1,5 @@
 import type { Catalogue, Level } from "../../instructions/model.js"
+import { OTHER_LAB, parseModelGroupId } from "../../instructions/model-labs.js"
 import { MODELS_GROUP_ID } from "../../instructions/model-settings.js"
 import { categorySummary } from "../../instructions/permission-catalog.js"
 import type { TreeNode } from "../../instructions/tree.js"
@@ -24,6 +25,8 @@ export function structureDetail(node: TreeNode): string | undefined {
   const origin = node.id.match(/^group:(project|global|defaults):agents:(native(?::special)?|plus|user)$/)
   if (origin !== null) return originDetail(origin[1] as Level, origin[2] ?? "")
   if (node.id === MODELS_GROUP_ID) return MODELS_SECTION
+  const models = parseModelGroupId(node.id)
+  if (models !== undefined) return modelGroupDetail(models.providerID, models.lab === undefined ? undefined : node.label)
   const shared = node.id.match(/^group:defaults:(:|\/teams:)(settings|models|compaction|tools|skills|base|system|mcp)$/)
   if (shared !== null) return sharedDetail(shared[1] === ":" ? "agents" : "teams", shared[2] ?? "")
   const parts = parseOwnerGroup(node.id)
@@ -35,7 +38,15 @@ export function structureDetail(node: TreeNode): string | undefined {
 
 type Origin = "native" | "plus" | "user"
 
-const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: warming, keep-alive text, default effort (variant), compaction strategy, routing and input/output token thresholds, and how images are converted and shrunk and what happens when they fill a request. "Every model" sits below the per-model rows. → opens a row into its fields; Enter edits one field. Blank/reset inherits; threshold off suppresses an inherited early trigger. Chat thresholds take precedence and normal context safety still applies. A warming time rounds up to whole pings.`
+const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: warming, keep-alive text, default effort (variant), compaction strategy, routing and input/output token thresholds, and how images are converted and shrunk and what happens when they fill a request. "Every model" sits below the per-model rows, which are grouped by provider, then AI lab. → opens a row into its fields; Enter edits one field. Blank/reset inherits; threshold off suppresses an inherited early trigger. Chat thresholds take precedence and normal context safety still applies. A warming time rounds up to whole pings.`
+
+// A Models list's provider and lab groups (model-labs.ts): built in, they
+// follow the rows and hold no setting of their own.
+function modelGroupDetail(providerID: string, lab: string | undefined): string {
+  if (lab === undefined) return `Models served by the ${providerID} provider, one group per AI lab. Built in: the groups follow the models listed here; a folder can still hold a model row.`
+  if (lab === OTHER_LAB) return `Models served by ${providerID} whose display name and id name no known AI lab.`
+  return `${lab} models served by ${providerID}: the lab is read from each model's display name, else its id.`
+}
 
 const ROOTS: Record<string, string> = {
   "root:project": "Customizations for this project: its agents and teams, and the rows they resolve to. Project rows override Global and Defaults.",
@@ -90,7 +101,7 @@ function sharedDetail(catalogue: Catalogue, category: string): string {
   if (category === "settings")
     return `Settings shared by every ${noun} unless a more specific row overrides them: Enabled, Mode, Description, Hidden, Color and Steps.`
   if (category === "models")
-    return `Model candidates shared by every ${noun}, unioned down each one's chain. The first active row down the chain wins, else the upstream model.`
+    return `Model candidates shared by every ${noun}, unioned down each one's chain and grouped by provider, then AI lab. The first active row down the chain wins, else the upstream model.`
   if (category === "compaction")
     return `How every ${noun} compacts a long session by default: strategy, local model and instructions. A more specific row overrides these.`
   if (category === "tools") return `Tools every ${noun} may call, grouped by origin; each row expands to its Description and Permissions.`
@@ -172,7 +183,7 @@ function ownerCategoryDetail(part: OwnerGroup): string | undefined {
   if (part.category === "notifications")
     return `Notifications and sounds for ${subject}'s chats: each event's desktop notification and sound, and how many levels of subagents and team members raise "done". Empty rows follow Settings › Notifications; enter changes a row, r returns it to Settings.`
   if (part.category === "models")
-    return `Models ${subject} may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.`
+    return `Models ${subject} may use: the candidates down its chain plus its own model, grouped by provider, then AI lab. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.`
   if (part.category === "compaction")
     return `How ${subject} compacts a long session: strategy, local model and instructions. Remote uses the provider instead and locks the local fields.`
   if (part.category === "tools") return `Tools ${subject} may call, grouped by origin; each row expands to its Description and Permissions.`

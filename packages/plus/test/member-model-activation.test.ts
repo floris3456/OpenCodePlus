@@ -459,7 +459,10 @@ test("preset team members badge their own active model and agree with the instal
     expect(rows.find((row) => row.id === `${prefix}claude-haiku-5-5`)?.badges.active).toBeUndefined()
     const found = await runOk(need(tools, "instructions_find"), { agent, type: "model" })
     expect(found).toMatchObject({ rows: expect.arrayContaining([`${prefix}claude-opus-5-5@high | active | set here`]) })
-    const group = await runOk(need(tools, "instructions_read"), { id: `group:global:lab/:${agent}:models` })
+    // The tab lists its provider group; the rows sit in its Claude group.
+    const tab = `group:global:lab/:${agent}:models`
+    expect(await runOk(need(tools, "instructions_read"), { id: tab })).toMatchObject({ rows: [`${tab}:provider=cliproxyapi | - | -`] })
+    const group = await runOk(need(tools, "instructions_read"), { id: `${tab}:provider=cliproxyapi:lab=claude` })
     expect(group).toMatchObject({ rows: [
       `${prefix}claude-haiku-5-5 | - | set here`,
       `${prefix}claude-opus-5-5@high | active | set here`,

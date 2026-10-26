@@ -3,7 +3,7 @@
 // the key bindings keep shift+r for rename. The user category tabs are gone.
 import { afterEach, expect, test } from "bun:test"
 import { createSnapshot, renderInstructionsRoute, type TestFixture } from "./tui.js"
-import { binds, category, dispatch, footer, gotoLevel, levelOf, moveTo, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
+import { binds, category, dispatch, expand, footer, gotoLevel, levelOf, moveTo, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
 
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 
@@ -127,6 +127,9 @@ test("m picks a model row up, right enters the folder below, Enter drops through
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
     await category(fixture, "Models")
+    // The row sits in its openai › ChatGPT group; right from there enters the tab's first folder.
+    await moveTo(fixture, "ChatGPT")
+    await expand(fixture)
     await moveTo(fixture, "gpt-4o")
     expect(dispatch(fixture, "m")).toBe(true)
     await fixture.waitForFrame((frame) => footer(frame).includes("drop"))

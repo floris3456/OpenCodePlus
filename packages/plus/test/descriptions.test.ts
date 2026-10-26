@@ -152,7 +152,7 @@ test("every shared Defaults inventory category describes both catalogues", () =>
     expect(detail(`group:defaults:/teams:${category}`)).toBeDefined()
   }
   expect(detail("group:defaults::models")).toBe(
-    "Model candidates shared by every stand-alone agent, unioned down each one's chain. The first active row down the chain wins, else the upstream model.",
+    "Model candidates shared by every stand-alone agent, unioned down each one's chain and grouped by provider, then AI lab. The first active row down the chain wins, else the upstream model.",
   )
   expect(detail("group:defaults:/teams:mcp")).toBe("MCP servers every team member can call. `a` adds one; `d` removes it everywhere.")
   expect(detail("group:defaults::settings")).toContain("stand-alone agent")
@@ -174,7 +174,7 @@ test("owner categories name the agent, member, preset or title agent they belong
     "Tools this team member may call, grouped by origin; each row expands to its Description and Permissions.",
   )
   expect(detail("group:project:crew/:special:title:models")).toBe(
-    "Models this title agent may use: the candidates down its chain plus its own model. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.",
+    "Models this title agent may use: the candidates down its chain plus its own model, grouped by provider, then AI lab. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.",
   )
   expect(detail("group:preset:basic/:implementer:settings")).toBe(
     "This member preset's settings: Enabled, Mode, Description, Hidden, Color, Steps and Notifications. Space toggles Enabled; enter edits a value.",

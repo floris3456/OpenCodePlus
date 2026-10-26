@@ -1923,8 +1923,13 @@ test("nested agent id and team member group ids never collide", async () => {
   expect(agentModels).not.toBe(teamModels)
   expect(nodes.some((node) => node.id === agentModels)).toBe(true)
   expect(nodes.some((node) => node.id === teamModels)).toBe(true)
-  const agentKids = childrenOf(nodes, agentModels)
-  const teamKids = childrenOf(nodes, teamModels)
+  // The model rows sit in the tab's provider › lab groups.
+  const modelRows = (tab: string) =>
+    childrenOf(nodes, tab).flatMap((provider) => childrenOf(nodes, provider.id).flatMap((lab) => childrenOf(nodes, lab.id)))
+  const agentKids = modelRows(agentModels)
+  const teamKids = modelRows(teamModels)
+  expect(agentKids.map((kid) => kid.address?.item)).toEqual(["model:acme/shared"])
+  expect(teamKids.map((kid) => kid.address?.item)).toEqual(["model:acme/shared"])
   expect(agentKids.length).toBeGreaterThan(0)
   expect(teamKids.length).toBeGreaterThan(0)
   for (const kid of agentKids) expect(kid.address?.agent).toBe("crew/alpha")
