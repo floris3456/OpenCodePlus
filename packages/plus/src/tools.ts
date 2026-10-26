@@ -945,8 +945,10 @@ function eachRow<Input extends { readonly id?: string | readonly string[]; reado
           onFailure: (error) => ({ id: row, error: error.message }),
         }),
       ),
+    ).pipe(
+      // Also when interrupted: rows already saved must still reach the running chats.
+      Effect.ensuring(Effect.suspend(() => (deferred.writes > 0 ? Effect.promise(() => api.refresh()) : Effect.void))),
     )
-    if (deferred.writes > 0) yield* Effect.promise(() => api.refresh())
     return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
   })
 }

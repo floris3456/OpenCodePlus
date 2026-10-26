@@ -5,7 +5,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect } from "effect"
+import { Deferred, Effect, Fiber } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -122,4 +122,42 @@ test("instructions_set over a list of rows publishes once at the end", async () 
   const one = (await runOk(set, { id: ids[0], state: "off" })) as { status: string }
   expect(one.status.length).toBeGreaterThan(0)
   expect(calls).toEqual({ publishFalse: 3, publishDefault: 1, refresh: 1 })
+})
+
+test("an interrupted list still publishes the rows it already saved", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: ["preview", "navigate"].map((name) => ({ id: name, description: `${name} tool`, options: { codemode: true, namespace: "browser" } })),
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api: PlusApi = createPlusApi(ctx, createState())
+  const calls = { writes: 0, refresh: 0 }
+  const second = Promise.withResolvers<void>()
+  const counted: PlusApi = {
+    ...api,
+    mutate: (input, options) => {
+      calls.writes++
+      if (calls.writes === 1) return api.mutate(input, options)
+      // The second row's write never finishes: the call is interrupted while it waits.
+      second.resolve()
+      return new Promise(() => {})
+    },
+    refresh: () => {
+      calls.refresh++
+      return api.refresh()
+    },
+  }
+  await registerInstructionTools(ctx, counted)
+  const set = need(await readTools(ctx), "instructions_set")
+  const ids = ["item:defaults:alpha:tool:browser_preview", "item:defaults:alpha:tool:browser_navigate"]
+
+  const fiber = Effect.runFork(set.execute({ id: ids, state: "on" }, toolContext()))
+  await second.promise
+  await Effect.runPromise(Fiber.interrupt(fiber))
+  expect(calls).toEqual({ writes: 2, refresh: 1 })
+  const after = await api.snapshot()
+  if (!after.ok) throw new Error("snapshot failed")
+  expect(after.value.records.filter((record) => record.type === "customization" && record.state === "on").map((record) => record.item)).toEqual(["tool:browser_preview"])
 })
