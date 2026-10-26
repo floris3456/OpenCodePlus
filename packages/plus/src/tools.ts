@@ -512,7 +512,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       origin,
       execute: (input, context) => Effect.gen(function* () {
         const snapshot = yield* snapshotOrFail(api)
-        const memo = buildTreeMemo(memoFromSnapshot(snapshot))
+        const memo = treeMemoOf(memoFromSnapshot(snapshot))
         const reflected = reflectedRows(memo, input.id, input.selected)
         if (input.op === "set" && (input.input.active === true || input.input.state === "on")) {
           const refusal = modelActivationRefusal(reflected.targets)
@@ -578,7 +578,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
                 ...(input.offset === undefined ? {} : { offset: input.offset }),
                 withoutAliases: true,
                 collapse: findCollapse(where),
-              }),
+              }, treeMemoOf(memo)),
             catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
           })
           return {
@@ -624,7 +624,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const actor = actorFrom(context)
             const snapshot = yield* snapshotOrFail(api)
             const memo = memoFromSnapshot(snapshot)
-            const treeMemo = buildTreeMemo(memo)
+            const treeMemo = treeMemoOf(memo)
             const node = findRow(memo, input.id, treeMemo)
             if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
             const protectedAgent = protectedOf(snapshot, node)
@@ -684,7 +684,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           Effect.gen(function* () {
             const snapshot = yield* snapshotOrFail(api)
             const memo = memoFromSnapshot(snapshot)
-            const treeMemo = buildTreeMemo(memo)
+            const treeMemo = treeMemoOf(memo)
             const node = findRow(memo, input.id, treeMemo)
             if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
             const protectedAgent = protectedOf(snapshot, node)
@@ -714,7 +714,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const node = findRow(memo, input.id)
+          const node = findRow(memo, input.id, treeMemoOf(memo))
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
           if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
@@ -742,7 +742,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const actor = actorFrom(context)
             const snapshot = yield* snapshotOrFail(api)
             const memo = memoFromSnapshot(snapshot)
-            const treeMemo = buildTreeMemo(memo)
+            const treeMemo = treeMemoOf(memo)
             const node = findRow(memo, input.id, treeMemo)
             if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
             const protectedAgent = protectedOf(snapshot, node)
@@ -774,7 +774,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
           const memo = memoFromSnapshot(snapshot)
-          const treeMemo = buildTreeMemo(memo)
+          const treeMemo = treeMemoOf(memo)
           const node = findRow(memo, input.id, treeMemo)
           if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
           const protectedAgent = protectedOf(snapshot, node)
@@ -816,11 +816,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
                 const folderId = folderIdOfInput(memo, input.id)
                 if (folderId !== undefined) {
                   const owner = input.id.includes(":folder:") ? input.id.split(":folder:")[0] : snapshot.folders?.find((folder) => folder.id === folderId)?.owner
-                  const from = owner === undefined ? undefined : tabLayout(buildTreeMemo(memo), owner).inherited
+                  const from = owner === undefined ? undefined : tabLayout(treeMemoOf(memo), owner).inherited
                   const applied = yield* applyLayout(api, snapshot, planFolderDelete(layoutOf(snapshot), folderId, new Date().toISOString(), owner, from), actor)
                   return { output: { id: input.id, ...applied } }
                 }
-                const node = findRow(memo, input.id)
+                const node = findRow(memo, input.id, treeMemoOf(memo))
                 if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
                 const protectedAgent = protectedOf(snapshot, node)
                 if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
@@ -950,14 +950,14 @@ function foundRows(api: PlusApi, filter: typeof FindFilter.Type): Effect.Effect<
     const memo = memoFromSnapshot(yield* snapshotOrFail(api))
     const where = findWhere(filter)
     const queried = yield* Effect.try({
-      try: () => query(memo, { where, fields: ["id"], withoutAliases: true, collapse: { ...findCollapse(where), copies: false } }),
+      try: () => query(memo, { where, fields: ["id"], withoutAliases: true, collapse: { ...findCollapse(where), copies: false } }, treeMemoOf(memo)),
       catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
     })
     if (queried.total > maxRows)
       return yield* Effect.fail(
         new Tool.Error({ message: `find matches ${queried.total} rows; one call takes at most ${maxRows}: narrow it (agent, type, name, where) or pass ids` }),
       )
-    const treeMemo = buildTreeMemo(memo)
+    const treeMemo = treeMemoOf(memo)
     const shared = (id: string) => findRow(memo, id, treeMemo)?.address?.agent === null
     return queried.rows.map((row) => row.id).toSorted((left, right) => Number(!shared(left)) - Number(!shared(right)))
   })
@@ -1070,7 +1070,7 @@ function memberModelRows(
   return (memo.teams ?? []).flatMap((team) => {
     if (team.level !== flat.level || !team.agents.includes(flat.owner)) return []
     const rowId = `item:${flat.level}:${team.team}/:${flat.owner}:${flat.item}`
-    return findRow(memo, rowId) === undefined ? [] : [{ team: team.team, rowId }]
+    return findRow(memo, rowId, treeMemoOf(memo)) === undefined ? [] : [{ team: team.team, rowId }]
   })
 }
 
@@ -1081,7 +1081,7 @@ function isOwnerLevel(value: string | undefined): value is "project" | "global" 
 // The folder a delete id names: `folder:<id>` or a folder row's id.
 function folderIdOfInput(memo: MemoInput, id: string): string | undefined {
   if (id.startsWith("folder:")) return id.slice("folder:".length)
-  const node = findRow(memo, id)
+  const node = findRow(memo, id, treeMemoOf(memo))
   const token = node === undefined ? undefined : rowToken(node)
   return token === undefined ? undefined : folderIdOfRef(token)
 }
@@ -1120,9 +1120,15 @@ function protectedError(agent: string): Tool.Error {
   return new Tool.Error({ message: `agent.protected: row belongs to protected agent "${agent}"` })
 }
 
+// api.snapshot() answers the same object until the store or host changes, so
+// its memo input and tree memo are built once per snapshot.
+const memoInputs = new WeakMap<Plus.Snapshot, MemoInput>()
+
 function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
+  const known = memoInputs.get(snapshot)
+  if (known !== undefined) return known
   const memo = memoInputOf(snapshot)
-  return {
+  const input: MemoInput = {
     ...memo,
     records: memo.records.map((record, index) => {
       const snap = snapshot.records[index]
@@ -1132,6 +1138,18 @@ function memoFromSnapshot(snapshot: Plus.Snapshot): MemoInput {
       return record
     }),
   }
+  memoInputs.set(snapshot, input)
+  return input
+}
+
+const treeMemos = new WeakMap<MemoInput, Memo>()
+
+function treeMemoOf(memo: MemoInput): Memo {
+  const known = treeMemos.get(memo)
+  if (known !== undefined) return known
+  const tree = buildTreeMemo(memo)
+  treeMemos.set(memo, tree)
+  return tree
 }
 
 function modelsOfMemo(memo: MemoInput): ModelRecord[] {
@@ -1277,7 +1295,7 @@ function linkRow(
   return Effect.gen(function* () {
     const snapshot = yield* snapshotOrFail(api)
     const memo = memoFromSnapshot(snapshot)
-    const node = findRow(memo, input.id)
+    const node = findRow(memo, input.id, treeMemoOf(memo))
     if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
     const address = node.address
     if (address === undefined || address.item === undefined)
@@ -1301,7 +1319,7 @@ function linkRow(
         },
       }
     }
-    const targetNode = findRow(memo, input.target)
+    const targetNode = findRow(memo, input.target, treeMemoOf(memo))
     if (targetNode === undefined) return yield* Effect.fail(unknownError(input.target, memo))
     const targetAddress = targetNode.address
     if (targetAddress === undefined || targetAddress.item === undefined)
@@ -1564,7 +1582,7 @@ function setModel(
   },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const node = findRow(memo, id)
+    const node = findRow(memo, id, treeMemoOf(memo))
     const label = node?.label ?? id
     if (input.active === false) return yield* Effect.fail(new Tool.Error({ message: `"${label}" cannot be deactivated with active:false; remove the candidate to mask it` }))
     if ((input.active !== undefined || input.state !== undefined) &&
@@ -1662,7 +1680,7 @@ function setModelField(
   input: { text?: string },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const node = findRow(memo, id)
+    const node = findRow(memo, id, treeMemoOf(memo))
     if (node === undefined) return yield* Effect.fail(unknownError(id))
     if (input.text === undefined)
       return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" takes text: its value, or "" to inherit` }))
@@ -1685,7 +1703,7 @@ function resetModelField(
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const node = findRow(memo, id)
+    const node = findRow(memo, id, treeMemoOf(memo))
     if (node === undefined) return yield* Effect.fail(unknownError(id))
     const op = resetModelFieldRow(memo, id)
     if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
@@ -1864,7 +1882,7 @@ function setPerm(
   treeMemo?: Memo,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const node = findRow(memo, id)
+    const node = findRow(memo, id, treeMemoOf(memo))
     const label = node?.label ?? id
     if (input.label !== undefined || input.patterns !== undefined || input.keywords !== undefined || input.message !== undefined)
       return yield* updateRuleRow(api, snapshot, memo, id, actor, {
@@ -1937,7 +1955,7 @@ function deleteRuleRow(
   actor: Plus.Actor,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const found = findRow(memo, id)
+    const found = findRow(memo, id, treeMemoOf(memo))
     const address = found?.address
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
@@ -1963,7 +1981,7 @@ function updateRuleRow(
   input: { label?: string; patterns?: readonly string[]; keywords?: readonly string[]; message?: string },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const found = findRow(memo, id)
+    const found = findRow(memo, id, treeMemoOf(memo))
     const address = found?.address
     if (address === undefined) return yield* Effect.fail(unknownError(id))
     const parsed = parsePermItemId(address.item)
@@ -2011,7 +2029,7 @@ function setTeam(
   input: { state?: "on" | "off"; text?: string; pin?: boolean; resolve?: "keep" | "take" | "edit" | "merge" },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const node = findRow(memo, id)
+    const node = findRow(memo, id, treeMemoOf(memo))
     const label = node?.label ?? id
     if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
     if (input.resolve !== undefined) return yield* Effect.fail(new Tool.Error({ message: resolveRefusalForLabel(label) }))
@@ -2043,7 +2061,7 @@ function setGroup(
   input: { state?: "on" | "off"; text?: string; pin?: boolean; mode?: unknown; requires?: unknown; resolve?: unknown },
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const node = findRow(memo, id)
+    const node = findRow(memo, id, treeMemoOf(memo))
     const label = node?.label ?? id
     if (input.text !== undefined) return yield* Effect.fail(new Tool.Error({ message: editRefusalForLabel(label) }))
     if (input.pin !== undefined) return yield* Effect.fail(new Tool.Error({ message: `"${label}" is not a Code Mode tool and cannot be pinned` }))
@@ -2078,7 +2096,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
   return Effect.gen(function* () {
     const snapshot = yield* snapshotOrFail(api)
     const memo = memoFromSnapshot(snapshot)
-    const treeMemo = buildTreeMemo(memo)
+    const treeMemo = treeMemoOf(memo)
     const node = findRow(memo, id, treeMemo)
     if (node === undefined) return yield* Effect.fail(unknownError(id, memo))
     // A model row's field row renders one effective value with its source.
@@ -2318,7 +2336,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const split = resolveSplit({ text: resolved.text, title: upstream.title, splits, scopes, address })
       return { output: { id, view, sections: split.sections.map((section) => section.id) } }
     }
-    const proposal = mergeProposal(memo, buildTreeMemo(memo), node)
+    const proposal = mergeProposal(memo, treeMemoOf(memo), node)
     if (proposal === undefined) return { output: { id, view: "diff", mineDiff: "", upstreamDiff: "", summary: "no changes" } }
     const { three, entries } = proposal
     const mineDiff = unifiedDiff(three.original, three.mine, { from: "original", to: "mine" })
@@ -2390,7 +2408,7 @@ function upstreamOf(memo: MemoInput, address: Address) {
   const matches = memo.items.filter((item) => item.id === address.item)
   const item = matches.find((item) => address.agent === null || applies(item, address.agent)) ?? matches[0]
   if (item === undefined || item.kind !== "perm") return item
-  const context = buildTreeMemo(memo).ctx
+  const context = treeMemoOf(memo).ctx
   return ruleItem(item, context.rules, context.scopes, address)
 }
 
@@ -2711,17 +2729,17 @@ function createRow(
             }),
           )
       }
-      const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`)
+      const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`, treeMemoOf(memo))
       // Match the TUI Models group: presets and Defaults entries own scoped
       // records; an ordinary member writes its agent's records in this team's chain.
-      if (team !== undefined && (agent === null || findRow(memo, `group:${level}:${team}/:${agent}:models`) === undefined))
+      if (team !== undefined && (agent === null || findRow(memo, `group:${level}:${team}/:${agent}:models`, treeMemoOf(memo)) === undefined))
         return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
       const owner = team === undefined
         ? {}
         : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
           ? { team: { level, team } }
           : { memberOf: { level, team } }
-      if (team === undefined && findRow(memo, `group:${level}:${agent ?? (input.catalogue === "teams" ? "/teams" : "")}:models`) === undefined)
+      if (team === undefined && findRow(memo, `group:${level}:${agent ?? (input.catalogue === "teams" ? "/teams" : "")}:models`, treeMemoOf(memo)) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown model owner ${JSON.stringify(agent)} at ${level}` }))
       const created = yield* Effect.promise(() =>
         api.addModel({
@@ -2765,7 +2783,8 @@ function createRow(
       if (level !== "preset" && agent !== null && protectedForActor(snapshot, agent))
         return yield* Effect.fail(protectedError(agent))
       const team = input.team?.trim()
-      const member = team === undefined ? undefined : findRow(memoFromSnapshot(snapshot), `team:${level}:${team}:${agent}`)
+      const memo = memoFromSnapshot(snapshot)
+      const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`, treeMemoOf(memo))
       if (team !== undefined && member?.owner === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `rule.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
       const owner = team === undefined ? {} : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
