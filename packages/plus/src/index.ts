@@ -717,7 +717,7 @@ export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
   readonly chatRefresh: (input: Schema.Schema.Type<typeof Plus.ChatRefreshInput>) => Promise<{ ok: true; value: Schema.Schema.Type<typeof Plus.ChatRefreshResult> }>
-  readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
+  readonly mutate: (input: Plus.MutateInput, options?: { readonly publish?: boolean }) => Promise<MutateResult>
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
   readonly catalogModels: () => Promise<CatalogModelsResult>
@@ -910,7 +910,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
   }
 
-  const mutateDelta = async (input: typeof Plus.MutateInputDelta.Type): Promise<MutateResult> => {
+  const mutateDelta = async (input: typeof Plus.MutateInputDelta.Type, publish: boolean): Promise<MutateResult> => {
     const directory = await activationDirectory(ctx.location.directory)
     const config = await read(directory)
     const upserts = input.changes.upsert.map(toRecord)
@@ -955,7 +955,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       globalChanged: saved.changed.global,
     })
     const next = { ...loadedFromSave(saved, decision.records), protectedAgents: config.protectedAgents }
-    const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+    const discovered = publish ? await Effect.runPromise(publishFresh(ctx, state, next, builtins)) : undefined
     const snapshot = input.snapshot === true ? await snapshotOf(next, directory, discovered) : undefined
     return {
       ok: true as const,
@@ -1051,8 +1051,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         },
       }
     },
-    mutate: async (input) => {
-      if ("changes" in input) return mutateDelta(input)
+    mutate: async (input, options) => {
+      if ("changes" in input) return mutateDelta(input, options?.publish !== false)
       return mutateFull(input)
     },
     log: async (input) => {
