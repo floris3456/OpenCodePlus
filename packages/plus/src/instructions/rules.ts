@@ -10,7 +10,7 @@ export function ownRule(records: readonly RuleRecord[], address: Address): RuleR
   if (index === undefined) {
     index = new Map<string, RuleRecord[]>()
     for (const record of records) {
-      const key = JSON.stringify([record.tool, record.id])
+      const key = `${record.tool}\u0000${record.id}`
       const rows = index.get(key)
       if (rows === undefined) {
         index.set(key, [record])
@@ -20,7 +20,7 @@ export function ownRule(records: readonly RuleRecord[], address: Address): RuleR
     }
     ruleIndexes.set(records, index)
   }
-  const candidates = index.get(JSON.stringify([parsed.tool, parsed.ruleId]))
+  const candidates = index.get(`${parsed.tool}\u0000${parsed.ruleId}`)
   if (candidates === undefined) return undefined
   const owners = address.level === "defaults" && address.agent === null
     ? (["project", "global", "defaults"] as const).map((level) => ({ ...address, level }))
@@ -48,10 +48,22 @@ export function ruleItem(item: Item, records: readonly RuleRecord[], scopes: Sco
   if (item.kind !== "perm") return item
   const record = ruleAt(records, scopes, address)
   if (record === undefined) return item.custom === true ? undefined : item
+  const byOwner = ruleItems.get(item) ?? new Map<RuleRecord, Map<string, Item>>()
+  ruleItems.set(item, byOwner)
+  const byRecord = byOwner.get(record) ?? new Map<string, Item>()
+  byOwner.set(record, byRecord)
+  const ownerKey = record.agent === null ? "" : address.agent === null ? "\u0000" : `\u0001${address.agent}`
+  const cached = byRecord.get(ownerKey)
+  if (cached !== undefined) return cached
   const text = `${record.label}\n${record.patterns.join("\n")}`
-  return {
+  const built = {
     ...item, title: record.label, text, fingerprint: fingerprint(text), custom: true,
     patterns: record.patterns, keywords: record.keywords, message: record.message,
     ...(record.agent === null ? {} : { ownedBy: address.agent ?? undefined }),
   }
+  byRecord.set(ownerKey, built)
+  return built
 }
+
+// The rule's Item for one upstream item, record and owner: built once, since the tree resolves each permission row on every walk.
+const ruleItems = new WeakMap<Item, WeakMap<RuleRecord, Map<string, Item>>>()
