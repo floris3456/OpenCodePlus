@@ -38,7 +38,7 @@ export function structureDetail(node: TreeNode): string | undefined {
 
 type Origin = "native" | "plus" | "user"
 
-const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: warming, keep-alive text, default effort (variant), compaction strategy, routing and input/output token thresholds, and how images are converted and shrunk and what happens when they fill a request. "Every model" sits below the per-model rows, which are grouped by provider, then AI lab. → opens a row into its fields; Enter edits one field. Blank/reset inherits; threshold off suppresses an inherited early trigger. Chat thresholds take precedence and normal context safety still applies. A warming time rounds up to whole pings.`
+const MODELS_SECTION = `The model settings every agent falls back to when its own model row does not set them: warming, keep-alive text, default effort (variant), compaction strategy, routing and input/output token thresholds, and how images are converted and shrunk and what happens when they fill a request. "Every model" sits below the per-model rows. The per-model rows are grouped by provider, then AI lab. → opens a row into its fields; Enter edits one field. Blank/reset inherits; threshold off suppresses an inherited early trigger. Chat thresholds take precedence and normal context safety still applies. A warming time rounds up to whole pings.`
 
 // A Models list's provider and lab groups (model-labs.ts): built in, they
 // follow the rows and hold no setting of their own.

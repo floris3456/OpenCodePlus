@@ -527,6 +527,9 @@ test("Models group is first and space activates the candidate", async () => {
     await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
     expect(dispatch(fixture, "1")).toBe(true)
     await fixture.waitForFrame((frame) => breadcrumb(frame).includes("Implementer › Models"))
+    // The rows sit in the acme › Other group.
+    await moveTo(fixture, "Other")
+    await expand(fixture)
     await moveTo(fixture, "acme/nova-2")
     expect(binds(fixture)).toContain("space")
     dispatch(fixture, "space")

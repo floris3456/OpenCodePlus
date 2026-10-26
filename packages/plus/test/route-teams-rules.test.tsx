@@ -1653,7 +1653,9 @@ test("space on a Models row under a team special persists the team-scoped record
     }),
     teams: [{ level: "project" as const, team: "crew", enabled: true, agents: ["alpha"] }],
   }
-  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 120, height: 40 })
+  // Wide enough that the filter's result keeps the whole label at its depth
+  // (Teams › crew › Special › title › Models › acme › Other).
+  const fixture = await renderInstructionsRoute({ snapshots: [snapshot], width: 160, height: 40 })
   try {
     await fixture.waitForFrame((frame) => frame.includes("Instructions"))
     // Teams › crew › Special › title (sidebar) › Models › the candidate.

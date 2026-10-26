@@ -3,7 +3,7 @@ import type { DialogSelectOptions } from "@opencode/plugin/tui/context"
 import { InstructionsRoute } from "../src/tui/instructions/route.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { createSnapshot, renderInstructionsRoute, renderPlusFixture } from "./tui.js"
-import { category, dispatch, footer, moveTo, sleep, toSidebar } from "./instructions-nav.js"
+import { category, dispatch, expand, footer, moveTo, sleep, toSidebar } from "./instructions-nav.js"
 
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 afterEach(() => {
@@ -28,6 +28,9 @@ test("L picks a primary without writes, Esc cancels, L on another row writes onl
     dispatch(fixture, "right")
     await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
     await category(fixture, "Models")
+    // Both rows sit in the acme › Other group.
+    await moveTo(fixture, "Other")
+    await expand(fixture)
     await moveTo(fixture, "first")
     expect(dispatch(fixture, "shift+l")).toBe(true)
     await fixture.waitForFrame((frame) => frame.includes("finish link"))
@@ -140,6 +143,8 @@ test("link list Space toggles immediately and d removes only the local directed 
     await moveTo(fixture, "Implementer")
     dispatch(fixture, "right")
     await category(fixture, "Models")
+    await moveTo(fixture, "Other")
+    await expand(fixture)
     await moveTo(fixture, "second")
     dispatch(fixture, "shift+l")
     await fixture.flush()
