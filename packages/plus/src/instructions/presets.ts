@@ -681,9 +681,10 @@ export function withOwnerRoles(items: readonly Item[], state: PresetState): Item
     ...presetListing(state.presets).flatMap((entry) => (entry.ref.kind === "team" ? [] : [entry.ref.id])),
     ...(state.entries ?? []).map((entry) => entry.name),
   ]
+  const owned = new Set(items.flatMap((item) => (item.controlTeam === undefined ? (item.agents ?? []).map((agent) => `${item.id}\u0000${agent}`) : [])))
   const controls = [...new Set(owners)].flatMap((owner) =>
     controlItems(owner)
-      .filter((row) => !items.some((item) => item.id === row.id && item.agents?.includes(owner) && item.controlTeam === undefined)),
+      .filter((row) => !owned.has(`${row.id}\u0000${owner}`)),
   )
   return [...items, ...ownerRoleItems(items, owners), ...controls]
 }
