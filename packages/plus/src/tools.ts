@@ -603,7 +603,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input) =>
-        eachRow(api, input, (input) =>
+        eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const view = input.view ?? "resolved"
             if (view === "assembled") return yield* showAssembled(api, input.id)
@@ -619,7 +619,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        eachRow(api, input, (input) =>
+        eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const actor = actorFrom(context)
             const snapshot = yield* snapshotOrFail(api)
@@ -680,7 +680,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        eachRow(api, input, (input) =>
+        eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const snapshot = yield* snapshotOrFail(api)
             const memo = memoFromSnapshot(snapshot)
@@ -737,7 +737,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       options,
       origin,
       execute: (input, context) =>
-        eachRow(api, input, (input) =>
+        eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const actor = actorFrom(context)
             const snapshot = yield* snapshotOrFail(api)
@@ -808,7 +808,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       execute: (input, context) =>
         input.confirm !== true
           ? Effect.fail(new Tool.Error({ message: "delete.unconfirmed: delete requires confirm:true" }))
-          : eachRow(api, input, (input) =>
+          : eachRow(api, input, (input, api) =>
               Effect.gen(function* () {
                 const actor = actorFrom(context)
                 const snapshot = yield* snapshotOrFail(api)
@@ -923,19 +923,31 @@ function findWhere(filter: typeof FindFilter.Type): string {
 function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof FindFilter.Type }>(
   api: PlusApi,
   input: Input,
-  one: (input: Omit<Input, "id" | "find"> & { readonly id: string }) => Effect.Effect<{ output: unknown }, Tool.Error>,
+  one: (input: Omit<Input, "id" | "find"> & { readonly id: string }, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const { id, find, ...rest } = input
-    if (typeof id === "string") return yield* one({ ...rest, id })
+    if (typeof id === "string") return yield* one({ ...rest, id }, api)
     const ids = find === undefined ? [...new Set(id ?? [])] : yield* foundRows(api, find)
+    // A list saves row by row but publishes once: each publish rediscovers and reinstalls everything.
+    const deferred = { writes: 0 }
+    const batch: PlusApi = {
+      ...api,
+      mutate: (change) => {
+        deferred.writes++
+        return api.mutate(change, { publish: false })
+      },
+    }
     const results = yield* Effect.forEach(ids, (row) =>
-      one({ ...rest, id: row }).pipe(
+      one({ ...rest, id: row }, batch).pipe(
         Effect.match({
           onSuccess: (done) => ({ id: row, output: done.output }),
           onFailure: (error) => ({ id: row, error: error.message }),
         }),
       ),
+    ).pipe(
+      // Also when interrupted: rows already saved must still reach the running chats.
+      Effect.ensuring(Effect.suspend(() => (deferred.writes > 0 ? Effect.promise(() => api.refresh()) : Effect.void))),
     )
     return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
   })
