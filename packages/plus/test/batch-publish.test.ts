@@ -159,5 +159,6 @@ test("an interrupted list still publishes the rows it already saved", async () =
   expect(calls).toEqual({ writes: 2, refresh: 1 })
   const after = await api.snapshot()
   if (!after.ok) throw new Error("snapshot failed")
-  expect(after.value.records.filter((record) => record.type === "customization" && record.state === "on").map((record) => record.item)).toEqual(["tool:browser_preview"])
+  const stored = after.value.records.filter((record) => record.type === "customization").filter((record) => record.state === "on")
+  expect(stored.map((record) => record.item)).toEqual(["tool:browser_preview"])
 })
