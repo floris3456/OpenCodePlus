@@ -2,6 +2,9 @@
 // Tavily and Exa tools (once the `search` MCP server) and the CLIProxyAPI
 // page tool moved into Code Mode's `web` namespace (OpenCodePlus 1.3.30).
 // Stored rows, requires markers and rules that name an old id follow the tool.
+// The `search_*` ids are what core named the tools of Plus's former `search`
+// MCP server; a server of the user's own under that name with the same tool
+// names would be taken for it.
 
 /** Old tool id → current tool id. */
 export const renamedTools: Readonly<Record<string, string>> = {
