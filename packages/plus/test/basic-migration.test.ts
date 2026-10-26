@@ -12,6 +12,7 @@ import { expect, test } from "bun:test"
 import { fingerprint, resolve, type Item, type LinkRecord } from "../src/instructions/model.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { migrateRemovedPresets } from "../src/instructions/store.js"
+import { currentRowId } from "../src/instructions/tool-renames.js"
 import { presetInput, type TeamMember } from "./teams/preset-table.js"
 
 interface Snapshot {
@@ -112,13 +113,26 @@ const currentText = (id: string): string | undefined => migratedInput.after.item
 // team_check, since a finding about tests rests on running them.
 const reopened: Record<string, readonly string[]> = { reviewer: ["tool:team_check"] }
 
+// The snapshot's rows under their current ids: it names the web tools renamed
+// since (webfetch, search_tavily_search, …) by their old ones (tool-renames.ts).
+function snapshotRows(agentId: string): [string, { readonly state: string; readonly text: string }][] {
+  return Object.entries(fixture.agents[agentId]?.items ?? {})
+    .filter(([id]) => !retired(id))
+    .map(([id, value]) => {
+      const current = currentRowId(id)
+      // A fixture tool row's text is its id (preset-table.ts toolItem), so a renamed tool's is its new id.
+      const renamed = current !== id && id.startsWith("tool:") && value.text === id.slice("tool:".length)
+      return [current, renamed ? { ...value, text: current.slice("tool:".length) } : value]
+    })
+}
+
 // The snapshot, with the rows the member preset has changed on purpose since.
 function expectedFor(agentId: string, memberId: string): { role: string; items: Record<string, { state: string; text: string }> } {
   const before = fixture.agents[agentId]
   const member = plusTeamPresets.find((team) => team.id === "basic")?.members.find((entry) => entry.id === memberId)
   if (before === undefined || member === undefined) throw new Error(`missing ${agentId} or ${memberId}`)
   const items = Object.fromEntries(
-    Object.entries(before.items).filter(([id]) => !retired(id)).map(([id, value]) => {
+    snapshotRows(agentId).map(([id, value]) => {
       const state = member.overrides[id]?.state ?? (member.offPrefixes.some((prefix) => id.startsWith(prefix)) ? "off" : reopened[memberId]?.includes(id) ? "on" : undefined)
       const text = rewrittenRows.includes(id) ? currentText(id) ?? value.text : value.text
       return [id, { ...value, text, ...(state === undefined ? {} : { state }) }]
@@ -130,7 +144,7 @@ function expectedFor(agentId: string, memberId: string): { role: string; items: 
 // The rows the snapshot recorded; rows the test inventory gained later are not in it.
 function recorded(agentId: string): { role: string; items: Record<string, { state: string; text: string }> } {
   const now = resolvedFor(agentId)
-  const keys = Object.keys(fixture.agents[agentId]?.items ?? {}).filter((id) => !retired(id))
+  const keys = snapshotRows(agentId).map(([id]) => id)
   expect(keys.filter((id) => now.items[id] === undefined)).toEqual([])
   return { role: now.role, items: Object.fromEntries(keys.map((id) => [id, now.items[id]])) }
 }

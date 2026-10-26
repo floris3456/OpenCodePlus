@@ -305,7 +305,7 @@ test("approval asks, a question in a delegated run is refused there, and env row
   expect(approval.refuse).toBeUndefined()
   // The decision names the permission action core checks the call under;
   // the hook asks at exactly that check.
-  expect(approval.approval).toBe("web_opencode_fetch")
+  expect(approval.approval).toBe("webfetch")
   expect(decide(rowsFor("web_opencode_fetch"), call("web_opencode_fetch", { url: "https://example.org" }))).toEqual({})
 
   // "In delegated team runs" ships off: the call is refused only where nobody watches.
