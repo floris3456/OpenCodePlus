@@ -24,6 +24,7 @@ import type { TeamRecord } from "./teams.js"
 import { globalRecordsPath, linkedProjectsPath, projectRecordsPath } from "./paths.js"
 import { basicMemberForRetiredAgent, basicTeamId, retiredMemberPresets } from "./presets.js"
 import { catalogFor } from "./permission-catalog.js"
+import { currentRowId, currentToolId } from "./tool-renames.js"
 import { ensure } from "../project.js"
 
 export type { CustomizationRecord, SplitRecord }
@@ -446,7 +447,7 @@ export async function load(projectDir: string): Promise<Loaded> {
     const skills = migrateSkillPermissions(presets.records)
     const splits = migrateSplitRows(skills.records)
     const wholeRows = migrateWholeRows(splits.records)
-    const rowlinks = migrateRequires(wholeRows.records)
+    const rowlinks = migrateRequires(migrateRenamedTools(wholeRows.records))
     return {
       projectRevision: projectParsed.revision,
       globalRevision: globalParsed.revision,
@@ -469,7 +470,7 @@ export async function load(projectDir: string): Promise<Loaded> {
   const skills = migrateSkillPermissions(presets.records)
   const splits = migrateSplitRows(skills.records)
   const wholeRows = migrateWholeRows(splits.records)
-  const rowlinks = migrateRequires(wholeRows.records)
+  const rowlinks = migrateRequires(migrateRenamedTools(wholeRows.records))
   const routed = route([...rowlinks.records, ...rowlinks.rowlinks])
   return {
     projectRevision: projectParsed.revision,
@@ -484,6 +485,24 @@ export async function load(projectDir: string): Promise<Loaded> {
     foldersMigrated: folders.migrated,
     rowlinksMigrated: rowlinks.migrated || projectParsed.rowlinksMigrated === true || globalParsed.rowlinksMigrated === true,
   }
+}
+
+// Renamed tools (tool-renames.ts): a stored row, rule, link, requires list or
+// folder entry that names a tool by its old id names it by its current one, so
+// its overrides keep applying. Idempotent: current ids map to themselves.
+export function migrateRenamedTools(records: readonly StoredRecord[]): StoredRecord[] {
+  return records.map((record): StoredRecord => {
+    if (record.type === "customization")
+      return {
+        ...record,
+        item: currentRowId(record.item),
+        ...(record.requires === undefined ? {} : { requires: record.requires.map(currentRowId) }),
+      }
+    if (record.type === "rule") return { ...record, tool: currentToolId(record.tool) }
+    if (record.type === "rowlink") return { ...record, item: currentRowId(record.item), target: currentRowId(record.target) }
+    if (record.type === "folder" || record.type === "order") return { ...record, items: record.items.map(currentRowId) }
+    return record
+  })
 }
 
 // Categories (plus-1.1.12) became folders (plus-1.2.0, B1, B4): each category

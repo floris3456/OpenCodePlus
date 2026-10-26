@@ -184,9 +184,15 @@ const V1Aliases = new Map([
   ["apply_patch", "patch"],
 ])
 
+// OpenCode's web tools exposed as direct tools keep the kinds of their former names.
+const WebAliases = new Map([
+  ["web_opencode_fetch", "webfetch"],
+  ["web_opencode_search", "websearch"],
+])
+
 export function canonicalName(toolName: string) {
   const name = toolName.toLocaleLowerCase()
-  return V1Aliases.get(name) ?? name
+  return V1Aliases.get(name) ?? WebAliases.get(name) ?? name
 }
 
 // Sessions migrated from V1 keep their original `filePath` tool inputs.

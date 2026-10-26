@@ -48,6 +48,9 @@ export function promptTokens(usage: {
 }
 
 const MAX_TARGET = 80
+// Web tools, by their current ids and the ids calls were recorded under before (tool-renames.ts).
+const pageTools = new Set(["webfetch", "web_opencode_fetch", "web_chatgpt_fetch", "web_chatgpt_open"])
+const searchTools = new Set(["websearch", "web_opencode_search", "web_chatgpt_search", "web_tavily_search", "web_exa_code_search"])
 
 /**
  * A short, secret-free description of what a call touched: a shell command's
@@ -72,8 +75,8 @@ export function targetOf(
   // A glob names files (path semantics); a grep pattern names content.
   if (tool === "glob") return clip(text("pattern"), "right")
   if (tool === "grep") return contentSummary(text("pattern"))
-  if (tool === "webfetch") return hostOf(text("url"))
-  if (tool === "websearch") return contentSummary(text("query"))
+  if (pageTools.has(tool)) return hostOf(text("url"))
+  if (searchTools.has(tool)) return contentSummary(text("query"))
   if (tool === "subagent") return text("agent")
   if (tool === "skill") return text("id") ?? text("name")
   if (tool === "team_delegate") return text("role")

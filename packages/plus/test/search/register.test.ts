@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { Deferred, Effect } from "effect"
+import { Deferred, Effect, Schema } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -11,7 +11,13 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
 import { activate, createHandlers, createState } from "../../src/index.js"
 import { readKey } from "../../src/search/keys.js"
-import { isOldGeneratedSearchCommand, registerSearchMcp, resolveSearchBinPath, searchMcpCommand } from "../../src/search/register.js"
+import {
+  isOldGeneratedSearchCommand,
+  registerSearchTools,
+  retireSearchMcp,
+  TavilyFetchInput,
+  TavilySearchInput,
+} from "../../src/search/register.js"
 import { agentInfo, context, fullContext, mcpHarness, toolInfo } from "../harness.js"
 
 const roots: string[] = []
@@ -83,111 +89,102 @@ async function getServer(domain: MCPDomain, name: string): Promise<any> {
   return found
 }
 
-test("register-when-absent registers search MCP server with local command and reloads", async () => {
-  const baseMcp = mcpHarness([])
-  const ctx = context({
-    ...fullContext({ directory: "/tmp/test" }),
-    mcp: baseMcp.domain,
+test("Tavily and Exa are built-in Code Mode web tools that ask the web permissions", async () => {
+  const ctx = context({ ...fullContext({ directory: "/tmp/test" }), mcp: mcpHarness([]).domain })
+  const registration = await registerSearchTools(ctx)
+  const tools = await readTools(ctx)
+  const shape = (id: string) => {
+    const tool = tools.get(id)
+    return tool && { name: tool.name, options: tool.options, origin: tool.origin }
+  }
+  expect(shape("web_exa_code_search")).toEqual({
+    name: "exa_code_search",
+    options: { namespace: "web", permission: "websearch" },
+    origin: { type: "plugin", name: "opencode.plus" },
   })
+  expect(shape("web_tavily_search")).toMatchObject({ name: "tavily_search", options: { namespace: "web", permission: "websearch" } })
+  expect(shape("web_tavily_fetch")).toMatchObject({ name: "tavily_fetch", options: { namespace: "web", permission: "webfetch" } })
+  // Defaults the server applied before are part of the input schemas.
+  expect(Schema.decodeUnknownSync(TavilySearchInput)({ query: "bun" })).toEqual({
+    query: "bun",
+    search_depth: "basic",
+    topic: "general",
+    max_results: 5,
+  })
+  expect(Schema.decodeUnknownSync(TavilyFetchInput)({ urls: ["https://bun.sh"] })).toEqual({
+    urls: ["https://bun.sh"],
+    extract_depth: "basic",
+    format: "markdown",
+  })
+  expect(() => Schema.decodeUnknownSync(TavilyFetchInput)({ urls: ["not a url"] })).toThrow()
+  await Effect.runPromise(registration.dispose)
+  expect((await readTools(ctx)).has("web_tavily_search")).toBe(false)
+})
 
-  const before = await getServer(baseMcp.domain, "search")
-  expect(before).toBeUndefined()
-
-  const binPath = await resolveSearchBinPath()
-  const registration = await registerSearchMcp(ctx, binPath)
-  expect(registration).toBeDefined()
-
-  const after = await getServer(baseMcp.domain, "search")
-  expect(after).toBeDefined()
-  expect(after.type).toBe("local")
-  expect(after.command).toEqual([process.execPath, binPath])
-  // It runs outside every project folder, so it never keeps one (a team worktree) in use.
-  expect(after.cwd).toBe(path.dirname(process.execPath))
-  expect(after.environment).toBeDefined()
-  expect(after.environment.BUN_BE_BUN).toBe("0")
-  expect(after.environment.OPENCODEPLUS_SEARCH_KEYS_DIR).toBeDefined()
-
-  if (registration) {
-    await Effect.runPromise(registration.dispose)
-    const afterDispose = await getServer(baseMcp.domain, "search")
-    expect(afterDispose).toBeUndefined()
+test("a search tool without its key answers with a tool error naming the key", async () => {
+  const project = await tempProject()
+  process.env.OPENCODEPLUS_SEARCH_KEYS_DIR = path.join(project, "no-keys")
+  const priorTavily = process.env.TAVILY_API_KEY
+  delete process.env.TAVILY_API_KEY
+  try {
+    const ctx = context({ ...fullContext({ directory: "/tmp/test" }), mcp: mcpHarness([]).domain })
+    await registerSearchTools(ctx)
+    const tool = (await readTools(ctx)).get("web_tavily_search")!
+    const exit = await Effect.runPromiseExit(tool.execute({ query: "bun" }, toolContext()))
+    expect(JSON.stringify(exit)).toContain("TAVILY_API_KEY is not set")
+  } finally {
+    if (priorTavily !== undefined) process.env.TAVILY_API_KEY = priorTavily
   }
 })
 
-test("leave-when-present leaves existing search MCP server untouched and returns undefined", async () => {
-  const existingConfig = { type: "remote" as const, url: "https://custom-search.example.com/mcp" }
-  const baseMcp = mcpHarness([["search", existingConfig]])
-  const ctx = context({
-    ...fullContext({ directory: "/tmp/test" }),
-    mcp: baseMcp.domain,
-  })
-
-  const before = await getServer(baseMcp.domain, "search")
-  expect(before).toEqual(existingConfig)
-
-  const binPath = await resolveSearchBinPath()
-  const registration = await registerSearchMcp(ctx, binPath)
-  expect(registration).toBeUndefined()
-
-  const after = await getServer(baseMcp.domain, "search")
-  expect(after).toEqual(existingConfig)
+test("the search MCP entry Plus used to add is left out; a user's own search server stays", async () => {
+  const generated = {
+    type: "local" as const,
+    command: ["/opt/opencodeplus/bin/opencodeplus", "search-mcp"],
+    environment: { BUN_BE_BUN: "0", OPENCODEPLUS_SEARCH_KEYS_DIR: "/keys" },
+  }
+  const old = { type: "local" as const, command: ["/path/to/bun", "/work/packages/plus/src/search/bin.ts"] }
+  for (const config of [generated, old]) {
+    const mcp = mcpHarness([["search", config]])
+    const ctx = context({ ...fullContext({ directory: "/tmp/test" }), mcp: mcp.domain })
+    const registration = await retireSearchMcp(ctx)
+    expect(registration).toBeDefined()
+    expect(await getServer(mcp.domain, "search")).toBeUndefined()
+    await Effect.runPromise(registration!.dispose)
+    expect(await getServer(mcp.domain, "search")).toEqual(config)
+  }
+  for (const own of [
+    { type: "remote" as const, url: "https://custom-search.example.com/mcp" },
+    { type: "local" as const, command: ["my-custom-search-tool", "--query-param"], environment: { CUSTOM_ENV: "1" } },
+  ]) {
+    const mcp = mcpHarness([["search", own]])
+    const ctx = context({ ...fullContext({ directory: "/tmp/test" }), mcp: mcp.domain })
+    expect(await retireSearchMcp(ctx)).toBeUndefined()
+    expect(await getServer(mcp.domain, "search")).toEqual(own)
+  }
 })
 
-test("full activation registers search MCP when absent and reflects it in instructions snapshot", async () => {
+test("full activation adds the web tools and no search MCP server", async () => {
   const project = await tempProject()
-
   const baseMcp = mcpHarness([])
   const ctx = context({
     ...fullContext({ directory: project }),
     mcp: baseMcp.domain,
   })
-
   const state = createState()
   const handlers = createHandlers(ctx, state)
-
   await Effect.runPromise(activate(ctx, state))
-
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
-  const searchMcpItem = snapshot.items.find((item) => item.id === "mcp:search")
-  expect(searchMcpItem).toBeDefined()
-
-  const server = await getServer(baseMcp.domain, "search")
-  expect(server).toBeDefined()
-  expect(server.type).toBe("local")
-  expect(server.command).toEqual([process.execPath, await resolveSearchBinPath()])
-  expect(server.environment).toEqual({
-    BUN_BE_BUN: "0",
-    OPENCODEPLUS_SEARCH_KEYS_DIR: path.join(process.env.XDG_DATA_HOME!, "opencode", "opencodeplus", "search"),
-  })
-})
-
-test("full activation leaves existing search MCP server when present", async () => {
-  const project = await tempProject()
-
-  const existingConfig = { type: "remote" as const, url: "https://custom-search.example.com/mcp" }
-  const baseMcp = mcpHarness([["search", existingConfig]])
-  const ctx = context({
-    ...fullContext({ directory: project }),
-    mcp: baseMcp.domain,
-  })
-
-  const state = createState()
-  const handlers = createHandlers(ctx, state)
-
-  await Effect.runPromise(activate(ctx, state))
-
-  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
-  const searchMcpItem = snapshot.items.find((item) => item.id === "mcp:search")
-  expect(searchMcpItem).toBeDefined()
-
-  const server = await getServer(baseMcp.domain, "search")
-  expect(server).toEqual(existingConfig)
+  expect(snapshot.items.some((item) => item.id === "mcp:search")).toBe(false)
+  expect(await getServer(baseMcp.domain, "search")).toBeUndefined()
+  const tools = await readTools(ctx)
+  expect(["web_exa_code_search", "web_tavily_search", "web_tavily_fetch"].every((id) => tools.has(id))).toBe(true)
 })
 
 test("real-handler server filter: instructions.find where:\"server:search\" returns mcp:search row and tool rows", async () => {
   const project = await tempProject()
 
-  const baseMcp = mcpHarness([])
+  const baseMcp = mcpHarness([["search", { type: "remote", url: "https://custom-search.example.com/mcp" }]])
   const ctx = context({
     ...fullContext({
       directory: project,
@@ -292,80 +289,9 @@ test("reproducible key file read metadata with disposable sentinel", async () =>
   expect(metadata.tavily.mode).toBe("0600")
 })
 
-test("searchMcpCommand: compiled branch produces [<absolute exec path>, 'search-mcp']", () => {
-  const relCmd = searchMcpCommand({
-    execPath: "opencodeplus",
-    binPath: "/embedded/path/bin.ts",
-    binPathExists: false,
-  })
-  expect(relCmd).toEqual([path.resolve("opencodeplus"), "search-mcp"])
-  expect(path.isAbsolute(relCmd[0])).toBe(true)
-
-  const absCmd = searchMcpCommand({
-    execPath: "/usr/local/bin/opencodeplus",
-    binPath: "/embedded/path/bin.ts",
-    binPathExists: false,
-  })
-  expect(absCmd).toEqual(["/usr/local/bin/opencodeplus", "search-mcp"])
-})
-
-test("searchMcpCommand: development branch keeps the on-disk path form", () => {
-  const devCmd = searchMcpCommand({
-    execPath: process.execPath,
-    binPath: "/repos/opencode/packages/plus/src/search/bin.ts",
-    binPathExists: true,
-  })
-  expect(devCmd).toEqual([process.execPath, "/repos/opencode/packages/plus/src/search/bin.ts"])
-})
-
-test("migration: old generated command is migrated to new command", async () => {
-  const oldCommand = ["/path/to/bun", "/work/packages/plus/src/search/bin.ts"]
-  const oldConfig = {
-    type: "local" as const,
-    command: oldCommand,
-    environment: {
-      OPENCODEPLUS_SEARCH_KEYS_DIR: "/some/keys/dir",
-    },
-  }
-  const baseMcp = mcpHarness([["search", oldConfig]])
-  const ctx = context({
-    ...fullContext({ directory: "/tmp/test" }),
-    mcp: baseMcp.domain,
-  })
-
-  const before = await getServer(baseMcp.domain, "search")
-  expect(before.command).toEqual(oldCommand)
-
-  const binPath = await resolveSearchBinPath()
-  const registration = await registerSearchMcp(ctx, binPath)
-  expect(registration).toBeDefined()
-
-  const after = await getServer(baseMcp.domain, "search")
-  expect(after.command).toEqual([process.execPath, binPath])
-  expect(after.environment.BUN_BE_BUN).toBe("0")
-})
-
-test("custom command is preserved untouched", async () => {
-  const customConfig = {
-    type: "local" as const,
-    command: ["my-custom-search-tool", "--query-param"],
-    environment: {
-      CUSTOM_ENV: "1",
-    },
-  }
-  const baseMcp = mcpHarness([["search", customConfig]])
-  const ctx = context({
-    ...fullContext({ directory: "/tmp/test" }),
-    mcp: baseMcp.domain,
-  })
-
-  const before = await getServer(baseMcp.domain, "search")
-  expect(before).toEqual(customConfig)
-
-  const binPath = await resolveSearchBinPath()
-  const registration = await registerSearchMcp(ctx, binPath)
-  expect(registration).toBeUndefined()
-
-  const after = await getServer(baseMcp.domain, "search")
-  expect(after).toEqual(customConfig)
+test("isOldGeneratedSearchCommand matches only the old search/bin entry point", () => {
+  expect(isOldGeneratedSearchCommand(["/path/to/bun", "/work/packages/plus/src/search/bin.ts"])).toBe(true)
+  expect(isOldGeneratedSearchCommand(["bun", "C:\\work\\search\\bin.js"])).toBe(true)
+  expect(isOldGeneratedSearchCommand(["opencodeplus", "search-mcp"])).toBe(false)
+  expect(isOldGeneratedSearchCommand("bun search/bin.ts")).toBe(false)
 })

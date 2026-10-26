@@ -226,27 +226,27 @@ const plannerShell: PresetOverrides = rows(off, [
   "perm:shell:commands.secret-reads",
 ])
 
-const tavily = rows(off, ["tool:search_tavily_search", "tool:search_tavily_extract"])
+const tavily = rows(off, ["tool:web_tavily_search", "tool:web_tavily_fetch"])
 
-// Outside the build seat, Code Mode would hold only the search server's tools
+// Outside the build seat, Code Mode would hold only the web tools members use
 // (the namespaces that add many tools are the seat's, seatOnly below): those
 // go direct and execute goes off. Live, members called execute only to probe
 // for tools they lack (a shell, the opencode namespace) or with no-op code.
 const noCodeMode: PresetOverrides = {
   ...rows(off, ["tool:execute"]),
   ...Object.fromEntries(
-    ["search_exa_code_search", "search_tavily_search", "search_tavily_extract"].map((tool) => [`toolmode:${tool}`, { text: "direct" }] as const),
+    ["web_exa_code_search", "web_tavily_search", "web_tavily_fetch", "web_opencode_fetch"].map((tool) => [`toolmode:${tool}`, { text: "direct" }] as const),
   ),
 }
 
 // Tools a member's role never uses. Each costs tokens on every request and
-// invites a call the role text forbids. `websearch` duplicates the search
-// server's tools; the skills are the build seat's (configuration, releases,
+// invites a call the role text forbids. `web.opencode_search` duplicates the
+// Tavily and Exa tools; the skills are the build seat's (configuration, releases,
 // issue reports) and the teaching row explains the configuration tools only
 // the build seat has (paths.ts teachingItemId and teachingSkillId; not imported:
 // this module stays free of filesystem code).
 const unused: PresetOverrides = rows(off, [
-  "tool:websearch",
+  "tool:web_opencode_search",
   "system:opencodeplus",
   "skill:instructions-tools",
   "skill:opencodeplus-release",

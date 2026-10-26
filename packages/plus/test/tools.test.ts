@@ -1325,15 +1325,20 @@ test("activation installs the instruction tooling and deactivate disposes it", a
   )
   await Effect.runPromise(instructions.dispose)
   expect(instructionPaths).toContain(teachingFilePath())
-  // Configured either way: Plus registers its own here, and a host that
-  // already has one keeps it.
-  expect(await serverNames()).toContain("search")
+  // Tavily and Exa are built-in web tools: Plus adds no search MCP server.
+  expect(await serverNames()).toEqual(beforeServers)
+  expect([...(await readTools(ctx)).keys()].filter((id) => id.startsWith("web_")).toSorted()).toEqual([
+    "web_exa_code_search",
+    "web_tavily_fetch",
+    "web_tavily_search",
+  ])
   const installed = [...state.tooling]
   await Effect.runPromise(activate(ctx, state))
   expect(state.tooling).toEqual(installed)
   expect(await toolIds()).toEqual(instructionToolIds)
   await Effect.runPromise(deactivate(state))
   expect(await toolIds()).toEqual([])
+  expect([...(await readTools(ctx)).keys()].some((id) => id.startsWith("web_"))).toBe(false)
   expect(await skillIds()).not.toContain(teachingSkillId)
   expect(await serverNames()).toEqual(beforeServers)
   expect(state.tooling).toEqual([])
@@ -3926,7 +3931,7 @@ test("find is held-back lists what an agent's shown when keeps from it", async (
   await runOk(need(tools, "instructions_set"), { id: "item:defaults:alpha:system:tools-and-rules", state: "on" })
   const rows = await heldBack()
   // No code search tool here: its section is held back, and says what it needs.
-  expect(rows.find((row) => row.includes(":tools-and-rules/code-search |"))).toContain("held back (needs tool:search_exa_code_search on)")
+  expect(rows.find((row) => row.includes(":tools-and-rules/code-search |"))).toContain("held back (needs tool:web_exa_code_search on)")
   // Questions waits for the question tool; switching it on sends it.
   expect(rows.find((row) => row.includes(":tools-and-rules/questions |"))).toContain("held back (needs tool:question on)")
   await runOk(need(tools, "instructions_set"), { id: "item:defaults:alpha:tool:question", state: "on" })

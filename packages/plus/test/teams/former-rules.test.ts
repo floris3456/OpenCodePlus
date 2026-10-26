@@ -335,7 +335,7 @@ test("tool rows are the ceiling: a team tool, shell, question, subagent and Tavi
   const { evaluate } = await import("../../../core/src/permission.js")
   const direct = ["tool:team_delegate", "tool:team_list", "tool:shell", "tool:question", "tool:subagent"]
   // Tavily runs in Code Mode: off there is a deny on the tool, not a plan.
-  const codemode = ["search_tavily_search", "search_tavily_extract"]
+  const codemode = ["web_tavily_search", "web_tavily_fetch"]
   const tools = [...direct, ...codemode.map((tool) => `tool:${tool}`)]
   const off = await appliedFor(...tools.map((item) => [item, "off"] as [string, "off"]))
   expect(off.tools.filter((plan) => !plan.enabled && tools.includes(`tool:${plan.tool}`)).map((plan) => `tool:${plan.tool}`).toSorted()).toEqual(direct.toSorted())

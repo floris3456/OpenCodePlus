@@ -3886,7 +3886,7 @@ function permissionParameter(item: Item, tool: string, params: readonly Item[]):
   if (field !== undefined && params.some((param) => param.title === field)) return field
   const resource: Record<string, string> = {
     read: "path", edit: "path", write: "path", patch: "patchText", shell: "command",
-    glob: "pattern", grep: "pattern", webfetch: "url", websearch: "query", skill: "name", subagent: "agent",
+    glob: "pattern", grep: "pattern", web_opencode_fetch: "url", web_opencode_search: "query", skill: "name", subagent: "agent",
     team_delegate: "role", team_followup: "run", team_integrate: "run", team_finish: "status",
     team_checkpoint: "files", team_stop: "run", team_status: "run",
     team_diff: "run", team_list: "all", team_check: "id",

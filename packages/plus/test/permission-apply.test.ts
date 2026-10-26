@@ -393,17 +393,17 @@ test("the permission evaluate hook turns an approval row into a question for tha
   const applied = await apply(
     host.ctx,
     input({
-      items: catalogItems([toolItem("webfetch")], actionForToolId),
+      items: catalogItems([toolItem("web_opencode_fetch")], actionForToolId),
       agents: [{ id: "alpha", level: "project" }],
-      records: [record("alpha", "perm:webfetch:approval.every", "on")],
+      records: [record("alpha", "perm:web_opencode_fetch:approval.every", "on")],
       enforcement,
     }),
   )
-  expect(await refusalOf(host.tool, beforeEvent("alpha", "webfetch", { url: "https://example.org" }, { call: "call_1" }))).toBeUndefined()
+  expect(await refusalOf(host.tool, beforeEvent("alpha", "web_opencode_fetch", { url: "https://example.org" }, { call: "call_1" }))).toBeUndefined()
   const asked = evaluation("call_1")
   await authorize(host.permission, asked)
   expect(asked.effect).toBe("ask")
-  expect(asked.message).toContain("webfetch asks the human")
+  expect(asked.message).toContain("web_opencode_fetch asks the human")
   // The call waits until the human answers: core's re-evaluation of the
   // pending request (after an "always" to something else) still asks.
   const again = evaluation("call_1")
@@ -421,7 +421,7 @@ test("the permission evaluate hook turns an approval row into a question for tha
   expect(answered).toEqual(evaluation("call_1"))
 
   // A deny core already reached stays a deny.
-  expect(await refusalOf(host.tool, beforeEvent("alpha", "webfetch", { url: "https://example.org" }, { call: "call_3" }))).toBeUndefined()
+  expect(await refusalOf(host.tool, beforeEvent("alpha", "web_opencode_fetch", { url: "https://example.org" }, { call: "call_3" }))).toBeUndefined()
   const denied = evaluation("call_3", "deny")
   await authorize(host.permission, denied)
   expect(denied).toEqual(evaluation("call_3", "deny"))
@@ -433,15 +433,15 @@ test("nobody is asked in a delegated run: approval and questions are refused the
   const applied = await apply(
     host.ctx,
     input({
-      items: catalogItems([toolItem("webfetch"), toolItem("question")], actionForToolId),
+      items: catalogItems([toolItem("web_opencode_fetch"), toolItem("question")], actionForToolId),
       agents: [{ id: "alpha", level: "project" }],
-      records: [record("alpha", "perm:webfetch:approval.every", "on")],
+      records: [record("alpha", "perm:web_opencode_fetch:approval.every", "on")],
       // A team is enabled, so "In delegated team runs" matters.
       teamAgents: ["ocp-deepseek-implementer"],
       enforcementDeps: { headless: async (sessionID) => sessionID === "ses_child" },
     }),
   )
-  const unwatched = await refusalOf(host.tool, beforeEvent("alpha", "webfetch", { url: "https://example.org" }, { session: "ses_child" }))
+  const unwatched = await refusalOf(host.tool, beforeEvent("alpha", "web_opencode_fetch", { url: "https://example.org" }, { session: "ses_child" }))
   expect(unwatched).toStartWith("Permission denied: ")
   expect(unwatched).toContain("nobody watches a delegated run")
   const ask = { questions: [{ question: "Which one?", options: [] }] }

@@ -218,7 +218,7 @@ function mineSites(text: string): Generated[] {
     if (!host.includes(".") || host.includes("github.com") || host === "127.0.0.1") continue
     hosts.add(host)
   }
-  return [...hosts].map((host) => ({ tool: "webfetch", id: slugify(host), label: host, patterns: [`*${host}*`] }))
+  return [...hosts].map((host) => ({ tool: "web_opencode_fetch", id: slugify(host), label: host, patterns: [`*${host}*`] }))
 }
 
 function slugify(name: string): string {

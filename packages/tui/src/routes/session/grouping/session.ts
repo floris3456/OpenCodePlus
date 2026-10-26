@@ -82,7 +82,7 @@ function unwrap(node: GroupNode<ProjectionEntry, GroupKind>): GroupNode<SessionE
   return { ...node, children: node.children.map(unwrap) }
 }
 
-const explorationTools = new Set(["read", "glob", "grep", "webfetch", "websearch"])
+const explorationTools = new Set(["read", "glob", "grep", "webfetch", "websearch", "web_opencode_fetch", "web_opencode_search"])
 
 /**
  * Grouping path for an assistant part. Adjacent thoughts group, as do reads, searches

@@ -655,17 +655,17 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
     approval(),
   ],
   skill: [approval()],
-  webfetch: [
+  web_opencode_fetch: [
     {
       id: "more-sites",
       label: "More sites",
       kind: "rule",
-      summary: "More site families for webfetch, on top of the curated Sites rows.",
+      summary: "More site families for opencode_fetch, on top of the curated Sites rows.",
       rows: localSites
         .filter((row) => row.id !== "localhost" && row.id !== "http")
         .map((row) => ({ ...row, message: `${row.label} cannot be fetched here` })),
     },
-    values("format", "format", "Formats", "Formats webfetch may return.", [
+    values("format", "format", "Formats", "Formats opencode_fetch may return.", [
       { id: "markdown", label: "Markdown", on: true, value: "markdown" },
       { id: "text", label: "Plain text", on: true, value: "text" },
       { id: "html", label: "Raw HTML", on: true, value: "html" },
@@ -673,7 +673,7 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
     limits([{ id: "timeout", label: "Longest timeout (seconds)", on: false, limit: 60, field: "timeout", toolDefault: 30 }], "clamp"),
     approval(),
   ],
-  websearch: [
+  web_opencode_search: [
     {
       id: "queries",
       label: "Queries",
@@ -1102,7 +1102,7 @@ const releaseCatalog: Record<string, readonly CategorySpec[]> = {
 }
 
 const searchCatalog: Record<string, readonly CategorySpec[]> = {
-  search_tavily_search: [
+  web_tavily_search: [
     queries("query"),
     values("search_depth", "depth", "Search depth", "Depths a search may use. advanced costs two credits.", [
       { id: "ultra-fast", label: "ultra-fast", on: true, value: "ultra-fast" },
@@ -1118,8 +1118,8 @@ const searchCatalog: Record<string, readonly CategorySpec[]> = {
     limits([{ id: "results", label: "Results per search", on: false, limit: 10, field: "max_results", toolDefault: 5 }], "clamp"),
     approval(),
   ],
-  search_tavily_extract: [
-    sites("urls[]", "Pages extract may fetch. Extraction runs on Tavily's side, so local and private addresses only leak their names."),
+  web_tavily_fetch: [
+    sites("urls[]", "Pages tavily_fetch may fetch. Extraction runs on Tavily's side, so local and private addresses only leak their names."),
     values("extract_depth", "depth", "Extract depth", "Depths an extraction may use. advanced costs more.", [
       { id: "basic", label: "basic", on: true, value: "basic" },
       { id: "advanced", label: "advanced", on: true, value: "advanced" },
@@ -1127,7 +1127,7 @@ const searchCatalog: Record<string, readonly CategorySpec[]> = {
     limits([{ id: "urls", label: "Pages per call", on: false, limit: 5, field: "urls" }], "refuse", "count"),
     approval(),
   ],
-  search_exa_code_search: [
+  web_exa_code_search: [
     queries("query"),
     values("type", "types", "Search types", "Search types a code search may use.", [
       { id: "fast", label: "fast", on: true, value: "fast" },
@@ -1148,7 +1148,7 @@ const searchCatalog: Record<string, readonly CategorySpec[]> = {
 // Anthropic's search, so they keep the search tools' rows.
 const webCatalog: Record<string, readonly CategorySpec[]> = {
   web_chatgpt_search: [queries("query"), approval()],
-  web_chatgpt_open: [
+  web_chatgpt_fetch: [
     sites("url", "Pages ChatGPT's search may open. It opens them on OpenAI's side, so local and private addresses only leak their names."),
     approval(),
   ],
@@ -1260,7 +1260,7 @@ const legacyCategories: Record<string, { readonly id: string; readonly label: st
   write: { id: "files", label: "Files" },
   patch: { id: "files", label: "Files" },
   read: { id: "files", label: "Files" },
-  webfetch: { id: "sites", label: "Sites" },
+  web_opencode_fetch: { id: "sites", label: "Sites" },
   glob: { id: "patterns", label: "Search patterns" },
   grep: { id: "patterns", label: "Search patterns" },
   subagent: { id: "agents", label: "Agents" },
@@ -1334,7 +1334,7 @@ export function categoryOrder(tool: string): readonly string[] {
 export function hostOf(permTool: string): string {
   if (permTool === "external_directory") return "read"
   if (permTool === "task") return "subagent"
-  if (permTool === "search") return "search_tavily_search"
+  if (permTool === "search") return "web_tavily_search"
   return permTool
 }
 

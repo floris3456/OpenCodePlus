@@ -14,7 +14,7 @@ import { Image } from "@opencode/core/image"
 import { testEffect } from "./lib/effect"
 import { imagePassthrough } from "./lib/image"
 import { permissionLayer } from "./lib/permission"
-import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
+import { codeModeListings, toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
 
 const webFetchToolNode = makeLocationNode({
   name: "test/webfetch-tool-plugin",
@@ -55,10 +55,14 @@ const reset = () => {
   respond = () => Effect.succeed(new Response("hello", { headers: { "content-type": "text/plain" } }))
 }
 
+// The tool lives in Code Mode; these tests call it directly, as an agent with it exposed direct does.
+const run = (registry: Tool.Interface, input: Parameters<typeof executeTool>[1]) =>
+  executeTool(registry, input, { [WebFetchTool.id]: "direct" })
+
 const call = (input: typeof WebFetchTool.Input.Type, id = "call-webfetch") => ({
   sessionID,
   ...toolIdentity,
-  call: { type: "tool-call" as const, id, name: "webfetch", input },
+  call: { type: "tool-call" as const, id, name: WebFetchTool.id, input },
 })
 
 describe("WebFetchTool helpers", () => {
@@ -415,8 +419,10 @@ describe("WebFetchTool registration", () => {
       const registry = yield* Tool.Service
       const url = "http://example.com/public"
 
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["webfetch", "execute"])
-      expect(yield* executeTool(registry, call({ url, format: "text", timeout: 4 }))).toEqual({
+      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["execute"])
+      const catalog = (yield* registry.snapshot()).codeModeCatalog
+      expect(catalog && codeModeListings(catalog).map((tool) => tool.path)).toEqual(["web.opencode_fetch"])
+      expect(yield* run(registry, call({ url, format: "text", timeout: 4 }))).toEqual({
         status: "completed",
         output: { url, contentType: "text/plain", format: "text", output: "hello" },
         content: [{ type: "text", text: "hello" }],
@@ -445,7 +451,7 @@ describe("WebFetchTool registration", () => {
       const registry = yield* Tool.Service
       const url = "http://localhost/private"
 
-      expect(yield* executeTool(registry, call({ url, format: "text" }))).toMatchObject({
+      expect(yield* run(registry, call({ url, format: "text" }))).toMatchObject({
         status: "completed",
         content: [{ type: "text", text: "hello" }],
       })
@@ -481,7 +487,7 @@ describe("WebFetchTool registration", () => {
           const registry = yield* Tool.Service
           const url = new URL("/redirect", server.url).toString()
 
-          expect(yield* executeTool(registry, call({ url, format: "text" }))).toMatchObject({
+          expect(yield* run(registry, call({ url, format: "text" }))).toMatchObject({
             status: "completed",
             content: [{ type: "text", text: "redirected" }],
           })
@@ -507,7 +513,7 @@ describe("WebFetchTool registration", () => {
       const registry = yield* Tool.Service
 
       // toSessionError unwraps the "Unable to fetch <url>" ToolFailure to its cause message.
-      expect(yield* executeTool(registry, call({ url: "file:///etc/passwd", format: "text" }))).toEqual({
+      expect(yield* run(registry, call({ url: "file:///etc/passwd", format: "text" }))).toEqual({
         status: "error",
         error: { type: "unknown", message: "URL must use http:// or https://" },
       })
@@ -527,11 +533,11 @@ describe("WebFetchTool registration", () => {
         )
       const registry = yield* Tool.Service
 
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "markdown" }))).toMatchObject({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1", format: "markdown" }))).toMatchObject({
         status: "completed",
         content: [{ type: "text", text: "# Hello\n\nworld" }],
       })
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "text" }))).toMatchObject({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1", format: "text" }))).toMatchObject({
         status: "completed",
         content: [{ type: "text", text: "Helloworld" }],
       })
@@ -550,7 +556,7 @@ describe("WebFetchTool registration", () => {
       const registry = yield* Tool.Service
       const url = "https://1.1.1.1/deep-html"
 
-      expect(yield* executeTool(registry, call({ url, format: "markdown" }))).toMatchObject({
+      expect(yield* run(registry, call({ url, format: "markdown" }))).toMatchObject({
         status: "completed",
         content: [{ type: "text", text: "content" }],
       })
@@ -567,7 +573,7 @@ describe("WebFetchTool registration", () => {
             headers: { "content-type": "text/plain", "content-length": String(WebFetchTool.MAX_RESPONSE_BYTES + 1) },
           }),
         )
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/declared", format: "text" }))).toEqual({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1/declared", format: "text" }))).toEqual({
         status: "error",
         error: {
           type: "unknown",
@@ -579,7 +585,7 @@ describe("WebFetchTool registration", () => {
         Effect.succeed(
           new Response("x".repeat(WebFetchTool.MAX_RESPONSE_BYTES + 1), { headers: { "content-type": "text/plain" } }),
         )
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/streamed", format: "text" }))).toEqual({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1/streamed", format: "text" }))).toEqual({
         status: "error",
         error: {
           type: "unknown",
@@ -594,13 +600,13 @@ describe("WebFetchTool registration", () => {
       reset()
       const registry = yield* Tool.Service
       respond = () => Effect.succeed(new Response("png", { headers: { "content-type": "image/png" } }))
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/image", format: "html" }))).toEqual({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1/image", format: "html" }))).toEqual({
         status: "error",
         error: { type: "unknown", message: "Unsupported fetched image content type: image/png" },
       })
 
       respond = () => Effect.succeed(new Response("pdf", { headers: { "content-type": "application/pdf" } }))
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/file", format: "html" }))).toEqual({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1/file", format: "html" }))).toEqual({
         status: "error",
         error: { type: "unknown", message: "Unsupported fetched file content type: application/pdf" },
       })
@@ -619,7 +625,7 @@ describe("WebFetchTool registration", () => {
         )
       const registry = yield* Tool.Service
 
-      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "text" }))).toMatchObject({
+      expect(yield* run(registry, call({ url: "https://1.1.1.1", format: "text" }))).toMatchObject({
         status: "completed",
         content: [{ type: "text", text: "ok" }],
       })
@@ -636,7 +642,7 @@ describe("WebFetchTool registration", () => {
       const registry = yield* Tool.Service
       const url = "https://example.com/forbidden"
 
-      expect(yield* executeTool(registry, call({ url, format: "text" }))).toEqual({
+      expect(yield* run(registry, call({ url, format: "text" }))).toEqual({
         status: "error",
         error: { type: "unknown", message: `StatusCode: non 2xx status code (403 GET ${url})` },
       })
@@ -650,7 +656,7 @@ describe("WebFetchTool registration", () => {
       reset()
       respond = () => Effect.never
       const registry = yield* Tool.Service
-      const fiber = yield* executeTool(
+      const fiber = yield* run(
         registry,
         call({ url: "https://1.1.1.1/slow", format: "text", timeout: 1 }),
       ).pipe(Effect.forkChild)

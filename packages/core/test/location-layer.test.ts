@@ -496,6 +496,7 @@ describe("LocationServiceMap", () => {
           const blockedTools = blockedState.tools.map((tool) => tool.name)
           // Plus installs its team tools in every instance (project mode off
           // included), so a booted location carries them alongside core's tools.
+          // The web tools are in Code Mode, behind execute.
           expect(blockedTools.filter((name) => name !== "execute").sort()).toEqual([
             "edit",
             "glob",
@@ -517,8 +518,6 @@ describe("LocationServiceMap", () => {
             "team_list",
             "team_status",
             "team_stop",
-            "webfetch",
-            "websearch",
             "write",
           ])
           const allowedState = yield* update(allowed.path, allowedID)
@@ -547,8 +546,6 @@ describe("LocationServiceMap", () => {
             "team_list",
             "team_status",
             "team_stop",
-            "webfetch",
-            "websearch",
             "write",
           ])
         }),

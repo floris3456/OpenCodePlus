@@ -317,9 +317,10 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
     const current = child.tools.get(key)
     const output = toolOutputText(part.name, toolDisplayContent(part.state))
     if (part.state.status === "running") {
-      const ready = part.name !== "websearch" || typeof part.state.metadata.provider === "string"
+      const ready = canonicalToolName(part.name) !== "websearch" || typeof part.state.metadata.provider === "string"
       const awaitingProvider =
-        current?.part.name === "websearch" &&
+        current !== undefined &&
+        canonicalToolName(current.part.name) === "websearch" &&
         current.part.state.status === "running" &&
         typeof current.part.state.metadata.provider !== "string"
       if (ready && (!current || current.part.state.status === "streaming" || awaitingProvider))

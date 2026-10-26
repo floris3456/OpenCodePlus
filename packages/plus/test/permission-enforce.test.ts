@@ -173,9 +173,9 @@ test("an input category with a closed fallback lets through only its allow rows,
   expect(decide(open, call("browser_navigate", { tabID: "tab_1", url: "http://localhost:4096/api" })).refuse).toContain("Localhost")
 
   // Every value of an array field is checked.
-  const extract = rowsFor("search_tavily_extract", { off: ["sites.*"] }, [allowRow("search_tavily_extract", "sites", "docs", "urls[]", ["https://docs.example.com*"])])
-  expect(decide(extract, call("search_tavily_extract", { urls: ["https://docs.example.com/a", "https://docs.example.com/b"] }))).toEqual({})
-  expect(decide(extract, call("search_tavily_extract", { urls: ["https://docs.example.com/a", "https://evil.example/x"] })).refuse).toBe(
+  const extract = rowsFor("web_tavily_fetch", { off: ["sites.*"] }, [allowRow("web_tavily_fetch", "sites", "docs", "urls[]", ["https://docs.example.com*"])])
+  expect(decide(extract, call("web_tavily_fetch", { urls: ["https://docs.example.com/a", "https://docs.example.com/b"] }))).toEqual({})
+  expect(decide(extract, call("web_tavily_fetch", { urls: ["https://docs.example.com/a", "https://evil.example/x"] })).refuse).toBe(
     `${messageOf(extract, "sites.*")}; still allowed: docs`,
   )
 })
@@ -192,20 +192,20 @@ test("CLIProxyAPI's web tools keep the search tools' query and site rows", () =>
   )
   // The rows start on: nothing is refused until one is turned off.
   expect(decide(rowsFor("web_claude_search"), call("web_claude_search", { question: "what is in /home/me/notes.md" }))).toEqual({})
-  const open = rowsFor("web_chatgpt_open", { off: ["sites.localhost"] })
-  expect(decide(open, call("web_chatgpt_open", { url: "http://localhost:4096/api" })).refuse).toContain("Localhost")
-  expect(decide(open, call("web_chatgpt_open", { url: "https://github.com/x" }))).toEqual({})
+  const open = rowsFor("web_chatgpt_fetch", { off: ["sites.localhost"] })
+  expect(decide(open, call("web_chatgpt_fetch", { url: "http://localhost:4096/api" })).refuse).toContain("Localhost")
+  expect(decide(open, call("web_chatgpt_fetch", { url: "https://github.com/x" }))).toEqual({})
 })
 
 // ── value and param rows ───────────────────────────────────────────────────
 
 test("a value row that is off refuses its literal and nothing else", () => {
-  const rows = rowsFor("webfetch", { off: ["format.html"] })
-  const refusal = decide(rows, call("webfetch", { url: "https://example.org", format: "html" })).refuse
+  const rows = rowsFor("web_opencode_fetch", { off: ["format.html"] })
+  const refusal = decide(rows, call("web_opencode_fetch", { url: "https://example.org", format: "html" })).refuse
   expect(refusal).toStartWith("Permission denied: ")
   expect(refusal).toContain(`format "html"`)
-  expect(decide(rows, call("webfetch", { url: "https://example.org", format: "markdown" }))).toEqual({})
-  expect(decide(rows, call("webfetch", { url: "https://example.org" }))).toEqual({})
+  expect(decide(rows, call("web_opencode_fetch", { url: "https://example.org", format: "markdown" }))).toEqual({})
+  expect(decide(rows, call("web_opencode_fetch", { url: "https://example.org" }))).toEqual({})
 })
 
 test("a param row that is off refuses a call that uses the parameter", () => {
@@ -301,12 +301,12 @@ test("a refuse limit refuses by length and by count", () => {
 // ── approval and env rows ─────────────────────────────────────────────────
 
 test("approval asks, a question in a delegated run is refused there, and env rows strip variables", () => {
-  const approval = decide(rowsFor("webfetch", { on: ["approval.every"] }), call("webfetch", { url: "https://example.org" }))
+  const approval = decide(rowsFor("web_opencode_fetch", { on: ["approval.every"] }), call("web_opencode_fetch", { url: "https://example.org" }))
   expect(approval.refuse).toBeUndefined()
   // The decision names the permission action core checks the call under;
   // the hook asks at exactly that check.
-  expect(approval.approval).toBe("webfetch")
-  expect(decide(rowsFor("webfetch"), call("webfetch", { url: "https://example.org" }))).toEqual({})
+  expect(approval.approval).toBe("web_opencode_fetch")
+  expect(decide(rowsFor("web_opencode_fetch"), call("web_opencode_fetch", { url: "https://example.org" }))).toEqual({})
 
   // "In delegated team runs" ships off: the call is refused only where nobody watches.
   const shipped = rowsFor("question")
@@ -443,7 +443,7 @@ test("isOutside resolves relative, absolute, home and parent paths against the c
 type Json = Record<string, unknown>
 
 test("narrowSchema drops literals, parameters and their required entries, and sets numeric bounds", () => {
-  const webfetch: Json = {
+  const web_opencode_fetch: Json = {
     type: "object",
     properties: {
       url: { type: "string" },
@@ -453,8 +453,8 @@ test("narrowSchema drops literals, parameters and their required entries, and se
     required: ["url"],
     additionalProperties: false,
   }
-  expect(narrowSchema(webfetch, rowsFor("webfetch", { off: ["format.html"], on: ["limits.timeout"], text: { "limits.timeout": "20" } }))).toBe(true)
-  expect(webfetch).toEqual({
+  expect(narrowSchema(web_opencode_fetch, rowsFor("web_opencode_fetch", { off: ["format.html"], on: ["limits.timeout"], text: { "limits.timeout": "20" } }))).toBe(true)
+  expect(web_opencode_fetch).toEqual({
     type: "object",
     properties: {
       url: { type: "string" },
@@ -474,7 +474,7 @@ test("narrowSchema drops literals, parameters and their required entries, and se
     },
     required: ["query"],
   }
-  expect(narrowSchema(search, rowsFor("search_exa_code_search", { off: ["types.neural", "types.keyword"] }))).toBe(true)
+  expect(narrowSchema(search, rowsFor("web_exa_code_search", { off: ["types.neural", "types.keyword"] }))).toBe(true)
   expect(search).toEqual({
     type: "object",
     properties: {
@@ -805,16 +805,16 @@ test("maskSecrets masks secret keys and everything in headers and environments, 
 test("tableActive installs the hooks only while some row refuses, clamps, asks or strips", () => {
   const active = (tools: readonly string[], changes: Changes = {}, extra: readonly Item[] = [], members: readonly string[] = []) =>
     tableActive(tableOf(tools, changes, extra, members), ["alpha"])
-  const natives = ["read", "glob", "grep", "edit", "write", "patch", "shell", "webfetch", "subagent", "question"]
+  const natives = ["read", "glob", "grep", "edit", "write", "patch", "shell", "web_opencode_fetch", "subagent", "question"]
   expect(active(natives)).toBe(false)
   // The team-only rows matter once a team is enabled.
   expect(active(["subagent"], {}, [], ["ocp-build"])).toBe(true)
   expect(active(["question"], {}, [], ["ocp-build"])).toBe(true)
   expect(active(["read"], { on: ["limits.lines"] })).toBe(true)
-  expect(active(["webfetch"], { on: ["approval.every"] })).toBe(true)
+  expect(active(["web_opencode_fetch"], { on: ["approval.every"] })).toBe(true)
   expect(active(["shell"], { off: ["environment.secrets"] })).toBe(true)
   expect(active(["glob"], { off: ["parameters.hidden"] })).toBe(true)
-  expect(active(["webfetch"], { off: ["format.html"] })).toBe(true)
+  expect(active(["web_opencode_fetch"], { off: ["format.html"] })).toBe(true)
   expect(active(["grep"], { off: ["files.env"] })).toBe(true)
   // An allow-list row that is off, and team rows, refuse nothing through a hook.
   expect(active(["grep"], {}, [allowRow("grep", "files", "source", "path", ["src/*"], false)])).toBe(false)
@@ -836,14 +836,14 @@ test("tableActive installs the hooks only while some row refuses, clamps, asks o
 
 test("tableNarrows reacts to off values and parameters, on value caps and Delegate to rows", () => {
   const narrows = (tools: readonly string[], changes: Changes = {}) => tableNarrows(tableOf(tools, changes), ["alpha"])
-  expect(narrows(["read", "glob", "grep", "shell", "webfetch", "write", "patch", "question"])).toBe(false)
-  expect(narrows(["webfetch"], { off: ["format.html"] })).toBe(true)
+  expect(narrows(["read", "glob", "grep", "shell", "web_opencode_fetch", "write", "patch", "question"])).toBe(false)
+  expect(narrows(["web_opencode_fetch"], { off: ["format.html"] })).toBe(true)
   expect(narrows(["glob"], { off: ["parameters.hidden"] })).toBe(true)
   expect(narrows(["read"], { on: ["limits.lines"] })).toBe(true)
   // Length and count caps are refused per call; they have no schema bound.
   expect(narrows(["write"], { on: ["limits.size"] })).toBe(false)
   expect(narrows(["patch"], { on: ["limits.files"] })).toBe(false)
-  expect(narrows(["webfetch"], { on: ["approval.every"] })).toBe(false)
+  expect(narrows(["web_opencode_fetch"], { on: ["approval.every"] })).toBe(false)
   expect(narrows(["shell"], { off: ["environment.secrets"] })).toBe(false)
   const member = permissionTable({
     items: teamPolicyItems(policyMembersOf(["ocp-astra-reviewer"])),

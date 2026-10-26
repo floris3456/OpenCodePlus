@@ -346,11 +346,11 @@ test("shell create.before strips the secret variables of the call that announced
 })
 
 test("an off value is refused when the call leaves it to the tool's default", () => {
-  const table = tableFor(["webfetch", "team_followup"], { "perm:webfetch:format.markdown": false, "perm:team_followup:delivery.queue": false })
+  const table = tableFor(["web_opencode_fetch", "team_followup"], { "perm:web_opencode_fetch:format.markdown": false, "perm:team_followup:delivery.queue": false })
   const call = (tool: string, input: unknown) =>
     decide(table.toolRows("build", tool), { tool, input, sessionID: "ses", directory: "/work", teamMembers: new Set() })
-  expect(call("webfetch", { url: "https://x.test" }).refuse).toContain('format defaults to "markdown"')
-  expect(call("webfetch", { url: "https://x.test", format: "text" }).refuse).toBeUndefined()
+  expect(call("web_opencode_fetch", { url: "https://x.test" }).refuse).toContain('format defaults to "markdown"')
+  expect(call("web_opencode_fetch", { url: "https://x.test", format: "text" }).refuse).toBeUndefined()
   expect(call("team_followup", { run: "w-1", requestID: "r", prompt: "p" }).refuse).toContain('delivery defaults to "queue"')
 })
 

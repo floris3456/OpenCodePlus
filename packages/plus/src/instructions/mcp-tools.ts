@@ -6,8 +6,7 @@
 // comes before that discovery gets them in its catalog for good (the first
 // catalog is the chat's instruction baseline). Discovery therefore lists, for
 // an enabled server that has registered nothing yet, the tools it registered
-// last time: their rows and denials exist from the first publish. Plus's own
-// search server is known from its source before it ever ran. When the server
+// last time: their rows and denials exist from the first publish. When the server
 // registers, the registry watcher (index.ts watchToolRegistry) republishes
 // with what it actually registered, and that is what is remembered next.
 import type { Mcp } from "@opencode/schema/mcp"
@@ -17,7 +16,6 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { Product } from "@opencode/util/product"
-import { searchTools } from "../search/tools.js"
 
 export interface KnownMcpTool {
   readonly name: string
@@ -81,7 +79,7 @@ export function pendingMcpTools(
   const registered = new Set(registry.flatMap((tool) => (tool.origin?.type === "mcp" ? [tool.origin.name] : [])))
   return servers.flatMap(([server, config]) => {
     if (config.disabled === true || registered.has(server)) return []
-    const tools = known.get(server) ?? (ownSearchServer(config) ? searchTools.map((tool) => ({ ...tool, input: {} })) : [])
+    const tools = known.get(server) ?? []
     const namespace = sanitize(server)
     return tools.map(
       (tool): RegistryTool => ({
@@ -96,12 +94,6 @@ export function pendingMcpTools(
       }),
     )
   })
-}
-
-// Plus writes its search server's config with its keys directory; a user's own
-// "search" server is not Plus's and is only known once it has connected.
-function ownSearchServer(config: Mcp.ServerConfig): boolean {
-  return config.type === "local" && config.environment?.OPENCODEPLUS_SEARCH_KEYS_DIR !== undefined
 }
 
 // core's McpTool.namespace and tool name sanitising.

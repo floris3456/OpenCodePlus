@@ -9,7 +9,7 @@ import { permissionTableOf, type ApplyInput } from "../../src/instructions/apply
 import { fingerprint, permItemId, resolve, type CustomizationRecord, type Item, type LinkRecord, type PresetRef } from "../../src/instructions/model.js"
 import type { PermissionTable } from "../../src/instructions/permission-enforce.js"
 import { catalogItems, categoryOfRow } from "../../src/instructions/permission-catalog.js"
-import { curatedRules } from "../../src/instructions/tool-permissions.js"
+import { actionForToolId, curatedRules } from "../../src/instructions/tool-permissions.js"
 import { chainContext } from "../../src/instructions/presets.js"
 import { policyMembersOf, teamPolicyItems, type PolicyRun } from "../../src/instructions/team-policy-rows.js"
 import { toolModeItem } from "../../src/instructions/tool-mode.js"
@@ -39,7 +39,7 @@ export function linked(id: string, preset: string, team = shippedTeam): TeamMemb
 }
 
 const nativeTools = ["read", "glob", "grep", "edit", "write", "patch", "shell", "question", "subagent", "skill"]
-const searchTools = ["search_tavily_search", "search_tavily_extract", "search_exa_code_search"]
+const searchTools = ["web_tavily_search", "web_tavily_fetch", "web_exa_code_search"]
 
 function toolItem(id: string, group: Item["group"]): Item {
   return { id: `tool:${id}`, kind: "tool", group, title: id, text: id, enabled: true, fingerprint: fingerprint(id) }
@@ -48,7 +48,7 @@ function toolItem(id: string, group: Item["group"]): Item {
 // Rows a member preset answers besides tools with permission rules: web search,
 // the skills an install ships or seeds, the Plus teaching row, and one tool of
 // each namespace the member presets ship off by prefix.
-const otherTools = ["websearch", "webfetch"]
+const otherTools = ["web_opencode_search", "web_opencode_fetch"]
 const prefixedTools = ["browser_navigate", "instructions_set", "release_request", "monitor_query", "opencode_session_move"]
 const skills = ["opencode", "report", "instructions-tools", "opencodeplus-release", "pilotty"]
 
@@ -56,13 +56,13 @@ function rowItem(id: string, kind: Item["kind"], group: Item["group"]): Item {
   return { id, kind, group, title: id, text: id, enabled: true, fingerprint: fingerprint(id) }
 }
 
-// Discovery's tool rows: MCP search tools run in Code Mode, every tool but the
+// Discovery's tool rows: the web tools run in Code Mode, every tool but the
 // host's execute entry point has an exposure row.
 const tools: readonly Item[] = [
   ...teamTools.map((name) => toolItem(`team_${name}`, "plus")),
   ...nativeTools.map((name) => toolItem(name, "native")),
-  ...searchTools.map((name): Item => ({ ...toolItem(name, "mcp"), codemode: true })),
-  ...otherTools.map((name) => toolItem(name, "native")),
+  ...searchTools.map((name): Item => ({ ...toolItem(name, "plus"), codemode: true })),
+  ...otherTools.map((name): Item => ({ ...toolItem(name, "native"), codemode: true })),
   ...prefixedTools.map((name) => toolItem(name, "plus")),
 ]
 
@@ -74,7 +74,7 @@ export const inventory: readonly Item[] = [
   rowItem("system:opencodeplus", "system", "plus"),
 ]
 
-const catalog = catalogItems(inventory, (tool) => (tool.startsWith("team_") ? `team.${tool.slice("team_".length)}` : tool === "write" || tool === "patch" ? "edit" : tool))
+const catalog = catalogItems(inventory, (tool) => (tool.startsWith("team_") ? `team.${tool.slice("team_".length)}` : actionForToolId(tool)))
 
 // The curated rule rows discovery lists for the native tools (shell's git
 // push, read's .env files, …), shaped as discovery shapes them.

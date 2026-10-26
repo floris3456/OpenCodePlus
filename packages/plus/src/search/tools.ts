@@ -1,7 +1,7 @@
-// The search server's tool names and descriptions: the server registers them
-// (mcp.ts), and discovery knows them before the server has connected
-// (instructions/mcp-tools.ts), so a member's "off" row denies them from the
-// first request. Dependency-free: discovery imports it without the MCP SDK.
+// The Tavily and Exa tools' names and descriptions: the built-in web tools
+// (register.ts, where tavily_extract is web.tavily_fetch) and the stand-alone
+// `opencodeplus search-mcp` server (mcp.ts) both describe them so.
+// Dependency-free: the plugin imports it without the MCP SDK.
 export const searchTools = [
   {
     name: "exa_code_search",

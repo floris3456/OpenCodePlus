@@ -22,6 +22,8 @@
 // and "you cannot run checks" mentions what it denies. `mentionWarnings` finds
 // the mentions a marker does not cover, so the Instructions tree can flag them.
 
+import { currentRowId } from "./tool-renames.js"
+
 export interface Requirement {
   /** The row's item id. */
   readonly id: string
@@ -41,10 +43,11 @@ export interface GatedSection {
 
 const MARKER = /^[ \t]*<!--\s*requires:\s*(.*?)\s*-->[ \t]*$/
 
+// A marker that names a tool by an id it had before a rename still follows it.
 export function parseRequirements(list: string): Requirement[] {
   return list
     .split(/[,\s]+/)
-    .map((token) => token.trim())
+    .map((token) => currentRowId(token.trim()))
     .filter((token) => token.length > 0)
     .map((token) => (token.startsWith("!") ? { id: token.slice(1), on: false } : { id: token, on: true }))
 }
@@ -233,7 +236,7 @@ export function mentionWarnings(
 }
 
 // Whether a text refers to a tool or skill by name. An identifier-like name
-// (team_status, search_exa_code_search, opencodeplus-release) counts anywhere
+// (team_status, web_exa_code_search, opencodeplus-release) counts anywhere
 // as a whole word. A plain word that is also English (edit, shell, report,
 // question) counts only where it reads as the tool: in backticks, or as "edit
 // tool" / "pilotty skill". "Use the shell to build" reads as the word, not

@@ -28,7 +28,7 @@ import { installTeaching } from "./instructions/teaching.js"
 import { INSTRUCTION_DISABLED, registerInstructionTools } from "./tools.js"
 import { listOps, runOp, toolRegistry, withCliActor } from "./instructions-cli.js"
 import { registerReleaseTools } from "./release/tools.js"
-import { registerSearchMcp } from "./search/register.js"
+import { registerSearchTools, retireSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
 import { buildRunTree, byDirectory, bySession, loadRun } from "./teams/run.js"
 import { readJson } from "./teams/store.js"
@@ -5854,9 +5854,10 @@ async function installTooling(ctx: Context, state: PlusState): Promise<Registrat
   const release = await registerReleaseTools(ctx)
   const monitor = await registerMonitorTools(ctx)
   const refresh = await registerRefreshTool(ctx, api)
-  const search = await registerSearchMcp(ctx)
-  const base = [...teaching, tools, release, monitor, refresh]
-  return search !== undefined ? [...base, search] : base
+  const search = await registerSearchTools(ctx)
+  const retired = await retireSearchMcp(ctx)
+  const base = [...teaching, tools, release, monitor, refresh, search]
+  return retired !== undefined ? [...base, retired] : base
 }
 
 function disposeTooling(state: PlusState): Effect.Effect<void> {

@@ -2,6 +2,9 @@ export function canonicalToolName(name: string) {
   if (name === "bash") return "shell"
   if (name === "task") return "subagent"
   if (name === "apply_patch") return "patch"
+  // OpenCode's web tools as direct tools; in Code Mode they run inside execute.
+  if (name === "web_opencode_fetch") return "webfetch"
+  if (name === "web_opencode_search") return "websearch"
   return name
 }
 

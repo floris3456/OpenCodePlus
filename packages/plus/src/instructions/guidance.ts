@@ -14,18 +14,18 @@ export const guidanceTitle = "Tools and rules"
 export const guidanceContent = `# Tools and rules
 
 ## Code search
-<!-- requires: tool:search_exa_code_search -->
-For external APIs and libraries, check current usage with search_exa_code_search
+<!-- requires: tool:web_exa_code_search -->
+For external APIs and libraries, check current usage with web.exa_code_search
 instead of relying on memory.
 
 ## Documentation search
-<!-- requires: tool:search_tavily_search -->
+<!-- requires: tool:web_tavily_search -->
 For current documentation, release notes and changelogs, search with
-search_tavily_search.
+web.tavily_search.
 
 ## Reading web pages
-<!-- requires: tool:search_tavily_extract -->
-Read a page you found in full with search_tavily_extract.
+<!-- requires: tool:web_tavily_fetch -->
+Read a page you found in full with web.tavily_fetch.
 
 ## Terminal UIs
 <!-- requires: skill:pilotty -->

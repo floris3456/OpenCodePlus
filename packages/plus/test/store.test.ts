@@ -796,3 +796,39 @@ test("ModelRecord with originalCandidate round-trips through disk save and load"
     },
   })
 })
+
+test("rows, rules, links and folders that name a renamed web tool follow it to its current id", async () => {
+  const { project } = await isolated()
+  const rule: StoredRecord = {
+    type: "rule",
+    level: "project",
+    agent: "alpha",
+    tool: "webfetch",
+    id: "docs",
+    label: "Docs",
+    patterns: ["*docs.example*"],
+    keywords: [],
+    updated: UPDATED,
+  }
+  const folder = { type: "folder", level: "global", tab: "tools", id: "tools:web", name: "Web", items: ["tool:websearch", "tool:read"], updated: UPDATED } as const
+  const stored = [
+    customization({ item: "tool:webfetch", state: "off" }),
+    customization({ item: "perm:webfetch:http", state: "on" }),
+    customization({ item: "param:search_tavily_search:topic", state: "off" }),
+    customization({ item: "toolmode:search_exa_code_search", text: "direct" }),
+    customization({ item: "tool:read", state: "off" }),
+    rule,
+    rowlink({ item: "tool:web_chatgpt_open", target: "system:notes" }),
+    folder,
+  ]
+  await fs.mkdir(path.dirname(projectRecordsPath(project)), { recursive: true })
+  await Bun.write(projectRecordsPath(project), [JSON.stringify({ version: 2, revision: 1 }), ...stored.map((record) => JSON.stringify(record))].join("\n") + "\n")
+  const loaded = await load(project)
+  const items = loaded.records.flatMap((record) => (record.type === "customization" ? [record.item] : [])).toSorted()
+  expect(items).toEqual(["param:web_tavily_search:topic", "perm:web_opencode_fetch:http", "tool:read", "tool:web_opencode_fetch", "toolmode:web_exa_code_search"])
+  expect(loaded.records).toContainEqual({ ...rule, tool: "web_opencode_fetch" })
+  expect(loaded.records).toContainEqual(rowlink({ item: "tool:web_chatgpt_fetch", target: "system:notes" }))
+  expect(loaded.records).toContainEqual({ ...folder, items: ["tool:web_opencode_search", "tool:read"] })
+  // Loading again changes nothing: current ids map to themselves.
+  expect((await load(project)).records).toEqual(loaded.records)
+})

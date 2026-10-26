@@ -11,7 +11,8 @@ import { guidanceContent } from "../src/instructions/guidance.js"
 import { fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
 import { guidancePath, guidanceItemId } from "../src/instructions/paths.js"
 import { chainContext } from "../src/instructions/presets.js"
-import { applyRequires, gatedSections, mentionWarnings, mentions } from "../src/instructions/requires.js"
+import { applyRequires, gatedSections, mentionWarnings, mentions, parseRequirements } from "../src/instructions/requires.js"
+import { currentRowId } from "../src/instructions/tool-renames.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import { agentHarness, agentInfo, context, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
@@ -162,7 +163,7 @@ test("the tree says when a section is shown, flags an uncovered mention, and lin
     { id: "system:role", kind: "system", group: "none", title: "Role", text: body, enabled: true, fingerprint: fingerprint(body), agents: ["alpha"] },
     { id: "tool:team_check", kind: "tool", group: "plus", title: "team_check", text: "Run a check.", enabled: true, fingerprint: "a" },
     { id: "tool:team_status", kind: "tool", group: "plus", title: "team_status", text: "Status.", enabled: true, fingerprint: "b" },
-    { id: "tool:search_exa_code_search", kind: "tool", group: "mcp", server: "search", title: "search_exa_code_search", text: "Search.", enabled: true, fingerprint: "c" },
+    { id: "tool:web_exa_code_search", kind: "tool", group: "mcp", server: "search", title: "web_exa_code_search", text: "Search.", enabled: true, fingerprint: "c" },
     { id: guidanceItemId, kind: "system", group: "plus", title: "Tools and rules", text: guidanceContent, enabled: true, fingerprint: fingerprint(guidanceContent) },
   ]
   const nodes = expandedTree({
@@ -176,7 +177,7 @@ test("the tree says when a section is shown, flags an uncovered mention, and lin
   expect(badges("section:project:alpha:system:role:role/checks")?.requires).toEqual([{ id: "tool:team_check", on: true, met: false }])
   expect(badges("section:project:alpha:system:role:role/checks")?.mentions).toBeUndefined()
   expect(badges("section:project:alpha:system:role:role/status")?.mentions).toEqual([{ word: "team_status", id: "tool:team_status" }])
-  expect(badges("item:project:alpha:tool:search_exa_code_search")?.guidance).toEqual(["Code search"])
+  expect(badges("item:project:alpha:tool:web_exa_code_search")?.guidance).toEqual(["Code search"])
 })
 
 test("a plain English word counts as a tool mention only where it reads as the tool", () => {
@@ -186,4 +187,18 @@ test("a plain English word counts as a tool mention only where it reads as the t
   expect(mentions("Finish with a report.", "report")).toBe(false)
   expect(mentions("Read team_status.", "team_status")).toBe(true)
   expect(mentions("Read team_status_extra.", "team_status")).toBe(false)
+})
+
+test("a marker that names a renamed web tool by its old id requires the tool under its current one", () => {
+  expect(parseRequirements("tool:search_tavily_search, !perm:webfetch:http tool:read skill:webfetch")).toEqual([
+    { id: "tool:web_tavily_search", on: true },
+    { id: "perm:web_opencode_fetch:http", on: false },
+    { id: "tool:read", on: true },
+    { id: "skill:webfetch", on: true },
+  ])
+  expect(currentRowId("toolmode:websearch")).toBe("toolmode:web_opencode_search")
+  expect(currentRowId("param:search_tavily_extract:urls")).toBe("param:web_tavily_fetch:urls")
+  expect(currentRowId("tool:web_chatgpt_open")).toBe("tool:web_chatgpt_fetch")
+  expect(currentRowId("tool:web_opencode_fetch")).toBe("tool:web_opencode_fetch")
+  expect(currentRowId("mcp:search")).toBe("mcp:search")
 })

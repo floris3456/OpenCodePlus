@@ -583,18 +583,21 @@ field (`packages/plus/src/teams/audit.ts:170`). The teams data dir is
 `<XDG_DATA_HOME>/opencode/opencodeplus/teams`
 (`packages/plus/src/instructions/paths.ts:41`).
 
-## 6. `search` MCP tools
+## 6. Tavily and Exa web tools
 
-The server is `opencodeplus-search` (`packages/plus/src/search/mcp.ts:116`).
+Built-in Code Mode tools in the `web` namespace (`packages/plus/src/search/register.ts`):
+`web.exa_code_search`, `web.tavily_search` and `web.tavily_fetch`. The stand-alone
+`opencodeplus search-mcp` server (`opencodeplus-search`, `packages/plus/src/search/mcp.ts`)
+serves the same tools for other MCP clients, `tavily_fetch` there as `tavily_extract`.
 
 | Tool | Inputs | Errors |
 | --- | --- | --- |
 | `exa_code_search` | `query`, `type` `fast`/`auto`/`neural`/`keyword` (default `fast`), `numResults` 1–100 (default 10), `includeDomains`, `excludeDomains`, `startPublishedDate`, `endPublishedDate`, `contents` (default `{ highlights: true }`) (`packages/plus/src/search/mcp.ts:41`) | `EXA_API_KEY is not set in the host environment` (`packages/plus/src/search/mcp.ts:24`), `Exa search failed (<status>): …` (`packages/plus/src/search/mcp.ts:31`) |
 | `tavily_search` | `query` 1–400 chars, `search_depth` `ultra-fast`/`fast`/`basic`/`advanced` (default `basic`), `topic` `general`/`news`/`finance`, `max_results` 1–20 (default 5), `time_range`, `include_domains`, `exclude_domains` (`packages/plus/src/search/mcp.ts:74`) | `TAVILY_API_KEY is not set in the host environment` (`packages/plus/src/search/mcp.ts:11`), `Tavily search failed (<status>): …` (`packages/plus/src/search/mcp.ts:18`) |
-| `tavily_extract` | `urls` 1–20, `extract_depth` `basic`/`advanced`, `query`, `chunks_per_source` 1–5, `format` `markdown`/`text` (`packages/plus/src/search/mcp.ts:97`) | As `tavily_search` (`packages/plus/src/search/mcp.ts:9`) |
+| `tavily_fetch` | `urls` 1–20, `extract_depth` `basic`/`advanced`, `query`, `chunks_per_source` 1–5, `format` `markdown`/`text` (`packages/plus/src/search/mcp.ts:97`) | As `tavily_search` (`packages/plus/src/search/mcp.ts:9`) |
 
-Failed calls return a text result `{ error: … }` with `isError: true`
-(`packages/plus/src/search/mcp.ts:62`).
+A failed call is a tool error with the reason (a missing key names it); the
+stand-alone server returns a text result `{ error: … }` with `isError: true`.
 
 Keys are read at call time from
 `<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key` (file mode
@@ -609,11 +612,10 @@ directory is overridable through that same variable
 row, log or report (`packages/plus/src/search/keys.ts:22`, README
 `packages/plus/README.md:375`).
 
-The search server's tools are permission actions of the form
-`<server>_<tool>` (`packages/core/src/tool/mcp.ts:17`). Plus narrows the Tavily
-tools for implementers, reviewers and scouts with the action
-`search_tavily_*` (`packages/plus/src/instructions/team-policy-rows.ts:81`,
-`packages/plus/src/instructions/team-policy-rows.ts:166`).
+The searches ask core's `websearch` permission and `tavily_fetch` `webfetch`, as
+`web.opencode_search` and `web.opencode_fetch` do. The Basic team's member presets
+turn the Tavily tools off for implementers, reviewers and scouts
+(`packages/plus/src/instructions/presets.ts`).
 
 ## 7. Permission actions and effects
 
@@ -644,10 +646,9 @@ resolves disabled (`packages/plus/src/instructions/apply.ts:408`–
 | --- | --- | --- |
 | `instructions` | The `instructions` namespace | `packages/plus/src/tools.ts:62` |
 | `team.<name>` | One team tool; non-members get one `team.*` deny | `packages/plus/src/teams/tools.ts:484`, `packages/plus/src/instructions/apply.ts:434` |
-| `shell`, `read`, `edit`, `write`, `webfetch`, `glob`, `grep` | Curated tool rules carried by perm items | `packages/plus/src/instructions/tool-permissions.ts:110`–`packages/plus/src/instructions/tool-permissions.ts:211` |
+| `shell`, `read`, `edit`, `write`, `webfetch` (tool `web_opencode_fetch`), `glob`, `grep` | Curated tool rules carried by perm items | `packages/plus/src/instructions/tool-permissions.ts:110`–`packages/plus/src/instructions/tool-permissions.ts:211` |
 | `subagent`, `skill` | Id rules populated from discovered agents and skills | `packages/plus/src/instructions/tool-permissions.ts:226`–`packages/plus/src/instructions/tool-permissions.ts:234` |
 | `question`, `task`, `shell`, `external_directory`, `read`, `subagent` | Role-native answers installed by team policy rows | `packages/plus/src/teams/policy.ts:98`–`packages/plus/src/teams/policy.ts:113` |
-| `search_tavily_*` | The search server's Tavily tools | `packages/plus/src/instructions/team-policy-rows.ts:81` |
 
 A perm item's action is the tool's own `options.permission` when the registry
 provides it, falling back to the tool id; `edit`, `write` and `patch` share

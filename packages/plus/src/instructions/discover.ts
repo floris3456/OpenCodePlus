@@ -594,8 +594,14 @@ function toolOrigin(tool: Tool.Info & { readonly id: string }): ToolOrigin | und
 
 function toolGroup(origin: ToolOrigin | undefined): { group: Item["group"]; server?: string } {
   if (origin?.type === "mcp") return { group: "mcp", server: origin.name }
-  if (origin?.type === "plugin" && origin.name === "opencode.plus") return { group: "plus" }
+  if (origin?.type === "plugin" && isPlusPlugin(origin.name)) return { group: "plus" }
   return { group: "native" }
+}
+
+// OpenCodePlus's own plugins: Plus itself and the CLIProxyAPI catalogue
+// (`opencode.plus.cliproxyapi`) and Pacer (`opencode-pacer`) plugins that ship with it.
+function isPlusPlugin(name: string): boolean {
+  return name === "opencode.plus" || name.startsWith("opencode.plus.") || name === "opencode-pacer"
 }
 
 function toolItems(
@@ -1065,10 +1071,10 @@ function opencodePartItems(order: number): Item[] {
 
 // Tool-specific permission rules as view-time perm items: the curated
 // defaults plus one subagent rule per discovered agent id, the catalog rows,
-// and the user's RuleRecords as custom rows. Only native/plus, non-Code-Mode,
-// non-execute tools get curated rows: MCP resources are always "*" and Code
-// Mode denies are whole-tool, so per-resource rules there would never match
-// core evaluation.
+// and the user's RuleRecords as custom rows. Only the tools ruleTools names
+// get curated rows: MCP resources are always "*" and a Code Mode plugin tool
+// is checked whole, so per-resource rules there would never match core
+// evaluation.
 function permItems(input: {
   readonly tools: readonly (Tool.Info & { readonly id: string })[]
   readonly toolRows: readonly Item[]
@@ -1146,11 +1152,18 @@ function permItems(input: {
 }
 
 // The tools that get curated rule rows: native and Plus tools outside Code
-// Mode and execute.
+// Mode and execute, and OpenCode's own tools in Code Mode (web.opencode_fetch):
+// they check each resource themselves wherever they are called from, unlike a
+// plugin tool (its gate asks for "*") or an MCP tool.
 function ruleTools(toolRows: readonly Item[]): Set<string> {
   return new Set(
     toolRows
-      .filter((item) => (item.group === "native" || item.group === "plus") && item.codemode !== true && item.execute !== true)
+      .filter(
+        (item) =>
+          (item.group === "native" || item.group === "plus") &&
+          (item.codemode !== true || item.group === "native") &&
+          item.execute !== true,
+      )
       .map((item) => (item.id.startsWith("tool:") ? item.id.slice("tool:".length) : item.id))
       .filter((toolId) => toolId.length > 0),
   )

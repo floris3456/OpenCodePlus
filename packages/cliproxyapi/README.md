@@ -77,14 +77,16 @@ The bundled code stays in the executable when removed from the enabled plugins.
   USED), NEXT USE and FORCE USE, as structured output plus a short text. `model` defaults to
   the chat's model; `all` lists every account Pacer meters. Read-only: no model request.
 - Instructions UI, instructions storage and its compaction controls are unchanged.
-- **Web search** (`src/web.ts`): three tools in the `web` group, for every chat
-  model, on the `/connect` login's CPA with the models Pacer's catalogue lists.
-  They use the `websearch` permission, so the rules for web search apply to them.
+- **Web search** (`src/web.ts`): three tools in Code Mode's `web` namespace (beside
+  OpenCode's `web.opencode_search` and `web.opencode_fetch`), for every chat model,
+  on the `/connect` login's CPA with the models Pacer's catalogue lists. The searches
+  use the `websearch` permission and `chatgpt_fetch` the `webfetch` one, so the rules
+  for web search and fetch apply to them.
   A chat's searches run under its ID plus `-search`: they stay on one account, and
   Pacer never counts them as the chat's own requests.
-  - `web.chatgpt_search` and `web.chatgpt_open`: ChatGPT's search engine through
+  - `web.chatgpt_search` and `web.chatgpt_fetch`: ChatGPT's search engine through
     CPA's `/v1/alpha/search` (the endpoint Codex clients use) on a Codex account.
-    Search returns the found pages' text with their titles and URLs; open returns
+    Search returns the found pages' text with their titles and URLs; fetch returns
     a page from the top as numbered lines with its total line count. `tokens`
     caps the text (default 2000, about 8000 characters). The endpoint takes a
     start line but ignores it, so a larger cap is how to read further down. The

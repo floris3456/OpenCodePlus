@@ -122,7 +122,7 @@ Compaction, warming and the cold-cache list are model settings at any level; edi
 
 \`perm:<tool>:<rule>\` rows hang under each tool (\`find({ type: "rule", where: "tool:shell" })\`). \`set({ id, state: "off" })\` refuses what the rule matches for that agent and scrubs matching lines from its prompts; \`set({ id, message })\` sets the refusal the model reads; \`label\`, \`patterns\` and \`keywords\` rewrite the rule. \`create({ kind: "rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds one (no \`agent\`: a shared Defaults rule); only user-created rules delete. Definitions are per owner: editing an inherited one makes a local copy. \`edit\` is decided by \`set\`'s rows (Rows it may change, Override text, approval).
 
-Patterns are core wildcards, not regex: \`*\` is any run (including spaces), \`?\` one character. For shell the resource is the parsed command, so \`git *\` also matches a bare \`git\`; for file tools the path (\`*.env*\`, \`**/.git/**\`); for webfetch the URL; for subagent and skill the exact id. A \`team_*\` tool row that is off refuses the call.
+Patterns are core wildcards, not regex: \`*\` is any run (including spaces), \`?\` one character. For shell the resource is the parsed command, so \`git *\` also matches a bare \`git\`; for file tools the path (\`*.env*\`, \`**/.git/**\`); for opencode_fetch (permission \`webfetch\`) the URL; for subagent and skill the exact id. A \`team_*\` tool row that is off refuses the call.
 
 ## Review
 

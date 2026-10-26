@@ -16,7 +16,7 @@ function off(item: string, owner: Partial<CustomizationRecord> = {}): Customizat
   }
 }
 
-const tools = new Set(["shell", "edit", "webfetch"])
+const tools = new Set(["shell", "edit", "web_opencode_fetch"])
 const text = "Never `git rebase main`. Edits src/foo.c. See https://docs.example.org/guide."
 
 test("a switched-off generated rule comes back with the patterns it had, at its own owner", () => {
@@ -24,7 +24,7 @@ test("a switched-off generated rule comes back with the patterns it had, at its 
     records: [
       off("perm:shell:git-rebase"),
       off("perm:edit:src-foo-c", { level: "global", agent: null, catalogue: "teams" }),
-      off("perm:webfetch:docs-example-org", { team: { level: "project", team: "Basic" }, agent: "Planner" }),
+      off("perm:web_opencode_fetch:docs-example-org", { team: { level: "project", team: "Basic" }, agent: "Planner" }),
     ],
     rows: [],
     tools,
@@ -57,7 +57,7 @@ test("a switched-off generated rule comes back with the patterns it had, at its 
       level: "project",
       agent: "Planner",
       team: { level: "project", team: "Basic" },
-      tool: "webfetch",
+      tool: "web_opencode_fetch",
       id: "docs-example-org",
       label: "docs.example.org",
       patterns: ["*docs.example.org*"],

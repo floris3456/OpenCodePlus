@@ -232,8 +232,8 @@ What the Basic member presets set (on = permitted):
 | paths outside the checkout (read/edit Where, `external_directory`) | on | on | off | off | off | on |
 | `subagent` tool | off | off | off | off | off | on |
 | read or grep secret files ¹ | off | off | off | off | off | on |
-| Tavily search and extract tools | on | off | off | off | off | on |
-| Code Mode (`execute`; the search tools are sent direct instead) | off | off | off | off | off | on |
+| Tavily search and fetch tools | on | off | off | off | off | on |
+| Code Mode (`execute`; the Tavily, Exa and OpenCode fetch tools are sent direct instead) | off | off | off | off | off | on |
 | edit files | plan files only ² | plan files only ² | yes | no | no | yes |
 | delegates to | orchestrator | orchestrator, implementer, reviewer, scout | — | — | — | every other member |
 | asks you before each delegation (Approval) | yes | no | no | no | no | no |
@@ -914,21 +914,31 @@ bun test test/route.test.tsx test/instructions-panes.test.tsx test/instructions-
 bun run typecheck
 ```
 
-## Search MCP server
+## Web tools
 
-Plus ships a built-in local MCP server providing code and web search tools (`src/search/mcp.ts`, `src/search/bin.ts`, `src/search/register.ts`):
+Every web tool sits in Code Mode's `web` namespace (`tools.web.*`), whatever provides it:
 
-- **Activation**: If the host has no MCP server named `search`, Plus registers its local stdio server command (`[process.execPath, <path to bin.ts|bin.js>]`) and reloads MCP. If an MCP server named `search` is already present, Plus leaves it alone and logs `search MCP already configured; not replacing`. The registration disposes cleanly on deactivation.
-- **Tools**:
-  - `exa_code_search`: code search over GitHub repos, docs, Stack Overflow, and blogs via Exa.
-  - `tavily_search`: web search via Tavily.
-  - `tavily_extract`: clean web content extraction from URLs via Tavily.
-  Under the `search` server name, core exposes them as `search_exa_code_search`, `search_tavily_search`, and `search_tavily_extract`.
-- **Keys & authentication**: Keys are read at call time from key files under the Plus data directory (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, file mode `0600` strictly enforced, value trimmed), falling back to `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment. No key is ever written to a config file, a row, a log, a report, or a commit. If a key file has insecure permissions (mode not `0600`), the tool call returns an error. A missing key returns a tool error result `{ error: "<KEY> is not set in the host environment" }` with `isError: true`.
+| Tool | From | Permission |
+| --- | --- | --- |
+| `web.opencode_search` (was `websearch`) | OpenCode, through the chosen web search integration | `websearch` |
+| `web.opencode_fetch` (was `webfetch`) | OpenCode | `webfetch` |
+| `web.tavily_search`, `web.exa_code_search` | OpenCodePlus (`src/search/register.ts`) | `websearch` |
+| `web.tavily_fetch` (was `tavily_extract`) | OpenCodePlus | `webfetch` |
+| `web.chatgpt_search`, `web.claude_search` | CLIProxyAPI (Pacer) | `websearch` |
+| `web.chatgpt_fetch` (was `chatgpt_open`) | CLIProxyAPI (Pacer) | `webfetch` |
+
+In Code Mode a script can run several searches at once, fetch the pages it needs and keep only what it uses, so a whole page reaches the context only when it is returned. `opencode_search` and `opencode_fetch` are pinned: their signatures are always in the catalog. An agent without Code Mode (`execute` off) has none of them unless a tool's **Exposure** row sends it direct; the Basic team's members do that for `tavily_search`, `tavily_fetch`, `exa_code_search` and `opencode_fetch`. The Instructions tree lists `opencode_*` under Tools › OpenCode › Code Mode › web and the rest under Tools › OpenCodePlus › Code Mode › web.
+
+Stored rows, rules, `requires` lists and markers that name a tool by its old id (`webfetch`, `websearch`, `search_tavily_search`, `search_tavily_extract`, `search_exa_code_search`, `web_chatgpt_open`) follow it to its new one when the store loads (`src/instructions/tool-renames.ts`).
+
+### Tavily and Exa
+
+- **Tools**: `web.exa_code_search` (code search over GitHub repos, docs, Stack Overflow and blogs via Exa), `web.tavily_search` (web search via Tavily) and `web.tavily_fetch` (clean page content via Tavily's extract endpoint), registered by Plus with origin `opencode.plus`. They were the tools of a `search` MCP server Plus added until 1.3.29; Plus now leaves out a `search` server it generated (its command names `search/bin` or its environment carries `OPENCODEPLUS_SEARCH_KEYS_DIR`) and keeps a `search` server of your own. `opencodeplus search-mcp` still runs the stand-alone server for other MCP clients.
+- **Keys & authentication**: Keys are read at call time from key files under the Plus data directory (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, or `OPENCODEPLUS_SEARCH_KEYS_DIR`; file mode `0600` strictly enforced, value trimmed), falling back to `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment. No key is ever written to a config file, a row, a log, a report, or a commit. A key file with another mode, or a missing key (`<KEY> is not set in the host environment`), makes the call fail with that message.
   For `bin/opencodeplus`, place the key files in `<XDG_DATA_HOME>/opencode/opencodeplus/search/` (e.g. `$HOME/.local/share/opencode/opencodeplus/search/exa.key` and `tavily.key`, or `run/plus/data/opencode/opencodeplus/search/{exa,tavily}.key` if `XDG_DATA_HOME` is set to `run/plus/data`) and ensure permissions are restricted (`chmod 600 <file>`).
-- **Query & filtering**: `instructions.find where:"server:<name>"` (and TUI filter `server:<name>`) matches both the `mcp:<name>` server configuration row and all tool rows exposed by that server (for example, `instructions.find where:"server:search"` returns the `mcp:search` server row alongside its tool rows).
-- **Team prompts & policy**: The Tools and rules row names `search_exa_code_search`, `search_tavily_search` and `search_tavily_extract`, each in a section that depends on that tool, so an agent reads the line exactly while it has the tool. The `perm:search:team-tavily` policy row disables Tavily search for implementer, reviewer, and scout roles while keeping code search enabled; it lists under `search_tavily_search` → Permissions → `Access`, beside the search tools' own rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
+- **Query & filtering**: `instructions.find where:"server:<name>"` (and TUI filter `server:<name>`) matches both the `mcp:<name>` server configuration row and all tool rows exposed by that server.
+- **Team prompts & policy**: The Tools and rules row names `web.exa_code_search`, `web.tavily_search` and `web.tavily_fetch`, each in a section that depends on that tool, so an agent reads the line exactly while it has the tool. The Basic team's member presets turn Tavily off for implementer, reviewer and scout while keeping code search on; each tool lists its own Permissions rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
 
-## Web search through CLIProxyAPI
+### Through CLIProxyAPI
 
-With CLIProxyAPI connected (`/connect`), the Pacer adapter adds `web.chatgpt_search`, `web.chatgpt_open` and `web.claude_search`: ChatGPT's search engine and Claude's server-side web search, on the CPA's own Codex and Claude accounts, for every chat model and without a Tavily or Exa key. They follow the `websearch` permission. Details: `packages/cliproxyapi/README.md`, "Web search".
+With CLIProxyAPI connected (`/connect`), the Pacer adapter adds `web.chatgpt_search`, `web.chatgpt_fetch` and `web.claude_search`: ChatGPT's search engine and Claude's server-side web search, on the CPA's own Codex and Claude accounts, for every chat model and without a Tavily or Exa key. Details: `packages/cliproxyapi/README.md`, "Web search".

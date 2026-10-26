@@ -9,7 +9,12 @@ import { Permission } from "../../permission.js"
 import { convertHTMLToMarkdown, MAX_MARKDOWN_BYTES } from "../html-markdown.js"
 import { collectBoundedResponseBody } from "../http-body.js"
 
-export const name = "webfetch"
+/** Code Mode `tools.web.opencode_fetch`; the tool id is `web_opencode_fetch`. */
+export const name = "opencode_fetch"
+export const namespace = "web"
+export const id = "web_opencode_fetch"
+/** The permission action keeps the tool's former name, so rules and saved answers still apply. */
+export const permission = "webfetch"
 export const MAX_RESPONSE_BYTES = MAX_MARKDOWN_BYTES
 export const DEFAULT_TIMEOUT_SECONDS = 30
 export const MAX_TIMEOUT_SECONDS = 120
@@ -104,13 +109,16 @@ export const Plugin = {
   id: "opencode.tool.webfetch",
   effect: Effect.fn("WebFetchTool.Plugin")(function* (ctx: Context) {
     const http = yield* HttpClient.HttpClient
-    const permission = yield* Permission.Service
+    const permissions = yield* Permission.Service
 
     yield* ctx.tool
-      .transform((editor) =>
+      .transform((editor) => {
+        // The namespace every web tool shares: OpenCode's own search and fetch, and the
+        // engines plugins add (ChatGPT, Claude, Tavily, Exa).
+        editor.namespace({ name: namespace, description: "Search the web and read web pages." })
         editor.add({
           name,
-          options: { codemode: false },
+          options: { namespace, permission, pinned: true },
           description,
           input: Input,
           output: Output,
@@ -121,8 +129,8 @@ export const Plugin = {
                 catch: (error) => error,
               })
 
-              yield* permission.assert({
-                action: name,
+              yield* permissions.assert({
+                action: permission,
                 resources: [input.url],
                 save: ["*"],
                 metadata: input,
@@ -161,8 +169,8 @@ export const Plugin = {
               }
               return { output: result, content: result.output, metadata: { contentType: result.contentType } }
             }).pipe(Effect.mapError((error) => new ToolFailure({ message: `Unable to fetch ${input.url}`, error }))),
-        }),
-      )
+        })
+      })
       .pipe(Effect.orDie)
   }),
 }

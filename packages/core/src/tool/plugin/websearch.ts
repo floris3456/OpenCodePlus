@@ -9,7 +9,12 @@ import { Form } from "../../form.js"
 import { Permission } from "../../permission.js"
 import { WebSearch } from "../../websearch.js"
 
-export const name = "websearch"
+/** Code Mode `tools.web.opencode_search`; the tool id is `web_opencode_search`. */
+export const name = "opencode_search"
+export const namespace = "web"
+export const id = "web_opencode_search"
+/** The permission action keeps the tool's former name, so rules and saved answers still apply. */
+export const permission = "websearch"
 export const NO_RESULTS = "No search results found. Please try a different query."
 const providerSelectionLock = Semaphore.makeUnsafe(1)
 const httpErrors = new Map([
@@ -32,7 +37,7 @@ const Output = Schema.Struct({
 export const Plugin = {
   id: "opencode.tool.websearch",
   effect: Effect.fn("WebSearchTool.Plugin")(function* (ctx: Context) {
-    const permission = yield* Permission.Service
+    const permissions = yield* Permission.Service
     const forms = yield* Form.Service
     const websearch = yield* WebSearch.Service
 
@@ -40,14 +45,14 @@ export const Plugin = {
       .transform((editor) =>
         editor.add({
           name,
-          options: { codemode: false },
+          options: { namespace, permission, pinned: true },
           description,
           input: Input,
           output: Output,
           execute: (input, context) =>
             Effect.gen(function* () {
-              yield* permission.assert({
-                action: name,
+              yield* permissions.assert({
+                action: permission,
                 resources: [input.query],
                 save: ["*"],
                 metadata: input,
@@ -165,6 +170,8 @@ export const Plugin = {
             }).pipe(
               Effect.mapError((error) => {
                 const fallback = `Unable to search the web for ${input.query}`
+                if (Schema.is(WebSearch.DisabledError)(error))
+                  return new ToolFailure({ message: "Web search is disabled here.", error })
                 if (!Schema.is(WebSearch.RequestError)(error)) return new ToolFailure({ message: fallback, error })
                 const status = HttpClientError.isHttpClientError(error.cause) ? error.cause.response?.status : undefined
                 return new ToolFailure({
@@ -187,7 +194,8 @@ export const Plugin = {
           Effect.as(false),
           Effect.catchTag("WebSearch.Disabled", () => Effect.succeed(true)),
         )
-        if (disabled) delete event.tools[name]
+        // Only a direct tool can leave the request; in Code Mode a call answers that search is disabled.
+        if (disabled) delete event.tools[id]
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)

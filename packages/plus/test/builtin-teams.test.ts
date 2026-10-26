@@ -178,7 +178,7 @@ test("no built-in prompt names a tool that left the namespace", () => {
 test("search tools are named in Tools and rules, each in a section that depends on it", () => {
   const team = builtinTeams.find((entry) => entry.name === "basic")
   if (team === undefined) throw new Error("missing basic")
-  for (const tool of ["search_exa_code_search", "search_tavily_search", "search_tavily_extract"]) {
+  for (const tool of ["web_exa_code_search", "web_tavily_search", "web_tavily_fetch"]) {
     // The innermost section that names it (the whole-row heading names every one).
     const section = gatedSections(guidanceContent)
       .filter((entry) => guidanceContent.slice(entry.start, entry.end).includes(tool))
@@ -218,7 +218,7 @@ test("every Basic role names only tools its member preset ships on, and forbids 
       expect([member.id, /<!-- requires: [^>]*\btool:shell\b[^>]*-->/.test(section)]).toEqual([member.id, true])
     // Only the build seat, the user's own chat, keeps the configuration, release,
     // monitor, browser and session tools and their teaching rows.
-    const seatOnly = ["tool:instructions_set", "tool:release_request", "tool:monitor_query", "tool:browser_navigate", "tool:opencode_session_move", "system:opencodeplus", "skill:instructions-tools", "skill:opencodeplus-release", "skill:report", "tool:websearch"]
+    const seatOnly = ["tool:instructions_set", "tool:release_request", "tool:monitor_query", "tool:browser_navigate", "tool:opencode_session_move", "system:opencodeplus", "skill:instructions-tools", "skill:opencodeplus-release", "skill:report", "tool:web_opencode_search"]
     const expected = member.id === "build-seat" ? "on" : "off"
     expect([member.id, seatOnly.filter((id) => states[id] !== expected)]).toEqual([member.id, []])
   }

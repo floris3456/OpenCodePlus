@@ -1227,7 +1227,7 @@ test("discovery lists the shipped rules, never the commands, paths and sites a p
   const discovered = await discover({
     ctx: fullContext({
       directory,
-      tools: [nativeTool("shell", shellDesc), nativeTool("edit", "Edit files like src/app.py."), nativeTool("webfetch", "Fetch https://example.com/x.")],
+      tools: [nativeTool("shell", shellDesc), nativeTool("edit", "Edit files like src/app.py."), nativeTool("web_opencode_fetch", "Fetch https://example.com/x.")],
       skills: [skill("notes", "Use `rm -rf /tmp/work` to clean.", path.join(directory, "skills", "notes", "SKILL.md"))],
     }),
     records: [],
@@ -1235,12 +1235,46 @@ test("discovery lists the shipped rules, never the commands, paths and sites a p
     activeBase: noBase,
   })
   // Catalog rows carry "<category>.<row>" ids; every other rule row is a shipped one.
-  const rules = discovered.items.filter((item) => item.kind === "perm" && item.ruleId?.includes(".") === false && ["shell", "edit", "webfetch"].includes(item.permTool ?? ""))
-  const shipped = curatedRules.filter((rule) => ["shell", "edit", "webfetch"].includes(rule.tool)).map((rule) => `perm:${rule.tool}:${rule.id}`)
+  const rules = discovered.items.filter((item) => item.kind === "perm" && item.ruleId?.includes(".") === false && ["shell", "edit", "web_opencode_fetch"].includes(item.permTool ?? ""))
+  const shipped = curatedRules.filter((rule) => ["shell", "edit", "web_opencode_fetch"].includes(rule.tool)).map((rule) => `perm:${rule.tool}:${rule.id}`)
   expect(rules.map((item) => item.id).toSorted()).toEqual(shipped.toSorted())
   expect(rules.find((item) => item.id === "perm:shell:git-push")).toMatchObject({ patterns: ["git push *"], keywords: ["git push"], category: "commands" })
   expect(rules.find((item) => item.id === "perm:edit:package-json")).toMatchObject({ patterns: ["package.json", "*/package.json"], alsoUnder: ["patch"] })
   expect(discovered.minedRules).toBeUndefined()
+})
+
+test("OpenCodePlus's own plugins list under Plus, and OpenCode's fetch keeps its Sites rows in Code Mode", async () => {
+  const directory = await tempDir("plus-discover-")
+  const codeMode = (id: string, namespace: string, origin?: { type: "plugin"; name: string }) => ({
+    ...nativeTool(id, `${id}.`),
+    name: id.slice(namespace.length + 1),
+    options: { namespace },
+    ...(origin === undefined ? {} : { origin }),
+  })
+  const discovered = await discover({
+    ctx: fullContext({
+      directory,
+      tools: [
+        codeMode("web_opencode_fetch", "web"),
+        codeMode("web_chatgpt_search", "web", { type: "plugin", name: "opencode-pacer" }),
+        codeMode("pacer_usage", "pacer", { type: "plugin", name: "opencode-pacer" }),
+        codeMode("image_generate", "image", { type: "plugin", name: "opencode.plus.cliproxyapi" }),
+        codeMode("web_tavily_search", "web", { type: "plugin", name: "opencode.plus" }),
+        codeMode("acme_lookup", "acme", { type: "plugin", name: "acme" }),
+      ],
+    }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  const group = (id: string) => discovered.items.find((item) => item.id === `tool:${id}`)?.group
+  expect(["web_chatgpt_search", "pacer_usage", "image_generate", "web_tavily_search"].map(group)).toEqual(["plus", "plus", "plus", "plus"])
+  expect([group("web_opencode_fetch"), group("acme_lookup")]).toEqual(["native", "native"])
+  // OpenCode's fetch checks each URL itself, in Code Mode too: its shipped Sites rows stay.
+  const sites = discovered.items.filter((item) => item.kind === "perm" && item.permTool === "web_opencode_fetch" && item.category === "sites")
+  expect(sites.map((item) => item.id).toSorted()).toEqual(
+    curatedRules.filter((rule) => rule.tool === "web_opencode_fetch").map((rule) => `perm:web_opencode_fetch:${rule.id}`).toSorted(),
+  )
 })
 
 test("a generated rule someone switched off is kept as their own rule and still refuses", async () => {

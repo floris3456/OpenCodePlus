@@ -131,9 +131,15 @@ authority, so use narrow rules in [Permissions](/permissions).
 
 ## Web
 
+The web tools are in Code Mode's `web` namespace: an agent calls them from
+`execute`, so one script can run several searches, fetch the pages it needs and
+return only what it uses. Both are pinned, so their signatures are always in the
+catalog. An agent without Code Mode does not get them; in OpenCodePlus a tool's
+Exposure row can send one direct instead.
+
 ### Webfetch
 
-`webfetch` retrieves one HTTP or HTTPS URL as `markdown`, `text`, or `html`.
+`web.opencode_fetch` (formerly the `webfetch` tool) retrieves one HTTP or HTTPS URL as `markdown`, `text`, or `html`.
 Markdown is the default; `timeout` accepts up to 120 seconds.
 
 ```text
@@ -147,8 +153,8 @@ URL as its resource.
 
 ### Websearch
 
-`websearch` searches the selected integration for current information. Its
-input is a search `query`.
+`web.opencode_search` (formerly the `websearch` tool) searches the selected
+integration for current information. Its input is a search `query`.
 
 ```text
 Search the web for the latest Bun release notes.

@@ -132,9 +132,9 @@ const rawRules: readonly RawRule[] = [
   { tool: "read", id: "package-json", label: "package.json", patterns: ["package.json", "*/package.json"], message: "package.json cannot be read here" },
   { tool: "read", id: "git", label: "Git internals", patterns: [".git/*", "**/.git/**"], message: "git internals cannot be read here" },
   { tool: "read", id: "ssh", label: "SSH keys", patterns: ["*/.ssh/*", "*/.ssh", ".ssh/*", ".ssh"], message: "ssh keys cannot be read here" },
-  { tool: "webfetch", id: "http", label: "Plain HTTP", patterns: ["http://*"], message: "plain HTTP fetches are not allowed here" },
-  { tool: "webfetch", id: "github", label: "GitHub", patterns: ["*github.com*"], message: "github.com fetches are not allowed here" },
-  { tool: "webfetch", id: "localhost", label: "Localhost", patterns: ["*localhost*"], message: "localhost fetches are not allowed here" },
+  { tool: "web_opencode_fetch", id: "http", label: "Plain HTTP", patterns: ["http://*"], message: "plain HTTP fetches are not allowed here" },
+  { tool: "web_opencode_fetch", id: "github", label: "GitHub", patterns: ["*github.com*"], message: "github.com fetches are not allowed here" },
+  { tool: "web_opencode_fetch", id: "localhost", label: "Localhost", patterns: ["*localhost*"], message: "localhost fetches are not allowed here" },
   // Glob/grep permission resources are the user's search pattern, NOT the
   // search path (core/src/tool/plugin/grep.ts and glob.ts assert
   // `resources: [input.pattern]`). PATH-scoped restriction is therefore NOT
@@ -192,11 +192,22 @@ export function curatedRuleMessage(tool: string, ruleId: string): string | undef
 // write, and patch all register `permission: "edit"`); this map is the
 // fallback for items that predate that seam and for tools without one. Edit,
 // write, and patch share core's `edit` action (core/src/tool/plugin/edit.ts,
-// write.ts, and patch.ts assert `action: "edit"`). Every other tool asserts
-// its own id.
+// write.ts, and patch.ts assert `action: "edit"`), and the web tools ask
+// core's `webfetch` or `websearch`. Every other tool asserts its own id.
 export function actionForToolId(toolId: string): string {
   if (toolId === "write" || toolId === "patch" || toolId === "edit") return "edit"
-  return toolId
+  return webActions[toolId] ?? toolId
+}
+
+const webActions: Readonly<Record<string, string>> = {
+  web_opencode_fetch: "webfetch",
+  web_chatgpt_fetch: "webfetch",
+  web_tavily_fetch: "webfetch",
+  web_opencode_search: "websearch",
+  web_chatgpt_search: "websearch",
+  web_claude_search: "websearch",
+  web_tavily_search: "websearch",
+  web_exa_code_search: "websearch",
 }
 
 // Line-level whole-word scrub: drop every line containing any keyword as a

@@ -35,7 +35,7 @@ const searchInput = {
 }
 
 const searchTool: Tool.Info & { readonly id: string } = {
-  id: "search_tavily_search",
+  id: "web_tavily_search",
   name: "tavily_search",
   description: "Search the web",
   input: searchInput as never,
@@ -272,10 +272,10 @@ test("discovery lists every tool's parameters as rows of that tool", async () =>
   expect(params.map((item) => [item.id, item.paramType, item.required === true, item.text])).toEqual([
     ["param:reader:path", "string", true, "The file to read"],
     ["param:reader:offset", "number | null", false, "First line to read"],
-    ["param:search_tavily_search:query", "string", true, "What to search for"],
-    ["param:search_tavily_search:include_domains", "string[]", false, "Only these domains"],
-    ["param:search_tavily_search:depth", `"basic" | "advanced"`, false, "How deep to search"],
-    ["param:search_tavily_search:limit", "integer | null", false, ""],
+    ["param:web_tavily_search:query", "string", true, "What to search for"],
+    ["param:web_tavily_search:include_domains", "string[]", false, "Only these domains"],
+    ["param:web_tavily_search:depth", `"basic" | "advanced"`, false, "How deep to search"],
+    ["param:web_tavily_search:limit", "integer | null", false, ""],
   ])
 })
 
@@ -291,7 +291,7 @@ test("an edited description and a switched-off parameter reach the native defini
     record("param:reader:path", { text: "Absolute path of the file" }, "The file to read"),
     record("param:reader:offset", { state: "off" }, "First line to read"),
     // A required parameter stays even when a record says off.
-    record("param:search_tavily_search:query", { state: "off" }, "What to search for"),
+    record("param:web_tavily_search:query", { state: "off" }, "What to search for"),
   ])
   expect(result.tools.find((plan) => plan.tool === "reader")).toEqual({
     agent: "alpha",
@@ -321,8 +321,8 @@ test("an edited description and a switched-off parameter reach the native defini
 
 test("a Code Mode tool's edited parameters reach its catalog entry by replacing its input", async () => {
   const { hooks } = await applied([
-    record("param:search_tavily_search:query", { text: "Search terms" }, "What to search for"),
-    record("param:search_tavily_search:include_domains", { state: "off" }, "Only these domains"),
+    record("param:web_tavily_search:query", { text: "Search terms" }, "What to search for"),
+    record("param:web_tavily_search:include_domains", { state: "off" }, "Only these domains"),
   ])
   const run = hooks.catalog[0]
   if (run === undefined) throw new Error("missing catalog hook")

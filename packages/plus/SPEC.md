@@ -477,7 +477,7 @@ Mode and MCP included, expands into Description and Permissions.
   (owner-less) row lists only rows with no `agents`, an owner's row the rows
   that apply to it. A row lists under `hostOf(permTool)` — its own tool, except
   `external_directory` (under read), `task` (under subagent) and `search`
-  (under search_tavily_search) — and a row whose category carries `alsoUnder`
+  (under web_tavily_search) — and a row whose category carries `alsoUnder`
   lists again under each of those tools with the row id
   `item:<level>:<owner>:perm:<tool>:<rule>@<alias>` (edit's Protected files and
   Where under write and patch): one permission, one address and one record, a
@@ -1786,8 +1786,8 @@ Ten names are **not** in the namespace, not in any team tool row and not named
 by any built-in prompt: `wait` (a settling child wakes its parent; see
 Waiting on children below), `review`, `shutdown_request`, `resume`, `prepare`,
 `plan_handoff`, `metrics`, `exa_code_search`, `tavily_search` and
-`tavily_extract`. Web and code search are not team tools: they are delivered by
-the `search` MCP server and narrowed per role by a policy row (below).
+`tavily_extract`. Web and code search are not team tools: they are the `web`
+namespace's Tavily and Exa tools, narrowed per role by the member presets (below).
 
 `diff` is a read-only `git diff` of a run the caller can see — its own run or
 one of its children. Omit `run` for the caller's own run. `from` is `base` (the default), `parent` (the parent
@@ -1870,7 +1870,7 @@ refused, a requirement demands nothing, a bound is absent.
 | planner edits plan files only | edit → Files it may change: `allowed.*` "Every other file" (fallback) and `allowed.plans` (allow-list) for edit, write and patch | tool hook |
 | planner asks before delegating | `perm:team_delegate:approval.every` | tool hook |
 | orchestrator shell changes | shell curated rows `git-push`, `git-commit`, `git-rewrite`, `rm` and catalog Commands `git-changes`, `git-refs`, `file-writes` | core rules |
-| Tavily narrowing | `tool:search_tavily_search`, `tool:search_tavily_extract` | tool plans |
+| Tavily narrowing | `tool:web_tavily_search`, `tool:web_tavily_fetch` | tool plans |
 | grep secret files | grep → Files rows (as read's) and Include filters `env`, `keys` | tool hook |
 
 What the Basic member presets set (every other row is the catalogue's shipped value):
@@ -2054,7 +2054,7 @@ Tool permission rules carry the same field:
 
 There is no `Policy` group any more. Each row lists under the tool it governs,
 in that tool's Permissions (`hostOf`: external directories under read, task
-under subagent, the `search` row under search_tavily_search): Delegate to,
+under subagent, the `search` row under web_tavily_search): Delegate to,
 Runs, Access and Team role come first, then the tool's other categories (tree
 shape, above). Only a role row whose tool this owner's inventory lacks goes to
 `Other permissions` (`group:<level>:<team>/:<member>:tools:policy`, the old
@@ -2629,7 +2629,7 @@ path is skipped.
 - Rows come from four sources. The per-tool catalog (`permission-catalog.ts`,
   below) gives every tool, Code Mode and MCP included, its categories of
   rows. Team rows come from `team-policy-rows.ts` (Team rules are instructions
-  rows). The curated registry (shell, edit, write, read, webfetch, glob, grep
+  rows). The curated registry (shell, edit, write, read, web_opencode_fetch, glob, grep
   entries, plus one `idRules` row per discovered agent id for `subagent`;
   skills are not rule rows — each skill item is its own switch, listed under
   the skill tool's Permissions › Skills category) lists for native and Plus
@@ -2861,8 +2861,8 @@ the shipped limits):
 | `question` | Parameters (`questions[].multiple`) · Limits (Questions per call 4, refuse) · When (approval: In delegated team runs, off) |
 | `subagent` | Agents (one row per agent id) · Team members (input `agent`, off) · Parameters (`background`, `sessionID`) · Approval |
 | `skill` | Skills (one row per skill id) · Approval |
-| `webfetch` | Sites (curated) · More sites (rule: private networks, cloud metadata, paste and capture sites) · Formats (value `format`) · Limits (Longest timeout 60 s, clamp) · Approval |
-| `websearch` | Queries (rule: keys and tokens, local paths) · Approval |
+| `web_opencode_fetch` | Sites (curated) · More sites (rule: private networks, cloud metadata, paste and capture sites) · Formats (value `format`) · Limits (Longest timeout 60 s, clamp) · Approval |
+| `web_opencode_search` | Queries (rule: keys and tokens, local paths) · Approval |
 | `execute` | Limits (Tool calls per run 50, refuse: Code Mode inner calls per `execute` call) |
 | `opencode_session_move` | Sessions (param `sessionID`: other sessions) · Destinations (input `directory`: absolute paths, `../`) |
 | `opencode_session_rename` | Sessions (param `sessionID`) · Limits (Longest title 80 characters, refuse) |
@@ -2883,11 +2883,11 @@ the shipped limits):
 | `instructions_create` | Kinds (value `kind`) · Levels (value `level`) · Approval |
 | `release_request` | Kinds (value `kind`: build, promote) · Targets (value `artifact.target`) · Parameters (`approvalRef: null`) · Approval |
 | `release_status` | Approval |
-| `search_tavily_search` | Queries (input `query`) · Search depth (value `search_depth`) · Topics (value `topic`) · Limits (Results per search 10, clamp) · Approval |
-| `search_tavily_extract` | Sites (input `urls[]`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Extract depth (value `extract_depth`) · Limits (Pages per call 5, refuse) · Approval |
-| `search_exa_code_search` | Queries (input `query`) · Search types (value `type`) · Parameters (`contents.text`, `contents.summary`) · Limits (Results per search 10, clamp) · Approval |
+| `web_tavily_search` | Queries (input `query`) · Search depth (value `search_depth`) · Topics (value `topic`) · Limits (Results per search 10, clamp) · Approval |
+| `web_tavily_fetch` | Sites (input `urls[]`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Extract depth (value `extract_depth`) · Limits (Pages per call 5, refuse) · Approval |
+| `web_exa_code_search` | Queries (input `query`) · Search types (value `type`) · Parameters (`contents.text`, `contents.summary`) · Limits (Results per search 10, clamp) · Approval |
 | `web_chatgpt_search`, `web_claude_search` (CLIProxyAPI) | Queries (input `query`; `question` for Claude) · Approval |
-| `web_chatgpt_open` (CLIProxyAPI) | Sites (input `url`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Approval |
+| `web_chatgpt_fetch` (CLIProxyAPI) | Sites (input `url`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) · Approval |
 | `browser_navigate`, `browser_tabs_open` | Sites (input `url`, fallback: localhost, private networks, cloud metadata, plain HTTP, paste sites) |
 | `browser_tabs_list` | Use (List this session's tabs) |
 | every other `browser_*` | Sites (the tab's current page) and, by tool: `files_upload`/`files_drop` Files (input `paths[]`, fallback: secret files) · Limits (Files per call 2, refuse); `network_get` Parameters (`includeBody`) · Limits (Largest body 5000 characters, clamp); `dialog` Actions (value `action`: get, accept, dismiss); `evaluate` Parameters (`frameID`) · Limits (Longest script 4000 characters, refuse); `screenshot` Parameters (`fullPage`); `fill`/`fill_form` Limits (Longest text typed 2000 characters, refuse); `trace_start` Limits (Longest trace 10000 ms, clamp) |
@@ -3178,23 +3178,26 @@ export function query(input: MemoInput, options?: QueryOptions, memo?: Memo): { 
 | `instruction.disabled` | `create kind:"instruction"` is refused pending the Context catalogue; OpenCode applies AGENTS.md files |
 | `view.unsupported` | that view needs another id kind (`assembled` needs an agent row) |
 
-## Search MCP server (`src/search/mcp.ts`, `src/search/bin.ts`, `src/search/register.ts`)
+## Tavily and Exa web tools (`src/search/register.ts`, `src/search/api.ts`)
 
-Plus ships a built-in search MCP server providing Exa code search and Tavily web search and extraction.
+Plus registers Exa code search and Tavily search and page fetch as built-in Code
+Mode tools in core's `web` namespace (origin `opencode.plus`): `tools.web.exa_code_search`,
+`tools.web.tavily_search` and `tools.web.tavily_fetch` (tool ids `web_exa_code_search`,
+`web_tavily_search`, `web_tavily_fetch`). The searches ask core's `websearch`
+permission, the fetch `webfetch`, like `web.opencode_search` and `web.opencode_fetch`.
+They install with the rest of the tooling and dispose on deactivation.
 
-### Registration and lifecycle
-
-On activation (`activate` / `ensureTooling`), Plus reads `ctx.mcp.transform` to check for an existing MCP server named `search`:
-- When absent (`editor.get("search") === undefined`), Plus registers its search server:
-  `editor.set("search", new Mcp.LocalConfig({ type: "local", command: [process.execPath, <path to bin.ts|bin.js>], environment: { OPENCODEPLUS_SEARCH_KEYS_DIR: <XDG_DATA_HOME>/opencode/opencodeplus/search } }))`
-  and reloads MCP via `ctx.mcp.reload()`. The registration is tracked and disposes cleanly on deactivation.
-- When present, Plus leaves the existing configuration untouched and logs `search MCP already configured; not replacing`.
-
-The server entrypoint is `packages/plus/src/search/bin.ts`, which runs over stdio and gracefully exits on `SIGTERM`, `SIGINT`, or stdin `end`.
+Until 1.3.29 these were the tools of a `search` MCP server Plus added at
+activation. `retireSearchMcp` now leaves out a `search` server Plus generated
+(command `[…, …/search/bin.ts|js]`, or environment carrying
+`OPENCODEPLUS_SEARCH_KEYS_DIR`) and reloads MCP; a `search` server of the user's own
+is untouched. `opencodeplus search-mcp` (`src/search/mcp.ts`, `bin.ts`) still serves
+the same tools over stdio for other MCP clients, as `exa_code_search`,
+`tavily_search` and `tavily_extract`.
 
 ### Tools and schemas
 
-The search server exposes three tools with the identical schemas used by the build seat:
+The three tools take these inputs (the stand-alone server's are the same):
 
 1. `exa_code_search`
    - Description: Search billions of GitHub repos, docs, Stack Overflow, and dev blogs for real, working code examples via Exa.
@@ -3217,7 +3220,7 @@ The search server exposes three tools with the identical schemas used by the bui
      - `time_range`: optional enum `["day", "week", "month", "year"]`
      - `include_domains`: optional array of strings
      - `exclude_domains`: optional array of strings
-3. `tavily_extract`
+3. `tavily_fetch` (`tavily_extract` on the stand-alone server)
    - Description: Extract clean content from up to 20 URLs via Tavily.
    - Input schema:
      - `urls`: array of URL strings, min 1, max 20
@@ -3226,10 +3229,10 @@ The search server exposes three tools with the identical schemas used by the bui
      - `chunks_per_source`: optional integer, min 1, max 5
      - `format`: enum `["markdown", "text"]`, default `"markdown"`
 
-When registered under the `search` server name, core exposes them to models with the prefixed IDs:
-- `search_exa_code_search`
-- `search_tavily_search`
-- `search_tavily_extract`
+Stored rows that name the old MCP ids (`search_exa_code_search`,
+`search_tavily_search`, `search_tavily_extract`) follow the tools to their new
+ids when the store loads (`instructions/tool-renames.ts`), as do `webfetch`,
+`websearch` and `web_chatgpt_open`.
 
 ### Authentication and error handling
 
@@ -3237,22 +3240,21 @@ API keys are read at call time:
 1. From key files under `$OPENCODEPLUS_SEARCH_KEYS_DIR/<name>.key` (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, with file mode `0600` strictly enforced, value trimmed).
 2. Falling back to process environment variables:
    - `EXA_API_KEY` for `exa_code_search`
-   - `TAVILY_API_KEY` for `tavily_search` and `tavily_extract`
+   - `TAVILY_API_KEY` for `tavily_search` and `tavily_fetch`
 
 Keys are never written to any config file, row, test fixture, log, report, or commit.
 
-If a key file has insecure permissions (mode not `0600`), the tool call returns an error result.
-
-If a key is missing from both the key file and the host environment, the tool returns a formatted tool error result rather than crashing or returning empty content:
-- Missing `EXA_API_KEY`: `{ error: "EXA_API_KEY is not set in the host environment" }` with `isError: true`
-- Missing `TAVILY_API_KEY`: `{ error: "TAVILY_API_KEY is not set in the host environment" }` with `isError: true`
+If a key file has insecure permissions (mode not `0600`), or a key is missing from
+both the key file and the host environment, the call fails with a tool error naming
+it (`EXA_API_KEY is not set in the host environment`, likewise `TAVILY_API_KEY`);
+the stand-alone server answers `{ error }` with `isError: true`.
 
 ### Team prompts and per-role policy
 
 The search tools are named by their exact model-visible IDs in the Tools and
 rules row (`instructions/guidance.ts`), each in a section that depends on that
 tool, so an agent reads the line exactly while it has the tool: Code search
-(`search_exa_code_search`), Documentation search (`search_tavily_search`) and
-Reading web pages (`search_tavily_extract`). No role text names them.
+(`web.exa_code_search`), Documentation search (`web.tavily_search`) and
+Reading web pages (`web.tavily_fetch`). No role text names them.
 
-The `perm:search:team-tavily` policy row disables `search_tavily_*` on `*` for implementer, reviewer, and scout roles while keeping `search_exa_code_search` available. It lists under `search_tavily_search` → Permissions → Access; the three tools' own categories (Queries, Sites, depths, topics, types, limits, Approval) are in the per-tool table under Permission rules.
+The Basic team's member presets turn `web_tavily_*` off for implementer, reviewer, and scout roles while keeping `web_exa_code_search` available; members without Code Mode get the three tools and `web_opencode_fetch` direct. A legacy `perm:search:…` policy row lists under `web_tavily_search` → Permissions → Access; the three tools' own categories (Queries, Sites, depths, topics, types, limits, Approval) are in the per-tool table under Permission rules.

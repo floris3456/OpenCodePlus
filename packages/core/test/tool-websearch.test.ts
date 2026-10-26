@@ -16,7 +16,7 @@ import { Image } from "@opencode/core/image"
 import { testEffect } from "./lib/effect"
 import { imagePassthrough } from "./lib/image"
 import { permissionLayer } from "./lib/permission"
-import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
+import { codeModeListings, toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
 import { webSearchHost } from "./plugin/host"
 import { TestWebSearch } from "./lib/websearch"
 
@@ -51,6 +51,9 @@ class Fixture {
 }
 
 const it = testEffect(TestWebSearch.layer)
+// The tool lives in Code Mode; these tests call it directly, as an agent with it exposed direct does.
+const run = (registry: Tool.Interface, input: Parameters<typeof executeTool>[1]) =>
+  executeTool(registry, input, { [WebSearchTool.id]: "direct" })
 const setup = Effect.gen(function* () {
   const fixture = new Fixture()
   const websearch = yield* TestWebSearch.Service
@@ -103,15 +106,17 @@ describe("WebSearchTool registration", () => {
       const registry = fixture.registry
       yield* fixture.websearch.select(WebSearch.ID.make("exa"))
 
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["websearch", "execute"])
+      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["execute"])
+      const catalog = (yield* registry.snapshot()).codeModeCatalog
+      expect(catalog && codeModeListings(catalog).map((tool) => tool.path)).toEqual(["web.opencode_search"])
       expect(
-        yield* executeTool(registry, {
+        yield* run(registry, {
           sessionID,
           ...toolIdentity,
           call: {
             type: "tool-call",
             id: "call-search",
-            name: "websearch",
+            name: WebSearchTool.id,
             input: { query: "effect typescript" },
           },
         }),
@@ -154,10 +159,10 @@ describe("WebSearchTool registration", () => {
       const registry = fixture.registry
 
       expect(
-        yield* executeTool(registry, {
+        yield* run(registry, {
           sessionID,
           ...toolIdentity,
-          call: { type: "tool-call", id: "call-parallel", name: "websearch", input: { query: "effect layers" } },
+          call: { type: "tool-call", id: "call-parallel", name: WebSearchTool.id, input: { query: "effect layers" } },
         }),
       ).toEqual({
         status: "completed",
@@ -191,10 +196,10 @@ describe("WebSearchTool registration", () => {
       const registry = fixture.registry
 
       expect(
-        yield* executeTool(registry, {
+        yield* run(registry, {
           sessionID,
           ...toolIdentity,
-          call: { type: "tool-call", id: "call-empty", name: "websearch", input: { query: "nothing" } },
+          call: { type: "tool-call", id: "call-empty", name: WebSearchTool.id, input: { query: "nothing" } },
         }),
       ).toMatchObject({
         status: "completed",
@@ -209,10 +214,10 @@ describe("WebSearchTool registration", () => {
       fixture.formResponse = { status: "answered", answer: { choice: "allow" } }
       const registry = fixture.registry
 
-      const first = yield* executeTool(registry, {
+      const first = yield* run(registry, {
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-enable", name: "websearch", input: { query: "effect" } },
+        call: { type: "tool-call", id: "call-enable", name: WebSearchTool.id, input: { query: "effect" } },
       })
       expect(first.status).toBe("completed")
       expect(["exa", "parallel"]).toContain(first.metadata?.provider)
@@ -247,10 +252,10 @@ describe("WebSearchTool registration", () => {
         },
       ])
 
-      const second = yield* executeTool(registry, {
+      const second = yield* run(registry, {
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-enabled", name: "websearch", input: { query: "effect schema" } },
+        call: { type: "tool-call", id: "call-enabled", name: WebSearchTool.id, input: { query: "effect schema" } },
       })
       expect(second.status).toBe("completed")
       expect(["exa", "parallel"]).toContain(second.metadata?.provider)
@@ -265,10 +270,10 @@ describe("WebSearchTool registration", () => {
       const fixture = yield* setup
       yield* fixture.websearch.transform((editor) => editor.default.set(WebSearch.ID.make("missing")))
       fixture.formResponse = { status: "answered", answer: { choice: "allow" } }
-      const result = yield* executeTool(fixture.registry, {
+      const result = yield* run(fixture.registry, {
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-missing", name: "websearch", input: { query: "effect" } },
+        call: { type: "tool-call", id: "call-missing", name: WebSearchTool.id, input: { query: "effect" } },
       })
       expect(result.status).toBe("completed")
       expect(yield* fixture.kv.get(WebSearch.ProviderKey)).toBe("random")
@@ -289,10 +294,10 @@ describe("WebSearchTool registration", () => {
       const registry = fixture.registry
 
       expect(
-        yield* executeTool(registry, {
+        yield* run(registry, {
           sessionID,
           ...toolIdentity,
-          call: { type: "tool-call", id: "call-choose", name: "websearch", input: { query: "effect" } },
+          call: { type: "tool-call", id: "call-choose", name: WebSearchTool.id, input: { query: "effect" } },
         }),
       ).toMatchObject({ status: "completed", metadata: { provider: "parallel" } })
       expect(yield* fixture.kv.get(WebSearch.ProviderKey)).toBe(WebSearch.ID.make("parallel"))
@@ -328,13 +333,13 @@ describe("WebSearchTool registration", () => {
 
       const results = yield* Effect.all(
         Array.from({ length: 5 }, (_, index) =>
-          executeTool(registry, {
+          run(registry, {
             sessionID,
             ...toolIdentity,
             call: {
               type: "tool-call",
               id: `call-concurrent-${index}`,
-              name: "websearch",
+              name: WebSearchTool.id,
               input: { query: `effect ${index}` },
             },
           }),
@@ -355,10 +360,10 @@ describe("WebSearchTool registration", () => {
       const registry = fixture.registry
 
       expect(
-        yield* executeTool(registry, {
+        yield* run(registry, {
           sessionID,
           ...toolIdentity,
-          call: { type: "tool-call", id: "call-disable", name: "websearch", input: { query: "effect" } },
+          call: { type: "tool-call", id: "call-disable", name: WebSearchTool.id, input: { query: "effect" } },
         }),
       ).toMatchObject({ status: "error" })
       expect(yield* fixture.kv.get(WebSearch.ProviderKey)).toBe(false)
@@ -380,11 +385,11 @@ describe("WebSearchTool registration", () => {
         }),
       )
       const progress: Tool.Metadata[] = []
-      const tools = yield* fixture.registry.snapshot()
+      const tools = yield* fixture.registry.snapshot(undefined, undefined, { [WebSearchTool.id]: "direct" })
       const result = yield* tools.execute({
         sessionID,
         ...toolIdentity,
-        call: { type: "tool-call", id: "call-failover", name: "websearch", input: { query: "effect" } },
+        call: { type: "tool-call", id: "call-failover", name: WebSearchTool.id, input: { query: "effect" } },
         progress: (metadata) =>
           Effect.sync(() => {
             progress.push(metadata)
@@ -406,14 +411,14 @@ describe("WebSearchTool registration", () => {
       const fixture = yield* setup
       yield* fixture.websearch.select("random")
       fixture.error = TestWebSearch.httpError()
-      const tools = yield* fixture.registry.snapshot()
+      const tools = yield* fixture.registry.snapshot(undefined, undefined, { [WebSearchTool.id]: "direct" })
       yield* Effect.forEach(["first", "cooling"], (query) =>
         Effect.gen(function* () {
           const error = yield* tools
             .execute({
               sessionID,
               ...toolIdentity,
-              call: { type: "tool-call", id: `call-${query}`, name: "websearch", input: { query } },
+              call: { type: "tool-call", id: `call-${query}`, name: WebSearchTool.id, input: { query } },
             })
             .pipe(Effect.flip)
           expect(toSessionError(error)).toEqual({
@@ -432,7 +437,7 @@ describe("WebSearchTool registration", () => {
     Effect.gen(function* () {
       const fixture = yield* setup
       const registry = fixture.registry
-      const tools = yield* registry.snapshot()
+      const tools = yield* registry.snapshot(undefined, undefined, { [WebSearchTool.id]: "direct" })
       yield* fixture.websearch.select(WebSearch.ID.make("exa"))
 
       yield* Effect.forEach(
@@ -452,7 +457,7 @@ describe("WebSearchTool registration", () => {
                 call: {
                   type: "tool-call",
                   id: `call-http-${index}`,
-                  name: "websearch",
+                  name: WebSearchTool.id,
                   input: { query: "effect" },
                 },
                 progress: (metadata) => Effect.sync(() => progress.push(metadata)),

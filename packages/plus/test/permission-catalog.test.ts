@@ -103,8 +103,8 @@ const inventory = [
   "question",
   "subagent",
   "skill",
-  "webfetch",
-  "websearch",
+  "web_opencode_fetch",
+  "web_opencode_search",
   "execute",
   "opencode_session_move",
   "opencode_session_rename",
@@ -112,9 +112,9 @@ const inventory = [
   ...instructionTools,
   "release_request",
   "release_status",
-  "search_tavily_search",
-  "search_tavily_extract",
-  "search_exa_code_search",
+  "web_tavily_search",
+  "web_tavily_fetch",
+  "web_exa_code_search",
   ...teamToolIds,
 ]
 
@@ -275,7 +275,7 @@ const shippedActions = new Map([
 ])
 
 test("catalogItems turns every category into unique perm rows with the tool's action", () => {
-  const tools = ["read", "grep", "edit", "write", "patch", "shell", "webfetch", "glob", "release_request", "team_status"]
+  const tools = ["read", "grep", "edit", "write", "patch", "shell", "web_opencode_fetch", "glob", "release_request", "team_status"]
   const items = catalogItems(
     [
       ...tools.map(toolItem),
@@ -313,7 +313,7 @@ test("catalogItems turns every category into unique perm rows with the tool's ac
     write: "edit",
     patch: "edit",
     shell: "shell",
-    webfetch: "webfetch",
+    web_opencode_fetch: "web_opencode_fetch",
     glob: "glob",
     release_request: "release_request",
     team_status: "team_status",
@@ -359,7 +359,7 @@ test("catalogItems turns every category into unique perm rows with the tool's ac
   expect(byId.get("perm:write:operations.create")).toMatchObject({ permKind: "input", field: "path", permAction: "edit" })
   expect(byId.get("perm:patch:operations.move")).toMatchObject({ permKind: "input", field: "patchText", permAction: "edit" })
   // Value rows take the category's field and carry their literal.
-  expect(byId.get("perm:webfetch:format.html")).toMatchObject({ permKind: "value", field: "format", value: "html" })
+  expect(byId.get("perm:web_opencode_fetch:format.html")).toMatchObject({ permKind: "value", field: "format", value: "html" })
   // Param rows carry the value that counts as using them, or none at all.
   expect(byId.get("perm:glob:parameters.hidden")).toMatchObject({ permKind: "param", field: "hidden", value: true })
   expect(byId.get("perm:shell:parameters.no-timeout")).toMatchObject({ field: "timeout", value: 0 })
@@ -391,7 +391,7 @@ test("categoryOfRow lists catalog, team, curated and custom rows where they belo
   expect(categoryOfRow({ permTool: "write", ruleId: "env" })).toBe("files")
   expect(categoryOfRow({ permTool: "patch", ruleId: "env" })).toBe("files")
   expect(categoryOfRow({ permTool: "read", ruleId: "env" })).toBe("files")
-  expect(categoryOfRow({ permTool: "webfetch", ruleId: "github" })).toBe("sites")
+  expect(categoryOfRow({ permTool: "web_opencode_fetch", ruleId: "github" })).toBe("sites")
   expect(categoryOfRow({ permTool: "glob", ruleId: "git" })).toBe("patterns")
   expect(categoryOfRow({ permTool: "grep", ruleId: "git" })).toBe("patterns")
   expect(categoryOfRow({ permTool: "subagent", ruleId: "explore" })).toBe("agents")
@@ -415,7 +415,7 @@ test("categoryLabel reads the catalog, then the host tool, then the fixed labels
   expect(categoryLabel("search", "queries")).toBe("Queries")
   // Legacy and fixed categories.
   expect(categoryLabel("glob", "patterns")).toBe("Search patterns")
-  expect(categoryLabel("webfetch", "sites")).toBe("Sites")
+  expect(categoryLabel("web_opencode_fetch", "sites")).toBe("Sites")
   expect(categoryLabel("subagent", "agents")).toBe("Agents")
   expect(categoryLabel("skill", "skills")).toBe("Skills")
   expect(categoryLabel("shell", "role")).toBe("Team role")
@@ -439,7 +439,7 @@ test("categoryOrder puts team rows first, then the legacy category, the catalog,
 test("hostOf maps the rows with no tool of their own", () => {
   expect(hostOf("external_directory")).toBe("read")
   expect(hostOf("task")).toBe("subagent")
-  expect(hostOf("search")).toBe("search_tavily_search")
+  expect(hostOf("search")).toBe("web_tavily_search")
   expect(hostOf("shell")).toBe("shell")
   expect(hostOf("team_delegate")).toBe("team_delegate")
 })

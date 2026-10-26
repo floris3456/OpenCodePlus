@@ -81,7 +81,7 @@ test("(b) ocp-alice linked to Plus orchestrator gets the orchestrator's rows, ro
     "tool:team_checkpoint": "on",
     "tool:team_delegate": "on",
     "tool:team_integrate": "on",
-    "tool:search_tavily_search": "off",
+    "tool:web_tavily_search": "off",
     "perm:read:where.external": "on",
     "perm:read:files.keys": "off",
     "perm:read:env": "off",

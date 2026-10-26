@@ -259,30 +259,29 @@ export function registerWebTools(ctx: Plugin.Context) {
     if (!found) throw new Error("Connect CLIProxyAPI through /connect to search the web through it.")
     return found
   }
-  const options = { namespace: "web", permission: "websearch" }
+  // Core's web namespace, beside its own opencode_search and opencode_fetch. The permission
+  // actions are core's: searches ask as websearch, opening a page as webfetch.
+  const searchOptions = { namespace: "web", permission: "websearch" }
+  const fetchOptions = { namespace: "web", permission: "webfetch" }
   const origin = { type: "plugin" as const, name: "opencode-pacer" }
   return ctx.tool.transform((editor) => {
-    editor.namespace({
-      name: "web",
-      description: "Search the web and read pages through CLIProxyAPI's ChatGPT and Claude accounts.",
-    })
     editor.add({
       name: "chatgpt_search",
       description:
         "Search the web with ChatGPT's search engine (through CLIProxyAPI). Returns the found pages' text, each with its title and URL. `tokens` caps the text (default 2000, about 8000 characters).",
       input: ChatGPTSearchInput,
       output: ChatGPTOutput,
-      options,
+      options: searchOptions,
       origin,
       execute: async (input, context) => searchChatGPT(input, context.sessionID, await target(), context.signal),
     })
     editor.add({
-      name: "chatgpt_open",
+      name: "chatgpt_fetch",
       description:
         "Open a web page through ChatGPT's search engine (through CLIProxyAPI) and return its text from the top, as numbered lines (L0, L1, …) with the page's total line count. `tokens` caps the text (default 2000, about 8000 characters); raise it to read further down a long page.",
       input: ChatGPTOpenInput,
       output: ChatGPTOutput,
-      options,
+      options: fetchOptions,
       origin,
       execute: async (input, context) => openChatGPT(input, context.sessionID, await target(), context.signal),
     })
@@ -292,7 +291,7 @@ export function registerWebTools(ctx: Plugin.Context) {
         "Ask a Claude model (through CLIProxyAPI) to search the web and answer a question with sources. Claude's search results are readable only by Claude, so this returns its short answer, the pages it cited and the queries it ran. Costs Claude tokens: roughly 10-20k input per question.",
       input: ClaudeSearchInput,
       output: ClaudeOutput,
-      options,
+      options: searchOptions,
       origin,
       execute: async (input, context) => searchClaude(input, context.sessionID, await target(), context.signal),
     })

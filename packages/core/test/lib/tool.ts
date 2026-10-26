@@ -88,11 +88,13 @@ export interface ToolExecution {
   readonly error?: SessionError.Error
 }
 
+/** `modes` exposes Code Mode tools directly (as an agent's exposure does), so a test can call one by its id. */
 export const executeTool = (
   registry: Tool.Interface,
   input: Parameters<Tool.Snapshot["execute"]>[0],
+  modes?: Readonly<Record<string, "direct" | "codemode">>,
 ): Effect.Effect<ToolExecution> =>
-  registry.snapshot().pipe(
+  registry.snapshot(undefined, undefined, modes).pipe(
     Effect.flatMap((tools) => tools.execute(input)),
     Effect.map((result) => ({ status: "completed" as const, ...result }) satisfies ToolExecution),
     Effect.catchTag("Tool.Error", (error) =>
