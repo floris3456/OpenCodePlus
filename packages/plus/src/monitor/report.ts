@@ -204,6 +204,23 @@ function sameFact(a: ContextFactRow, b: ContextFactRow): boolean {
   )
 }
 
+/**
+ * Requests an overview or steps report may fold before it answers. The fold
+ * runs on the service's one thread at about 0.4-3 ms a request (a long chat's
+ * requests cost the most), so this bounds the pause to a few seconds.
+ */
+export const MONITOR_FOLD_LIMIT = 2_000
+
+export class MonitorFoldLimit extends Error {
+  constructor(readonly requests: number, readonly sessions: number) {
+    super(
+      `monitor.too_large: this report would first fold ${requests} requests of ${sessions} session${sessions === 1 ? "" : "s"} ` +
+        `(limit ${MONITOR_FOLD_LIMIT}), holding the whole service for seconds to minutes. ` +
+        `Ask view "cache" or "tools" (saved results, fast), or narrow the window or scope.`,
+    )
+  }
+}
+
 export function requestReport(
   ledger: Ledger,
   input: MonitorQueryInput,
@@ -229,6 +246,13 @@ export function requestReport(
     )
     .all({ ...scope.bindings, $monitorSince: window.since, $monitorUntil: window.until })
     .map((s) => s.id)
+  // A session without a kept fold is folded whole, synchronously, before anything answers.
+  const cache = sessionCache.get(ledger)
+  const cold = selected.filter((id) => cache?.has(id) !== true)
+  const unfolded = cold.length === 0 ? 0 : ledger.db
+    .query<{ c: number }, [string]>("select count(*) as c from request where session_id in (select value from json_each(?))")
+    .get(JSON.stringify(cold))?.c ?? 0
+  if (unfolded > MONITOR_FOLD_LIMIT) throw new MonitorFoldLimit(unfolded, cold.length)
 
   const legacyMap = new Map<string, LegacyStep[]>()
   const hasLegacySteps =

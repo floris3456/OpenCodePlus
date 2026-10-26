@@ -6,6 +6,7 @@ import { MonitorReport } from "../src/rpc.js"
 import { FINGERPRINT_POLICY_VERSION, FINGERPRINT_VERSION, fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { prefixDiff } from "../src/monitor/cache.js"
 import { queryMonitor } from "../src/monitor/query.js"
+import { MonitorFoldLimit, sessionFold } from "../src/monitor/report.js"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { createLedger } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger } from "./monitor-fixture.js"
@@ -749,6 +750,11 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
     { name: "all overview", input: { scope: "all" as const, view: "overview" as const } },
     { name: "all cache", input: { scope: "all" as const, view: "cache" as const } },
   ]
+
+  // An overview refuses to fold 40,000 requests on the spot (MONITOR_FOLD_LIMIT);
+  // the polls below work from the kept folds these build.
+  expect(() => queryMonitor(db, { scope: "all", view: "overview" }, { directory: "/project" })).toThrow(MonitorFoldLimit)
+  for (const session of sessions) sessionFold(db, session.id)
 
   // Warmup / First call
   const firstTimes: Record<string, number> = {}
