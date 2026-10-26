@@ -1345,9 +1345,10 @@ resolves down the layers, most specific first:
 4. else what core proposed, unchanged: the host configuration (provider and
    model `opencode.json` settings, then its top-level `warming`), or with none
    of them core's built-in warming (schema `ConfigWarming.builtIn`): on for a
-   model whose id names Claude (a 5-minute cache: every 4 minutes for 30
-   minutes) or GPT-5.6 and later (a 30-minute cache: every 25 minutes for
-   1h30m, 1h40m in whole intervals). A hook before Plus (the CPA quota
+   model whose id names Claude (a 5-minute cache: every 4 minutes for 25
+   minutes, 28 minutes in whole intervals) or GPT-5.6 and later (a 30-minute
+   cache: every 25 minutes for 1h40m). CLIProxyAPI gives the models it serves
+   through Antigravity the Claude times as their model setting. A hook before Plus (the CPA quota
    handoff) can veto that proposal as any other;
 5. else the built-in defaults (`WARMING_DEFAULTS`: 4 minutes, 30 minutes,
    the fixed keep-alive text) and the built-in `on: false`. Defaults › Models

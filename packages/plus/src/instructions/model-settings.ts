@@ -147,8 +147,8 @@ export const BUILT_IN_BASE: WarmingBase = { ...BUILT_IN_WARMING, from: "built-in
 
 /**
  * The warming a model gets when no row and no opencode.json sets it, as core proposes it
- * (schema ConfigWarming.builtIn): on for Claude, every 4 minutes for 30 minutes, and GPT-5.6 and
- * later, every 25 minutes for 1h30m (1h40m in whole intervals). Every other model, and Every
+ * (schema ConfigWarming.builtIn): on for Claude, every 4 minutes for 25 minutes (28m in whole
+ * intervals), and GPT-5.6 and later, every 25 minutes for 1h40m. Every other model, and Every
  * model, is off.
  */
 export function builtInWarming(key?: ModelSettingsKey): WarmingBase {

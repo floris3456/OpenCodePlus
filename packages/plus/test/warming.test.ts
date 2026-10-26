@@ -130,7 +130,7 @@ test("Warm as subagent is independent of top-level warming and the chat switch w
   const rows: WarmingRows = { model: defaultsRecord({ warming: "off", subagent: "on", interval: "5m", waiting: "3h", prompt: "child ping" }) }
   const child = { configured: undefined, rows, chat: undefined, subagent: true, model: claude }
   expect(decideWarming(child)).toEqual({
-    settings: { prompt: "child ping", interval: 5 * MINUTE, duration: 30 * MINUTE },
+    settings: { prompt: "child ping", interval: 5 * MINUTE, duration: 25 * MINUTE },
     waiting: 180 * MINUTE,
     source: "model",
     level: "defaults",
@@ -224,10 +224,10 @@ test("Defaults › Models shows Claude and GPT-5.6+ warming built in; other mode
   const claude = view("claude-opus-5-5")
   expect([claude.on, claude.duration, claude.interval]).toEqual([
     { value: true, from: "built-in" },
-    { value: 32 * MINUTE, from: "built-in" },
+    // 25m every 4m warms 28m, a whole number of intervals.
+    { value: 28 * MINUTE, from: "built-in" },
     { value: 4 * MINUTE, from: "built-in" },
   ])
-  // 1h30m every 25m warms 1h40m, a whole number of intervals.
   expect([view("gpt-6-astra").duration.value, view("gpt-6-astra").interval.value]).toEqual([100 * MINUTE, 25 * MINUTE])
   expect(view("gpt-5.3-codex-spark").on).toEqual({ value: false, from: "built-in" })
   expect(view("gemini-3.8-flash-high").on.value).toBe(false)

@@ -338,9 +338,10 @@ export function catalogueSync(
         }
         const value = { ...next, connectionKey }
         const previous = loaded.get(providerID)
+        // The parsed models, not only CPA's hash: a newer plugin reads more from the same answer.
         if (
           previous &&
-          previous.catalogue.hash === value.catalogue.hash &&
+          JSON.stringify(previous.catalogue) === JSON.stringify(value.catalogue) &&
           previous.pkg === value.pkg &&
           previous.connectionKey === value.connectionKey
         )

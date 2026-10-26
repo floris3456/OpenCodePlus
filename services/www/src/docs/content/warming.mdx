@@ -9,8 +9,8 @@ known and off for the rest:
 
 | Model id contains | Cache lifetime | Warming |
 | --- | --- | --- |
-| `claude` | 5 minutes | every 4 minutes for 30 minutes |
-| `gpt-5.6` or later (`gpt-6`, …) | 30 minutes | every 25 minutes for 90 minutes |
+| `claude` | 5 minutes | every 4 minutes for 25 minutes |
+| `gpt-5.6` or later (`gpt-6`, …) | 30 minutes | every 25 minutes for 100 minutes |
 
 Any `warming` setting, global or scoped, replaces this default. Turn warming
 off with `"warming": false`, or enable it for every model in any
@@ -25,8 +25,9 @@ off with `"warming": false`, or enable it for every model in any
 
 With this configuration, OpenCode warms a recently active session after four
 minutes without a model request. It continues every four minutes until 30
-minutes have passed since the latest non-warming request. GPT-5.6 and later
-models use their own defaults instead: every 25 minutes for 90 minutes.
+minutes have passed since the latest non-warming request. Claude and GPT-5.6 and
+later models use their own defaults instead: every 4 minutes for 25 minutes, and
+every 25 minutes for 100 minutes.
 
 ## Options
 
@@ -48,7 +49,7 @@ window:
 | --- | --- | --- |
 | `prompt` | Keep-alive instruction | Appended as a transient user message for each warming request. The default asks the model to do no work, use no tools, and reply with `OK`. |
 | `interval` | `"4 minutes"` (`"25 minutes"` for GPT-5.6 and later) | Idle time before the next warming request. |
-| `duration` | `"30 minutes"` (`"90 minutes"` for GPT-5.6 and later) | Warming window measured from the latest non-warming model request. |
+| `duration` | `"30 minutes"` (`"25 minutes"` for Claude, `"100 minutes"` for GPT-5.6 and later) | Warming window measured from the latest non-warming model request. |
 
 Omitted object fields keep their defaults. For example, this changes only the
 interval:

@@ -28,6 +28,8 @@ export interface CatalogModel {
   readonly name: string
   readonly kind: "chat" | "image"
   readonly ownedBy?: string
+  /** The CPA providers serving it (claude, codex, antigravity, …), when the catalogue says. */
+  readonly providers?: readonly string[]
   /** Whole window: prompt + reply. */
   readonly context?: number
   /** Largest prompt, when smaller than `context` (Codex: 272k prompt of a 400k GPT window). */
@@ -48,6 +50,7 @@ export interface Catalogue {
 const DetailModel = Schema.Struct({
   id: Schema.String,
   owned_by: Schema.optional(Schema.NullOr(Schema.String)),
+  providers: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   display_name: Schema.optional(Schema.String),
   kind: Schema.optional(Schema.String),
   context_length: Schema.optional(Schema.NullOr(Schema.Number)),
@@ -115,6 +118,7 @@ export function parseDetails(raw: unknown): Catalogue | undefined {
       name: item.display_name?.trim() || item.id,
       kind,
       ownedBy: item.owned_by ? item.owned_by.toLowerCase() : undefined,
+      ...(item.providers?.length ? { providers: item.providers.map((provider) => provider.toLowerCase()) } : {}),
       context,
       inputLimit: inputLimit !== undefined && (context === undefined || inputLimit < context) ? inputLimit : undefined,
       output: positive(item.max_completion_tokens),
@@ -345,6 +349,12 @@ const RESPONSES = new Set([
 
 export const FAST_SUFFIX = "-fast"
 export const FAST_TIER = "priority"
+/** Warming for the models CPA serves through Antigravity: Claude's built-in times (schema ConfigWarming.builtIn). */
+export const ANTIGRAVITY_WARMING = { interval: "4 minutes", duration: "25 minutes" } as const
+
+export function servedByAntigravity(model: Pick<CatalogModel, "ownedBy" | "providers">): boolean {
+  return model.providers?.includes("antigravity") ?? model.ownedBy === "antigravity"
+}
 
 /** Adds the catalogue's models (and a `-fast` alias per Fast-capable model) to one provider. */
 export function applyCatalogue(
@@ -387,6 +397,10 @@ export function applyCatalogue(
                 ) as never)
               : ([] as never)
         if (fast) model.body = { ...(model.body ?? {}), service_tier: FAST_TIER } as never
+        // A model setting: config's own warming for the model merges over it later, while a
+        // provider-wide or top-level value does not reach it.
+        if (servedByAntigravity(item) && model.settings?.warming === undefined)
+          model.settings = { ...model.settings, warming: { ...ANTIGRAVITY_WARMING } }
       })
     // Image models answer only on CPA's images endpoint (image.generate tool), not in chat.
     define(item.id, item.kind === "image" ? `${item.name} (images)` : item.name, false)

@@ -596,8 +596,8 @@ test("Defaults › Models rows render Every model first with per-model rows and 
   expect(rows[0]?.badges.value).toBe("warm 30m · every 5m")
   // Claude keeps its own config duration while inheriting the rest.
   expect(rows[1]?.badges.value).toBe("warm 30m · every 5m · every model · opencode.json")
-  // GPT-6 takes Every model's switch and interval over its own built-in 1h30m.
-  expect(rows[2]?.badges.value).toBe("warm 1h30m · every 5m · every model")
+  // GPT-6 takes Every model's switch and interval over its own built-in 1h40m.
+  expect(rows[2]?.badges.value).toBe("warm 1h40m · every 5m · every model")
   // The row itself opens into its fields; the fields edit.
   expect(rows[0]?.actions).toMatchObject({ toggle: false, edit: false, reset: true, remove: true })
   // A model with no Plus row and no config shows the built-in values.
@@ -940,15 +940,15 @@ test("Warm as subagent persists through tools, RPC, snapshot and field reset on 
   const set = need(tools, "instructions_set")
   const show = need(tools, "instructions_read")
   const reset = need(tools, "instructions_reset")
-  for (const key of ["*", "anthropic/claude"]) {
+  // "on" warms for the warming time: built-in 30m for Every model, Claude's own 25m, in whole 4m pings.
+  for (const [key, minutes] of [["*", 32], ["anthropic/claude", 28]] as const) {
     const row = `item:defaults:/models:modeldefault:${key}`
     const field = `item:defaults:/models:modelsetting:subagent:${key}`
     await runOk(set, { id: row, subagent: " ON " })
     expect(await runOk(show, { id: row })).toMatchObject({ subagent: { value: true, from: "model" } })
     expect((await api.snapshot()).value.modelSettings?.some((entry) => entry.subagent === "on")).toBe(true)
-    // "on" warms for the warming time: built-in 30m, 32m in whole 4m pings.
-    expect(await runOk(show, { id: field })).toMatchObject({ field: "subagent", value: { text: "32m", from: "built-in" } })
-    expect(await runOk(show, { id: row })).toMatchObject({ subagent: { value: true, from: "model", duration: 32 * MINUTE } })
+    expect(await runOk(show, { id: field })).toMatchObject({ field: "subagent", value: { text: `${minutes}m`, from: "built-in" } })
+    expect(await runOk(show, { id: row })).toMatchObject({ subagent: { value: true, from: "model", duration: minutes * MINUTE } })
     await runOk(set, { id: field, text: "off" })
     expect(await runOk(show, { id: field })).toMatchObject({ value: { text: "off", from: "model" } })
     // Its own time, rounded up to whole pings when saved.
@@ -1001,8 +1001,8 @@ test("an agent's model row opens into field rows and one field edits and resets 
   // The row is inherited (the agent's upstream model), so Model and Warming
   // name where they came from; none of the fields is local yet.
   expect(fields[0]?.badges.value).toBe("anthropic/claude · upstream")
-  // Claude warms built in: 30m every 4m, 32m in whole intervals.
-  expect(fields[2]?.badges.value).toBe("32m · built-in")
+  // Claude warms built in: 25m every 4m, 28m in whole intervals.
+  expect(fields[2]?.badges.value).toBe("28m · built-in")
   // The two switches toggle with Space; every other field edits.
   const switches = ["modelfield:compactWarm:anthropic/claude", "modelfield:coldFirst:anthropic/claude"]
   expect(fields.filter((row) => !switches.includes(row.address?.item ?? "")).every((row) => row.actions?.edit === true && row.actions?.reset === false)).toBe(true)
@@ -1151,7 +1151,7 @@ test("every model field edits and resets individually and resets preserve unrela
   expect(byLabel.get("Warming")?.actions?.reset).toBe(false)
   expect(byLabel.get("Ping every")?.actions?.reset).toBe(false)
   expect(byLabel.get("Keep-alive prompt")?.actions?.reset).toBe(false)
-  expect(byLabel.get("Warming")?.badges.value).toBe("32m · built-in")
+  expect(byLabel.get("Warming")?.badges.value).toBe("28m · built-in")
   // A repeated Model FIELD reset is a no-op and must refuse with no write:
   // only the model ROW's r clears activation, never a FIELD reset. The local
   // bare candidate stays (its Model field already matches the original).

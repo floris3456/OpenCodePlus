@@ -3,7 +3,16 @@ import type { ProviderEditor } from "@opencode/plugin/effect/provider"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import type { Types } from "effect"
-import { anthropicVariants, applyCatalogue, applyRelayToExistingModels, isClaude, spellVariants, type Catalogue } from "../src/catalog.js"
+import {
+  ANTIGRAVITY_WARMING,
+  anthropicVariants,
+  applyCatalogue,
+  applyRelayToExistingModels,
+  isClaude,
+  parseDetails,
+  spellVariants,
+  type Catalogue,
+} from "../src/catalog.js"
 
 function createTestEditor(initial: { provider: Provider.Info; models?: Model.Info[] }[]) {
   const store = new Map<string, { provider: Provider.Info; models: Map<string, Model.Info> }>()
@@ -466,3 +475,36 @@ test("cliproxyapiConfig parses anthropicRelay opt-out per-route and top-level", 
   }
 })
 
+
+test("models CPA serves through Antigravity warm every 4 minutes for 25 minutes unless the model sets its own", () => {
+  const catalogue = parseDetails({
+    schema: "cliproxyapi.model-details/1",
+    hash: "h",
+    data: [
+      { id: "gemini-opus-4-6-thinking", owned_by: "antigravity", providers: ["antigravity"], display_name: "Claude Opus 4.6 (Thinking)" },
+      { id: "claude-sonnet-4-6", owned_by: "antigravity", providers: ["Antigravity"] },
+      { id: "gemini-3.8-flash-high", owned_by: "antigravity" },
+      { id: "gemini-3.1-flash-lite", owned_by: "google", providers: ["antigravity"] },
+      { id: "gemini-own", owned_by: "antigravity", providers: ["antigravity"] },
+      { id: "claude-opus-5-5", owned_by: "anthropic", providers: ["claude"] },
+      { id: "gpt-6-sol", owned_by: "openai", providers: ["codex"] },
+      { id: "gemini-direct", owned_by: "antigravity", providers: ["gemini-cli"] },
+    ],
+  })!
+  expect(catalogue.models.find((model) => model.id === "claude-sonnet-4-6")?.providers).toEqual(["antigravity"])
+  const own = Model.Info.default(Provider.ID.make("cpa"), Model.ID.make("gemini-own"))
+  const { editor, getModel } = createTestEditor([
+    {
+      provider: Provider.Info.empty(Provider.ID.make("cpa")),
+      models: [{ ...own, settings: { warming: { interval: "2 minutes" } } }],
+    },
+  ])
+  applyCatalogue(editor, "cpa", catalogue, "@opencode/ai/providers/openai-compatible")
+  const warming = (id: string) => getModel("cpa", id)?.settings?.warming
+  expect(ANTIGRAVITY_WARMING).toEqual({ interval: "4 minutes", duration: "25 minutes" })
+  for (const id of ["gemini-opus-4-6-thinking", "claude-sonnet-4-6", "gemini-3.8-flash-high", "gemini-3.1-flash-lite"])
+    expect(warming(id)).toEqual(ANTIGRAVITY_WARMING)
+  // A model that already has warming keeps it; other CPA providers get none (Claude and GPT warm built in).
+  expect(warming("gemini-own")).toEqual({ interval: "2 minutes" })
+  for (const id of ["claude-opus-5-5", "gpt-6-sol", "gemini-direct"]) expect(warming(id)).toBeUndefined()
+})

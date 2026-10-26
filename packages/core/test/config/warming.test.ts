@@ -69,9 +69,10 @@ const defaults = {
 
 describe("warming resolution", () => {
   test("warms Claude and GPT-5.6+ when nothing configures warming", () => {
-    const gpt = { ...defaults, interval: Duration.toMillis(Duration.minutes(25)), duration: Duration.toMillis(Duration.minutes(90)) }
-    expect(resolved({ id: "claude-opus-5-5" })).toEqual(defaults)
-    expect(resolved({ id: "anthropic/claude-haiku-5-5" })).toEqual(defaults)
+    const gpt = { ...defaults, interval: Duration.toMillis(Duration.minutes(25)), duration: Duration.toMillis(Duration.minutes(100)) }
+    const claude = { ...defaults, duration: Duration.toMillis(Duration.minutes(25)) }
+    expect(resolved({ id: "claude-opus-5-5" })).toEqual(claude)
+    expect(resolved({ id: "anthropic/claude-haiku-5-5" })).toEqual(claude)
     expect(resolved({ id: "gpt-6-astra" })).toEqual(gpt)
     expect(resolved({ id: "gpt-5.6-luna" })).toEqual(gpt)
     for (const id of ["gpt-5.3-codex-spark", "gpt-oss-120b", "gemini-3.8-flash-high", "deepseek-v4.1-flash"])
