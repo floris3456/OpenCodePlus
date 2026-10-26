@@ -48,12 +48,12 @@ export function ruleItem(item: Item, records: readonly RuleRecord[], scopes: Sco
   if (item.kind !== "perm") return item
   const record = ruleAt(records, scopes, address)
   if (record === undefined) return item.custom === true ? undefined : item
-  const byOwner = ruleItems.get(item) ?? new Map<RuleRecord, Map<string, Item>>()
-  ruleItems.set(item, byOwner)
-  const byRecord = byOwner.get(record) ?? new Map<string, Item>()
-  byOwner.set(record, byRecord)
+  const byRecord = ruleItems.get(item) ?? new WeakMap<RuleRecord, Map<string, Item>>()
+  if (!ruleItems.has(item)) ruleItems.set(item, byRecord)
+  const byOwner = byRecord.get(record) ?? new Map<string, Item>()
+  if (!byRecord.has(record)) byRecord.set(record, byOwner)
   const ownerKey = record.agent === null ? "" : address.agent === null ? "\u0000" : `\u0001${address.agent}`
-  const cached = byRecord.get(ownerKey)
+  const cached = byOwner.get(ownerKey)
   if (cached !== undefined) return cached
   const text = `${record.label}\n${record.patterns.join("\n")}`
   const built = {
@@ -61,7 +61,7 @@ export function ruleItem(item: Item, records: readonly RuleRecord[], scopes: Sco
     patterns: record.patterns, keywords: record.keywords, message: record.message,
     ...(record.agent === null ? {} : { ownedBy: address.agent ?? undefined }),
   }
-  byRecord.set(ownerKey, built)
+  byOwner.set(ownerKey, built)
   return built
 }
 
