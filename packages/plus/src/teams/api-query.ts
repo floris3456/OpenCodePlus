@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises"
 import path from "node:path"
 import { teamsDataDir } from "../instructions/paths.js"
 import { git, gitRaw } from "./git.js"
-import { isTerminal, loadRun, type RunRecord } from "./run.js"
+import { buildRunTree, isTerminal, loadRun, type RunRecord } from "./run.js"
 import { ListInput, toolError } from "./schema.js"
 import { readJson } from "./store.js"
 import type { TeamApiResult, TeamCaller } from "./api.js"
@@ -185,6 +185,16 @@ export function namespaceRunEntryOf(record: RunRecord, head: string): NamespaceR
     sessionID: record.sessionID,
     parent: record.parent,
   }
+}
+
+/**
+ * The run tree of one chat (buildRunTree over every run), each with its head.
+ * Heads come from git, one process per run, so only the runs in the tree ask,
+ * and at once rather than one after another.
+ */
+export async function listRunTree(root: string, sessionID: string, args?: { all?: boolean }) {
+  const tree = buildRunTree(sortRuns(await listRuns(root)), sessionID, args)
+  return Promise.all(tree.map(async (record) => ({ ...namespaceRunEntryOf(record, await resolveHead(record)), depth: record.depth })))
 }
 
 export async function listRunsForNamespace(root: string, args?: { all?: boolean }): Promise<NamespaceRunEntry[]> {

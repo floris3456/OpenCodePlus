@@ -324,23 +324,41 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     return { directory: fallback.directory, workspace: fallback.workspaceID }
   }
 
+  // One list request at a time. The poll, lifecycle bursts and team changes all
+  // ask for the same list: while one is out they ask once more when it answers,
+  // instead of piling up requests that answer out of order. An answer for a
+  // filter or chat that has since changed is not shown.
+  const runsFlight = { out: false, again: false }
   function refreshRuns() {
     if (disposed) return
+    if (runsFlight.out) {
+      runsFlight.again = true
+      return
+    }
+    runsFlight.out = true
     const location = targetLocation()
-    void plus["team.runs.list"](
-      { all: showInactive(), tree: treeView(), sessionID: props.sessionID },
-      { location },
-    ).then(
-      (output) => {
-        if (disposed) return
-        setStore("runs", reconcile(output.runs, { key: "id" }))
-        setStore("loaded", true)
-      },
-      () => {
-        if (disposed) return
-        setStore("runs", reconcile([], { key: "id" }))
-      },
-    )
+    const input = { all: showInactive(), tree: treeView(), sessionID: props.sessionID }
+    const current = () =>
+      input.all === showInactive() && input.tree === treeView() && input.sessionID === props.sessionID &&
+      location?.directory === targetLocation()?.directory && location?.workspace === targetLocation()?.workspace
+    void plus["team.runs.list"](input, { location })
+      .then(
+        (output) => {
+          if (disposed || !current()) return
+          setStore("runs", reconcile(output.runs, { key: "id" }))
+          setStore("loaded", true)
+        },
+        () => {
+          if (disposed || !current()) return
+          setStore("runs", reconcile([], { key: "id" }))
+        },
+      )
+      .finally(() => {
+        runsFlight.out = false
+        if (!runsFlight.again) return
+        runsFlight.again = false
+        refreshRuns()
+      })
   }
 
   // Only host session lifecycle events change a run's state (the same set the
