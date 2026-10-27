@@ -5,7 +5,7 @@ import { Location } from "@opencode/schema/location"
 import { AbsolutePath } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Duration, Effect, Fiber, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
-import { batchNotify, partition, peek, put, take, type InboxItem } from "./inbox.js"
+import { batchNotify, partition, peek, put, take, teamInboxKey, type InboxItem } from "./inbox.js"
 import { io, errCode } from "./io.js"
 import { gitRaw, parsePorcelain } from "./git.js"
 import type { MergeEntry } from "./merge.js"
@@ -758,7 +758,7 @@ export async function deliverInbox(ctx: Context, root: string, run: RunRecord): 
   const previous = delivery.previous ?? run
   await Effect.runPromise(
     ctx.session
-      .prompt({ sessionID: Session.ID.make(sessionID), text: delivery.text })
+      .prompt({ sessionID: Session.ID.make(sessionID), text: delivery.text, metadata: { [teamInboxKey]: "inbox" } })
       .pipe(
         // Admission normally takes milliseconds; a hang leaves the run working
         // with its inbox undelivered, so say so in the log while it lasts.

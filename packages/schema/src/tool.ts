@@ -93,8 +93,10 @@ export interface Result<Output extends ValueSchema<any> | undefined = ValueSchem
    * tool and output-limit continuations, not pending inbox delivery or failures.
    * Code Mode propagates successful inner requests only if its script succeeds.
    * Execution control only: not model content, metadata, or a durable event field.
+   * `"alone"` ends it only when every call of the step asks to end it: a wait
+   * beside other work lets the model read that work's results first.
    */
-  readonly endTurn?: boolean
+  readonly endTurn?: boolean | "alone"
 }
 
 export type Info<
