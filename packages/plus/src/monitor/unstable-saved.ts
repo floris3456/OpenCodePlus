@@ -37,6 +37,10 @@ function changedNames(before: RequestFingerprintData | undefined, after: Request
  */
 export function settleRequestChanges(ledger: Ledger, limit = 256): number {
   ensureTable(ledger)
+  // Both tables lose rows by the same start-time cutoff (ledger prune), so equal
+  // counts mean nothing is left: skip the anti-join walk over every request.
+  const behind = ledger.db.query<{ n: number }, []>("select (select count(*) from request) - (select count(*) from request_change) n").get()!.n
+  if (behind <= 0) return 0
   const pending = ledger.db
     .query<{ id: string; session_id: string; started: number; rowid: number }, [number]>(
       // Oldest first across sessions, so a long session never starves the rest.
