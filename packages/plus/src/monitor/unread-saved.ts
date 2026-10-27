@@ -44,7 +44,9 @@ function ensureTable(ledger: Ledger) {
   unread_all integer
 );
 create index if not exists unread_write_session on unread_write(session_id, at);
-create index if not exists unread_write_at on unread_write(at);`)
+create index if not exists unread_write_at on unread_write(at);
+create index if not exists unread_write_due on unread_write(expires) where unread_real is null;
+create index if not exists request_open on request(started) where ended is null;`)
   ready.add(ledger)
 }
 
@@ -60,6 +62,12 @@ export function settleUnreadWrites(ledger: Ledger, now: number, limit = 64): num
 }
 
 function insertWrites(ledger: Ledger, limit: number): number {
+  // Writes are saved oldest first, so an unsaved one can only sit a little
+  // before the newest saved write (a request that ended late, within the
+  // abandoned bound): walking from the first request made a backlog quadratic.
+  // A correction drops rows further back (ledger.ts savedSchema) and marks how far.
+  const dirty = ledger.db.query<{ at: number }, []>("select at from saved_dirty where name = 'unread_write'").get()?.at
+  const from = Math.min((ledger.db.query<{ at: number | null }, []>("select max(at) as at from unread_write").get()?.at ?? 0) - ABANDONED_AFTER, dirty ?? Infinity)
   const pending = ledger.db
     .query<
       {
@@ -72,15 +80,17 @@ function insertWrites(ledger: Ledger, limit: number): number {
         is_title: number
         cache_write_tokens: number
       },
-      [number]
+      [number, number]
     >(
       `select r.id, r.session_id, r.started, r.agent, r.provider, r.model, r.is_title, r.cache_write_tokens
         from request r
-        where r.ended is not null and r.cache_write_tokens > 0
+        where r.started >= ? and r.ended is not null and r.cache_write_tokens > 0
           and not exists (select 1 from unread_write u where u.request_id = r.id)
         order by r.started asc, r.rowid asc limit ?`,
     )
-    .all(limit)
+    .all(from, limit)
+  // A short walk saved everything from `from` on: the marker is done (unless a writer lowered it meanwhile).
+  if (dirty !== undefined && pending.length < limit) ledger.db.query("delete from saved_dirty where name = 'unread_write' and at = ?").run(dirty)
   if (pending.length === 0) return 0
   const insert = ledger.db.query<unknown, [string, string, number, number | null, string | null, string, number, number]>(
     `insert into unread_write (request_id, session_id, at, expires, agent, model, is_title, tokens)
@@ -142,19 +152,19 @@ function finalizeWrites(ledger: Ledger, now: number, limit: number): number {
 // One session's writes share a key cache: its reads are recomputed for each
 // write, so their lengths are reused rather than rebuilt per comparison.
 function finalizeSession(ledger: Ledger, writes: readonly DueWrite[]): number {
-  const reads = ledger.db.query<CandidateRead, [string, number, number, string | null, string | null]>(
+  // Only a read above what the write itself read can change its gain, and the
+  // largest first means the first match is the maximum: most writes stop early.
+  const reads = ledger.db.query<CandidateRead, [string, number, number, string | null, string | null, number]>(
     `select id, is_title, cache_read_tokens from request
       where session_id = ? and cache_read_tokens > 0 and started > ? and started <= ?
-        and provider is ? and model is ?
-      order by started asc, rowid asc`,
+        and provider is ? and model is ? and cache_read_tokens > ?
+      order by cache_read_tokens desc, started asc, rowid asc`,
   )
-  const fingerprints = new Map<string, RequestFingerprintData | undefined>()
   const keys = new Map<string, { readonly read: readonly UnreadKey[]; readonly write: readonly UnreadKey[] }>()
   const keysOf = (requestID: string) => {
     const cached = keys.get(requestID)
     if (cached) return cached
-    const fp = fingerprints.has(requestID) ? fingerprints.get(requestID) : ledger.getFingerprint(requestID)
-    fingerprints.set(requestID, fp)
+    const fp = fingerprintOf(ledger, writes[0]!.session_id, requestID)
     const computed = { read: unreadFingerprintKeys(fp, false), write: unreadFingerprintKeys(fp, true) }
     keys.set(requestID, computed)
     return computed
@@ -163,24 +173,41 @@ function finalizeSession(ledger: Ledger, writes: readonly DueWrite[]): number {
     "update unread_write set unread_real = ?, unread_all = ? where request_id = ?",
   )
   return writes.reduce((finalized, write) => {
-    const index = writeKeyIndex(keysOf(write.request_id).write)
-    const maxima = reads.all(write.session_id, write.at, write.expires, write.provider, write.model).reduce(
-      (best, read) => {
-        if (!matchesRead(index, keysOf(read.id).read)) return best
-        return {
-          all: Math.max(best.all, read.cache_read_tokens),
-          real: read.is_title === 1 ? best.real : Math.max(best.real, read.cache_read_tokens),
-        }
-      },
-      { all: 0, real: 0 },
-    )
+    const candidates = reads.all(write.session_id, write.at, write.expires, write.provider, write.model, write.write_read)
+    // Without a candidate read the write is wholly unread: its keys are not needed.
+    const index = candidates.length === 0 ? new Map<string, KeyIndexEntry>() : writeKeyIndex(keysOf(write.request_id).write)
+    const all = candidates.find((read) => matchesRead(index, keysOf(read.id).read))
+    const real = all === undefined || all.is_title === 0
+      ? all
+      : candidates.find((read) => read.is_title === 0 && matchesRead(index, keysOf(read.id).read))
     const saved = update.run(
-      unreadTokens(write.tokens, maxima.real, write.write_read),
-      unreadTokens(write.tokens, maxima.all, write.write_read),
+      unreadTokens(write.tokens, real?.cache_read_tokens ?? 0, write.write_read),
+      unreadTokens(write.tokens, all?.cache_read_tokens ?? 0, write.write_read),
       write.request_id,
     ).changes
     return finalized + (saved > 0 ? 1 : 0)
   }, 0)
+}
+
+// Decoding one stored fingerprint walks up to 63 deltas back to a keyframe, and
+// neighbouring writes of a session share most of their reads: the session being
+// settled keeps its decoded fingerprints (and with them their derived keys,
+// cache.ts) across calls, until any write to that session moves its mark.
+const decoded = new WeakMap<Ledger, { session: string; mark: number; fingerprints: Map<string, RequestFingerprintData | undefined> }>()
+const DECODED_LIMIT = 512
+
+function fingerprintOf(ledger: Ledger, sessionID: string, requestID: string) {
+  const mark = ledger.sessionRevision(sessionID)
+  const kept = decoded.get(ledger)
+  const cache = kept?.session === sessionID && kept.mark === mark
+    ? kept
+    : { session: sessionID, mark, fingerprints: new Map<string, RequestFingerprintData | undefined>() }
+  decoded.set(ledger, cache)
+  if (cache.fingerprints.has(requestID)) return cache.fingerprints.get(requestID)
+  const fp = ledger.getFingerprint(requestID)
+  cache.fingerprints.set(requestID, fp)
+  if (cache.fingerprints.size > DECODED_LIMIT) cache.fingerprints.delete(cache.fingerprints.keys().next().value!)
+  return fp
 }
 
 // A read key matches when some write key has the same prefix and either has no

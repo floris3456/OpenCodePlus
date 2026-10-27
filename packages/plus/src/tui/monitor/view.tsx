@@ -1383,7 +1383,7 @@ export function MonitorView(props: MonitorViewProps) {
       <Show when={tab() === "cache" && report()?.requestPage}>
         {(page) => (
           <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
-            {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
+            {`${page().returned}/${page().total} requests${(report()?.cachePending ?? 0) > 0 ? ` · ${report()?.cachePending} not analyzed yet` : ""} · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
           </text>
         )}
       </Show>

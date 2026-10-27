@@ -1336,32 +1336,7 @@ export function windowedSessionSignals(
       selectedModel(d.request.provider, d.request.model) &&
       selectedAgent(d.request.agent),
   )
-  const pings = inWindow.filter((d) => d.request.kind === "ping")
-  let followedByHit = 0
-  let followedByMiss = 0
-  let followedByCold = 0
-  let unused = 0
-  let unknown = 0
-  const unknownReasons: Record<string, number> = {}
-  let cost = 0
-  for (const ping of pings) {
-    cost += ping.request.cost
-    // Only a next request inside this window under the same selection describes
-    // the ping's effect; an excluded request belongs to another query.
-    const next = inWindow.find(
-      (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
-    )
-    if (!next) { unused++; continue }
-    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "unknown" || next.request.verdict === "error") {
-      unknown++
-      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : next.request.verdict === "unknown" ? "follow-up-incomplete" : "follow-up-unmeasured"
-      unknownReasons[reason] = (unknownReasons[reason] ?? 0) + 1
-      continue
-    }
-    if (next.request.verdict === "cold") { followedByCold++; continue }
-    if (next.request.verdict === "hit") followedByHit++
-    else if (next && isMiss(next.request)) followedByMiss++
-  }
+  const pings = windowPings(inWindow)
 
   // Unstable prefix: a segment changing on 3+ consecutive requests.
   // We retain each qualifying request's streak and identity, and for each
@@ -1380,6 +1355,39 @@ export function windowedSessionSignals(
   return {
     unread,
     unstable: [...latestUnstable.values()].map((entry) => ({ segment: entry.segment, streak: entry.streak })),
-    pings: { sent: pings.length, cost, followedByHit, followedByMiss, followedByCold, unused, unknown, unknownReasons },
+    pings,
   }
+}
+
+/**
+ * What followed each warming ping of one session's selected requests (in start
+ * order): only the next request inside the same selection describes its effect;
+ * an excluded request belongs to another query.
+ */
+export function windowPings(inWindow: readonly { readonly request: MonitorRequest }[]): WindowedPings {
+  const pings = inWindow.filter((d) => d.request.kind === "ping")
+  let followedByHit = 0
+  let followedByMiss = 0
+  let followedByCold = 0
+  let unused = 0
+  let unknown = 0
+  const unknownReasons: Record<string, number> = {}
+  let cost = 0
+  for (const ping of pings) {
+    cost += ping.request.cost
+    const next = inWindow.find(
+      (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
+    )
+    if (!next) { unused++; continue }
+    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "unknown" || next.request.verdict === "error") {
+      unknown++
+      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : next.request.verdict === "unknown" ? "follow-up-incomplete" : "follow-up-unmeasured"
+      unknownReasons[reason] = (unknownReasons[reason] ?? 0) + 1
+      continue
+    }
+    if (next.request.verdict === "cold") { followedByCold++; continue }
+    if (next.request.verdict === "hit") followedByHit++
+    else if (isMiss(next.request)) followedByMiss++
+  }
+  return { sent: pings.length, cost, followedByHit, followedByMiss, followedByCold, unused, unknown, unknownReasons }
 }

@@ -26,7 +26,7 @@ import {
   type MonitorTarget,
 } from "../src/tui/monitor/view.js"
 import { createSignal } from "solid-js"
-import { cleanupLedgers, collect, contractFixtureReport, ledger, script, usage } from "./monitor-fixture.js"
+import { cleanupLedgers, collect, contractFixtureReport, ledger, saveAll, script, usage } from "./monitor-fixture.js"
 import { dispatch, sleep } from "./instructions-nav.js"
 import { createTestTheme, renderPlusFixture, type DialogScript, type TestFixture } from "./tui.js"
 
@@ -376,6 +376,8 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     })
     db.requestEnded(`page-${String(i).padStart(3, "0")}`, { status: "completed", ended: NOW - 200 })
   }
+  // More results than one query saves; the service's background backfill saves the rest.
+  saveAll(db)
   const { fixture, queries } = await render(db, {
     width: 80,
     height: 24,
@@ -401,6 +403,33 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     await fixture.waitForFrame(() => queries.at(-1)?.missesOnly === true && queries.at(-1)?.requestPage === undefined)
   } finally {
     fixture.destroy()
+  }
+})
+
+test("ended requests not analyzed yet are counted beside the request page", async () => {
+  const db = await ledger()
+  const report = { ...contractFixtureReport(NOW), requestPage: { total: 48, returned: 48, limit: 100, complete: true } }
+  const { fixture } = await render(db, {
+    width: 100,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...report, cachePending: 157 }),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("48/48 requests · 157 not analyzed yet · [—] older"))
+  } finally {
+    fixture.destroy()
+  }
+  const settled = await render(db, {
+    width: 100,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...report, cachePending: 0 }),
+  })
+  try {
+    await settled.fixture.waitForFrame((text) => text.includes("48/48 requests · [—] older"))
+  } finally {
+    settled.fixture.destroy()
   }
 })
 

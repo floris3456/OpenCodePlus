@@ -2046,7 +2046,10 @@ export const MonitorPrompt = Schema.Struct({
 
 export interface MonitorReport extends Schema.Schema.Type<typeof MonitorReport> {}
 export const MonitorReport = Schema.Struct({
+  /** Ended requests whose saved result is not computed yet: missing from requests and totals until it is. */
   cachePending: Schema.optionalKey(Schema.Number),
+  /** Saved unread-write and changed-segment analysis not computed yet: unread and unstable can be incomplete. */
+  analysisPending: Schema.optionalKey(Schema.Number),
   now: Schema.Number,
   totals: MonitorTotals,
   groups: Schema.Array(MonitorGroup),

@@ -8,6 +8,9 @@ import type { Ledger, RequestFingerprintData } from "./ledger.js"
 
 const ready = new WeakSet<Ledger>()
 
+// How far before the newest settled request a request can still be recorded.
+const LATE_RECORDING = 6 * 3_600_000
+
 function ensureTable(ledger: Ledger) {
   if (ready.has(ledger)) return
   ledger.db.exec(`create table if not exists request_change (
@@ -41,16 +44,24 @@ export function settleRequestChanges(ledger: Ledger, limit = 256): number {
   // counts mean nothing is left: skip the anti-join walk over every request.
   const behind = ledger.db.query<{ n: number }, []>("select (select count(*) from request) - (select count(*) from request_change) n").get()!.n
   if (behind <= 0) return 0
+  // Rows are settled oldest first, so an unsettled one sits at most a little
+  // before the newest settled row (one recorded late): walking from the first
+  // request each time made a backlog quadratic.
+  // A correction drops rows further back (ledger.ts savedSchema) and marks how far.
+  const dirty = ledger.db.query<{ at: number }, []>("select at from saved_dirty where name = 'request_change'").get()?.at
+  const from = Math.min((ledger.db.query<{ at: number | null }, []>("select max(started) as at from request_change").get()?.at ?? 0) - LATE_RECORDING, dirty ?? Infinity)
   const pending = ledger.db
-    .query<{ id: string; session_id: string; started: number; rowid: number }, [number]>(
+    .query<{ id: string; session_id: string; started: number; rowid: number }, [number, number]>(
       // Oldest first across sessions, so a long session never starves the rest.
       // This order is also each session's own order, so a batch always takes a
       // prefix of that session's unsettled rows: its predecessor is settled.
       `select r.id as id, r.session_id as session_id, r.started as started, r.rowid as rowid from request r
-        where not exists (select 1 from request_change c where c.request_id = r.id)
+        where r.started >= ? and not exists (select 1 from request_change c where c.request_id = r.id)
         order by r.started asc, r.rowid asc limit ?`,
     )
-    .all(limit)
+    .all(from, limit)
+  // A short walk saved everything from `from` on: the marker is done (unless a writer lowered it meanwhile).
+  if (dirty !== undefined && pending.length < limit) ledger.db.query("delete from saved_dirty where name = 'request_change' and at = ?").run(dirty)
   if (pending.length === 0) return 0
   const first = new Map<string, { started: number; rowid: number; ids: Set<string>; lastStarted: number; lastRowid: number }>()
   for (const row of pending) {
