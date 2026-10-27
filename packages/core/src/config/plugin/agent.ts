@@ -82,7 +82,7 @@ export const Plugin = define({
     loaded.documents = yield* load()
     yield* ctx.agent.transform((editor) => {
       const permissions = expandPermissions(
-        loaded.documents.flatMap((document) => document.info.permissions ?? []),
+        loaded.documents.flatMap((document) => nameDenials(document.info.permissions ?? [], { path: document.path })),
         global.home,
       )
       const configuredDefault = Config.latest(loaded.documents, "default_agent")
@@ -120,7 +120,9 @@ export const Plugin = define({
             if (item.color !== undefined) agent.color = item.color
             if (item.steps !== undefined) agent.steps = item.steps
             if (item.permissions !== undefined) {
-              agent.permissions.push(...expandPermissions(item.permissions, global.home))
+              agent.permissions.push(
+                ...expandPermissions(nameDenials(item.permissions, { agent: id, path: document.path }), global.home),
+              )
             }
           })
         }
@@ -137,6 +139,32 @@ function isAgentSource(entries: Entry[], file: string) {
       entry.type === "directory" &&
       sourceDirectories.some((name) => FSUtil.contains(path.join(entry.path, name), file)),
   )
+}
+
+// A refusal must name the rule and the file that refused it: core sends the winning
+// deny rule's message to the model, and a rule written in a config document carried none.
+function nameDenials(rules: Permission.Ruleset, source: { agent?: string; path?: string }): Permission.Ruleset {
+  return rules.map((rule, index) => {
+    if (rule.effect !== "deny") return rule
+    // A later allow with the same action is what the reader needs next: it shows which
+    // resources still work. Cap the list so one rule stays readable.
+    const allowed = rules
+      .slice(index + 1)
+      .flatMap((item) => (item.effect === "allow" && item.action === rule.action ? [item.resource] : []))
+    const allows =
+      allowed.length === 0
+        ? ""
+        : `; ${source.path === undefined ? "that configuration" : "that file"} allows ${rule.action} for ${[
+            ...allowed.slice(0, 8),
+            ...(allowed.length > 8 ? ["…"] : []),
+          ].join(", ")}`
+    const who = source.agent === undefined ? "the" : `agent ${source.agent}'s`
+    const base = rule.message ?? `Permission denied: ${rule.action}`
+    return {
+      ...rule,
+      message: `${base} (denied by ${who} rule ${rule.action} "${rule.resource}": deny in ${source.path ?? "the configuration"}${allows})`,
+    }
+  })
 }
 
 function expandPermissions(rules: Permission.Ruleset, home: string): Permission.Ruleset {

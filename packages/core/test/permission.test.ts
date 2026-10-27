@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, Deferred, Effect, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Fiber, Layer, Schema } from "effect"
 import { Agent } from "@opencode/core/agent"
 import { Database } from "@opencode/core/database/database"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
+import { Config } from "@opencode/core/config"
+import { ConfigAgentPlugin } from "@opencode/core/config/plugin/agent"
 import { Location } from "@opencode/core/location"
 import { Permission } from "@opencode/core/permission"
 import { PermissionTable } from "@opencode/core/permission/sql"
@@ -12,6 +14,9 @@ import { PermissionSaved } from "@opencode/core/permission/saved"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
+import { Document, Info } from "@opencode/schema/config"
+import { FSUtil } from "@opencode/util/fs-util"
+import { Global } from "@opencode/util/global"
 import { Session } from "@opencode/core/session"
 import { SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
@@ -19,6 +24,7 @@ import { ShellParse } from "@opencode/core/shell/parse"
 import { eq } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
+import { agentHost, host } from "./plugin/host"
 
 const current = Layer.succeed(
   Location.Service,
@@ -26,7 +32,16 @@ const current = Layer.succeed(
 )
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionStore.node, PermissionSaved.node, Agent.node, Permission.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionStore.node,
+      PermissionSaved.node,
+      Agent.node,
+      Permission.node,
+      FSUtil.node,
+      Global.node,
+    ]),
     [Location.node.replace(current)],
   ),
 )
@@ -163,6 +178,47 @@ describe("Permission", () => {
 
       yield* setRules([{ action: "edit", resource: ".git/**", effect: "deny" }])
       expect((yield* service.assert(edit).pipe(Effect.flip)).message).toBe("Permission denied: edit")
+    }),
+  )
+
+  it.effect("refuses with the message a config-loaded agent's deny rule names", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const agents = yield* Agent.Service
+      const file = "/cfg/agents/pipeline-engineer.md"
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provide(
+          Config.testLayer([
+            new Document({
+              type: "document",
+              path: AbsolutePath.make(file),
+              info: Schema.decodeUnknownSync(Info)({
+                agents: {
+                  "pipeline-engineer": {
+                    permissions: [
+                      { action: "edit", resource: "*", effect: "deny" },
+                      { action: "edit", resource: "tools/*", effect: "allow" },
+                      { action: "edit", resource: "packages/*", effect: "allow" },
+                      { action: "edit", resource: "/tmp/opencodeplus/*", effect: "allow" },
+                    ],
+                  },
+                },
+              }),
+            }),
+          ]),
+        ),
+      )
+
+      const service = yield* Permission.Service
+      const agent = Agent.ID.make("pipeline-engineer")
+      const blocked = yield* service
+        .assert(assertion({ action: "edit", resources: ["content/models/x.py"], agent }))
+        .pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(Permission.BlockedError)
+      expect(blocked.message).toBe(
+        `Permission denied: edit (denied by agent pipeline-engineer's rule edit "*": deny in ${file}; that file allows edit for tools/*, packages/*, /tmp/opencodeplus/*)`,
+      )
+      yield* service.assert(assertion({ action: "edit", resources: ["tools/x.py"], agent }))
     }),
   )
 
