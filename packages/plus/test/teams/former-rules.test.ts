@@ -344,13 +344,14 @@ test("read's secret Files rows and Where for every tool: off installs the core d
 
 test("tool rows are the ceiling: a team tool, shell, question, subagent and Tavily off leave the member's tools, on keep them", async () => {
   const { evaluate } = await import("../../../core/src/permission.js")
-  // Tavily would run in Code Mode, which a member without a preset does not
-  // have: it goes direct, so off is a plan like the others and on reaches it.
-  const web = ["web_tavily_search", "web_tavily_fetch"]
-  const tools = ["tool:team_delegate", "tool:team_list", "tool:shell", "tool:question", "tool:subagent", ...web.map((tool) => `tool:${tool}`)]
+  const direct = ["tool:team_delegate", "tool:team_list", "tool:shell", "tool:question", "tool:subagent"]
+  // Tavily runs in Code Mode: off there is a deny on the tool, not a plan.
+  const codemode = ["web_tavily_search", "web_tavily_fetch"]
+  const tools = [...direct, ...codemode.map((tool) => `tool:${tool}`)]
   const off = await appliedFor(...tools.map((item) => [item, "off"] as [string, "off"]))
-  expect(off.tools.filter((plan) => !plan.enabled && tools.includes(`tool:${plan.tool}`)).map((plan) => `tool:${plan.tool}`).toSorted()).toEqual(tools.toSorted())
+  expect(off.tools.filter((plan) => !plan.enabled && tools.includes(`tool:${plan.tool}`)).map((plan) => `tool:${plan.tool}`).toSorted()).toEqual(direct.toSorted())
+  expect(codemode.map((tool) => evaluate(tool, "*", off.rules).effect)).toEqual(["deny", "deny"])
   const on = await appliedFor(...tools.map((item) => [item, "on"] as [string, "on"]))
   expect(on.tools.filter((plan) => tools.includes(`tool:${plan.tool}`) && !plan.enabled)).toEqual([])
-  expect(web.map((tool) => evaluate(tool, "*", on.rules).effect)).not.toContain("deny")
+  expect(codemode.map((tool) => evaluate(tool, "*", on.rules).effect)).not.toContain("deny")
 })

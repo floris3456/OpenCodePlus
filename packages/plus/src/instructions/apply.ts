@@ -36,7 +36,6 @@ import {
   type Level,
   type ModelRecord,
   type PolicyRule,
-  type Resolved,
   type RuleRecord,
   type Scopes,
   type SplitRecord,
@@ -1463,23 +1462,17 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
   const edited = editedParams(input)
   // Every exposure row, not only stored ones: a member preset sets exposure too.
   const exposures = new Map(input.items.filter((item) => item.id.startsWith("toolmode:")).map((item) => [item.id, item]))
-  const execute = input.items.find((item) => item.kind === "tool" && item.execute === true)
-  return input.agents.flatMap((agent) => {
-    const noCodeMode = execute !== undefined && !resolvedFor(execute, agent, input, gateFor(input, agent)).enabled
-    return input.items.flatMap((item) => {
+  return input.agents.flatMap((agent) =>
+    input.items.flatMap((item) => {
       if (item.kind !== "tool") return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input, gateFor(input, agent))
       const tool = parseId(item.id, "tool:")
       const params = paramPlans(input, agent, edited.get(tool))
       const exposure = exposures.get(`toolmode:${tool}`)
-      const exposed = item.execute !== true && exposure !== undefined ? resolvedFor(exposure, agent, input) : undefined
-      const requested =
-        exposed === undefined
-          ? undefined
-          : webFallback(item, exposed, noCodeMode)
-            ? "direct"
-            : exposed.assembled === "codemode" ? "codemode" : "direct"
+      const requested = item.execute !== true && exposure !== undefined
+        ? resolvedFor(exposure, agent, input).assembled === "codemode" ? "codemode" : "direct"
+        : undefined
       const mode = requested === (item.codemode === true ? "codemode" : "direct") ? undefined : requested
       // isNoop compares only text and enablement (it is shared with base and
       // instruction plans, which have no pin), so a pin-only change on a Code
@@ -1499,17 +1492,8 @@ function toolCandidates(input: ApplyInput, options?: { readonly skipNoop?: boole
         params,
         noop,
       }]
-    })
-  })
-}
-
-// A web tool (OpenCode's search and fetch, Tavily, Exa, ChatGPT, Claude) goes
-// direct for an agent without Code Mode, as these tools were before 1.3.30
-// moved them into `tools.web`. In Code Mode such an agent could not reach them
-// at all (live theorysnap members: "no web tools are available"); the tool row
-// still says whether the agent has it.
-function webFallback(item: Item, exposed: Resolved, noCodeMode: boolean): boolean {
-  return noCodeMode && item.namespace === "web" && exposed.assembled === "codemode"
+    }),
+  )
 }
 
 // Parameter rows by tool, only those some record touches: a parameter nobody
