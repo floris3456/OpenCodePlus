@@ -2269,6 +2269,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           // Where the row is listed and how it is enforced (permission-catalog.ts).
           category: upstream.category ?? "",
           kind: upstream.permKind ?? "rule",
+          ...(upstream.allow === true ? { allow: true } : {}),
           ...(upstream.field === undefined ? {} : { field: upstream.field }),
           ...(upstream.value === undefined ? {} : { value: upstream.value }),
           ...(isValueRow(upstream) ? { limit: limitOf(resolved.text) ?? null } : {}),

@@ -2799,19 +2799,22 @@ Row semantics, the same in every category:
   ships on (nothing refused) unless what it guards is never wanted.
 - An allow-list row (`allow: true`: Temporary directories, `/tmp/*` and
   `*/run/plus/tmp/*`, in read's and edit's Where; `pilotty (driving terminal
-  apps)` in shell's Commands, shipped off) lets its patterns through while it
-  is on, and only matters once the fallback is off. A closed fallback's
-  refusal ends in `; still allowed: <titles of the allow rows that are on>`.
+  apps)` in shell's Commands, shipped off; and every user shell rule whose id
+  starts with `allow.`, `perm:shell:allow.<name>`, `discover.ts`
+  `userRuleItem`) lets its patterns through while it is on, and only matters
+  once the fallback is off. Off, it opens nothing and refuses nothing (and
+  scrubs no prompt lines). A closed fallback's refusal ends in
+  `; still allowed: <titles of the allow rows that are on>`.
 - Shell's Commands is the one allow-list core enforces as well
   (`apply.ts` `shellAllowList`): while Every other command is off, the agent
-  gets a deny `*` and an allow per pattern of each allow row that is on. The
-  call as written is checked by Plus, and core checks every command it parses
-  out of it (each part of a pipeline, a list or a substitution), so
-  `pilotty … && git push` is refused. The pilotty row covers its terminal
-  commands (spawn, snapshot, output, key, type, click, scroll, resize,
-  wait-for, kill, list-sessions) but not `stop` or `daemon`, which end every
-  chat's terminals. pilotty runs whatever program it is told to spawn: the row
-  limits the shell to driving terminals, it is not a sandbox.
+  gets a deny `*` and an allow per pattern of each allow row that is on — a
+  user's `allow.` shell rule included. The call as written is checked by Plus,
+  and core checks every command it parses out of it (each part of a pipeline, a
+  list or a substitution), so `pilotty … && git push` is refused. The pilotty
+  row covers its terminal commands (spawn, snapshot, output, key, type, click,
+  scroll, resize, wait-for, kill, list-sessions) but not `stop` or `daemon`,
+  which end every chat's terminals. pilotty runs whatever program it is told to
+  spawn: the row limits the shell to driving terminals, it is not a sandbox.
 - A limit or bound row carries its number as its text; on applies it, off
   removes the cap.
 

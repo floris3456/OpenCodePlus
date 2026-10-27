@@ -13,7 +13,7 @@ import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
 import { Effect } from "effect"
-import { apply, orderRules, permissionTableOf, type ApplyInput } from "../src/instructions/apply.js"
+import { apply, orderRules, permissionTableOf, sessionPlans, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { catalogItems } from "../src/instructions/permission-catalog.js"
 import { decide, enforcementState, permissionTable } from "../src/instructions/permission-enforce.js"
@@ -347,6 +347,126 @@ test("a team member with no preset is told which row closed its shell, and openi
   expect(evaluate("shell", "git push origin main", pushing)).toMatchObject({
     effect: "deny",
     message: 'pushing is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git-push "Git push": off, set at project level)',
+  })
+})
+
+// T1: a user shell rule named `allow.<name>` is an allow row of Commands, so
+// theorysnap's runner runs what those six rules name while its "Every other
+// command" row stays off, and the rows that are off still refuse inside it.
+test("a shell allow. rule of a preset-less member opens its own patterns through a closed shell", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const { ShellParse } = await import("../../core/src/shell/parse.js")
+  const runner: TeamMember = { id: "runner", team: "theorysnap" }
+  // theorysnap's real records carry no team field and name the member.
+  const rule = (id: string, label: string, patterns: string[], keywords: string[]) => ({
+    type: "rule" as const,
+    level: "project" as const,
+    agent: "runner",
+    tool: "shell",
+    id,
+    label,
+    patterns,
+    keywords,
+    updated: "",
+  })
+  const rules = [
+    rule("allow.inspect", "Looking around (ls, echo)", ["ls", "ls *", "echo *", "cd *", "true"], ["ls", "echo", "cd", "true"]),
+    rule("allow.repo-python", "Repo scripts (python3 / uv run under tools/)", ["python3 tools/*", "uv run tools/*"], ["python3", "uv run"]),
+    rule("allow.wrappers", "Wrappers (nice, timeout)", ["nice *", "timeout *"], ["nice", "timeout"]),
+  ]
+  const closed = [change(runner, "tool:shell", { state: "on" })]
+  const inputFor = (records: readonly CustomizationRecord[]) => presetInput({ members: [runner], records, rules })
+  const shell = (records: readonly CustomizationRecord[], command: string) =>
+    decide(permissionTableOf(inputFor(records)).toolRows("runner", "shell"), {
+      tool: "shell",
+      input: { command },
+      sessionID: "ses",
+      directory: "/work",
+      teamMembers: new Set(),
+    }).refuse
+  // The closing row names the allow rows that are on, in the order the table lists them.
+  const stillAllowed = "Looking around (ls, echo), Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout)"
+  const closedMessage = `shell commands are not allowed here; still allowed: ${stillAllowed} (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))`
+  for (const command of ["echo hello", "python3 tools/check.py", "timeout 120 python3 tools/benchmark/bench.py report /tmp/opencodeplus/bench/batch1", "cd tools && ls"])
+    expect([command, shell(closed, command)]).toEqual([command, undefined])
+  expect(shell(closed, "git status")).toBe(`Permission denied: ${closedMessage}`)
+
+  // Core: the same four commands run, one part of a chain at a time.
+  const verdict = async (records: readonly CustomizationRecord[], line: string) => {
+    const applied = await rulesAfterApply("runner", inputFor(records))
+    const parsed = await Effect.runPromise(ShellParse.scan(line, "/bin/bash", "/work"))
+    const refused = parsed.commands.map((part) => evaluate("shell", part.resource, applied)).find((entry) => entry.effect === "deny")
+    return refused === undefined ? "runs" : (refused.message ?? "deny")
+  }
+  for (const command of ["echo hello", "python3 tools/check.py", "timeout 120 python3 tools/benchmark/bench.py report /tmp/opencodeplus/bench/batch1", "cd tools && ls"])
+    expect([command, await verdict(closed, command)]).toEqual([command, "runs"])
+  expect(await verdict(closed, "git rev-parse HEAD")).toBe(
+    'git commands are not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git "Git": off by default (nothing sets it))',
+  )
+  expect(await verdict(closed, "echo hi && git push origin main")).toBe(
+    'pushing is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git-push "Git push": off by default (nothing sets it))',
+  )
+  expect(await verdict(closed, "rm -rf build")).toBe(
+    'recursive force removal is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:rm-rf "Recursive force remove": off by default (nothing sets it))',
+  )
+  expect(await verdict(closed, "uv run python3 -c 1")).toBe(closedMessage)
+
+  // A deny-list row that is off still refuses inside what an allow row opens.
+  const noWrites = [...closed, change(runner, "perm:shell:commands.file-writes", { state: "off" })]
+  expect(await verdict(noWrites, "echo x > f.txt")).toBe(
+    'writing files from the shell is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:commands.file-writes "Writing files from the shell": off, set at project level)',
+  )
+  expect(await verdict(noWrites, "echo x")).toBe("runs")
+
+  // The allow row off opens nothing and scrubs nothing.
+  const inspectOff = [...closed, change(runner, "perm:shell:allow.inspect", { state: "off" })]
+  expect(shell(inspectOff, "echo hello")).toBe(
+    `Permission denied: shell commands are not allowed here; still allowed: Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout) (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))`,
+  )
+  expect(await verdict(inspectOff, "echo hello")).toBe(
+    `shell commands are not allowed here; still allowed: Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout) (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))`,
+  )
+  expect((await rulesAfterApply("runner", inputFor(inspectOff))).some((rule) => rule.action === "shell" && rule.resource === "echo *" && rule.effect === "deny")).toBe(false)
+  const scrubOf = (records: readonly CustomizationRecord[]) =>
+    new Map(sessionPlans(inputFor(records), permissionTableOf(inputFor(records))).scrubByAgent).get("runner") ?? []
+  // A deny-list row that is off still scrubs (git); an allow row never does.
+  expect(scrubOf(inspectOff)).toContain("git")
+  expect(scrubOf(inspectOff)).not.toContain("echo")
+  expect(scrubOf(inspectOff)).not.toContain("ls")
+
+  // With Every other command on the allow rows change nothing.
+  const open = [...closed, change(runner, "perm:shell:commands.*", { state: "on" })]
+  expect(await verdict(open, "uv run python3 -c 1")).toBe("runs")
+  expect(shell(open, "uv run python3 -c 1")).toBeUndefined()
+  expect(await verdict(open, "git status")).toBe(
+    'git commands are not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git "Git": off by default (nothing sets it))',
+  )
+
+  // A rule without the prefix stays a deny-list row: on, its patterns are
+  // refused by the closing row and it opens nothing.
+  const mine = [rule("mine", "Mine", ["mine *"], ["mine"])]
+  const withMine = (records: readonly CustomizationRecord[]) => presetInput({ members: [runner], records, rules: [...rules, ...mine] })
+  const mineVerdict = async (records: readonly CustomizationRecord[]) => {
+    const applied = await rulesAfterApply("runner", withMine(records))
+    const parsed = await Effect.runPromise(ShellParse.scan("mine x", "/bin/bash", "/work"))
+    const refused = parsed.commands.map((part) => evaluate("shell", part.resource, applied)).find((entry) => entry.effect === "deny")
+    return refused === undefined ? "runs" : (refused.message ?? "deny")
+  }
+  const mineRefusal = (records: readonly CustomizationRecord[]) =>
+    decide(permissionTableOf(withMine(records)).toolRows("runner", "shell"), {
+      tool: "shell",
+      input: { command: "mine x" },
+      sessionID: "ses",
+      directory: "/work",
+      teamMembers: new Set(),
+    }).refuse
+  expect(mineRefusal(closed)).toBe(`Permission denied: ${closedMessage}`)
+  expect(await mineVerdict(closed)).toBe(closedMessage)
+  const mineOff = [...open, change(runner, "perm:shell:mine", { state: "off" })]
+  const mineRules = await rulesAfterApply("runner", withMine(mineOff))
+  expect(evaluate("shell", "mine x", mineRules)).toMatchObject({
+    effect: "deny",
+    message: 'Mine is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:mine "Mine": off, set at project level)',
   })
 })
 

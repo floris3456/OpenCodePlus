@@ -1247,6 +1247,9 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
     const keywords = input.items.flatMap((upstream) => {
       const item = runtimeRule(upstream, agent, input)
       if (item === undefined || item.kind !== "perm") return []
+      // An allow row that is off opens nothing; scrubbing its keywords would
+      // only delete prompt lines for a refusal it never makes.
+      if (item.allow === true) return []
       if (item.keywords === undefined || item.keywords.length === 0) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)

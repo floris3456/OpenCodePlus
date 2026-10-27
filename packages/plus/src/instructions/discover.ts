@@ -1128,27 +1128,37 @@ function permItems(input: {
       continue
     }
     if (byId.has(id)) continue
-    byId.set(id, {
-      id,
-      kind: "perm",
-      group: "none",
-      title: record.id,
-      text: "",
-      enabled: upstreamEnabled(),
-      fingerprint: fingerprint(""),
-      permTool: record.tool,
-      ruleId: record.id,
-      patterns: [],
-      keywords: [],
-      custom: true,
-      // The agent the rule was created for owns it (§3.3 fallback: upstream).
-      category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }),
-      ...(action === undefined ? {} : { permAction: action }),
-    })
+    byId.set(id, userRuleItem(record, action))
   }
   const legacy = [...byId.values()]
   const taken = new Set(legacy.map((item) => item.id))
   return [...legacy, ...catalog.filter((item) => !taken.has(item.id))].toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+}
+
+/**
+ * The row of one stored user rule with no catalog row of its own. A shell rule
+ * whose id starts with `allow.` is an allow row of Commands, like pilotty: on,
+ * it lets its patterns through a closed "Every other command".
+ */
+export function userRuleItem(record: RuleRecord, action: string | undefined): Item {
+  return {
+    id: permItemId(record.tool, record.id),
+    kind: "perm",
+    group: "none",
+    title: record.id,
+    text: "",
+    enabled: upstreamEnabled(),
+    fingerprint: fingerprint(""),
+    permTool: record.tool,
+    ruleId: record.id,
+    patterns: [],
+    keywords: [],
+    custom: true,
+    // The agent the rule was created for owns it (§3.3 fallback: upstream).
+    category: categoryOfRow({ permTool: record.tool, custom: true, ruleId: record.id }),
+    ...(action === undefined ? {} : { permAction: action }),
+    ...(record.tool === "shell" && record.id.startsWith("allow.") ? { allow: true, permKind: "input" as const, field: "command" } : {}),
+  }
 }
 
 // The tools that get curated rule rows: native and Plus tools outside Code

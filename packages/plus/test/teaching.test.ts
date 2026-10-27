@@ -127,7 +127,7 @@ test("the skill content covers the tool surface", async () => {
     "compaction:model",
     "compaction:instructions",
     "(denied by ",
-    "never opens a closed shell",
+    'id: "allow.<name>"',
   ]) {
     expect(teachingSkillContent).toContain(phrase)
   }

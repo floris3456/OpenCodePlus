@@ -2269,6 +2269,48 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(curatedDelete.message).toContain("only user-created rules")
 })
 
+// T1: the read view of a perm row says when the row is an allow row of its
+// category, so a reader sees an `allow.` shell rule as the allow row it is.
+test("read shows an allow row as one, and a plain rule without the field", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const allow = (await runOk(need(tools, "instructions_create"), {
+    kind: "rule",
+    tool: "shell",
+    id: "allow.inspect",
+    label: "Looking around",
+    patterns: ["ls", "ls *"],
+    level: "project",
+  })) as { id: string }
+  const plain = (await runOk(need(tools, "instructions_create"), {
+    kind: "rule",
+    tool: "shell",
+    id: "mine",
+    label: "Mine",
+    patterns: ["mine *"],
+    level: "project",
+  })) as { id: string }
+  expect(await runOk(need(tools, "instructions_read"), { id: allow.id })).toMatchObject({
+    tool: "shell",
+    rule: "allow.inspect",
+    category: "commands",
+    kind: "input",
+    allow: true,
+    field: "command",
+  })
+  const plainRow = (await runOk(need(tools, "instructions_read"), { id: plain.id })) as Record<string, unknown>
+  expect(plainRow).toMatchObject({ tool: "shell", rule: "mine", category: "commands", kind: "rule" })
+  expect("allow" in plainRow).toBe(false)
+})
+
 test("a Teams-catalogue rule keeps its catalogue through a message set, and a curated Teams row materialises a Teams override", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({

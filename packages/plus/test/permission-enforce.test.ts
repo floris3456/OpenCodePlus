@@ -33,7 +33,7 @@ import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-polic
 import { actionForToolId } from "../src/instructions/tool-permissions.js"
 import { controlItems } from "../src/instructions/agent-controls.js"
 import { permissionTableOf } from "../src/instructions/apply.js"
-import { change, linked, presetInput, presetTable, shippedMembers } from "./teams/preset-table.js"
+import { change, linked, presetInput, presetTable, shippedMembers, type TeamMember } from "./teams/preset-table.js"
 
 function toolItem(tool: string): Item {
   return { id: `tool:${tool}`, kind: "tool", group: "native", title: tool, text: tool, enabled: true, fingerprint: fingerprint(tool) }
@@ -787,6 +787,38 @@ test("shellLine says a member runs no command, or only what its allow rows name,
       "runner cannot commit: never give it a commit deliverable.",
     ].join("\n"),
   )
+})
+
+// T1: the allow rows theorysnap's lead created are named in the same line, so
+// a delegator hears what its runner's shell does run and not only that it runs
+// nothing.
+test("shellLine names a member's own allow. shell rules among what its shell runs", () => {
+  const runner: TeamMember = { id: "runner", team: "theorysnap" }
+  const lead: TeamMember = { id: "lead", team: "theorysnap" }
+  const delegating = [change(lead, "tool:team_delegate", { state: "on" }), change(lead, "perm:team_delegate:to.runner", { state: "on" })]
+  const rule = (id: string, label: string, patterns: string[]) => ({
+    type: "rule" as const,
+    level: "project" as const,
+    agent: "runner",
+    tool: "shell",
+    id,
+    label,
+    patterns,
+    keywords: [],
+    updated: "",
+  })
+  const rules = [
+    rule("allow.inspect", "Looking around (ls, echo)", ["ls", "ls *", "echo *", "cd *", "true"]),
+    rule("allow.repo-python", "Repo scripts (python3 / uv run under tools/)", ["python3 tools/*", "uv run tools/*"]),
+    rule("allow.wrappers", "Wrappers (nice, timeout)", ["nice *", "timeout *"]),
+  ]
+  const table = (records: ReturnType<typeof change>[]) =>
+    presetTable({ members: [runner, lead], records: [...delegating, ...records], rules })
+  expect(shellLine(table([change(runner, "tool:shell", { state: "on" })]), "runner")).toEqual([
+    `runner's shell runs only Looking around (ls, echo), Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout): its "Every other command" row is off.`,
+  ])
+  // With the row on it runs everything again, and the allow rows add nothing.
+  expect(shellLine(table([change(runner, "tool:shell", { state: "on" }), change(runner, "perm:shell:commands.*", { state: "on" })]), "runner")).toEqual([])
 })
 
 // ── result masking ─────────────────────────────────────────────────────────

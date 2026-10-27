@@ -987,8 +987,8 @@ function noCommit(table: PermissionTable, target: string): string[] {
 
 // A member that cannot run commands, said before a Brief that needs them reaches it: theorysnap's runner,
 // its "Every other command" row off by default, refused every command for two attempts. Only allow-list
-// rows open a closed shell: a user rule you create is a deny-list row, so on it refuses nothing and it is
-// never in the open list.
+// rows open a closed shell — the pilotty row, and a user rule whose id starts with `allow.` — so each one
+// that is on is named here.
 export function shellLine(table: PermissionTable, target: string): string[] {
   if (!table.toolEnabled(target, "shell"))
     return [`${target} has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).`]
