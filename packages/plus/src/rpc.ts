@@ -1622,6 +1622,10 @@ export const MonitorStepResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("pending"),
   }),
+  /** The ledger file is being rewritten; ask again once it is done. */
+  Schema.Struct({
+    status: Schema.Literal("compacting"),
+  }),
   Schema.Struct({
     status: Schema.Literal("ready"),
     stepID: Schema.String,
@@ -1988,6 +1992,8 @@ export const MonitorSessionRow = Schema.Struct({
 
 export interface MonitorSessionList extends Schema.Schema.Type<typeof MonitorSessionList> {}
 export const MonitorSessionList = Schema.Struct({
+  /** The ledger file is being rewritten; the list is empty until it is done. */
+  compacting: Schema.optionalKey(Schema.Boolean),
   sessions: Schema.Array(MonitorSessionRow),
   /** Roots in the list (one page of them is returned). */
   roots: Schema.Number,
@@ -2023,6 +2029,8 @@ export const MonitorPromptRow = Schema.Struct({
 
 export interface MonitorPrompt extends Schema.Schema.Type<typeof MonitorPrompt> {}
 export const MonitorPrompt = Schema.Struct({
+  /** The ledger file is being rewritten; no sent body is available yet. */
+  compacting: Schema.optionalKey(Schema.Boolean),
   requestID: Schema.optionalKey(Schema.String),
   unchanged: Schema.optionalKey(Schema.Boolean),
   sessionID: Schema.optionalKey(Schema.String),
@@ -2046,6 +2054,8 @@ export const MonitorPrompt = Schema.Struct({
 
 export interface MonitorReport extends Schema.Schema.Type<typeof MonitorReport> {}
 export const MonitorReport = Schema.Struct({
+  /** The ledger file is being rewritten; this answer has no rows yet. */
+  compacting: Schema.optionalKey(Schema.Boolean),
   /** Ended requests whose saved result is not computed yet: missing from requests and totals until it is. */
   cachePending: Schema.optionalKey(Schema.Number),
   /** Saved unread-write and changed-segment analysis not computed yet: unread and unstable can be incomplete. */

@@ -106,7 +106,13 @@ export function SessionsTab(props: SessionsTabProps) {
         fallback={
           <box paddingLeft={1} paddingTop={1}>
             <text fg={theme().text.muted}>
-              {props.list === undefined ? "Loading sessions…" : props.all ? "No sessions recorded." : "No active sessions · [S] show inactive"}
+              {props.list === undefined
+                ? "Loading sessions…"
+                : props.list.compacting === true
+                  ? "Compacting the Monitor ledger…"
+                  : props.all
+                    ? "No sessions recorded."
+                    : "No active sessions · [S] show inactive"}
             </text>
           </box>
         }

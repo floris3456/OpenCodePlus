@@ -50,6 +50,8 @@ const LIVE_FOR_MS = 60_000
 
 export function refreshInterval(report: Plus.MonitorReport | undefined): number {
   if (report === undefined) return REFRESH_MS
+  // A rewrite of the ledger file is short: ask again promptly rather than at idle pace.
+  if (report.compacting === true) return REFRESH_MS
   // Take the newest timestamp available anywhere: the newest tool feed entry,
   // the last (newest) request, or the newest ping. `requests` is oldest-first,
   // so its newest row is the last one. Reading only the first request would
@@ -1304,8 +1306,12 @@ export function MonitorView(props: MonitorViewProps) {
           {(message) => <text fg={theme().text.feedback.error.base}>{`tools unavailable: ${message()}`}</text>}
         </Show>
         <Show
-          when={report()}
-          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading…" : ""}</text>}
+          when={report()?.compacting === true ? undefined : report()}
+          fallback={
+            <text fg={theme().text.muted}>
+              {failure() !== undefined ? "" : report()?.compacting === true ? "Compacting the Monitor ledger…" : "Loading…"}
+            </text>
+          }
         >
           {(current) => (
             <box flexDirection="column" flexShrink={0}>
@@ -1463,8 +1469,16 @@ export function MonitorView(props: MonitorViewProps) {
       {/* Tab Contents or Help */}
       <Show when={!helpOpen()} fallback={<MonitorHelp context={props.context} onClose={() => setHelpOpen(false)} />}>
         <Show
-          when={report()}
-          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading monitor data…" : ""}</text>}
+          when={report()?.compacting === true ? undefined : report()}
+          fallback={
+            <text fg={theme().text.muted}>
+              {failure() !== undefined
+                ? ""
+                : report()?.compacting === true
+                  ? "Compacting the Monitor ledger… the file is being rewritten, nothing is lost"
+                  : "Loading monitor data…"}
+            </text>
+          }
         >
           {(_current) => (
             <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>

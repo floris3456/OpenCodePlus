@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite"
 import fs from "node:fs"
 import path from "node:path"
-import { Effect, Schema } from "effect"
+import { Schema } from "effect"
 import { inconsistentObservation, Observation, readObservation, type RequestObservation } from "./observation.js"
 import { errorFingerprint } from "./fingerprint.js"
 import { teamsDataDir } from "../instructions/paths.js"
@@ -739,97 +739,34 @@ function migrateReadIndexes(db: Database) {
     coalesce(json_extract(observation, '$.scope'), ''), ended)`)
 }
 
-// A ledger at least this large is worth compacting: below it the file costs
-// little, and rewriting it would gain almost nothing.
-const COMPACT_BYTES = 64 * 1024 * 1024
 // Free pages below this share of the file are normal fragmentation.
 const COMPACT_SHARE = 0.3
-// A VACUUM rewrites the whole file beside it; never start one without room.
-const COMPACT_HEADROOM = 1.2
 // Pages returned to disk after a prune, and the least time between those runs.
 const INCREMENTAL_PAGES = 2000
 const INCREMENTAL_EVERY = HOUR
 
-/** How the ledger compacts itself. Tests pass their own sizes, clock and filesystem. */
+/**
+ * How this handle tidies the file it holds. The one-time rewrite is not here:
+ * it runs in a worker (compact.ts) so it never blocks the service.
+ */
 export interface LedgerOptions {
-  /** Bytes still free on the ledger's filesystem; `fs.statfsSync` by default. */
-  freeBytes?: (dir: string) => number
-  /** Compact only at least this many bytes (and when this share of pages is free). */
-  compactBytes?: number
-  compactShare?: number
-  compactHeadroom?: number
   incrementalPages?: number
   incrementalEvery?: number
+  /** Share of free pages above which pruning returns some to the disk. */
+  compactShare?: number
   /** Clock for the once-an-hour prune gate. */
   now?: () => number
 }
 
-const freeBytesOn = (dir: string) => {
-  const stat = fs.statfsSync(dir)
-  return stat.bavail * stat.bsize
-}
-
-/**
- * Compacts an existing ledger before its shared handle opens, and turns on
- * incremental auto-vacuum so later pruning can return pages to the disk.
- *
- * This runs on its own connection, then closes it: a VACUUM on the shared
- * handle makes that handle's own writes fail with "database is locked" after
- * the busy timeout, while a separate connection's writer waits for the lock
- * and then goes through. It runs synchronously before `createLedger` returns,
- * so Monitor writes from this process queue in the event loop instead of
- * failing, and WAL readers on other connections keep reading throughout.
- * Nothing is deleted: VACUUM rewrites live rows, so no record is dropped.
- */
-function compactBeforeOpen(file: string, options: LedgerOptions) {
-  const size = fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0
-  if (size < (options.compactBytes ?? COMPACT_BYTES)) return
-  const db = new Database(file)
-  const pages = db.query<{ page_count: number }, []>("pragma page_count").get()?.page_count ?? 0
-  const freelist = db.query<{ freelist_count: number }, []>("pragma freelist_count").get()?.freelist_count ?? 0
-  const auto = db.query<{ auto_vacuum: number }, []>("pragma auto_vacuum").get()?.auto_vacuum ?? 0
-  const fragmented = pages > 0 && freelist / pages > (options.compactShare ?? COMPACT_SHARE)
-  if (auto === 2 && !fragmented) {
-    db.close()
-    return
-  }
-  const free = (options.freeBytes ?? freeBytesOn)(path.dirname(file))
-  if (free < size * (options.compactHeadroom ?? COMPACT_HEADROOM)) {
-    db.close()
-    Effect.runSync(
-      Effect.logWarning("plus monitor ledger left uncompacted for disk space", { file, bytes: size, free }),
-    )
-    return
-  }
-  const started = Date.now()
-  Effect.runSync(Effect.logInfo("plus monitor ledger compaction started", { file, bytes: size, pages, free: freelist, autoVacuum: auto }))
-  db.exec("pragma auto_vacuum = incremental")
-  db.exec("vacuum")
-  // VACUUM writes its result through the WAL; only a truncating checkpoint
-  // makes the main file's own size shrink.
-  db.exec("pragma wal_checkpoint(truncate)")
-  const compactedPages = db.query<{ page_count: number }, []>("pragma page_count").get()?.page_count ?? 0
-  db.close()
-  const compacted = fs.statSync(file).size
-  Effect.runSync(Effect.logInfo("plus monitor ledger compaction finished", {
-    file,
-    durationMs: Date.now() - started,
-    bytesBefore: size,
-    bytesAfter: compacted,
-    pagesBefore: pages,
-    pagesAfter: compactedPages,
-  }))
-}
-
 /** `monitor.db` next to the teams data, under the XDG data directory. */
 // Pruning frees pages in place, so the file stops growing but does not shrink;
-// only a `VACUUM` gives that space back. The ledger now does that itself:
-// opening a file of 64 MB or more whose pages are over 30% free rewrites it
-// once (compactBeforeOpen), and after each prune pass a bounded
-// `incremental_vacuum` returns free pages hourly. Both are safe: the rewrite
-// runs on its own connection before this process writes to the file, so writes
-// wait and no row is dropped, WAL readers keep reading, and the incremental
-// form frees only pages SQLite already marks as free.
+// only a `VACUUM` gives that space back. Two things do that now, and neither
+// blocks the service: the one-time rewrite runs in a worker at monitor start
+// (compact.ts), holding writes in memory until it is done; afterwards each
+// prune pass may return a bounded batch of free pages with
+// `incremental_vacuum`, at most hourly. Neither drops a row: the rewrite
+// rewrites live rows, and the incremental form frees only pages SQLite already
+// marks as free.
 export function defaultLedgerPath(): string {
   return path.join(path.dirname(teamsDataDir()), "monitor.db")
 }
@@ -848,7 +785,6 @@ export function ledgerAt(file: string = defaultLedgerPath()): Ledger {
 
 export function createLedger(file: string, options: LedgerOptions = {}): Ledger {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  compactBeforeOpen(file, options)
   const db = new Database(file, { create: true })
   // Check before any migration, pragma or metadata write; never downgrade an unknown writer.
   const hasMeta = db.query("select name from sqlite_master where type = 'table' and name = 'meta'").get()
@@ -863,9 +799,9 @@ export function createLedger(file: string, options: LedgerOptions = {}): Ledger 
     throw new Error("Unsupported monitor analysis index version")
   }
   // Before the first table, so a new ledger starts in incremental mode; on an
-  // existing one this is a no-op until the next `VACUUM` (compactBeforeOpen
-  // already ran one when it was needed). It must also precede the journal-mode
-  // switch: on an empty file, setting WAL first stops it from persisting.
+  // existing one this is a no-op until the next `VACUUM`. It must also precede
+  // the journal-mode switch: on an empty file, setting WAL first stops it from
+  // persisting.
   db.exec("pragma auto_vacuum = incremental")
   db.exec("pragma journal_mode = wal")
   db.exec("pragma synchronous = normal")
@@ -1451,8 +1387,8 @@ export function createLedger(file: string, options: LedgerOptions = {}): Ledger 
       })
       // Returning freed pages to disk is cheap but not free, and pruning runs
       // every couple of minutes: do it at most hourly, and only when the file
-      // is mostly free space. A full `VACUUM` still waits for the next process
-      // start (compactBeforeOpen), because it rewrites the whole file.
+      // is mostly free space. A full `VACUUM` never runs here: it rewrites the
+      // whole file, and that has its own worker at monitor start.
       const clock = options.now ?? Date.now
       const at = clock()
       if (at - lastIncremental < (options.incrementalEvery ?? INCREMENTAL_EVERY)) return
