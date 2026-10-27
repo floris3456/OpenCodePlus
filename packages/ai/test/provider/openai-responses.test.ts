@@ -2831,6 +2831,18 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  // CLIProxyAPI's CommandCode route ends a truncated response this way.
+  it.effect("maps a completed response with status incomplete and no reason to length", () =>
+    Effect.gen(function* () {
+      const response = yield* LLMClient.generate(request).pipe(
+        Effect.provide(
+          fixedResponse(sseEvents({ type: "response.completed", response: { id: "resp_cut", status: "incomplete" } })),
+        ),
+      )
+      expect(response.finishReason).toEqual({ normalized: "length", raw: undefined })
+    }),
+  )
+
   // OpenAI's documented stream orders output text within one message item; no
   // provider-valid same-kind overlap is evidenced, so done boundaries close it.
   it.effect("closes sequential output messages before starting the next", () =>
