@@ -82,9 +82,10 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep, 
   if (node.address !== undefined && node.address.section !== null) {
     if (step === "in" || step === "out")
       return { refusal: "Sections move only within the same parent; cross-parent nesting is not supported (B42)" }
-    const neighbour = siblings[position + (step === "up" ? -1 : 1)]
-    if (neighbour === undefined) return { refusal: "Already at the edge of its sibling sections" }
-    const change = planSectionMove(input, node.id, step === "up" ? { before: neighbour.id } : { after: neighbour.id }, new Date().toISOString(), memo)
+    const slots = slotsAhead(siblings, position, step)
+    if (slots.length === 0) return { refusal: "Already at the edge of its sibling sections" }
+    const updated = new Date().toISOString()
+    const change = firstAccepted(slots, (target) => planSectionMove(input, node.id, target, updated, memo))
     if ("refusal" in change) return change
     return { state: { ...state, section: change, status: change.status }, expand: [] }
   }
@@ -101,9 +102,9 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep, 
   switch (step) {
     case "up":
     case "down": {
-      const neighbour = siblings[position + (step === "up" ? -1 : 1)]
-      if (neighbour === undefined) return { refusal: step === "up" ? "Already at the top of its list" : "Already at the bottom of its list" }
-      return apply(state, planFor(input, state.layout, node, parent, step === "up" ? { before: neighbour.id } : { after: neighbour.id }, memo))
+      const slots = slotsAhead(siblings, position, step)
+      if (slots.length === 0) return { refusal: step === "up" ? "Already at the top of its list" : "Already at the bottom of its list" }
+      return apply(state, firstAccepted(slots, (target) => planFor(input, state.layout, node, parent, target, memo)))
     }
     case "in": {
       // Origin headings are fixed presentation structure, not folder boundaries.
@@ -127,6 +128,31 @@ export function advanceMove(input: MemoInput, state: MoveState, step: MoveStep, 
       return apply(state, planFor(input, state.layout, node, parent, { into }, memo))
     }
   }
+}
+
+// The places one arrow press can reach, nearest first: each slot past a
+// neighbour, named by that neighbour and again by the next one (a row that
+// cannot anchor a move, like a Code Mode group, may still be passed). A row
+// is only refused a place it would land in, never one it passes on the way.
+function slotsAhead(siblings: readonly Lazy[], position: number, step: "up" | "down"): RowTarget[][] {
+  const ahead = step === "up" ? siblings.slice(0, position).reverse() : siblings.slice(position + 1)
+  return ahead.map((neighbour, index) => {
+    const next = ahead[index + 1]
+    return step === "up"
+      ? [{ before: neighbour.id }, ...(next === undefined ? [] : [{ after: next.id }])]
+      : [{ after: neighbour.id }, ...(next === undefined ? [] : [{ before: next.id }])]
+  })
+}
+
+// The first slot the planner accepts; when none is, the nearest one's refusal.
+function firstAccepted<Result extends object>(slots: readonly RowTarget[][], plan: (target: RowTarget) => Result | { readonly refusal: string }): Result | { readonly refusal: string } {
+  const refusals: { readonly refusal: string }[] = []
+  for (const target of slots.flat()) {
+    const result = plan(target)
+    if (!("refusal" in result)) return result
+    refusals.push(result)
+  }
+  return refusals[0]!
 }
 
 // Tabs and folders go through planRowMove; an origin/sidebar list group through
