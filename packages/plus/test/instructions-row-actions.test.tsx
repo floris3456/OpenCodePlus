@@ -33,6 +33,20 @@ test("the footer names copy and cut on a tool row, and their count once rows are
   await fixture.waitForFrame((frame) => frame.includes('None of the 2 rows can be duplicated: "read" exists once for each agent'))
 })
 
+test("with only agents selected the footer offers copy and duplicate but not cut, which would refuse", async () => {
+  const user = (id: string) => ({ id, scope: "project" as const, fileBacked: true, origin: "user" as const, path: `/project/.opencode/agent/${id}.md` })
+  await using fixture = await renderInstructionsRoute({ snapshots: [createSnapshot({ agents: [user("critic"), user("zed")], items: [item("tool:read", "read")] })], width: 150, height: 40 })
+  await reach(fixture, "agent:project:critic", "critic")
+  await fixture.waitForFrame((frame) => footer(frame).includes("ctrl+d duplicate"))
+  expect(footer(fixture.captureCharFrame())).not.toContain("ctrl+x")
+  expect(dispatch(fixture, "x")).toBe(true)
+  expect(dispatch(fixture, "down")).toBe(true)
+  await fixture.waitForFrame((frame) => selectedRow(frame).includes("zed"))
+  expect(dispatch(fixture, "x")).toBe(true)
+  await fixture.waitForFrame((frame) => footer(frame).includes("ctrl+c copy 2") && footer(frame).includes("ctrl+d duplicate 2"))
+  expect(footer(fixture.captureCharFrame())).not.toContain("ctrl+x")
+})
+
 test("ctrl+d on a user System row asks for the copy's name, offering \"<name> copy\", and duplicates it", async () => {
   const runs: unknown[] = []
   await using fixture = await renderInstructionsRoute({

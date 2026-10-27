@@ -271,7 +271,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         await refresh()
         const row = decoded.value.rows.at(-1)
         const memo = treeMemo()
-        if (row !== undefined && memo !== undefined) reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
+        // Pasted onto an agent or member, every row of it changed: stay on it.
+        if (row !== undefined && memo !== undefined && node.kind !== "agent" && node.kind !== "team") reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
       }
       if (decoded.value.clipboard !== undefined && decoded.value.mode !== undefined)
         setClipboard({ id: decoded.value.clipboard, mode: decoded.value.mode, rows: decoded.value.rows })
@@ -302,6 +303,9 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       const memo = treeMemo()
       if (row !== undefined && memo !== undefined) reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
       setStatus(decoded.value.status)
+      // A copy that is a new file reloads the screen once the host notices
+      // it, which clears the status line: the toast stays, as for a create.
+      context.ui.toast.show({ variant: "success", message: decoded.value.status })
       return true
     } catch (error) {
       setStatus(errorMessage(error))

@@ -2941,7 +2941,11 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       const copy = created.value.id
       const team = source.kind === "member" ? { level: source.level, team: source.team } : undefined
       const row = team === undefined ? `agent:${source.level}:${copy}` : `team:${source.level}:${team.team}:${copy}`
-      yield* createdRowOrFail(api, (input) => findRow(input, row, treeMemoOf(input)) === undefined ? undefined : { id: row, item: copy }, `agent "${copy}"`)
+      // The host lists a new agent file after its debounced rescan; rebuild
+      // now so the copy is in the tree to place. Its rows are stored by id,
+      // so they are written even if it is not listed yet (it is not placed).
+      yield* Effect.promise(() => api.refresh())
+      yield* createdRowOrFail(api, (input) => findRow(input, row, treeMemoOf(input)) === undefined ? undefined : { id: row, item: copy }, `agent "${copy}"`).pipe(Effect.ignore)
       const after = yield* snapshotOrFail(api)
       const current = memoFromSnapshot(after)
       const levels = [...new Set(source.kind === "agent" ? [source.scope, source.level] : [source.level])]

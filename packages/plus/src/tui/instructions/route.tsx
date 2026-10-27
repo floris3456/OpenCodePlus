@@ -1644,7 +1644,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const memo = state.memo()
     const hints: [string, string][] = []
     if (rows.length > 1 || copyable(node)) hints.push(["ctrl+c", `copy${count}`])
-    if (rows.length > 1 || (copyable(node) && node?.address !== undefined) || folderName(node) !== undefined) hints.push(["ctrl+x", `cut${count}`])
+    // A cut that takes an agent or team refuses (clipboard.ts captureRows).
+    const cuttable = (row: TreeNode | undefined) => row?.address !== undefined || folderName(row) !== undefined
+    if (rows.length > 1 ? memo !== undefined && rows.every((id) => cuttable(findLazy(memo, id))) : cuttable(node)) hints.push(["ctrl+x", `cut${count}`])
     if (state.clipboard() !== undefined) hints.push(["ctrl+v", `paste ${state.clipboard()!.rows.length}`])
     const duplicable = memo === undefined ? 0 : rows.filter((id) => !("refusal" in duplicateSource(memo, id))).length
     if (duplicable > 0) hints.push(["ctrl+d", `duplicate${rows.length > 1 ? ` ${duplicable}` : ""}`])
