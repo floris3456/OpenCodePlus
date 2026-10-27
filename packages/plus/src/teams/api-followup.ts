@@ -31,7 +31,7 @@ import {
   type RunBudget,
   type RunRecord,
 } from "./run.js"
-import { FollowupInput, toolError, type ResolvedBrief } from "./schema.js"
+import { FollowupInput, PATH_LIST_LIMIT, pathList, toolError, type ResolvedBrief } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
@@ -246,7 +246,7 @@ async function rebaseChild(
       if (dirty.length > 0)
         return {
           ok: false as const,
-          result: fail("E_DIRTY", `Run ${child.id} has uncommitted changes in [${dirty.join(", ")}]: only a clean worktree is rebased. Ask it to team_checkpoint first.`, dirty),
+          result: fail("E_DIRTY", `Run ${child.id} has uncommitted changes in [${pathList(dirty)}]: only a clean worktree is rebased. Ask it to team_checkpoint first.`, dirty.slice(0, PATH_LIST_LIMIT)),
         }
       const oldHead = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
       const moved = await gitRaw(child.directory, [
@@ -282,7 +282,7 @@ async function rebaseChild(
           ok: true as const,
           // Live, a worker committed only the conflicted file and finish refused the
           // rest (E_DIRTY): the whole change is uncommitted now, so name the one call.
-          note: `Plus replayed your whole change onto your parent's current HEAD ${head}: your base and HEAD are now that commit, and every file your change touches is uncommitted in your worktree: [${files.join(", ")}]. Conflict markers are in [${conflicts.join(", ")}]. Resolve them keeping both sides' intent, run your checks, then commit the whole change in one call, team_checkpoint with files [${files.join(", ")}], and finish. Your old commits remain at ${backup}.`,
+          note: `Plus replayed your whole change onto your parent's current HEAD ${head}: your base and HEAD are now that commit, and every file your change touches is uncommitted in your worktree: [${pathList(files)}]. Conflict markers are in [${pathList(conflicts)}]. Resolve them keeping both sides' intent, run your checks, then commit the whole change in one call, team_checkpoint with files [${pathList(files)}], and finish. Your old commits remain at ${backup}.`,
         }
       }
       const tip = await git(child.directory, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
