@@ -209,3 +209,40 @@ test("cutting a section remaps its links and masks the old endpoint", () => {
   expect(rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, inserted.address, inserted.address)).toContainEqual(expect.objectContaining({ item: tool.id, target: note.id, targetSection: inserted.address.section, type: "shownWhenOff", enabled: true }))
   expect(rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, section.address, section.address)).toContainEqual(expect.objectContaining({ enabled: false }))
 })
+
+test("an agent pastes onto another agent with its Skills and System rows, Base prompts included", () => {
+  const skill: Item = { id: "skill:notes", kind: "skill", group: "native", title: "notes", text: "Take notes", enabled: true, fingerprint: fingerprint("Take notes") }
+  const base: Item = { id: "base:gpt", kind: "base", group: "none", title: "GPT", text: "Base prompt", enabled: true, fingerprint: fingerprint("Base prompt") }
+  const note: Item = { id: "system:note", kind: "system", group: "none", title: "Note", text: "A note", enabled: true, userSystem: true, fingerprint: fingerprint("A note") }
+  const input: MemoInput = { ...source, items: [...source.items, skill, base, note] }
+  const skillOff = setEnabled(input, "item:project:build:skill:notes", false)
+  if ("refusal" in skillOff) throw new Error(skillOff.refusal)
+  const noteText = saveText({ ...input, records: skillOff.records }, "item:project:build:system:note", "Build's note")
+  if ("refusal" in noteText) throw new Error(noteText.refusal)
+  const current = { ...input, records: noteText.records }
+  const copy = captureRows(current, ["agent:project:build"], "copy")
+  if ("refusal" in copy) throw new Error(copy.refusal)
+  const pasted = pasteRows(current, copy, "agent:project:plan")
+  if ("refusal" in pasted) throw new Error(pasted.refusal)
+  const memo = buildTreeMemo(pasted.memo)
+  expect(findLazy(memo, "item:project:plan:skill:notes")?.partial().state).toBe("off")
+  expect(query(pasted.memo, { where: "id:item:project:plan:system:note", fields: ["text"] }).rows[0]?.text).toBe("Build's note")
+})
+
+test("a System row pasted onto another agent's System list takes its configuration without moving", () => {
+  const note: Item = { id: "system:note", kind: "system", group: "none", title: "Note", text: "A note", enabled: true, userSystem: true, fingerprint: fingerprint("A note") }
+  const input: MemoInput = { ...source, items: [...source.items, note] }
+  const changed = saveText(input, "item:project:build:system:note", "Build's note")
+  if ("refusal" in changed) throw new Error(changed.refusal)
+  const current = { ...input, records: changed.records }
+  const copy = captureRows(current, ["item:project:build:system:note"], "copy")
+  if ("refusal" in copy) throw new Error(copy.refusal)
+  const pasted = pasteRows(current, copy, "group:project:plan:system")
+  if ("refusal" in pasted) throw new Error(pasted.refusal)
+  expect(query(pasted.memo, { where: "id:item:project:plan:system:note", fields: ["text"] }).rows[0]?.text).toBe("Build's note")
+  expect(pasted.layout).toEqual({ folders: [], orders: [] })
+})
+
+test("cutting an agent refuses at once and says what to do instead", () => {
+  expect(captureRows(source, ["agent:project:build"], "cut")).toEqual({ refusal: '"build" cannot be cut: copy it (ctrl+c) to give another one its configuration, or cut its rows' })
+})
