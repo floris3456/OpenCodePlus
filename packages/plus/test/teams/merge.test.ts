@@ -215,6 +215,22 @@ describe("merge queue", () => {
     expect(audit.filter((line) => line.kind === "receipt.written" && line.head === head)).toHaveLength(2)
   })
 
+  test("an entry overlapping the parent's uncommitted file pauses the queue there", async () => {
+    const parentRun = "paused-overlap-parent"
+    const parent = await makeParent("paused-overlap")
+    const unrelated = await makeChild("paused-overlap-a", parent.head, { "a.txt": "a\n" }, "feat: a")
+    const overlapping = await makeChild("paused-overlap-b", parent.head, { "README.md": "child\n" }, "docs: child README")
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun: "paused-overlap-a-run", childBranch: unrelated.branch, childHead: unrelated.head })
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun: "paused-overlap-b-run", childBranch: overlapping.branch, childHead: overlapping.head })
+    await writeFile(join(parent.dir, "README.md"), "parent's own\n")
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.paused).toBe(true)
+    expect(result.processed).toHaveLength(1)
+    expect(result.processed[0]).toMatchObject({ childRun: "paused-overlap-a-run", state: "landed" })
+    expect((await pending(stateDir, parentRun)).map((entry) => entry.childRun)).toEqual(["paused-overlap-b-run"])
+    expect(await readFile(join(parent.dir, "README.md"), "utf8")).toBe("parent's own\n")
+  })
+
   test("a clean child lands and the temp worktree is gone", async () => {
     const parentRun = "w-0000000000000001"
     const childRun = "w-0000000000000002"
@@ -362,22 +378,35 @@ describe("merge queue", () => {
       (e) => asErr(e),
     )
     expect(wrongShort?.code).toBe("E_STALE_PARENT")
+    // A dirty parent refuses only where the child's own commits change the
+    // same path: README.md here is the parent's, and the child adds child.txt.
     await writeFile(join(parent.dir, "README.md"), "fixture modified\n")
-    const dirty = await enqueue(
-      stateDir,
-      {
-        parentRun: "w-0000000000000041",
-        parentWorktree: parent.dir,
-        childRun: "w-0000000000000042",
-        childBranch: "child-dirty",
-        childHead: p,
-        expectedParentHead: p,
-      },
-    ).then(
+    const elsewhere = await makeChild("guards-elsewhere", p, { "child.txt": "child\n" }, "feat: child file")
+    const allowed = await enqueue(stateDir, {
+      parentRun: "w-0000000000000041",
+      parentWorktree: parent.dir,
+      childRun: "w-0000000000000042",
+      childBranch: elsewhere.branch,
+      childHead: elsewhere.head,
+      expectedParentHead: p,
+    })
+    expect(allowed.state).toBe("pending")
+    const overlapping = await makeChild("guards-overlap", p, { "README.md": "child README\n" }, "docs: child edits README")
+    const dirty = await enqueue(stateDir, {
+      parentRun: "w-0000000000000043",
+      parentWorktree: parent.dir,
+      childRun: "w-0000000000000044",
+      childBranch: overlapping.branch,
+      childHead: overlapping.head,
+      expectedParentHead: p,
+    }).then(
       () => null,
       (e) => asErr(e),
     )
     expect(dirty?.code).toBe("E_DIRTY")
+    expect(dirty?.message).toBe(
+      "Your worktree has uncommitted changes to [README.md], which w-0000000000000044's commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.",
+    )
     await git(parent.dir, ["checkout", "--", "README.md"])
   })
 })

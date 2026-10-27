@@ -658,7 +658,7 @@ test("wrong expectedParentHead is refused with E_STALE_PARENT", async () => {
   })
 })
 
-test("dirty parent is refused with E_DIRTY naming the file", async () => {
+test("a dirty parent file the child does not change still lands and keeps its content", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -695,11 +695,66 @@ test("dirty parent is refused with E_DIRTY naming the file", async () => {
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       await fs.writeFile(path.join(repo.dir, "README.md"), "# integrate test modified\n")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
+      const landed = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable())) as { state: string; head: string }
+      expect(landed).toMatchObject({ state: "landed", head: childWork.head })
+      expect(await Bun.file(path.join(repo.dir, "README.md")).text()).toBe("# integrate test modified\n")
+      expect(await git(repo.dir, ["status", "--porcelain"])).toBe("M README.md")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
+
+test("a dirty parent file the child changes is refused with E_DIRTY naming only that file", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parentHead = repo.head
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: parentHead,
+        head: parentHead,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+        sessionID: "ses_parent_005b",
+        children: ["w-eeeeeeeeeeeeeeef"],
+      })
+      const childWork = await makeChild(repo.scratch, repo.dir, "dirty-overlap", parentHead, { "README.md": "# child README\n" }, "docs: child edits README")
+      const now = new Date().toISOString()
+      const child = baseRun({
+        id: "w-eeeeeeeeeeeeeeef",
+        role: "muse-implementer",
+        directory: childWork.dir,
+        branch: childWork.branch,
+        base: parentHead,
+        head: childWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_005b",
+        task: null,
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      await writeReport(root, child.id, 1, "done")
+      await fs.writeFile(path.join(repo.dir, "README.md"), "# integrate test modified\n")
+      await fs.writeFile(path.join(repo.dir, "parent-notes.txt"), "parent notes\n")
+      await git(repo.dir, ["add", "parent-notes.txt"])
+      await git(repo.dir, ["commit", "-m", "docs: parent notes"])
+      const movedHead = await git(repo.dir, ["rev-parse", "HEAD"])
+      await fs.writeFile(path.join(repo.dir, "parent-notes.txt"), "parent notes, uncommitted\n")
+      const error = rejected(
+        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: movedHead }, callerFor(parent), shippedTable()),
+      )
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
-        "Your worktree has tracked modifications [README.md]; commit or discard them; the merge queue is paused until clean.",
+        `Your worktree has uncommitted changes to [README.md], which ${child.id}'s commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.`,
       )
+      expect(error.accepted).toEqual(["README.md"])
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
