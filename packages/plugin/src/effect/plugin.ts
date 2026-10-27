@@ -22,6 +22,7 @@ import type { RpcDomain } from "./rpc.js"
 import type { SessionDomain } from "./session.js"
 import type { ShellDomain } from "./shell.js"
 import type { SkillDomain } from "./skill.js"
+import type { SnapshotDomain } from "./snapshot.js"
 import type { StorageDomain } from "./storage.js"
 import type { ToolDomain } from "./tool.js"
 import type { VcsDomain } from "./vcs.js"
@@ -101,6 +102,7 @@ export interface Context {
   readonly session: SessionDomain
   readonly shell: ShellDomain
   readonly skill: SkillDomain
+  readonly snapshot: SnapshotDomain
   readonly storage: StorageDomain
   readonly tool: ToolDomain
   readonly vcs: VcsDomain

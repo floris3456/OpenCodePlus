@@ -145,6 +145,9 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       transform: () => Effect.die("unused skill.transform"),
       reload: () => Effect.die("unused skill.reload"),
     },
+    snapshot: overrides.snapshot ?? {
+      transform: () => Effect.die("unused snapshot.transform"),
+    },
     storage: overrides.storage ?? {
       get: () => Effect.die("unused storage.get"),
       set: () => Effect.die("unused storage.set"),

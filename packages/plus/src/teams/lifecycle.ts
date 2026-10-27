@@ -34,6 +34,7 @@ import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { RETRY_SCHEDULED, SessionOutcomes, type SessionOutcome } from "./session-events.js"
 import { lock, readJson } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
+import { removeLeftoverSnapshotStores } from "./snapshots.js"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -1022,6 +1023,11 @@ export async function gc(root: string, customPolicy?: Policy, opts?: GcOptions):
     })
     orphansRemoved.push(...removed)
   }
+
+  // A worktree removed with `git worktree remove` outside `removeLocked` (or
+  // by an older Plus) leaves its snapshot store behind; the orphan scan cannot
+  // see the store, so the same pass sweeps those.
+  await removeLeftoverSnapshotStores(root)
 
   return { reaped, skippedDirty, orphansRemoved, removeFailed }
 }
