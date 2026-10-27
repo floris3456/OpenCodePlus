@@ -56,9 +56,8 @@ const files: Record<string, string> = {
   "test/unit/a.test.ts": "test('a', () => {})\n",
 }
 
-async function makeRepo(): Promise<{ dir: string; head: string }> {
-  const dir = path.join(tmp, "repo")
-  await fs.mkdir(dir)
+async function makeRepo(dir = path.join(tmp, "repo")): Promise<{ dir: string; head: string }> {
+  await fs.mkdir(dir, { recursive: true })
   await git(dir, ["init"])
   await git(dir, ["config", "user.name", "check-files"])
   await git(dir, ["config", "user.email", "check-files@local"])
@@ -216,6 +215,43 @@ test("a Basic orchestrator edits tests and plan files only; a Basic implementer 
   expect(editRefusal(table, orchestrator.id, dir, "docs/plans/x.md")).toBeUndefined()
   expect(editRefusal(table, orchestrator.id, dir, "packages/plus/src/value.ts")).toContain("not one you may change")
   expect(editRefusal(table, implementer.id, dir, "packages/plus/src/value.ts")).toBeUndefined()
+})
+
+// A team run worktree lives under ~/.local/share/opencodeplus/teams/worktrees/,
+// so every absolute path in it holds /teams/. Protected rows name one resource:
+// the checkout-relative path, as core's file access does.
+test("Agent and team definitions refuses a project's team definitions, not every Markdown file in a worktree under .../teams/", () => {
+  const implementer = linked("implementer", "implementer")
+  const table = presetTable({
+    members: [implementer],
+    records: [
+      // The outside path reaches the protected rows; "Where" is left open for it.
+      change(implementer, "perm:edit:where.outside", { state: "on" }),
+      change(implementer, "perm:edit:protected.team-state", { state: "on" }),
+      change(implementer, "perm:edit:protected.agent-definitions", { state: "off" }),
+    ],
+  })
+  const dir = "/home/u/.local/share/opencodeplus/teams/worktrees/repo/implementer/w-1"
+  expect(editRefusal(table, implementer.id, dir, "tools/archive/status.md")).toBeUndefined()
+  expect(editRefusal(table, implementer.id, dir, "docs/teams/guide.md")).toBeUndefined()
+  expect(editRefusal(table, implementer.id, dir, ".opencodeplus/teams/crew/member.md")).toContain("Agent and team definitions")
+  expect(editRefusal(table, implementer.id, dir, "sub/.opencodeplus/teams/crew/member.md")).toContain("Agent and team definitions")
+  expect(editRefusal(table, implementer.id, dir, "/home/u/.config/opencodeplus/agents/x.md")).toContain("Agent and team definitions")
+  // The same holds when the checkout itself sits under such a folder.
+  expect(editRefusal(table, implementer.id, "/home/u/.opencodeplus/teams/worktrees/x", "tools/archive/status.md")).toBeUndefined()
+})
+
+test("a delegated run in a worktree under .../teams/ commits a plain Markdown file in scope", async () => {
+  const table = tableWith(
+    ["perm:team_checkpoint:requirements.editable", "on"],
+    ["perm:edit:allowed.*", "on"],
+    ["perm:edit:protected.agent-definitions", "off"],
+  )
+  const inTeams = await makeRepo(path.join(tmp, "teams", "worktrees", "repo", "implementer", "w-1"))
+  expect(await checkpoint(table, await aliceRun(inTeams, [], ["notes/*"]), ["notes/status.md"])).toMatchObject({ ok: true, value: { committed: true } })
+  // And when the checkout's own path matches a protected row's pattern.
+  const nested = await makeRepo(path.join(tmp, ".opencodeplus", "teams", "worktrees", "repo", "implementer", "w-2"))
+  expect(await checkpoint(table, await aliceRun(nested, [], ["notes/*"]), ["notes/status.md"])).toMatchObject({ ok: true, value: { committed: true } })
 })
 
 test("a Basic orchestrator removes only its own files with rm, one plain path each, never recursively; others keep rm as it was", () => {
