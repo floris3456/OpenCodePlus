@@ -232,8 +232,11 @@ export function rowToken(node: Pick<TreeNode, "id" | "kind" | "address">): strin
   if (node.kind === "group") {
     const at = node.id.indexOf(FOLDER_MARK)
     if (at !== -1) return folderRef(node.id.slice(at + FOLDER_MARK.length))
-    // A tab group is `group:<level>:<owner>:<tab>`; an origin subgroup (Tools › mcp) has one more segment.
-    const tab = node.id.split(":").length === 4 ? tabOfGroupId(node.id) : undefined
+    // A tab group is `group:<level>:<owner>:<tab>`; the owner may hold `:`
+    // (a team member is `<team>/:<member>`), so the tab key decides, not the
+    // segment count. An origin subgroup (Tools › mcp) ends in no tab key.
+    if (!node.id.startsWith("group:")) return undefined
+    const tab = tabOfGroupId(node.id)
     return tab === undefined ? undefined : `tab:${tab}`
   }
   return node.address?.section === null ? node.address.item : undefined
