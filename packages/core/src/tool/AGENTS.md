@@ -55,6 +55,6 @@ Tool filtering is catalog visibility, not execution authorization. When a call r
 
 ## Output
 
-Built-ins return complete tool responses. `Tool.Snapshot.execute` is the local execution boundary. Generic output bounding is applied by the Session runner after execution.
+Built-ins return complete tool responses. `Tool.Snapshot.execute` is the local execution boundary. Generic output bounding is applied by the Session runner after execution, to successful results and to the failure message a later request would show the model.
 
 Producer capture remains local to producers. Shell stores combined process output in its backing file and returns a bounded tail with the full-output path when truncated.

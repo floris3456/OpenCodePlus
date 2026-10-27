@@ -12,6 +12,8 @@ import { State } from "./state.js"
 
 export const MAX_LINES = 2_000
 export const MAX_BYTES = 50 * 1024 // 50 KiB
+/** A result that bounded itself still gets cut above this, in case its own limit was huge. */
+export const SELF_BOUNDED_MAX_BYTES = 256 * 1024
 export const RETENTION = Duration.days(7)
 export const DIRECTORY = "tool-output"
 
@@ -30,6 +32,8 @@ export type Editor = {
 
 export interface Interface extends State.Transformable<Editor> {
   readonly truncate: (result: Result) => Effect.Effect<Result>
+  /** Bounds bare text, such as a tool failure message, the same way tool output is bounded. */
+  readonly truncateText: (text: string) => Effect.Effect<string>
   readonly cleanup: () => Effect.Effect<void>
 }
 
@@ -64,17 +68,16 @@ const layer = Layer.effect(
       }),
     })
 
-    const truncate = Effect.fnUntraced(function* (result: Result) {
-      if (result.metadata?.truncated !== undefined) return result
-      const content = result.content
-      const text = content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
-      const limits = state.get()
+    const exceeds = (text: string, limits: Limits) => {
       const lines = text.split("\n")
       if (text.endsWith("\n")) lines.pop()
-      const totalBytes = Buffer.byteLength(text, "utf-8")
-      if (lines.length <= limits.maxLines && totalBytes <= limits.maxBytes)
-        return { ...result, metadata: { ...result.metadata, truncated: false } }
+      return lines.length > limits.maxLines || Buffer.byteLength(text, "utf-8") > limits.maxBytes
+    }
 
+    // Saves the full text and keeps its head; `truncate` and `truncateText` share the cut.
+    const bound = Effect.fnUntraced(function* (text: string, limits: Limits) {
+      const lines = text.split("\n")
+      if (text.endsWith("\n")) lines.pop()
       const kept: string[] = []
       let bytes = 0
       for (const line of lines.slice(0, limits.maxLines)) {
@@ -91,32 +94,51 @@ const layer = Layer.effect(
       yield* fs.ensureDir(directory).pipe(Effect.orDie)
       yield* fs.writeFileString(file, text).pipe(Effect.orDie)
       const shown = cut ? `the first ${limits.maxBytes} bytes of line 1` : `lines 1-${kept.length}`
-      const marker = `[showing ${shown} of ${lines.length}; full output saved to ${file}]`
-      const bounded: Tool.Content[] = []
-      let remaining = kept.join("\n").length
+      return {
+        text: kept.join("\n"),
+        marker: `[showing ${shown} of ${lines.length}; full output saved to ${file}]`,
+        file,
+      }
+    })
+
+    const truncate = Effect.fnUntraced(function* (result: Result) {
+      const content = result.content
+      const text = content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
+      const limits = state.get()
+      if (result.metadata?.truncated !== undefined) {
+        // Read pages stay at most 50 KiB and shell bounds itself at maxBytes, so only a tool
+        // whose own limit was set huge reaches this ceiling.
+        if (Buffer.byteLength(text, "utf-8") <= Math.max(SELF_BOUNDED_MAX_BYTES, 2 * limits.maxBytes)) return result
+      } else if (!exceeds(text, limits)) return { ...result, metadata: { ...result.metadata, truncated: false } }
+
+      const bounded = yield* bound(text, limits)
+      const file = bounded.file
+      const marker = bounded.marker
+      const head: Tool.Content[] = []
+      let remaining = bounded.text.length
       let seenText = false
       let marked = false
       for (const item of content) {
         if (item.type === "file") {
-          bounded.push(item)
+          head.push(item)
           continue
         }
         if (seenText && remaining > 0) remaining--
         seenText = true
         if (remaining >= item.text.length) {
-          bounded.push(item)
+          head.push(item)
           remaining -= item.text.length
           continue
         }
-        if (remaining > 0) bounded.push({ ...item, text: item.text.slice(0, remaining) })
-        if (!marked) bounded.push({ type: "text", text: marker })
+        if (remaining > 0) head.push({ ...item, text: item.text.slice(0, remaining) })
+        if (!marked) head.push({ type: "text", text: marker })
         remaining = 0
         marked = true
       }
-      if (!marked) bounded.push({ type: "text", text: marker })
+      if (!marked) head.push({ type: "text", text: marker })
       return {
         ...result,
-        content: bounded,
+        content: head,
         metadata: { ...result.metadata, truncated: true, outputPath: file },
       }
     })
@@ -125,6 +147,12 @@ const layer = Layer.effect(
       transform: state.transform,
       reload: state.reload,
       truncate,
+      truncateText: Effect.fnUntraced(function* (text: string) {
+        const limits = state.get()
+        if (!exceeds(text, limits)) return text
+        const bounded = yield* bound(text, limits)
+        return `${bounded.text}\n${bounded.marker}`
+      }),
       cleanup: () => cleanup(fs, directory),
     })
   }),
