@@ -2815,6 +2815,13 @@ Row semantics, the same in every category:
   scroll, resize, wait-for, kill, list-sessions) but not `stop` or `daemon`,
   which end every chat's terminals. pilotty runs whatever program it is told to
   spawn: the row limits the shell to driving terminals, it is not a sandbox.
+- Read's Where is enforced by core the same way for `external_directory`
+  (`apply.ts` `externalAllowList`): while its rule row "Outside this checkout,
+  for every tool (external_directory)" is off, the agent gets a deny per
+  pattern of that row and an allow per pattern of each on allow row of read's
+  Where (Temporary directories), so `/tmp` and `run/plus/tmp` stay open for
+  every tool that asks it. The refusal ends in `; still allowed: …` like the
+  shell's.
 - A limit or bound row carries its number as its text; on applies it, off
   removes the cap.
 
