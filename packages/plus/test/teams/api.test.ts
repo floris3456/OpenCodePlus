@@ -1635,6 +1635,54 @@ test("finish done with a spaced path names the full path in E_DIRTY", async () =
   })
 }, 30000)
 
+test("finish done with more than 50 dirty files names the first 50 and counts the rest", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await dirtyChild(root, repo, "w-2222222222222222")
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
+      expect(checked.passed).toBe(true)
+      const files = Array.from({ length: 60 }, (_, i) => `src/bulk-${String(i).padStart(2, "0")}.ts`)
+      for (const file of files) await fs.writeFile(path.join(repo.dir, file), "export const bulk = 1\n")
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toBe(
+        `Worktree has uncommitted changes in [${files.slice(0, 50).join(", ")} and 10 more]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.`,
+      )
+      expect(error.message).not.toContain("src/bulk-50.ts")
+      expect(error.accepted).toEqual({ files: files.slice(0, 50) })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("a dirty finish result names at most 50 files and counts the rest, while the report holds them all", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = childInRepo("w-7777777777777777", repo)
+      await saveRun(root, child)
+      const files = Array.from({ length: 60 }, (_, i) => `bulk-${String(i).padStart(2, "0")}.ts`)
+      for (const file of files) await fs.writeFile(path.join(repo.dir, file), "export const bulk = 1\n")
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(await api.finish(finishInput({ status: "done_with_concerns", summary: "Bulk files reviewed." }), callerFor(child))) as {
+        dirty: boolean
+        dirtyFiles: string[]
+        dirtyCount: number
+      }
+      expect(value.dirty).toBe(true)
+      expect(value.dirtyFiles).toEqual(files.slice(0, 50))
+      expect(value.dirtyCount).toBe(60)
+      const report = (await Bun.file(path.join(root, "runs", child.id, "report-1.json")).json()) as { dirtyFiles: string[] }
+      expect(report.dirtyFiles).toEqual(files)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
 function finishedChild(id: string, repo: { dir: string; head: string }): RunRecord {
   const now = new Date().toISOString()
   return baseRun({
