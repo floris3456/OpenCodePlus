@@ -68,15 +68,32 @@ test("a write whose lifetime is unknown is saved but never counted", async () =>
   expect(savedUnread(db, [SESSION], { since: 0, until: 1_000_000 }, {})).toEqual({ unread: 0, pending: 0 })
 })
 
+// Every write's 24-hour lifetime has ended by EXPIRED; r5 starts inside them, minutes before.
+const EXPIRED = 86_500_000
+const LATE = 86_000_000
+
 test("a request still running inside the write's lifetime defers finalizing it", async () => {
   const db = await session()
   const window = { since: 0, until: UNTIL }
-  db.requestStarted({ id: "r5", sessionID: SESSION, kind: "step", agent: "build", provider: "p", model: "m", started: 3_500 })
+  db.requestStarted({ id: "r5", sessionID: SESSION, kind: "step", agent: "build", provider: "p", model: "m", started: LATE })
 
-  expect(settleUnreadWrites(db, UNTIL, 1_000)).toBe(3)
+  expect(settleUnreadWrites(db, EXPIRED, 1_000)).toBe(3)
   expect(savedUnread(db, [SESSION], window, { titles: false })).toEqual({ unread: 0, pending: 3 })
-  db.requestEnded("r5", { ended: 3_501, status: "completed", usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } })
-  expect(settleUnreadWrites(db, UNTIL, 1_000)).toBe(3)
+  db.requestEnded("r5", { ended: LATE + 1, status: "completed", usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } })
+  expect(settleUnreadWrites(db, EXPIRED, 1_000)).toBe(3)
+  expect(savedUnread(db, [SESSION], window, { titles: false })).toEqual({
+    unread: windowedSessionSignals(sessionFold(db, SESSION).analysis, window, { titles: false }).unread,
+    pending: 0,
+  })
+})
+
+test("a request still open six hours after it started no longer defers, as the fold reads nothing from it", async () => {
+  const db = await session()
+  const window = { since: 0, until: UNTIL }
+  db.requestStarted({ id: "r5", sessionID: SESSION, kind: "step", agent: "build", provider: "p", model: "m", started: LATE })
+
+  expect(settleUnreadWrites(db, EXPIRED, 1_000)).toBe(3)
+  expect(settleUnreadWrites(db, LATE + 6 * 3_600_000 + 1, 1_000)).toBe(3)
   expect(savedUnread(db, [SESSION], window, { titles: false })).toEqual({
     unread: windowedSessionSignals(sessionFold(db, SESSION).analysis, window, { titles: false }).unread,
     pending: 0,

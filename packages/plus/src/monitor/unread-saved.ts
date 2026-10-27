@@ -106,12 +106,16 @@ function insertWrites(ledger: Ledger, limit: number): number {
   )()
 }
 
+// A request still open this long after it started is a crashed run's row: it
+// never ends and, like the fold, reads nothing, so it must not hold writes back.
+const ABANDONED_AFTER = 6 * 3_600_000
+
 function finalizeWrites(ledger: Ledger, now: number, limit: number): number {
   // A session's open requests are few, so they are read once and matched in SQL
   // rather than rescanning each write's session history for every candidate.
   const open = ledger.db
-    .query<{ session: string; started: number }, []>("select session_id as session, started from request where ended is null")
-    .all()
+    .query<{ session: string; started: number }, [number]>("select session_id as session, started from request where ended is null and started > ?")
+    .all(now - ABANDONED_AFTER)
   const due = ledger.db
     .query<DueWrite, [number, string, number]>(
       `select u.request_id, u.session_id, u.at, u.expires, u.tokens,
