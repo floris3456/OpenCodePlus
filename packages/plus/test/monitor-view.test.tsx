@@ -501,6 +501,8 @@ async function render(
     active?: readonly string[]
     /** A fixed Sessions checklist answer instead of the ledger's. */
     checklist?: Plus.MonitorSessionList
+    /** Holds each Sessions checklist answer until the promise it returns settles. */
+    checklistGate?: () => Promise<void>
     /** A cache notice the view opens on; cleared when the view takes it. */
     target?: () => MonitorTarget | undefined
     onTarget?: () => void
@@ -537,6 +539,7 @@ async function render(
       "monitor.cache": async (input: Plus.MonitorQueryInput) => queryCacheResults(db, input, { directory: "/work/project", now: NOW }),
       "monitor.sessions": async (input: Plus.MonitorSessionsInput) => {
         lists.push(input)
+        await options.checklistGate?.()
         if (options.checklist !== undefined) return options.checklist
         const active = new Set(options.active ?? db.db.query<{ id: string }, []>("select id from session").all().map((row) => row.id))
         return sessionChecklist(db, input, { active, now: NOW, directory: "/work/project" })
@@ -745,6 +748,34 @@ test("the Sessions tab shows a token total that includes cache and reasoning", a
     // The old bug summed only input + output.
     expect(frame).not.toContain(formatTokens(row.input + row.output))
   } finally {
+    fixture.destroy()
+  }
+})
+
+test("a Sessions checklist answer slower than the poll is shown; the poll waits for it and asks once more", async () => {
+  const db = await seeded()
+  const gates: (() => void)[] = []
+  const { fixture, lists } = await render(db, {
+    settings: { ...defaultSettings, tab: "sessions" },
+    checklistGate: () => new Promise<void>((resolve) => gates.push(resolve)),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Loading sessions"))
+    expect(lists).toHaveLength(1)
+    // One real poll interval (REFRESH_MS, 1 s: the seeded chat is live) passes with
+    // the answer still out. A poll used to send a second request and drop this answer.
+    await Bun.sleep(1_200)
+    expect(lists).toHaveLength(1)
+    gates.shift()!()
+    const frame = await fixture.waitForFrame((text) => !text.includes("Loading sessions"))
+    // The chat's row, under the column headings (the scope line names it too).
+    expect(frame.slice(frame.indexOf("Session / Role"))).toContain("Fix the thing")
+    // The poll that came while the answer was out asks again as soon as it is in.
+    const deadline = Date.now() + 5_000
+    while (lists.length < 2 && Date.now() < deadline) await Bun.sleep(10)
+    expect(lists).toHaveLength(2)
+  } finally {
+    gates.splice(0).forEach((open) => open())
     fixture.destroy()
   }
 })

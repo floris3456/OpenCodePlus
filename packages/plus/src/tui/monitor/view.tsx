@@ -474,9 +474,21 @@ export function MonitorView(props: MonitorViewProps) {
     }
     setDrills((stack) => (stack.length === 0 ? [drill] : [...stack.slice(0, -1), { ...stack.at(-1)!, ...drill }]))
   }
-  const checklistFlight = { generation: 0 }
+  const checklistShown = () => props.full && tab() === "sessions" && props.active()
+  // A load for changed inputs supersedes the answers still out. A poll never
+  // does: while one is out it waits for it and asks once more, so an answer
+  // slower than the poll interval is still shown.
+  const checklistFlight = { generation: 0, out: 0, again: false }
+  const pollChecklist = () => {
+    if (checklistFlight.out > 0) {
+      checklistFlight.again = true
+      return
+    }
+    void loadChecklist()
+  }
   const loadChecklist = (expand: readonly string[] = []) => {
     const generation = ++checklistFlight.generation
+    checklistFlight.out++
     const query = currentQuery()
     const chat = props.sessionID()
     return plus["monitor.sessions"](
@@ -505,17 +517,25 @@ export function MonitorView(props: MonitorViewProps) {
         setFailure(error instanceof Error ? error.message : String(error))
         return undefined
       },
-    )
+    ).finally(() => {
+      checklistFlight.out--
+      if (checklistFlight.out > 0 || !checklistFlight.again) return
+      checklistFlight.again = false
+      if (checklistShown()) void loadChecklist()
+    })
   }
   createEffect(() => {
-    if (!props.full || tab() !== "sessions" || !props.active()) return
+    if (!checklistShown()) return
     allSessions()
     expanded()
     treeOffset()
     settings().window
     props.sessionID()
     untrack(() => void loadChecklist())
-    const timer = setInterval(() => void loadChecklist(), pace())
+  })
+  createEffect(() => {
+    if (!checklistShown()) return
+    const timer = setInterval(pollChecklist, pace())
     onCleanup(() => clearInterval(timer))
   })
   /** Space: check or uncheck a whole tree, opening it first so every session in it is known. */
