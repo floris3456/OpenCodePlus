@@ -11,6 +11,7 @@ import { AbsolutePath, RelativePath } from "@opencode/core/schema"
 import { Snapshot } from "@opencode/core/snapshot"
 import { Hash } from "@opencode/util/hash"
 import { tmpdir } from "./fixture/tmpdir"
+import { withEnv } from "./fixture/env"
 import { testEffect } from "./lib/effect"
 
 describe("Snapshot", () => {
@@ -391,6 +392,75 @@ describe("Snapshot", () => {
             }).pipe(Effect.provide(snapshotLayer(tmp.path, tmp.path))),
           ).toBeUndefined()
         }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  testEffect(Layer.empty).live("leaves Git LFS files out instead of copying every LFS object", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        withEnv({ GIT_CONFIG_GLOBAL: path.join(tmp.path, "gitconfig") }, () =>
+          Effect.gen(function* () {
+            const project = path.join(tmp.path, "project")
+            const marker = path.join(tmp.path, "lfs-marker")
+            yield* Effect.promise(async () => {
+              await fs.mkdir(project)
+              // An empty filter value yields an empty attribute field in check-attr's output,
+              // between the LFS paths it must not shift.
+              await fs.writeFile(path.join(project, ".gitattributes"), "plain.txt filter=\n*.bin filter=lfs\n")
+              await fs.writeFile(path.join(project, "plain.txt"), "plain one\n")
+              await fs.writeFile(path.join(project, "tracked.txt"), "one\n")
+              await fs.writeFile(path.join(project, "big.bin"), "big one\n")
+              // The commit predates the driver, so no filter runs while it is made.
+              await initGit(project, true)
+              await fs.writeFile(
+                path.join(tmp.path, "gitconfig"),
+                [
+                  `[filter "lfs"]`,
+                  `\trequired = true`,
+                  `\tclean = "cat >/dev/null; echo clean >> '${marker}'"`,
+                  `\tprocess = "echo process >> '${marker}'; exit 1"`,
+                  ``,
+                ].join("\n"),
+              )
+            })
+
+            yield* Effect.gen(function* () {
+              const snapshot = yield* Snapshot.Service
+              const first = yield* snapshot.capture()
+              expect(first).toBeDefined()
+              if (!first) return
+              yield* Effect.promise(async () => {
+                await fs.writeFile(path.join(project, "tracked.txt"), "two\n")
+                await fs.writeFile(path.join(project, "big.bin"), "big two\n")
+                await fs.writeFile(path.join(project, "new.bin"), "new bin\n")
+                await fs.writeFile(path.join(project, "new.txt"), "new text\n")
+              })
+              const second = yield* snapshot.capture()
+              expect(second).toBeDefined()
+              if (!second) return
+
+              const changed = yield* snapshot.files({ from: first, to: second })
+              expect(changed).toContain(RelativePath.make("tracked.txt"))
+              expect(changed).toContain(RelativePath.make("new.txt"))
+              expect(changed).not.toContain(RelativePath.make("big.bin"))
+              expect(changed).not.toContain(RelativePath.make("new.bin"))
+
+              const ran = yield* Effect.promise(() => fs.readFile(marker, "utf8").then((text) => text, () => ""))
+              expect(ran).toBe("")
+              const storage = yield* snapshotDirectory(tmp.path)
+              expect(yield* Effect.promise(() => fs.readdir(storage))).not.toContain("lfs")
+              const listed = yield* Effect.promise(() =>
+                $`git --git-dir ${storage} --work-tree ${project} ls-files -v big.bin`.quiet().text(),
+              )
+              expect(listed.startsWith("h")).toBe(true)
+
+              yield* Effect.promise(() => fs.writeFile(path.join(project, "big.bin"), "big three\n"))
+              expect(yield* snapshot.capture()).toBe(second)
+            }).pipe(Effect.provide(snapshotLayer(tmp.path, project)))
+          }),
+        ),
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),
   )
