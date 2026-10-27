@@ -451,6 +451,14 @@ not allowed here (denied by item:project:theorysnap/:runner:perm:shell:commands.
 preset has every shared row off that way, so the reader sees which row closed
 the shell instead of guessing from the state alone.
 
+A deny rule written in a config file — `permissions:` in an agent's Markdown
+frontmatter, or in `opencode.json` — names itself and its file the same way,
+with the allows that follow it for the same action: `Permission denied: edit
+(denied by agent pipeline-engineer's rule edit "*": deny in
+/root/.config/opencodeplus/agents/pipeline-engineer.md; that file allows edit
+for tools/*, packages/*, /tmp/opencodeplus/*)`. The last matching rule wins,
+so a later allow reopens what the deny closed; change such a rule in its file.
+
 Team tools appear only under the Teams catalogue. An agent that is not a
 member of an enabled team gets a `team.*` wildcard deny, so it sees no
 `team_*` tool and no `tools.team.*` catalog entry in any chat — the answer to

@@ -2060,6 +2060,17 @@ Tool permission rules carry the same field:
   `rowSource` builds it; `permission-enforce.ts` `deniedBy` appends it, and
   `permDenials`/`shellAllowList` put it on the core rule's own message. A row
   the table cannot place (one built by hand) keeps the plain refusal.
+- A deny rule read from a config document (core `config/plugin/agent.ts`
+  `nameDenials`: the document's `permissions`, and an agent entry's
+  `permissions`, which is where Markdown frontmatter `permissions:` and the
+  migrated legacy `permission:`/`tools:` end up) gets a message when it is
+  loaded: `<its message, else Permission denied: <action>> (denied by
+  <agent <id>'s |the >rule <action> "<resource as written>": deny in
+  <document path, else the configuration>; that file allows <action> for
+  <r1>, <r2>, …)` (`that configuration` without a path). The allows are the later `allow` rules of the same list with
+  the same action (at most 8, then `, …`); the clause is left out when there
+  are none. Allow and ask rules stay without a message. Built-in agent rules
+  (core `plugin/agent.ts`, `plugin/plan.ts`) keep the generic refusal.
 - `apply.ts` prefers the user record's message for a custom row and falls back
   to the curated message, then the catalog row's own, for a shipped row
   (`curatedRuleMessage(tool, rule) ?? item.message`); a subagent row has none
