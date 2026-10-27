@@ -29,7 +29,7 @@ afterEach(async () => {
 // Plus's file ops call) re-runs the installed transforms over the documents the
 // config agent plugin read at its last load, and publishes agent.updated;
 // `config.reload({ force: true })` is what rescans those documents from disk.
-function coreAgents(directory: string) {
+function coreAgents(directory: string, agentDirectories: readonly string[]) {
   const documents = new Map<string, Agent.Info>()
   const installed: Array<Parameters<AgentDomain["transform"]>[0]> = []
   const events = Effect.runSync(Queue.unbounded<{ readonly type: string }>())
@@ -57,26 +57,30 @@ function coreAgents(directory: string) {
     for (const transform of installed) transform(editor)
   }
 
-  async function read(directory: string): Promise<Map<string, Agent.Info>> {
+  async function read(): Promise<Map<string, Agent.Info>> {
     const found = new Map<string, Agent.Info>()
-    const files = await fs.readdir(directory, { recursive: true, withFileTypes: true }).catch(() => [])
-    for (const file of files) {
-      if (!file.isFile() || !file.name.endsWith(".md")) continue
-      const filepath = path.join(file.parentPath, file.name)
-      const text = await fs.readFile(filepath, "utf8")
-      const fields = parseFrontmatter(text)
-      const id = Agent.ID.make(idFromPath(directory, filepath))
-      // Core skips an empty file, and a body with no frontmatter still names an
-      // agent (Info.default), exactly like its own decode.
-      if (text.trim().length === 0) continue
-      found.set(
-        String(id),
-        {
-          ...Agent.Info.default(id),
-          ...(fields?.mode === undefined ? {} : { mode: fields.mode }),
-          ...(fields?.description === undefined ? {} : { description: fields.description }),
-        } as Agent.Info,
-      )
+    // Project first, then global: core's registry is id-keyed, so a project
+    // file shadows a global one of the same id.
+    for (const root of agentDirectories) {
+      const files = await fs.readdir(root, { recursive: true, withFileTypes: true }).catch(() => [])
+      for (const file of files) {
+        if (!file.isFile() || !file.name.endsWith(".md")) continue
+        const filepath = path.join(file.parentPath, file.name)
+        const text = await fs.readFile(filepath, "utf8")
+        const fields = parseFrontmatter(text)
+        const id = Agent.ID.make(idFromPath(root, filepath))
+        // Core skips an empty file, and a body with no frontmatter still names
+        // an agent (Info.default), exactly like its own decode.
+        if (text.trim().length === 0 || found.has(String(id))) continue
+        found.set(
+          String(id),
+          {
+            ...Agent.Info.default(id),
+            ...(fields?.mode === undefined ? {} : { mode: fields.mode }),
+            ...(fields?.description === undefined ? {} : { description: fields.description }),
+          } as Agent.Info,
+        )
+      }
     }
     return found
   }
@@ -115,7 +119,7 @@ function coreAgents(directory: string) {
     configReload: () =>
       Effect.gen(function* () {
         counts.reads++
-        const found = yield* Effect.promise(() => read(path.join(directory, ".opencode", "agent")))
+        const found = yield* Effect.promise(() => read())
         documents.clear()
         for (const [id, agent] of found) documents.set(id, agent)
         rebuild()
@@ -130,7 +134,8 @@ async function fixture() {
   process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
   const project = path.join(root, "project")
   await fs.mkdir(path.join(project, ".opencode", "agent"), { recursive: true })
-  const core = coreAgents(project)
+  const globalAgent = path.join(root, "config", "agent")
+  const core = coreAgents(project, [path.join(project, ".opencode", "agent"), globalAgent])
   const ctx = context({
     ...fullContext({ directory: project }),
     agent: core.domain,
@@ -141,7 +146,7 @@ async function fixture() {
   await Effect.runPromise(core.configReload())
   const api = createPlusApi(ctx, createState())
   await api.refresh()
-  return { api, core, project }
+  return { api, core, project, globalAgent }
 }
 
 test("a created agent is in the snapshot at once, though the host registry only rescans on a config reload", async () => {
@@ -177,5 +182,35 @@ test("a renamed agent's new id is in the snapshot at once", async () => {
   const snapshot = await api.snapshot()
   expect(snapshot.value.agents.map((agent) => agent.id)).toContain("after")
   expect(snapshot.value.agents.map((agent) => agent.id)).not.toContain("before")
+})
+
+test("a deleted project agent is gone from the snapshot at once", async () => {
+  const { api, project, core } = await fixture()
+  await Bun.write(path.join(project, ".opencode", "agent", "doomed.md"), formatMarkdown({ mode: "primary" }, "Doomed.\n"))
+  await Effect.runPromise(core.configReload())
+  await api.refresh()
+  expect((await api.snapshot()).value.agents.map((agent) => agent.id)).toContain("doomed")
+
+  const removed = await api.deleteAgent({ scope: "project", id: "doomed" })
+  if (!removed.ok) throw new Error(`deleteAgent failed: ${removed.error.message}`)
+
+  expect((await api.snapshot()).value.agents.map((agent) => agent.id)).not.toContain("doomed")
+})
+
+test("deleting a project agent leaves a same-id agent at another level listed", async () => {
+  const { api, project, globalAgent, core } = await fixture()
+  await Bun.write(path.join(globalAgent, "kept.md"), formatMarkdown({ mode: "primary" }, "Global copy.\n"))
+  await Bun.write(path.join(project, ".opencode", "agent", "kept.md"), formatMarkdown({ mode: "primary" }, "Project copy.\n"))
+  await Effect.runPromise(core.configReload())
+  await api.refresh()
+
+  const removed = await api.deleteAgent({ scope: "project", id: "kept" })
+  if (!removed.ok) throw new Error(`deleteAgent failed: ${removed.error.message}`)
+
+  // The project file is gone, so the global agent of the same id is the level
+  // that answers now: still listed, and no longer at project scope.
+  const kept = (await api.snapshot()).value.agents.filter((agent) => agent.id === "kept")
+  expect(kept.map((agent) => agent.scope)).toEqual(["global"])
+  expect(await Bun.file(path.join(globalAgent, "kept.md")).exists()).toBe(true)
 })
 
