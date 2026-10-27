@@ -1869,7 +1869,7 @@ refused, a requirement demands nothing, a bound is absent.
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
 | read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `databases`, and the curated `perm:read:env` | core rules |
 | subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
-| external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots | core rule / tool hook |
+| external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots; the on allow rows of read's Where (Temporary directories) stay open for it (`apply.ts` `externalAllowList`, the shell allow-list's shape) | core rule / tool hook |
 | planner edits plan files only | edit → Files it may change: `allowed.*` "Every other file" (fallback) and `allowed.plans` (allow-list) for edit, write and patch | tool hook |
 | planner asks before delegating | `perm:team_delegate:approval.every` | tool hook |
 | orchestrator shell changes | shell curated rows `git-push`, `git-commit`, `git-rewrite`, `rm` and catalog Commands `git-changes`, `git-refs`, `file-writes` | core rules |

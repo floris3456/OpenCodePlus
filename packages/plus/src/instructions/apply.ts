@@ -1088,6 +1088,9 @@ function permDenials(input: ApplyInput): Rule[] {
       // policyRules; installing their patterns here too would double them.
       if (item.policy !== undefined) return []
       if ((item.permKind ?? "rule") !== "rule") return []
+      // Installed as an allow-list instead (externalAllowList): its rank-8
+      // refusal would re-deny what the on allow rows open.
+      if (readWhereRule(item)) return []
       if (item.patterns === undefined || item.patterns.length === 0) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
@@ -1143,6 +1146,50 @@ function shellAllowList(input: ApplyInput): Rule[] {
   })
 }
 
+// Read's Where rule row ("Outside this checkout, for every tool
+// (external_directory)"). permDenials and externalAllowList both ask this so
+// they cannot disagree about which row they install.
+function readWhereRule(item: Item): boolean {
+  return item.kind === "perm" && item.permTool === "read" && item.category === "where" && (item.permKind ?? "rule") === "rule"
+}
+
+// Read's Where allow-list: core asks `external_directory` before any tool
+// (read, edit, the shell) touches a path outside the checkout, so while the
+// rule row is off only what read's Where allow rows that are on match may
+// leave it. Without the opening, a Temporary directories row that is on would
+// promise what core refuses; the rows that are off still refuse inside what
+// it opens, because they land after it (permDenials).
+function externalAllowList(input: ApplyInput): Rule[] {
+  const rows = input.items.filter((item) => item.kind === "perm" && item.permTool === "read" && item.category === "where")
+  const closing = rows.find(readWhereRule)
+  if (closing === undefined) return []
+  const action = closing.permAction ?? "external_directory"
+  return input.agents.flatMap((agent): Rule[] => {
+    if (!applies(closing, agent.id)) return []
+    const resolved = resolvedFor(closing, agent, input)
+    if (resolved.enabled) return []
+    const row = runtimeRule(closing, agent, input) ?? closing
+    if (row.patterns === undefined || row.patterns.length === 0) return []
+    const opened = rows.flatMap((candidate) => {
+      const item = runtimeRule(candidate, agent, input)
+      return item !== undefined && item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled ? [item] : []
+    })
+    const base = row.custom === true ? row.message : curatedRuleMessage("read", row.ruleId ?? "") ?? row.message
+    const message = allowListMessage(base ?? `${row.title} is not allowed here`, opened.map((item) => item.title))
+    return [
+      ...row.patterns.map((pattern): Rule => ({
+        agent: agent.id,
+        action,
+        resource: pattern,
+        effect: "deny",
+        allowList: "closing",
+        message: `${message} (denied by ${rowSource(row, agent, input.scopes, resolved)})`,
+      })),
+      ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
+    ]
+  })
+}
+
 interface Rule {
   readonly agent: string
   readonly action: string
@@ -1151,7 +1198,7 @@ interface Rule {
   readonly message?: string
   /** A row's own refusal (a rule row that is off, the non-member namespace deny): always lands last. */
   readonly refusal?: boolean
-  /** An allow-list (shellAllowList): its closing deny, then what its allow rows open, both before the refusals. */
+  /** An allow-list (shellAllowList, externalAllowList): its closing deny, then what its allow rows open, both before the refusals. */
   readonly allowList?: "closing" | "opening"
 }
 
@@ -1592,6 +1639,7 @@ export function sessionPlans(
   const permDenies = orderRules<Rule>([
     ...permDenials(input),
     ...shellAllowList(input),
+    ...externalAllowList(input),
     ...policyRules(input),
     ...teamNamespaceDenials(input),
     ...teamToolDenials(candidates, input.teamAgents),
