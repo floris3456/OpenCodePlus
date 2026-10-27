@@ -5,6 +5,7 @@ import { Effect, Option, Schema } from "effect"
 import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
 import { interactiveActor } from "./instructions-cli.js"
 import { captureRows, pasteRows, type Clipboard } from "./instructions/clipboard.js"
+import { duplicateName, duplicateSource, itemRecordsCopy, ownerLayoutCopy, ownerRecordsCopy, systemCopyId, systemOrderCopy, type DuplicateSource } from "./instructions/duplicate.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -73,6 +74,7 @@ import {
   resolve,
   resolveSplit,
   sameTeam,
+  scopedTo,
   threeWay,
   upstreamForEdit,
 } from "./instructions/model.js"
@@ -116,8 +118,8 @@ import {
   type ModelSettingsField,
   type ModelSettingsKey,
 } from "./instructions/model-settings.js"
-import { presetListing } from "./instructions/presets.js"
-import { folderIdOfRef } from "./instructions/folders.js"
+import { presetListing, presetOwner } from "./instructions/presets.js"
+import { folderIdOfRef, folderRef } from "./instructions/folders.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
 
@@ -456,12 +458,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
     editor.add({
       name: "clipboard",
-      description: "Copy or cut selected Instructions rows, then paste into a compatible row or category.\nCopy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.",
+      description: "Copy, cut and paste Instructions rows, or duplicate rows that can exist twice.\nPaste goes onto a compatible row or category. Copy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.\nduplicate with ids makes a copy of each user System row, agent (a built-in one becomes a user agent from its preset), team member with a file, preset or folder, right after it, named \"<name> copy\" / \"<id>-copy\" (name sets it for one id), with the original's configuration; a folder's copy is empty. Rows that exist once (tools, skills, built-in System rows, categories) refuse with the reason.",
       input: Schema.Struct({
-        action: Schema.Literals(["copy", "cut", "paste", "clear"]),
+        action: Schema.Literals(["copy", "cut", "paste", "clear", "duplicate"]),
         ids: Schema.optionalKey(Schema.Array(Schema.String)),
         clipboard: Schema.optionalKey(Schema.String),
         into: Schema.optionalKey(Schema.String),
+        name: Schema.optionalKey(Schema.String).annotate({ description: "duplicate: the copy's name when ids holds one row" }),
       }),
       output: Plus.InstructionsClipboardOutput,
       options,
@@ -470,6 +473,22 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         if (input.action === "clear") {
           if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
           return { output: { status: "Clipboard cleared", rows: [] } }
+        }
+        if (input.action === "duplicate") {
+          const ids = [...new Set(input.ids ?? [])]
+          if (ids.length === 0) return yield* Effect.fail(new Tool.Error({ message: "Select rows to duplicate" }))
+          const actor = actorFrom(context)
+          const done: { row: string; status: string }[] = []
+          const refused: string[] = []
+          for (const id of ids) {
+            yield* duplicateRow(api, id, ids.length === 1 ? input.name : undefined, actor).pipe(Effect.match({
+              onSuccess: (copy) => { done.push(copy) },
+              onFailure: (error) => { refused.push(error.message) },
+            }))
+          }
+          if (done.length === 0) return yield* Effect.fail(new Tool.Error({ message: refused.join("; ") }))
+          const status = done.length === 1 ? done[0]!.status : `Duplicated ${done.length} rows`
+          return { output: { status: refused.length === 0 ? status : `${status}; not duplicated: ${refused.join("; ")}`, rows: done.map((copy) => copy.row) } }
         }
         const snapshot = yield* snapshotOrFail(api)
         const memo = memoFromSnapshot(snapshot)
@@ -2876,6 +2895,121 @@ function createdRowOrFail(
         message: `create.failed: created ${label} but its row is missing from the instructions tree; re-read with instructions_find`,
       }),
     )
+  })
+}
+
+// Duplicate one row: the existing create operation makes the copy (a file or a
+// preset), then one guarded layout write gives it the original's stored
+// configuration and places it right after the original where its list can.
+function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor: Plus.Actor): Effect.Effect<{ readonly row: string; readonly status: string }, Tool.Error> {
+  return Effect.gen(function* () {
+    const snapshot = yield* snapshotOrFail(api)
+    const memo = memoFromSnapshot(snapshot)
+    const tree = treeMemoOf(memo)
+    const source = duplicateSource(tree, id)
+    if ("refusal" in source) return yield* Effect.fail(new Tool.Error({ message: source.refusal }))
+    const label = name?.trim() || duplicateName(tree, source)
+    const updated = new Date().toISOString()
+    const failed = (result: { readonly ok: false; readonly error: { readonly code: string; readonly message: string } }) =>
+      Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+    if (source.kind === "folder") {
+      const created = planFolderCreate(memo, layoutOf(snapshot), source.parent, label, updated, tree)
+      if ("refusal" in created) return yield* Effect.fail(new Tool.Error({ message: created.refusal }))
+      const added = created.layout.folders.find((entry) => folderRef(entry.id) === created.target)!
+      const row = `${added.owner}:folder:${added.id}`
+      const status = `Duplicated folder "${source.name}" as "${added.name}" (empty: a row sits in one folder)`
+      return yield* writeCopy(api, snapshot, memo, memo.records, placeAfter({ ...memo, ...created.layout }, created.layout, row, source), row, status, actor)
+    }
+    if (source.kind === "system") {
+      const created = yield* Effect.promise(() =>
+        api.createSystem({ id: systemCopyId(tree, source, label), title: label, text: source.text, ...(source.models === undefined ? {} : { models: source.models }), actor }),
+      )
+      if (!created.ok) return yield* failed(created)
+      const item = `system:${created.value.id}`
+      yield* createdRowOrFail(api, (input) => createdItemRow(input, { level: "defaults", agent: null, item }), `System row "${created.value.id}"`)
+      const after = yield* snapshotOrFail(api)
+      const current = memoFromSnapshot(after)
+      const row = `${source.row.slice(0, -source.item.length)}${item}`
+      const status = `Duplicated "${source.title}" as "${label}"`
+      return yield* writeCopy(api, after, current, [...current.records, ...itemRecordsCopy(current.records, source.item, item)], systemOrderCopy(layoutOf(after), source.item, item, updated), row, status, actor)
+    }
+    if (source.kind === "agent" || source.kind === "member") {
+      const created = yield* Effect.promise(() => source.kind === "agent"
+        ? api.createAgent({ scope: source.scope, id: label, ...(source.link === undefined ? {} : { preset: source.link }), ...(source.file ? { from: source.agent } : {}), actor })
+        : api.addTeamAgent({ level: source.level, team: source.team, id: label, ...(source.link === undefined ? {} : { preset: source.link }), from: source.agent, actor }))
+      if (!created.ok) return yield* failed(created)
+      const copy = created.value.id
+      const team = source.kind === "member" ? { level: source.level, team: source.team } : undefined
+      const row = team === undefined ? `agent:${source.level}:${copy}` : `team:${source.level}:${team.team}:${copy}`
+      yield* createdRowOrFail(api, (input) => findRow(input, row, treeMemoOf(input)) === undefined ? undefined : { id: row, item: copy }, `agent "${copy}"`)
+      const after = yield* snapshotOrFail(api)
+      const current = memoFromSnapshot(after)
+      const levels = [...new Set(source.kind === "agent" ? [source.scope, source.level] : [source.level])]
+      const owner = (agent: string) => (level: string) => team === undefined ? `group:${level}:${agent}:` : `group:${level}:${team.team}/:${agent}:`
+      // A discovered member keeps its own rows under its id, like an agent;
+      // its team-scoped rows (links between members) come along too.
+      const records = levels.flatMap((level) => [
+        ...ownerRecordsCopy(current.records, { level, agent: source.agent }, copy),
+        ...(team === undefined ? [] : ownerRecordsCopy(current.records, { level, agent: source.agent, team }, copy)),
+      ])
+      const layout = levels.reduce((all, level) => ownerLayoutCopy(all, owner(source.agent)(level), owner(copy)(level), updated), layoutOf(after))
+      const next = { ...current, records: [...current.records, ...records], ...layout }
+      const status = `Duplicated ${source.agent} as ${copy}${source.kind === "member" || source.file ? "" : ` (a new agent from preset ${source.link!.id})`}`
+      return yield* writeCopy(api, after, current, next.records, placeAfter(next, layout, row, source), row, status, actor)
+    }
+    const ref = source.ref
+    const created = yield* Effect.promise(() => ref.kind === "member"
+      ? api.addPresetMember({ team: ref.team, id: label, from: ref, actor })
+      : ref.kind === "team"
+        ? api.createPreset({ kind: "team", id: label, from: ref.id, actor })
+        : api.createPreset({ kind: "agent", id: label, from: ref, actor }))
+    if (!created.ok) return yield* failed(created)
+    const copy = created.value.ref
+    const row = yield* createdRowOrFail(api, (input) => createdPresetRow(input, copy), `preset "${copy.id}"`)
+    // A user agent or member preset is its own records: the copy takes them
+    // and the original's link, so it does not follow the original. Built-in
+    // presets and team presets are code or member lists: the copy is created
+    // from the original and follows it.
+    if (source.origin !== "user" || ref.kind === "team") return { row: row.id, status: `Duplicated preset ${ref.id} as ${copy.id} (created from it)` }
+    const after = yield* snapshotOrFail(api)
+    const current = memoFromSnapshot(after)
+    const from = presetOwner(ref)
+    const link = (current.links ?? []).find((record) => scopedTo(record, from))
+    const relinked = yield* Effect.promise(() => api.setLink({ ...presetOwner(copy), preset: link?.preset ?? null, actor }))
+    if (!relinked.ok) return yield* failed(relinked)
+    const fresh = yield* snapshotOrFail(api)
+    const latest = memoFromSnapshot(fresh)
+    const prefix = (agent: string) => ref.kind === "member" ? `group:preset:${ref.team}/:${agent}:` : `group:preset:${agent}:`
+    const layout = ownerLayoutCopy(layoutOf(fresh), prefix(ref.id), prefix(copy.id), updated)
+    const records = [...latest.records, ...ownerRecordsCopy(latest.records, from, copy.id)]
+    return yield* writeCopy(api, fresh, latest, records, placeAfter({ ...latest, records, ...layout }, layout, row.id, source), row.id, `Duplicated preset ${ref.id} as ${copy.id}`, actor)
+  })
+}
+
+// The copy goes right after the original in their list; a list that does not
+// take that order (a built-in agent's copy lands among the user agents) keeps
+// its own.
+function placeAfter(memo: MemoInput, layout: LayoutRecords, row: string, source: DuplicateSource): LayoutRecords {
+  const tree = buildTreeMemo(memo)
+  // A folder whose tab took its own copy of an inherited layout has a new id.
+  const original = findLazy(tree, source.row)?.id
+    ?? (source.kind === "folder" ? findLazy(tree, source.parent)?.children().find((entry) => entry.id.includes(":folder:") && entry.label === source.name && entry.id !== row)?.id : undefined)
+  if (original === undefined) return layout
+  const moved = planRowMove(memo, layout, row, { after: original }, new Date().toISOString(), tree)
+  return "refusal" in moved ? layout : moved.layout
+}
+
+function writeCopy(api: PlusApi, snapshot: Plus.Snapshot, before: MemoInput, records: MemoInput["records"], layout: LayoutRecords, row: string, status: string, actor: Plus.Actor) {
+  return Effect.gen(function* () {
+    const delta = deltaOf(before.records, records)
+    const written = yield* Effect.promise(() => api.layoutWrite({
+      folders: [...layout.folders], orders: [...layout.orders],
+      changes: { upsert: delta.upsert.flatMap((record) => { const next = snapshotRecordOf(record); return next === undefined ? [] : [next] }), remove: delta.remove },
+      expectedProjectRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision,
+      target: row, status, actor,
+    }))
+    if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: `The copy was created, but its configuration was not saved: ${written.error.message}` }))
+    return { row, status }
   })
 }
 

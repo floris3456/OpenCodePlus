@@ -16,7 +16,7 @@ import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, hostModelsFrom, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
-import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
+import { create, duplicate, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
@@ -723,7 +723,8 @@ export interface PlusApi {
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
   readonly catalogModels: () => Promise<CatalogModelsResult>
-  readonly createAgent: (input: Plus.CreateAgentInput & { readonly actor?: Plus.Actor }) => Promise<CreateAgentResult>
+  /** `from` (Duplicate, not on the RPC): copy that agent's file at `scope` instead of writing the preset's fields. */
+  readonly createAgent: (input: Plus.CreateAgentInput & { readonly actor?: Plus.Actor; readonly from?: string }) => Promise<CreateAgentResult>
   readonly renameAgent: (input: Plus.RenameAgentInput & { readonly actor?: Plus.Actor }) => Promise<RenameAgentResult>
   readonly deleteAgent: (input: Plus.DeleteAgentInput & { readonly actor?: Plus.Actor }) => Promise<DeleteAgentResult>
   readonly createSkill: (input: Plus.CreateSkillInput & { readonly actor?: Plus.Actor }) => Promise<CreateSkillResult>
@@ -742,7 +743,8 @@ export interface PlusApi {
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
   readonly layoutWrite: (input: Plus.LayoutWriteInput & { readonly actor?: Plus.Actor }) => Promise<LayoutWriteResult>
-  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
+  /** `from` (Duplicate, not on the RPC): copy that member's file instead of writing the preset's fields. */
+  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor; readonly from?: string }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
   readonly renameTeam: (input: Plus.RenameTeamInput & { readonly actor?: Plus.Actor }) => Promise<RenameTeamResult>
@@ -1109,13 +1111,19 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // follow the preset. No preset: an empty file and no link (off).
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
-      const created = await create({
-        scope: input.scope,
-        projectDirectory: directory,
-        id: validated.id,
-        fields: presetFields(preset ?? {}),
-        prompt: "",
-      })
+      const created = input.from === undefined
+        ? await create({
+            scope: input.scope,
+            projectDirectory: directory,
+            id: validated.id,
+            fields: presetFields(preset ?? {}),
+            prompt: "",
+          })
+        : await duplicate({ scope: input.scope, projectDirectory: directory, from: input.from, to: validated.id })
+      if (!created.ok && created.reason === "missing-source") {
+        const reason = `Agent ${input.from} has no file at ${created.path} to copy`
+        return { ok: false as const, error: { code: "agent.invalid" as const, message: reason, data: { id: input.from ?? "", reason } } }
+      }
       if (!created.ok)
         return {
           ok: false as const,
@@ -1136,7 +1144,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: input.scope,
         op: "agent.create",
         target: created.path,
-        summary: `agent.create ${validated.id} (${input.scope})${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
+        summary: `agent.create ${validated.id} (${input.scope})${input.from === undefined ? "" : ` as a copy of ${input.from}`}${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
       })
       return { ok: true as const, value: { id: validated.id, path: created.path } }
     },
@@ -2016,8 +2024,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // empty body; a team-scoped link makes the rest follow the preset.
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
+      const source = input.from === undefined ? undefined : found.agents.find((agent) => agent.id === input.from)?.path
+      if (input.from !== undefined && source === undefined) {
+        const reason = `Member ${input.from} of team ${validatedTeam.team} has no file to copy`
+        return { ok: false as const, error: { code: "agent.invalid" as const, message: reason, data: { id: input.from, reason } } }
+      }
       await fs.mkdir(path.dirname(target), { recursive: true })
-      await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      if (source === undefined) await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      else await fs.copyFile(source, target)
       // The config lands only once the member file exists, so a failed write
       // above leaves nothing behind.
       if (input.level === "project") await ensure(directory)
@@ -2035,7 +2049,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: input.level === "project" ? "project" : "global",
         op: "team.addAgent",
         target,
-        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
+        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})${input.from === undefined ? "" : ` as a copy of ${input.from}`}${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
       })
       return { ok: true as const, value: { id: validated.id, path: target } }
     },

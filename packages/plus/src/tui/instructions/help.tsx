@@ -25,7 +25,8 @@ export const HELP: readonly HelpGroup[] = [
       ["esc", "back one step; from the sidebar it closes the screen"],
       ["x · shift+↑↓ · ctrl+a", "select a row · select a range · select visible rows; Esc clears"],
       ["", "selected rows stay selected across agents and tabs; edits reflect to compatible settings"],
-      ["ctrl+c / ctrl+x / ctrl+v", "copy / cut / paste selected rows; cut stays pending until paste succeeds; Esc cancels"],
+      ["ctrl+c / ctrl+x / ctrl+v", "copy / cut / paste the selected rows (else the row under the cursor): paste onto the same row of another agent, an agent onto an agent, or into a category; cut stays pending until paste succeeds; Esc cancels"],
+      ["ctrl+d", "duplicate: a copy right after the original with its configuration (a user System row, agent, team member, preset or folder; a folder's copy is empty); one row asks for the name, esc keeps \"<name> copy\""],
     ],
   ],
   [

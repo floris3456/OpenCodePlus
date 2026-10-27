@@ -27,6 +27,7 @@ import { KeyHints, RowLine } from "./row.js"
 import { Splitter } from "./splitter.js"
 import { createInstructionsState } from "./state.js"
 import { renameCandidateOf } from "./rename.js"
+import { duplicateName, duplicateSource } from "../../instructions/duplicate.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
 import { ancestry, CATEGORY, isLevelId, LEVELS, reviewTargets, settingsTarget, toolCountOf, toolHint, folderName, workspaceOf, type LevelId, type Row, type ToolCount } from "./workspace.js"
 
@@ -1585,8 +1586,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     const node = current()
     const row = currentRow()
     const hints: [string, string][] = [["↑↓", "move"]]
-    if (state.clipboard() !== undefined) hints.push(["ctrl+v", `paste ${state.clipboard()!.rows.length}`])
     hints.push(["x", node !== undefined && state.selection().has(node.id) ? "deselect" : "select row"])
+    hints.push(...clipboardHints(node))
     if (focus() === "nav") {
       if (row?.role === "owner" || row?.role === "every") hints.push(["→", "open"])
       else if (row?.expandable === true) hints.push(["←→", row.expanded ? "close" : "open"])
@@ -1626,6 +1627,70 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     hints.push(["tab", focus() === "nav" ? "list" : "sidebar"], ["/", "filter"], ["?", "help"])
     hints.push(["esc", state.clipboard()?.mode === "cut" ? "cancel cut" : state.selection().size > 0 ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
     return hints
+  }
+
+  // The rows ctrl+c / ctrl+x / ctrl+d act on: the selection when the cursor is
+  // in it, else the cursor row.
+  function actedRows(node: TreeNode | undefined): readonly string[] {
+    if (node === undefined) return []
+    return state.selectionContains(node) ? [...state.selection()] : [node.id]
+  }
+
+  // Copy, cut, paste and duplicate where they apply; with selected rows they
+  // name how many rows they take.
+  function clipboardHints(node: TreeNode | undefined): [string, string][] {
+    const rows = actedRows(node)
+    const count = rows.length > 1 ? ` ${rows.length}` : ""
+    const memo = state.memo()
+    const hints: [string, string][] = []
+    if (rows.length > 1 || copyable(node)) hints.push(["ctrl+c", `copy${count}`])
+    if (rows.length > 1 || (copyable(node) && node?.address !== undefined) || folderName(node) !== undefined) hints.push(["ctrl+x", `cut${count}`])
+    if (state.clipboard() !== undefined) hints.push(["ctrl+v", `paste ${state.clipboard()!.rows.length}`])
+    const duplicable = memo === undefined ? 0 : rows.filter((id) => !("refusal" in duplicateSource(memo, id))).length
+    if (duplicable > 0) hints.push(["ctrl+d", `duplicate${rows.length > 1 ? ` ${duplicable}` : ""}`])
+    return hints
+  }
+
+  // What the clipboard takes (clipboard.ts captureRows): a row with settings,
+  // an agent, member, team or preset, or a category; not the fixed headings.
+  function copyable(node: TreeNode | undefined): boolean {
+    return node !== undefined && (node.address !== undefined || node.owner !== undefined || folderName(node) !== undefined)
+  }
+
+  function clipboard(action: "copy" | "cut" | "paste") {
+    const node = current()
+    if (node === undefined) {
+      state.setStatus(action === "paste" ? "Choose a row to paste onto" : `Choose a row to ${action}`)
+      return
+    }
+    void state.clipboardOperation(action, node)
+  }
+
+  // ctrl+d: one row asks for the copy's name first (Esc keeps the offered
+  // one); several rows are copied under their default names.
+  async function duplicate() {
+    const node = current()
+    const memo = state.memo()
+    const rows = actedRows(node)
+    if (node === undefined || memo === undefined || rows.length === 0) {
+      state.setStatus("Choose a row to duplicate")
+      return
+    }
+    const sources = rows.map((id) => duplicateSource(memo, id))
+    const refusal = sources.every((source) => "refusal" in source) ? sources[0] : undefined
+    if (refusal !== undefined && "refusal" in refusal) {
+      state.setStatus(rows.length === 1 ? refusal.refusal : `None of the ${rows.length} rows can be duplicated: ${refusal.refusal}`)
+      return
+    }
+    if (rows.length > 1) {
+      await state.duplicateRows(rows)
+      return
+    }
+    const source = sources[0]!
+    if ("refusal" in source) return
+    const offered = duplicateName(memo, source)
+    const name = await props.context.ui.dialog.prompt({ title: `Duplicate ${node.label}`, description: "Name of the copy; esc keeps this one", value: offered })
+    await state.duplicateRows(rows, name?.trim() || undefined)
   }
 
   props.context.keymap.layer(() => {
@@ -1684,9 +1749,10 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         { bind: "up", title: "Previous row", group: "Instructions", run: () => move(-1) },
         { bind: "down", title: "Next row", group: "Instructions", run: () => move(1) },
         { bind: "x", title: "Select or deselect row", group: "Instructions", run: markRow },
-        { bind: "ctrl+c", title: "Copy rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("copy", node) } },
-        { bind: "ctrl+x", title: "Cut rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("cut", node) } },
-        { bind: "ctrl+v", title: "Paste rows", group: "Instructions", run: () => { const node = current(); if (node !== undefined) void state.clipboardOperation("paste", node) } },
+        { bind: "ctrl+c", title: "Copy rows", group: "Instructions", run: () => clipboard("copy") },
+        { bind: "ctrl+x", title: "Cut rows", group: "Instructions", run: () => clipboard("cut") },
+        { bind: "ctrl+v", title: "Paste rows", group: "Instructions", run: () => clipboard("paste") },
+        { bind: "ctrl+d", title: "Duplicate rows", group: "Instructions", run: () => void duplicate() },
         { bind: "shift+up", title: "Extend selection up", group: "Instructions", run: () => markRange(-1) },
         { bind: "shift+down", title: "Extend selection down", group: "Instructions", run: () => markRange(1) },
         { bind: "ctrl+a", title: "Select visible rows", group: "Instructions", run: () => state.setSelection(new Set((focus() === "nav" ? workspace().nav : listRows()).map((row) => row.node.id))) },
