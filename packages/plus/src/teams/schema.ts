@@ -799,6 +799,17 @@ export function toolError(code: string, message: string, accepted?: unknown): To
   return accepted === undefined ? { code, message } : { code, message, accepted }
 }
 
+// How many paths a refusal or a report names before it counts the rest. A
+// worktree with a stale index once listed 56k paths in one E_DIRTY: the 12 MB
+// refusal was more than the provider accepts, and the run died.
+export const PATH_LIST_LIMIT = 50
+
+/** "a, b, c", or the first PATH_LIST_LIMIT paths and "and N more". */
+export function pathList(paths: readonly string[], limit = PATH_LIST_LIMIT): string {
+  if (paths.length <= limit) return paths.join(", ")
+  return `${paths.slice(0, limit).join(", ")} and ${paths.length - limit} more`
+}
+
 const DURATION_RE = /^\s*(?:(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)\s*)+$/i
 const DURATION_PART_RE = /(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)/gi
 
