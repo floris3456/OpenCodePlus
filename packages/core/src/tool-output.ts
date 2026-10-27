@@ -105,14 +105,13 @@ const layer = Layer.effect(
       const content = result.content
       const text = content.flatMap((item) => (item.type === "text" ? [item.text] : [])).join("\n")
       const limits = state.get()
-      if (result.metadata?.truncated !== undefined) {
-        // Read pages stay at most 50 KiB and shell bounds itself at maxBytes, so only a tool
-        // whose own limit was set huge reaches this ceiling.
-        if (Buffer.byteLength(text, "utf-8") <= Math.max(SELF_BOUNDED_MAX_BYTES, 2 * limits.maxBytes)) return result
-      } else if (!exceeds(text, limits)) return { ...result, metadata: { ...result.metadata, truncated: false } }
+      const selfBounded = result.metadata?.truncated !== undefined
+      // Read pages stay at most 50 KiB and shell bounds itself at maxBytes, so only a tool
+      // whose own limit was set huge reaches this ceiling.
+      if (selfBounded && Buffer.byteLength(text, "utf-8") <= Math.max(SELF_BOUNDED_MAX_BYTES, 2 * limits.maxBytes)) return result
+      if (!selfBounded && !exceeds(text, limits)) return { ...result, metadata: { ...result.metadata, truncated: false } }
 
       const bounded = yield* bound(text, limits)
-      const file = bounded.file
       const marker = bounded.marker
       const head: Tool.Content[] = []
       let remaining = bounded.text.length
@@ -139,7 +138,7 @@ const layer = Layer.effect(
       return {
         ...result,
         content: head,
-        metadata: { ...result.metadata, truncated: true, outputPath: file },
+        metadata: { ...result.metadata, truncated: true, outputPath: bounded.file },
       }
     })
 
