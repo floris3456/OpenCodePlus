@@ -1,10 +1,10 @@
-import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorSessionRow, MonitorTotals } from "../rpc.js"
+import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorRequestDetail, MonitorTotals } from "../rpc.js"
 import {
   foldSession,
   isMiss,
   promptTokens,
   sessionFingerprints,
-  windowedSessionSignals,
+  windowPings,
   type SessionAnalysis,
   type SessionFold,
 } from "./cache.js"
@@ -12,7 +12,10 @@ import type { ContextFactRow, Ledger, RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
 import { reuseRate, measurement } from "./measurement.js"
 import { AnalysisCache } from "./analysis-cache.js"
-import { reportPage, reportPageBounds, requestDetail } from "./report-page.js"
+import { reportPage, reportPageBounds } from "./report-page.js"
+import { backfillCacheBatch, FOLD_FIELDS, requestAnalysis, savedRequestFilter } from "./snapshot.js"
+import { savedUnread, settleUnreadWrites } from "./unread-saved.js"
+import { savedUnstable, settleRequestChanges } from "./unstable-saved.js"
 export { ANALYSIS_CACHE_LIMIT } from "./analysis-cache.js"
 
 interface SessionRow {
@@ -204,23 +207,6 @@ function sameFact(a: ContextFactRow, b: ContextFactRow): boolean {
   )
 }
 
-/**
- * Requests an overview or steps report may fold before it answers. The fold
- * runs on the service's one thread at about 0.4-3 ms a request (a long chat's
- * requests cost the most), so this bounds the pause to a few seconds.
- */
-export const MONITOR_FOLD_LIMIT = 2_000
-
-export class MonitorFoldLimit extends Error {
-  constructor(readonly requests: number, readonly sessions: number) {
-    super(
-      `monitor.too_large: this report would first fold ${requests} requests of ${sessions} session${sessions === 1 ? "" : "s"} ` +
-        `(limit ${MONITOR_FOLD_LIMIT}), holding the whole service for seconds to minutes. ` +
-        `Ask view "cache" or "tools" (saved results, fast), or narrow the window or scope.`,
-    )
-  }
-}
-
 export function requestReport(
   ledger: Ledger,
   input: MonitorQueryInput,
@@ -235,123 +221,47 @@ export function requestReport(
     >(`${scope.cte} select * from session ${scope.cte ? "where id in (select id from scope)" : ""}`)
     .all(scope.bindings)
 
-  // Hooks can record a request before the asynchronous host lookup learns its
-  // session; include these rows rather than silently losing real requests.
-  const selected = ledger.db
-    .query<{ id: string }, [typeof scope.bindings]>(
-      `${scope.cte}
-    select distinct session_id as id from request where started >= $monitorSince and started < $monitorUntil ${scope.cte ? "and session_id in (select id from scope)" : ""}
-    union select distinct session_id as id from step where started >= $monitorSince and started < $monitorUntil ${scope.cte ? "and session_id in (select id from scope)" : ""}
-    union select distinct session_id as id from context_fact where at >= $monitorSince and at < $monitorUntil ${scope.cte ? "and session_id in (select id from scope)" : ""}`,
+  // Saved per-request results answer this report, never a history fold: the
+  // fold ran on the service's one thread and took seconds to minutes and
+  // gigabytes for a project. Each saved result is the whole fold's analysis of
+  // its request (snapshot.ts requestAnalysis); requests still running are
+  // analyzed the same way here. What is not saved yet is reported as pending.
+  const signals = savedSignals(ledger, input, window, scope.cte ? sessions.map((session) => session.id) : null)
+  const filter = savedRequestFilter(input, context, window)
+  const running = runningRequests(ledger, input, scope, window)
+  const requests = [
+    ...ledger.db
+      .query<{ summary: string }, typeof filter.bindings>(`${filter.cte} select summary from cache_result where ${filter.where}`)
+      .all(filter.bindings)
+      .map((row): MonitorRequest => JSON.parse(row.summary)),
+    ...running,
+  ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
+  // Running requests are analyzed already. A saved summary carries the cache
+  // screen's wording and its `fold` column the fold's own; a result saved
+  // before that column is analyzed again until the backfill saves it anew.
+  const foldText = (rows: readonly MonitorRequest[]) => {
+    const saved = rows.filter((r) => !running.includes(r)).map((r) => r.id)
+    const folds = new Map(
+      saved.length === 0
+        ? []
+        : ledger.db
+            .query<{ id: string; fold: string | null }, string[]>(
+              `select request_id id, fold from cache_result where request_id in (${saved.map(() => "?").join(", ")})`,
+            )
+            .all(...saved)
+            .map((row) => [row.id, row.fold]),
     )
-    .all({ ...scope.bindings, $monitorSince: window.since, $monitorUntil: window.until })
-    .map((s) => s.id)
-  // A session without a kept fold is folded whole, synchronously, before anything answers.
-  const cache = sessionCache.get(ledger)
-  const cold = selected.filter((id) => cache?.has(id) !== true)
-  const unfolded = cold.length === 0 ? 0 : ledger.db
-    .query<{ c: number }, [string]>("select count(*) as c from request where session_id in (select value from json_each(?))")
-    .get(JSON.stringify(cold))?.c ?? 0
-  if (unfolded > MONITOR_FOLD_LIMIT) throw new MonitorFoldLimit(unfolded, cold.length)
-
-  const legacyMap = new Map<string, LegacyStep[]>()
-  const hasLegacySteps =
-    ledger.db
-      .query<
-        { c: number },
-        []
-      >("select count(*) as c from step s where not exists (select 1 from request r where r.session_id = s.session_id and r.message_id = s.message_id)")
-      .get()?.c ?? 0
-
-  if (hasLegacySteps > 0) {
-    const rawLegacy = ledger.db
-      .query<
-        LegacyStep,
-        [typeof scope.bindings]
-      >(`${scope.cte} select s.* from step s where not exists (select 1 from request r where r.session_id = s.session_id and r.message_id = s.message_id) ${scope.cte ? "and s.session_id in (select id from scope)" : ""}`)
-      .all(scope.bindings)
-    for (let i = 0; i < rawLegacy.length; i++) {
-      const step = rawLegacy[i]!
-      const list = legacyMap.get(step.session_id)
-      if (list) list.push(step)
-      else legacyMap.set(step.session_id, [step])
-    }
+    const analyzed = requestAnalysis(ledger, saved.filter((id) => !folds.get(id)))
+    return rows.map((r) => {
+      if (running.includes(r)) return r
+      const fold = folds.get(r.id)
+      if (!fold) return analyzed.summary(r.id) ?? r
+      return {
+        ...Object.fromEntries(Object.entries(r).filter(([key]) => !FOLD_FIELDS.includes(key))),
+        ...JSON.parse(fold),
+      } as MonitorRequest
+    })
   }
-
-  const analyses = selected.map((id) => {
-    const { rows, facts, analysis } = sessionData(ledger, id)
-    const compact = facts.findLast((f) => f.kind === "compaction" && f.at < window.until)?.at
-    const since = Math.max(window.since, input.sinceCompaction ? (compact ?? 0) : 0)
-    const legacy = (legacyMap.get(id) ?? []).filter(
-      (s) =>
-        s.started >= since &&
-        s.started < window.until &&
-        (!input.agents?.length || input.agents.includes(s.agent ?? "")) &&
-        (!input.models?.length || input.models.includes(`${s.provider}/${s.model}`)),
-    )
-    const signals = windowedSessionSignals(
-      analysis,
-      { since, until: window.until },
-      { agents: input.agents, models: input.models, titles: input.titles },
-    )
-    const details = analysis.summaries.filter(
-      (d) =>
-        d.request.at >= since &&
-        d.request.at < window.until &&
-        (input.titles || d.request.kind !== "title") &&
-        (!input.agents?.length || input.agents.includes(d.request.agent ?? "")) &&
-        (!input.models?.length || input.models.includes(`${d.request.provider}/${d.request.model}`)),
-    )
-    const current = rows.findLast((r) => r.started < window.until && r.kind !== "ping" && !r.isTitle)
-    const currentMeasurement = current ? measurement(current) : undefined
-    const inputState: NonNullable<MonitorReport["context"]>[number]["inputState"] =
-      current?.status === "running"
-        ? "pending"
-        : currentMeasurement?.input !== undefined
-          ? "measured"
-          : currentMeasurement?.state === "legacy-unknown"
-            ? "stored"
-            : "unavailable"
-    const after =
-      compact === undefined
-        ? undefined
-        : rows.find(
-            (r) =>
-              r.started >= compact &&
-              r.started < window.until &&
-              r.kind !== "compaction" &&
-              r.kind !== "ping" &&
-              !r.isTitle,
-          )
-    return {
-      id,
-      rows,
-      details,
-      detail: (id: string) => requestDetail(analysis, id),
-      legacy,
-      unstable: signals.unstable.map((entry) => ({ ...entry, sessionID: id })),
-      fingerprints: analysis.fingerprints,
-      unread: signals.unread,
-      nextExpiry: analysis.writes.reduce((next, write) => {
-        const expiry = write.at + write.lifetime
-        return expiry > window.until ? Math.min(next, expiry) : next
-      }, Infinity),
-      pings: signals.pings,
-      context: {
-        sessionID: id,
-        now: current ? promptTokens(current) : 0,
-        inputState,
-        ...(currentMeasurement?.input === undefined ? {} : { measuredNow: currentMeasurement.input }),
-        ...(after ? { atCompaction: promptTokens(after) } : {}),
-      },
-    }
-  })
-
-  const details = analyses
-    .flatMap((a) => a.details)
-    .sort((a, b) => a.request.at - b.request.at || a.request.id.localeCompare(b.request.id))
-  // Copies: the steps view adds per-query fields, and the analysis is cached.
-  const requests = details.map((d) => ({ ...d.request }))
   // Transport-only children remain inspectable, but are not extra model calls
   // or unknown-usage invocations in aggregate measurement coverage.
   const invocations = requests.filter((r) => r.measurement?.scope !== "exchange")
@@ -396,7 +306,7 @@ export function requestReport(
 
   const pingRows = invocations.filter((r) => r.kind === "ping")
   const misses = requests.filter(isMiss)
-  const legacy = analyses.flatMap((a) => a.legacy)
+  const legacy = legacyStepRows(ledger, input, scope, window)
   const legacyTotal = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
     legacy.reduce((n, s) => n + s[key], 0)
   const priced = invocations.filter((r) => r.pricing?.state === "priced")
@@ -457,7 +367,8 @@ export function requestReport(
       input.requestPage?.direction === "newer" && cursor !== undefined
         ? candidates.slice(0, limit)
         : candidates.slice(-limit)
-    sections.requests = page
+    // The returned rows show the fold's own wording.
+    sections.requests = foldText(page).map((r) => ({ ...r }))
     const first = page[0]
     const last = page.at(-1)
     const before =
@@ -481,9 +392,7 @@ export function requestReport(
 
   const pages: Record<string, NonNullable<MonitorReport["pages"]>[string]> = {}
   if (input.id) {
-    const index = details.findIndex((d) => d.request.id === input.id)
-    const selected = details[index]
-    const detail = selected && analyses.find((analysis) => analysis.id === selected.request.sessionID)?.detail(input.id)
+    const detail = requests.some((r) => r.id === input.id) ? requestAnalysis(ledger, [input.id]).detail(input.id) : undefined
     if (detail) {
       const callCount = ledger.db
         .query<{ total: number; revision: string }, [string, string]>(
@@ -530,7 +439,7 @@ export function requestReport(
 
       sections.detail = {
         ...detail,
-        request: requests[index]!,
+        request: { ...detail.request },
         calls: calls.map((c) => ({
           sessionID: detail.request.sessionID,
           callID: c.call_id,
@@ -610,64 +519,40 @@ export function requestReport(
   }
 
   if (view === "overview" || view === "cache") {
-    sections.unstable = analyses.flatMap((a) => a.unstable)
-    sections.pings = {
-      sent: pingRows.length,
-      cost: sum(pingRows, "cost"),
-      followedByHit: analyses.reduce((n, a) => n + a.pings.followedByHit, 0),
-      followedByCold: analyses.reduce((n, a) => n + a.pings.followedByCold, 0),
-      unused: analyses.reduce((n, a) => n + a.pings.unused, 0),
-      unknown: analyses.reduce((n, a) => n + a.pings.unknown, 0),
-      unknownReasons: analyses.reduce<Record<string, number>>((result, a) => {
-        Object.entries(a.pings.unknownReasons).forEach(([reason, count]) => { result[reason] = (result[reason] ?? 0) + count })
-        return result
-      }, {}),
-      followedByMiss: analyses.reduce((n, a) => n + a.pings.followedByMiss, 0),
-    }
-    sections.unread = analyses.reduce((total, a) => total + a.unread, 0)
+    sections.unstable = signals.unstable
+    sections.pings = [...Map.groupBy(requests, (r) => r.sessionID).values()]
+      .map((rows) => windowPings(rows.map((request) => ({ request }))))
+      .reduce(
+        (total, pings) => ({
+          sent: total.sent + pings.sent,
+          cost: total.cost + pings.cost,
+          followedByHit: total.followedByHit + pings.followedByHit,
+          followedByCold: total.followedByCold + pings.followedByCold,
+          unused: total.unused + pings.unused,
+          unknown: total.unknown + pings.unknown,
+          unknownReasons: Object.entries(pings.unknownReasons).reduce(
+            (reasons, [reason, count]) => ({ ...reasons, [reason]: (reasons[reason] ?? 0) + count }),
+            total.unknownReasons,
+          ),
+          followedByMiss: total.followedByMiss + pings.followedByMiss,
+        }),
+        { sent: 0, cost: 0, followedByHit: 0, followedByCold: 0, unused: 0, unknown: 0, unknownReasons: {} as Record<string, number>, followedByMiss: 0 },
+      )
+    sections.unread = signals.unread
   }
 
   if (view === "overview") {
-    const active = new Set(selected)
-    // Activity selection bounds expensive folds, not the requested as-of
-    // context population. Quiet Sessions need only indexed predecessor reads.
-    const quiet = sessions.filter((session) => !active.has(session.id))
-    const snapshot = quiet.length
-      ? ledger.db.query<
-          { now: number; atCompaction: number | null; status: string | null },
-          [{ $session: string; $until: number }]
-        >(`
-      select coalesce((select input_tokens + cache_read_tokens + cache_write_tokens from request
-        where session_id = $session and started < $until and kind != 'ping' and is_title = 0
-        order by started desc, id desc limit 1), 0) as now,
-      (select input_tokens + cache_read_tokens + cache_write_tokens from request
-        where session_id = $session and started < $until and kind not in ('ping', 'compaction') and is_title = 0
-        and started >= (select max(at) from context_fact where session_id = $session and kind = 'compaction' and at < $until)
-         order by started, id limit 1) as atCompaction,
-       (select status from request where session_id=$session and started < $until and kind != 'ping' and is_title=0
-         order by started desc,id desc limit 1) as status
-    `)
-      : undefined
+    // Sessions active in the window read their latest request's measurement;
+    // quiet ones need only their indexed predecessor reads.
+    const active = activeSessions(ledger, scope, window)
     sections.context = [
-      ...analyses.map((a) => a.context),
-      ...quiet.map((session) => {
-        const state = snapshot!.get({ $session: session.id, $until: window.until })!
-        return {
-          sessionID: session.id,
-          now: state.now,
-          inputState:
-            state.status === "running"
-              ? ("pending" as const)
-              : state.status === null
-                ? ("unavailable" as const)
-                : ("stored" as const),
-          ...(state.atCompaction === null ? {} : { atCompaction: state.atCompaction }),
-        }
-      }),
+      ...active.map((id) => sessionContext(ledger, id, window.until)),
+      ...sessions.filter((session) => !active.includes(session.id)).map((session) => quietContext(ledger, session.id, window.until)),
     ]
-    sections.topMisses = [...misses]
+    const topMisses = [...misses]
       .sort((a, b) => (b.missCost ?? 0) - (a.missCost ?? 0) || (b.missTokens ?? 0) - (a.missTokens ?? 0))
       .slice(0, 3)
+    sections.topMisses = foldText(topMisses)
 
     const agentMap = new Map<
       string,
@@ -750,109 +635,6 @@ export function requestReport(
         lastActive: e.lastActive,
       }))
       .sort((a, b) => b.lastActive - a.lastActive)
-  }
-
-  if (view === "sessions") {
-    const all = ledger.db.query<SessionRow, []>("select * from session").all()
-    const byID = new Map(all.map((s) => [s.id, s]))
-    const placements = new Map<string, { rootID: string; depth: number }>()
-    const placement = (id: string) => {
-      const chain: string[] = []
-      const seen = new Set<string>()
-      let parent: string | undefined = id
-      while (parent && !placements.has(parent) && !seen.has(parent)) {
-        seen.add(parent)
-        chain.push(parent)
-        parent = byID.get(parent)?.parent_id ?? undefined
-      }
-      const known = parent ? placements.get(parent) : undefined
-      const rootID = known?.rootID ?? parent ?? chain.at(-1)!
-      chain
-        .toReversed()
-        .forEach((key, index) => placements.set(key, { rootID, depth: (known?.depth ?? -1) + index + 1 }))
-      return placements.get(id)!
-    }
-    const requestsBySession = new Map<string, MonitorRequest[]>()
-    invocations.forEach((r) => {
-      const list = requestsBySession.get(r.sessionID) ?? []
-      list.push(r)
-      requestsBySession.set(r.sessionID, list)
-    })
-    const analysisBySession = new Map(analyses.map((a) => [a.id, a]))
-    const rows: MonitorSessionRow[] = sessions.map((s) => {
-      const place = placement(s.id)
-      const rs = requestsBySession.get(s.id) ?? []
-      const sessionLegacy = analysisBySession.get(s.id)?.legacy ?? []
-      const base = totalsFor(rs)
-      const legacySum = (key: "input" | "output" | "reasoning" | "cache_read" | "cache_write" | "cost") =>
-        sessionLegacy.reduce((n, step) => n + step[key], 0)
-      const input = base.input + legacySum("input")
-      const cacheRead = base.cacheRead + legacySum("cache_read")
-      // The host is authoritative for the agent; the ledger's last write is the
-      // fallback, which can have been overwritten by a title or generate call.
-      const agent = context.agents?.get(s.id) ?? s.agent
-      return {
-        sessionID: s.id,
-        rootID: place.rootID,
-        depth: place.depth,
-        ...(s.parent_id ? { parentID: s.parent_id } : {}),
-        ...(s.title ? { title: s.title } : {}),
-        ...(agent ? { agent } : {}),
-        ...(s.run_id ? { runID: s.run_id } : {}),
-        ...(s.role ? { role: s.role } : {}),
-        ...(s.team ? { team: s.team } : {}),
-        ...(context.states?.get(s.id) === undefined ? {} : { state: context.states.get(s.id)! }),
-        lastActive: Math.max(rs.at(-1)?.at ?? 0, sessionLegacy.at(-1)?.started ?? 0) || s.last_seen,
-        input,
-        output: base.output + legacySum("output"),
-        reasoning: base.reasoning + legacySum("reasoning"),
-        cacheRead,
-        cacheWrite: base.cacheWrite + legacySum("cache_write"),
-        cost: base.cost + legacySum("cost"),
-        ...reuseRate(rs, sessionLegacy.length),
-        requests: base.requests,
-        steps: base.steps + sessionLegacy.length,
-        misses: base.misses,
-      }
-    })
-
-    const ordered: MonitorSessionRow[] = []
-    const rowByID = new Map(rows.map((r) => [r.sessionID, r]))
-    const children = new Map<string, MonitorSessionRow[]>()
-    const latestByRoot = new Map<string, number>()
-    rows.forEach((row) => {
-      latestByRoot.set(row.rootID, Math.max(latestByRoot.get(row.rootID) ?? 0, row.lastActive))
-      if (!row.parentID) return
-      const list = children.get(row.parentID) ?? []
-      list.push(row)
-      children.set(row.parentID, list)
-    })
-    children.forEach((list) =>
-      list.sort((a, b) => b.lastActive - a.lastActive || a.sessionID.localeCompare(b.sessionID)),
-    )
-    const visited = new Set<string>()
-    const visit = (row: MonitorSessionRow) => {
-      if (visited.has(row.sessionID)) return
-      visited.add(row.sessionID)
-      ordered.push(row)
-      children.get(row.sessionID)?.forEach(visit)
-    }
-
-    rows
-      .filter((r) => !r.parentID || !rowByID.has(r.parentID))
-      .sort(
-        (a, b) =>
-          (latestByRoot.get(b.rootID) ?? 0) - (latestByRoot.get(a.rootID) ?? 0) ||
-          a.sessionID.localeCompare(b.sessionID),
-      )
-      .forEach(visit)
-    // Cyclic or orphaned historical placement must remain reachable too.
-    rows
-      .filter((r) => !visited.has(r.sessionID))
-      .sort((a, b) => a.sessionID.localeCompare(b.sessionID))
-      .forEach(visit)
-
-    sections.sessions = ordered
   }
 
   if (sections.sessions) {
@@ -967,6 +749,204 @@ export function requestReport(
     }
   }
   sections.presentation = { textLimit, truncated }
-  const nextExpiry = analyses.reduce((next, analysis) => Math.min(next, analysis.nextExpiry), Infinity)
+  sections.cachePending = signals.cachePending
+  if (signals.analysisPending > 0) sections.analysisPending = signals.analysisPending
+  const nextExpiry = signals.nextExpiry
   return { totals, sections, nextExpiry, enrichment }
+}
+
+// Unread writes and unstable prefixes from the saved per-write and per-request
+// analysis; what is not saved yet is pending.
+function savedSignals(
+  ledger: Ledger,
+  input: MonitorQueryInput,
+  window: { since: number; until: number },
+  sessionIDs: readonly string[] | null,
+) {
+  const options = { ...(input.agents === undefined ? {} : { agents: input.agents }), ...(input.models === undefined ? {} : { models: input.models }) }
+  const unread = savedUnread(ledger, sessionIDs, window, { ...options, titles: input.titles === true })
+  const unstable = savedUnstable(ledger, sessionIDs, window, options)
+  const ids = JSON.stringify(sessionIDs ?? [])
+  const all = sessionIDs === null ? 1 : 0
+  // A written cache that expires after the window's end is counted once it expires.
+  const nextExpiry = ledger.db
+    .query<{ at: number | null }, [number, number, number, number, string]>(
+      `select min(expires) at from unread_write where at >= ? and at < ? and expires > ?
+        and (? = 1 or session_id in (select value from json_each(?)))`,
+    )
+    .get(window.since, window.until, window.until, all, ids)?.at ?? Infinity
+  const cachePending = ledger.db
+    .query<{ n: number }, [number, string, number, string]>(
+      `select max(0, (select count(*) from request indexed by request_ended where ended is not null and (? = 1 or session_id in (select value from json_each(?))))
+        - (select count(*) from cache_result where ? = 1 or session_id in (select value from json_each(?)))) n`,
+    )
+    .get(all, ids, all, ids)!.n
+  return {
+    unread: unread.unread,
+    unstable: unstable.unstable,
+    nextExpiry,
+    cachePending,
+    analysisPending: unread.pending + unstable.pending,
+  }
+}
+
+const settled = new WeakMap<Ledger, string>()
+
+/**
+ * Saves about 100 ms of what a report reads (results, then changed segments,
+ * then expired writes) on the service's thread. Each kind saves at least one
+ * batch, so a quiet ledger is complete at once however slow the machine; a
+ * backlog continues in the next report and the background backfill
+ * (snapshot.ts). A ledger left complete and unchanged has nothing new to save,
+ * so an idle poll runs no SQL; a write that merely expires is finalized by
+ * that backfill.
+ */
+export function settleSavedAnalysis(ledger: Ledger) {
+  if (settled.get(ledger) === ledger.revision()) return
+  const deadline = performance.now() + 100
+  const drain = (batch: () => number) => {
+    while (batch() > 0) if (performance.now() >= deadline) return true
+    return false
+  }
+  const backlog = [
+    drain(() => backfillCacheBatch(ledger, 16)),
+    drain(() => settleRequestChanges(ledger, 64)),
+    drain(() => settleUnreadWrites(ledger, Date.now(), 8)),
+  ].includes(true)
+  if (!backlog) settled.set(ledger, ledger.revision())
+}
+
+// Requests still running in scope and window, under the report's selection:
+// not saved yet, so analyzed here exactly as their saved results will be.
+function runningRequests(
+  ledger: Ledger,
+  input: MonitorQueryInput,
+  scope: ReturnType<typeof scopeOf>,
+  window: { since: number; until: number },
+): MonitorRequest[] {
+  const ids = ledger.db
+    .query<{ id: string }, typeof scope.bindings>(
+      `${scope.cte} select id from request where ended is null and started >= $runningSince and started < $runningUntil
+        ${scope.cte ? "and session_id in (select id from scope)" : ""}`,
+    )
+    .all({ ...scope.bindings, $runningSince: window.since, $runningUntil: window.until })
+    .map((row) => row.id)
+  if (ids.length === 0) return []
+  const compactions = compactionsBefore(ledger, input, window.until)
+  const analyzed = requestAnalysis(ledger, ids)
+  return ids.flatMap((id) => {
+    const r = analyzed.summary(id)
+    if (r === undefined) return []
+    const selected = r.at >= Math.max(window.since, compactions?.get(r.sessionID) ?? 0) &&
+      (input.titles || r.kind !== "title") &&
+      (!input.agents?.length || input.agents.includes(r.agent ?? "")) &&
+      (!input.models?.length || input.models.includes(`${r.provider}/${r.model}`))
+    return selected ? [r] : []
+  })
+}
+
+// Each session's latest compaction before `until`, when the report starts there.
+function compactionsBefore(ledger: Ledger, input: MonitorQueryInput, until: number) {
+  if (!input.sinceCompaction) return undefined
+  return new Map(
+    ledger.db
+      .query<{ id: string; at: number }, [number]>(
+        "select session_id id, max(at) at from context_fact where kind = 'compaction' and at < ? group by session_id",
+      )
+      .all(until)
+      .map((row) => [row.id, row.at]),
+  )
+}
+
+// Sessions with a request, step or fact in the window. Hooks can record a
+// request before the asynchronous host lookup learns its session, so these
+// come from the activity tables, not the session list.
+function activeSessions(ledger: Ledger, scope: ReturnType<typeof scopeOf>, window: { since: number; until: number }): string[] {
+  const within = scope.cte ? "and session_id in (select id from scope)" : ""
+  return ledger.db
+    .query<{ id: string }, typeof scope.bindings>(
+      `${scope.cte}
+      select distinct session_id as id from request where started >= $activeSince and started < $activeUntil ${within}
+      union select distinct session_id as id from step where started >= $activeSince and started < $activeUntil ${within}
+      union select distinct session_id as id from context_fact where at >= $activeSince and at < $activeUntil ${within}`,
+    )
+    .all({ ...scope.bindings, $activeSince: window.since, $activeUntil: window.until })
+    .map((row) => row.id)
+}
+
+// A quiet session's prompt size as of `until`, from indexed reads only.
+function quietContext(ledger: Ledger, sessionID: string, until: number): NonNullable<MonitorReport["context"]>[number] {
+  const state = ledger.db
+    .query<{ now: number; atCompaction: number | null; status: string | null }, { $session: string; $until: number }>(`
+      select coalesce((select input_tokens + cache_read_tokens + cache_write_tokens from request
+        where session_id = $session and started < $until and kind != 'ping' and is_title = 0
+        order by started desc, id desc limit 1), 0) as now,
+      (select input_tokens + cache_read_tokens + cache_write_tokens from request
+        where session_id = $session and started < $until and kind not in ('ping', 'compaction') and is_title = 0
+        and started >= (select max(at) from context_fact where session_id = $session and kind = 'compaction' and at < $until)
+         order by started, id limit 1) as atCompaction,
+       (select status from request where session_id=$session and started < $until and kind != 'ping' and is_title=0
+         order by started desc,id desc limit 1) as status`)
+    .get({ $session: sessionID, $until: until })!
+  return {
+    sessionID,
+    now: state.now,
+    inputState: state.status === "running" ? "pending" : state.status === null ? "unavailable" : "stored",
+    ...(state.atCompaction === null ? {} : { atCompaction: state.atCompaction }),
+  }
+}
+
+// v1 steps recorded before request rows existed, in scope and window: they
+// count in token totals and the agents table.
+function legacyStepRows(
+  ledger: Ledger,
+  input: MonitorQueryInput,
+  scope: ReturnType<typeof scopeOf>,
+  window: { since: number; until: number },
+): LegacyStep[] {
+  const orphan = "not exists (select 1 from request r where r.session_id = s.session_id and r.message_id = s.message_id)"
+  if ((ledger.db.query<{ c: number }, []>(`select count(*) as c from step s where ${orphan}`).get()?.c ?? 0) === 0) return []
+  const compactions = compactionsBefore(ledger, input, window.until)
+  return ledger.db
+    .query<LegacyStep, typeof scope.bindings>(
+      `${scope.cte} select s.* from step s where ${orphan} ${scope.cte ? "and s.session_id in (select id from scope)" : ""}`,
+    )
+    .all(scope.bindings)
+    .filter(
+      (s) =>
+        s.started >= Math.max(window.since, compactions?.get(s.session_id) ?? 0) &&
+        s.started < window.until &&
+        (!input.agents?.length || input.agents.includes(s.agent ?? "")) &&
+        (!input.models?.length || input.models.includes(`${s.provider}/${s.model}`)),
+    )
+}
+
+// The session's prompt size as of `until`: its latest real request, and the
+// first real request after its latest compaction.
+function sessionContext(ledger: Ledger, sessionID: string, until: number): NonNullable<MonitorReport["context"]>[number] {
+  const ids = ledger.db
+    .query<{ current: string | null; after: string | null }, { $session: string; $until: number }>(`
+      select (select id from request where session_id = $session and started < $until and kind != 'ping' and is_title = 0
+          order by started desc, id desc limit 1) as current,
+        (select id from request where session_id = $session and started < $until and kind not in ('ping', 'compaction') and is_title = 0
+          and started >= (select max(at) from context_fact where session_id = $session and kind = 'compaction' and at < $until)
+          order by started, id limit 1) as after`)
+    .get({ $session: sessionID, $until: until })
+  const current = ids?.current ? ledger.getRequest(ids.current) : undefined
+  const after = ids?.after ? ledger.getRequest(ids.after) : undefined
+  const measured = current ? measurement(current) : undefined
+  return {
+    sessionID,
+    now: current ? promptTokens(current) : 0,
+    inputState:
+      current?.status === "running"
+        ? "pending"
+        : measured?.input !== undefined
+          ? "measured"
+          : measured?.state === "legacy-unknown"
+            ? "stored"
+            : "unavailable",
+    ...(measured?.input === undefined ? {} : { measuredNow: measured.input }),
+    ...(after ? { atCompaction: promptTokens(after) } : {}),
+  }
 }

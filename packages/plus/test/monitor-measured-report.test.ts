@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { queryMonitor } from "../src/monitor/query.js"
-import { sessionFoldResumeFrom } from "../src/monitor/report.js"
 import { cleanupLedgers, ledger } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
@@ -68,10 +67,14 @@ test("persisted explicit zero alerts survive late fingerprint corrections and ap
   add("b", 20, 0)
   const query = () => queryMonitor(db, { scope: "session", sessionID: "synthetic", view: "cache" }, { now: 100 })
   expect(query().requests?.[1]).toMatchObject({ verdict: "miss", missTokens: 10000 })
+  const saved = () => db.db.query<{ request_id: string }, []>("select request_id from cache_result order by request_id").all().map((row) => row.request_id)
   add("c", 30, 10000)
+  // Appending leaves the saved results before it alone.
+  expect(saved()).toEqual(["a", "b"])
   query()
-  expect(sessionFoldResumeFrom(db, "synthetic")).toBe(2)
+  expect(saved()).toEqual(["a", "b", "c"])
   fingerprint("b", "synthetic corrected final request")
+  // A correction drops what it can affect, from b on.
+  expect(saved()).toEqual(["a"])
   expect(query().requests?.[1]).toMatchObject({ verdict: "miss", missTokens: 10000 })
-  expect(sessionFoldResumeFrom(db, "synthetic")).toBe(1)
 })

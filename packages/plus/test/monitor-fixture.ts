@@ -5,6 +5,9 @@ import os from "node:os"
 import path from "node:path"
 import { createCollector } from "../src/monitor/collector.js"
 import { createLedger, type Ledger, type SessionFacts } from "../src/monitor/ledger.js"
+import { backfillCacheBatch } from "../src/monitor/snapshot.js"
+import { settleUnreadWrites } from "../src/monitor/unread-saved.js"
+import { settleRequestChanges } from "../src/monitor/unstable-saved.js"
 
 const dirs: string[] = []
 const ledgers: Ledger[] = []
@@ -12,6 +15,14 @@ const ledgers: Ledger[] = []
 export async function cleanupLedgers(): Promise<void> {
   ledgers.splice(0).forEach((ledger) => ledger.close())
   await Promise.all(dirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })))
+}
+
+// Saves every result and saved analysis now, as completion and the background
+// backfill do; a query itself saves only about 100 ms of a backlog.
+export function saveAll(db: Ledger) {
+  while (backfillCacheBatch(db, 1_000) > 0) continue
+  while (settleRequestChanges(db, 1_000) > 0) continue
+  while (settleUnreadWrites(db, Date.now(), 1_000) > 0) continue
 }
 
 export async function ledger(): Promise<Ledger> {

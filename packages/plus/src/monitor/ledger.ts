@@ -132,6 +132,76 @@ create trigger if not exists request_fingerprint_change_delete after delete on r
 end;`
 }
 
+// Saved analysis the reports read (snapshot.ts cache_result, unread-saved.ts,
+// unstable-saved.ts) follows corrections: a request's saved result reads its
+// predecessors and the facts before it, its changed segments read the previous
+// real request, and a write's unread tokens read the requests in its lifetime.
+// So a change to a request, its fingerprint's content or a fact drops what it
+// can affect, from that point of its session on; the backfill saves it again.
+// `saved_dirty` tells the windowed walks how far back to look for those rows.
+// Deletions (retention) drop nothing else: later results keep what they saw.
+// A fingerprint rewritten with the same content (a repeated capture) drops nothing.
+const FINGERPRINT_CONTENT = [
+  "session_id", "protocol", "system_parts", "tools", "options_hash", "options_keys", "message_prefixes",
+  "prefix_base", "prefix_shared", "prefix_depth", "cache_key", "cache_control", "body_hash", "created",
+  "previous_response_id", "response_id", "fingerprint_version", "policy_version", "system_hash",
+]
+
+function savedSchema(): string {
+  const dirty = (name: string, at: string) => `insert into saved_dirty (name, at) values ('${name}', ${at})
+    on conflict (name) do update set at = min(at, excluded.at);`
+  const drop = (session: string, at: string, id: string) => `
+    delete from cache_result where session_id = ${session} and started >= ${at};
+    delete from request_change where session_id = ${session} and started >= ${at};
+    ${dirty("request_change", at)}
+    delete from unread_write where request_id = ${id};
+    ${dirty("unread_write", at)}
+    update unread_write set unread_real = null, unread_all = null
+      where session_id = ${session} and at < ${at} and expires >= ${at} and unread_real is not null;`
+  return `
+create table if not exists unread_write (
+  request_id text primary key,
+  session_id text not null,
+  at integer not null,
+  expires integer,
+  agent text,
+  model text,
+  is_title integer not null,
+  tokens integer not null,
+  unread_real integer,
+  unread_all integer
+);
+create index if not exists unread_write_session on unread_write(session_id, at);
+create index if not exists unread_write_at on unread_write(at);
+create index if not exists unread_write_due on unread_write(expires) where unread_real is null;
+create index if not exists request_open on request(started) where ended is null;
+create table if not exists request_change (
+  request_id text primary key,
+  session_id text not null,
+  started integer not null,
+  real integer not null,
+  changed text not null
+);
+create index if not exists request_change_session on request_change(session_id, started);
+create table if not exists saved_dirty (name text primary key, at integer not null);
+create trigger if not exists saved_request_update after update on request begin
+  ${drop("old.session_id", "min(old.started, new.started)", "old.id")}
+  ${drop("new.session_id", "min(old.started, new.started)", "new.id")}
+end;
+create trigger if not exists saved_fingerprint_insert after insert on request_fingerprint
+  when exists (select 1 from request where id = new.request_id) begin
+  ${drop("new.session_id", "(select started from request where id = new.request_id)", "new.request_id")}
+end;
+create trigger if not exists saved_fingerprint_update after update on request_fingerprint
+  when (${FINGERPRINT_CONTENT.map((column) => `old.${column} is not new.${column}`).join(" or ")})
+    and exists (select 1 from request where id = new.request_id) begin
+  ${drop("new.session_id", "(select started from request where id = new.request_id)", "new.request_id")}
+end;
+create trigger if not exists saved_fact_insert after insert on context_fact begin
+  delete from cache_result where session_id = new.session_id and started >= new.at;
+end;`
+}
+
 function rollupTriggers(): string {
   return `
 create trigger if not exists call_hour_insert after insert on call begin
@@ -603,6 +673,8 @@ export interface Ledger {
   relabelLatestRequest(sessionID: string, fromKind: string, toKind: string): void
   getRequest(id: string): RequestRow | undefined
   getRequests(sessionID: string): readonly RequestRow[]
+  /** The session's requests that started in [from, to], in the same order as getRequests. */
+  getRequestsBetween(sessionID: string, from: number, to: number): readonly RequestRow[]
   getFingerprint(requestID: string): RequestFingerprintData | undefined
   getFingerprints(sessionID: string): readonly RequestFingerprintData[]
   getContextFacts(sessionID: string): readonly ContextFactRow[]
@@ -722,6 +794,10 @@ export function createLedger(file: string): Ledger {
   }
   db.exec("create index if not exists request_fingerprint_base on request_fingerprint(prefix_base)")
   migrateCacheColumns(db)
+  // The fold's own wording of a saved result (report.ts); rows saved before it are saved again.
+  if (!db.query<{ name: string }, []>("pragma table_info(cache_result)").all().some((column) => column.name === "fold")) db.exec("alter table cache_result add column fold text")
+  db.exec("create index if not exists cache_result_unfolded on cache_result(started) where fold is null")
+  db.exec(savedSchema())
   if (
     !db
       .query<{ name: string }, []>("pragma table_info(session)")
@@ -847,6 +923,9 @@ export function createLedger(file: string): Ledger {
   const findRequest = db.query<Record<string, unknown>, [string]>("select * from request where id = ?")
   const findSessionRequests = db.query<Record<string, unknown>, [string]>(
     "select *, rowid as ledger_order from request where session_id = ? order by started asc, rowid asc",
+  )
+  const findSessionRequestsBetween = db.query<Record<string, unknown>, [string, number, number]>(
+    "select *, rowid as ledger_order from request where session_id = ? and started >= ? and started <= ? order by started asc, rowid asc",
   )
   const findFingerprint = db.query<Record<string, unknown>, [string]>(
     "select * from request_fingerprint where request_id = ?",
@@ -1241,6 +1320,11 @@ export function createLedger(file: string): Ledger {
         db.query("delete from step where started < ?").run(before)
         db.query("delete from cache_wire where request_id in (select id from request where started < ?)").run(before)
         db.query("delete from cache_result where started < ?").run(before)
+        // Saved unread writes and changed segments; their modules create the tables on first use.
+        if (db.query("select 1 from sqlite_master where type = 'table' and name = 'unread_write'").get())
+          db.query("delete from unread_write where at < ?").run(before)
+        if (db.query("select 1 from sqlite_master where type = 'table' and name = 'request_change'").get())
+          db.query("delete from request_change where started < ?").run(before)
         db.query("delete from request where started < ?").run(before)
         db.query("delete from request_fingerprint where created < ?").run(before)
         db.query("delete from context_fact where at < ?").run(before)
@@ -1317,6 +1401,7 @@ export function createLedger(file: string): Ledger {
       return row ? toRequestRow(row) : undefined
     },
     getRequests: (sessionID) => findSessionRequests.all(sessionID).map(toRequestRow),
+    getRequestsBetween: (sessionID, from, to) => findSessionRequestsBetween.all(sessionID, from, to).map(toRequestRow),
     getFingerprint: (requestID) => {
       const row = findFingerprint.get(requestID)
       if (!row) return undefined

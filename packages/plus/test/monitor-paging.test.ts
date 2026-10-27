@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import type { MonitorQueryInput } from "../src/rpc.js"
-import { cleanupLedgers, ledger } from "./monitor-fixture.js"
+import { cleanupLedgers, ledger, saveAll } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
@@ -15,6 +15,8 @@ test("keyset enumeration reaches the whole equal-timestamp population; totals ne
     db.requestEnded(id, { status: "completed", ended: 99 })
     db.callStarted({ sessionID: "s", messageID: id, callID: `call-${id}`, tool: `tool-${id}`, idx: i, epoch: 0, status: "completed", started: 1, inputChars: 0 })
   })
+  // More results than one query saves; the background backfill saves the rest.
+  saveAll(db)
   const input = { scope: "session", sessionID: "s", view: "cache" } as const
   const query = (requestPage?: MonitorQueryInput["requestPage"]) => queryMonitor(db, { ...input, requestPage }, { now: 100 })
   const first = query()
