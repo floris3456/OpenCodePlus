@@ -1,10 +1,11 @@
 // Core reads agent markdown in its config agent plugin, on a config reload:
 // Agent.reload only re-runs the registered transforms over the documents it
-// read last. So a project agent file Plus writes during a create, duplicate or
-// rename is missing from the registry — and from the snapshot the Instructions
-// screen paints — until that rescan. The write asks for the rescan and waits
-// for the agent.updated it publishes, so the snapshot right after it lists the
-// agent instead of leaving it to a restart.
+// read last. So a project agent file Plus writes during a create, duplicate,
+// rename or delete is missing from the registry — and from the snapshot the
+// Instructions screen paints — until that rescan. The write asks for the
+// rescan and waits for the agent.updated it publishes, so the snapshot right
+// after it lists the agent instead of leaving it to a restart. Team files are
+// Plus's own directories, which Plus re-reads itself, so they need none.
 import { afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Effect, Queue, Stream, type Types } from "effect"
@@ -212,5 +213,26 @@ test("deleting a project agent leaves a same-id agent at another level listed", 
   const kept = (await api.snapshot()).value.agents.filter((agent) => agent.id === "kept")
   expect(kept.map((agent) => agent.scope)).toEqual(["global"])
   expect(await Bun.file(path.join(globalAgent, "kept.md")).exists()).toBe(true)
+})
+
+// A team member and a team are Plus's own directories (.opencodeplus/teams and
+// its global counterpart), which Plus reads back itself (discoverTeams), not
+// core's agent registry. So they show up and go away without any host rescan:
+// the fixture's agent reload does nothing and its config reload is never asked
+// for, which is what these two check.
+test("a team member and a team list their files at once, without a host rescan", async () => {
+  const { api, core } = await fixture()
+  const readsBefore = core.counts.reads
+  expect((await api.createTeam({ level: "project", team: "crew" })).ok).toBe(true)
+  expect((await api.addTeamAgent({ level: "project", team: "crew", id: "mate" })).ok).toBe(true)
+  expect((await api.snapshot()).value.teams?.find((team) => team.team === "crew")?.agents).toEqual(["mate"])
+
+  expect((await api.renameTeam({ level: "project", from: "crew", to: "squad" })).ok).toBe(true)
+  expect((await api.snapshot()).value.teams?.map((team) => team.team)).toEqual(["squad"])
+
+  expect((await api.removeTeamAgent({ level: "project", team: "squad", id: "mate" })).ok).toBe(true)
+  expect((await api.snapshot()).value.teams?.find((team) => team.team === "squad")?.agents).toEqual([])
+  // No config rescan was needed: these files are Plus's own.
+  expect(core.counts.reads).toBe(readsBefore)
 })
 
