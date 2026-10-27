@@ -132,9 +132,15 @@ export const make = Effect.gen(function* () {
                 restore(executeTool(event)).pipe(
                   Effect.flatMap(toolOutput.truncate),
                   Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
-                  Effect.catchTag("Tool.Error", (error) =>
-                    publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
-                  ),
+                  Effect.catchTag("Tool.Error", (error) => {
+                    // A failure message becomes the tool result the model sees next, so it is bounded too.
+                    const failure = toSessionError(error)
+                    return toolOutput.truncateText(failure.message).pipe(
+                      Effect.flatMap((message) =>
+                        publisher.failTool(event.id, { ...failure, message }, error.metadata).pipe(Effect.asVoid),
+                      ),
+                    )
+                  }),
                 ),
               ).pipe(Effect.forkScoped),
             })

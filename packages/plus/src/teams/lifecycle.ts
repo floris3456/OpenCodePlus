@@ -27,7 +27,7 @@ import {
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
-import { Policy, budgetDimensions, budgetExhaustion, parseDuration } from "./schema.js"
+import { Policy, budgetDimensions, budgetExhaustion, parseDuration, pathList } from "./schema.js"
 import { sessionTokens } from "./usage.js"
 import { bound } from "./reach.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
@@ -655,7 +655,7 @@ export function childSettledText(
   const checks = list<{ id?: string; passed?: boolean }>(report.checks)
   if (checks.length > 0) lines.push(`Checks: ${checks.map((check) => `${check.id} ${check.passed ? "pass" : "FAIL"}`).join(", ")}`)
   const dirty = list<string>(report.dirtyFiles)
-  if (dirty.length > 0) lines.push(`Uncommitted: ${dirty.join(", ")}`)
+  if (dirty.length > 0) lines.push(`Uncommitted: ${pathList(dirty)}`)
   const block = (title: string, items: string[]) => {
     if (items.length > 0) lines.push(`${title}:\n${items.map((item) => `- ${item}`).join("\n")}`)
   }

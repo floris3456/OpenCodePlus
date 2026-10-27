@@ -8,7 +8,7 @@ import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek, put } from "../../src/teams/inbox.js"
-import { gc, onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
+import { gc, onSessionIdle, reconcile, childSettledText } from "../../src/teams/lifecycle.js"
 import { Policy } from "../../src/teams/schema.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 
@@ -282,6 +282,17 @@ test("the parent inbox got exactly one settled failed notify line", async () => 
     expect(items[0]?.text).toContain("settled: failed")
     expect(items[0]?.text).toContain("next: team_stop + delegate fresh")
   })
+})
+
+test("a settlement names at most 50 uncommitted files and counts the rest", () => {
+  const child = workingChild("w-3333333333333333", "main-0123456789abcdef", "ses_settle_dirty")
+  const attempt = child.attempts[0]!
+  const files = Array.from({ length: 60 }, (_, i) => `src/file-${String(i).padStart(2, "0")}.ts`)
+  const lines = childSettledText(child, attempt, { status: "done_with_concerns", summary: "Bulk import adds files.", dirtyFiles: files }).split("\n")
+  const uncommitted = lines.filter((line) => line.startsWith("Uncommitted:"))
+  expect(uncommitted).toHaveLength(1)
+  expect(uncommitted[0]?.startsWith(`Uncommitted: ${files.slice(0, 50).join(", ")} and 10 more`)).toBe(true)
+  expect(uncommitted[0]).not.toContain("src/file-50.ts")
 })
 
 test("reconcile skips valid-JSON malformed runs and still settles later healthy runs", async () => {

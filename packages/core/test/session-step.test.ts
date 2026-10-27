@@ -17,6 +17,7 @@ import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionStep } from "@opencode/core/session/runner/step"
 import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
 import { Snapshot } from "@opencode/core/snapshot"
+import { Tool } from "@opencode/core/tool"
 import { ToolOutput } from "@opencode/core/tool-output"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { SessionModelObservation } from "@opencode/core/session/model-observation"
@@ -178,6 +179,82 @@ for (const fixture of [
     }),
   )
 }
+
+it.effect("bounds an oversized tool failure before publishing it", () =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    const llm = yield* TestLLM.Test
+    const sessionID = Session.ID.create()
+    const assistantMessageID = SessionMessage.ID.create()
+    const output = yield* ToolOutput.Service
+    yield* output.transform((editor) => editor.configure({ maxLines: 100, maxBytes: 1_000 }))
+    const steps = yield* SessionStep.make.pipe(
+      Effect.provide(
+        Layer.mock(Snapshot.Service)({
+          capture: () => Effect.succeed(Snapshot.ID.make("start")),
+          files: () => Effect.succeed([]),
+        }),
+      ),
+    )
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .run()
+    yield* db
+      .insert(SessionTable)
+      .values({ id: sessionID, project_id: Project.ID.global, slug: "step", directory: "/project", version: "test" })
+      .run()
+    const model = SessionRunnerModel.resolved(
+      LanguageModel.make({ id: "test-model", provider: "test", route: OpenAIChat.route }),
+      {
+        capabilities: { tools: true, input: ["text"], output: ["text"] },
+        limit: { context: 100_000, output: 1_000 },
+        cost: [],
+      },
+    )
+    const hooks = yield* PluginHooks.Service
+    yield* llm.push(
+      TestLLM.complete(
+        { reason: { normalized: "stop" } },
+        LLMEvent.toolCall({ id: "call-test", name: "test", input: {} }),
+      ),
+    )
+    const result = yield* steps
+      .attempt({
+        isLocationClosed: () => false,
+        sessionID,
+        assistantMessageID,
+        agent: Agent.defaultID,
+        model,
+        prepared: {
+          observer: SessionModelObservation.make(
+            hooks,
+            { sessionID, agent: Agent.defaultID, model: model.ref, kind: "primary" },
+            model.cost,
+          ),
+          retry: () => Effect.void,
+          request: LLM.request({ model: model.model, prompt: "Run one tool" }),
+          options: {},
+          executeTool: () => Effect.fail(new Tool.Error({ message: "x".repeat(20_000) })),
+        },
+        retry: () => Effect.succeed({ retry: false }),
+        recoverContinuation: true,
+        recoverOverflow: Effect.succeed(false),
+      })
+      .pipe(Effect.exit)
+    expect(Exit.isSuccess(result)).toBe(true)
+
+    const failed = yield* db
+      .select({ data: EventTable.data })
+      .from(EventTable)
+      .where(eq(EventTable.type, "session.tool.failed.2"))
+      .get()
+    const message = (failed?.data as { error?: { message?: string } } | undefined)?.error?.message ?? ""
+    expect(message.length).toBeLessThan(2_000)
+    expect(message).toStartWith("x".repeat(1_000))
+    expect(message).toContain("full output saved to")
+  }),
+)
 
 it.effect("streams before the start snapshot exists and runs a local tool only after it is recorded", () =>
   Effect.gen(function* () {

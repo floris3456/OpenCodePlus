@@ -857,6 +857,26 @@ test("followup with rebase refuses a dirty worktree and a working child, and mov
   })
 }, 30000)
 
+test("followup with rebase names at most 50 dirty files and counts the rest", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await rebaseFixture({ "child.ts": "export const child = 1\n" }, { "sibling.ts": "export const sibling = 1\n" })
+    try {
+      const { parent } = await rebaseRuns(root, repo)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const files = Array.from({ length: 60 }, (_, i) => `bulk-${String(i).padStart(2, "0")}.ts`)
+      for (const file of files) await Bun.write(path.join(repo.worktree, file), "keep me\n")
+      const dirty = rejected(await api.followup(followupInput({ requestID: "r-dirty-many", rebase: true }), callerFor(parent)))
+      expect(dirty.code).toBe("E_DIRTY")
+      expect(dirty.message).toBe(
+        `Run ${parent.children[0]} has uncommitted changes in [${files.slice(0, 50).join(", ")} and 10 more]: only a clean worktree is rebased. Ask it to team_checkpoint first.`,
+      )
+      expect(dirty.accepted).toEqual(files.slice(0, 50))
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
 // A child delegated on the parent's checkout, with one commit and a done
 // report, as team_integrate finds it. Its branch follows delegation's naming.
 async function landingFixture(root: string) {

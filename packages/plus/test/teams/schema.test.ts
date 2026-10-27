@@ -37,6 +37,7 @@ import {
   WorktreeStates,
   budgetExhaustion,
   parseDuration,
+  pathList,
   toolError,
   validateChecks,
   validateSummary,
@@ -178,6 +179,26 @@ test("StopInput parses run, optional force and an optional reason of at most 300
 })
 
 const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "test/model.test.ts"] }
+
+describe("pathList", () => {
+  test("names every path up to the limit, unchanged", () => {
+    expect(pathList([])).toBe("")
+    expect(pathList(["a.ts"])).toBe("a.ts")
+    expect(pathList(["a.ts", "b.ts", "c.ts"])).toBe("a.ts, b.ts, c.ts")
+    expect(pathList(Array.from({ length: 50 }, (_, i) => `f${i}.ts`))).toBe(Array.from({ length: 50 }, (_, i) => `f${i}.ts`).join(", "))
+  })
+
+  test("names the first 50 and counts the rest", () => {
+    const paths = Array.from({ length: 51 }, (_, i) => `f${i}.ts`)
+    expect(pathList(paths)).toBe(`${paths.slice(0, 50).join(", ")} and 1 more`)
+    expect(pathList(Array.from({ length: 60 }, (_, i) => `f${i}.ts`))).toBe(`${Array.from({ length: 50 }, (_, i) => `f${i}.ts`).join(", ")} and 10 more`)
+  })
+
+  test("honours a custom limit", () => {
+    expect(pathList(["a.ts", "b.ts", "c.ts"], 2)).toBe("a.ts, b.ts and 1 more")
+    expect(pathList(["a.ts", "b.ts"], 2)).toBe("a.ts, b.ts")
+  })
+})
 
 describe("validateChecks", () => {
   test("rejects bare bun test with E_CHECKS and accepted", async () => {

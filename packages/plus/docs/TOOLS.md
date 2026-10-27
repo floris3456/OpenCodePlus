@@ -411,6 +411,11 @@ commands passed on this exact rebased tree and need not run again). Landed and
 red results both carry that explanation; internal merge records retain
 `reusedChecks`. Clean-worktree requirements and mutation rejection still apply.
 
+`team_integrate` lands past the parent's own uncommitted work: it refuses
+`E_DIRTY` only for tracked parent files the child's commits also change, which
+git cannot fast-forward over. Untracked files the landing would add stay
+refused. Every other uncommitted parent file stays exactly as it was.
+
 Provider retry notices wake a parent only for a scheduled wait of at least
 10 minutes, once per error type per team attempt or plain-subagent busy period.
 A third short retry does not notify; the team's retry status still updates.
@@ -518,7 +523,7 @@ colon (`packages/plus/src/teams/tools.ts:651`). `failed` results may append
 | `E_CORRECTION` | A finish written in a step that began before its parent's last correction arrived; the correction is the next message | `packages/plus/src/teams/api.ts` (`finishHandler`) |
 | `E_UNLANDED` | `finish done` while a done child's commits have not landed, or a review delegated from a base that holds none of them | `packages/plus/src/teams/api.ts:279`, `packages/plus/src/teams/api.ts:682` |
 | `E_CHECKS_RED` | `finish done` with a failing check | `packages/plus/src/teams/api.ts:494` |
-| `E_DIRTY` | Worktree dirty at a boundary that needs it clean | `packages/plus/src/teams/api.ts:503`, `packages/plus/src/teams/merge.ts:200` |
+| `E_DIRTY` | Worktree dirty at a boundary that needs it clean, or — for `team_integrate` — uncommitted parent files the child's own commits also change | `packages/plus/src/teams/api.ts:503`, `packages/plus/src/teams/merge.ts:266` |
 | `E_NEEDS` | `blocked` without needs | `packages/plus/src/teams/api.ts:510` |
 | `E_STALE_HEAD` | `checkpoint` expectedHead mismatch | `packages/plus/src/teams/api.ts:569` |
 | `E_SCOPE` | Checkpoint file outside `scope.paths` | `packages/plus/src/teams/api.ts:572` |
