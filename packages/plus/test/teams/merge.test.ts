@@ -231,6 +231,28 @@ describe("merge queue", () => {
     expect(await readFile(join(parent.dir, "README.md"), "utf8")).toBe("parent's own\n")
   })
 
+  test("a dirty path with a space is named unquoted in E_DIRTY", async () => {
+    const parent = await makeParent("spaced-dirty")
+    const base = await commitFile(parent.dir, "sp ace.txt", "parent\n", "chore: spaced file")
+    const child = await makeChild("spaced-dirty-1", base, { "sp ace.txt": "child\n" }, "feat: child spaced file")
+    await writeFile(join(parent.dir, "sp ace.txt"), "parent uncommitted\n")
+    const dirty = await enqueue(stateDir, {
+      parentRun: "spaced-dirty-parent",
+      parentWorktree: parent.dir,
+      childRun: "spaced-dirty-child",
+      childBranch: child.branch,
+      childHead: child.head,
+      expectedParentHead: base,
+    }).then(
+      () => null,
+      (e) => asErr(e),
+    )
+    expect(dirty?.code).toBe("E_DIRTY")
+    expect(dirty?.message).toBe(
+      "Your worktree has uncommitted changes to [sp ace.txt], which spaced-dirty-child's commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.",
+    )
+  })
+
   test("a clean child lands and the temp worktree is gone", async () => {
     const parentRun = "w-0000000000000001"
     const childRun = "w-0000000000000002"

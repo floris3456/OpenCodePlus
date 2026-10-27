@@ -2,7 +2,7 @@ import { copyFile, mkdir, readdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { Effect } from "effect"
 import { atomicJson, lock, readJson, ulid } from "./store.js"
-import { git, gitRaw } from "./git.js"
+import { git, gitPlain, gitRaw } from "./git.js"
 import { computePolicyDigest, execute, passingReceipt, reuseReceipt, type Receipt } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
@@ -97,32 +97,31 @@ function getHead(dir: string): Promise<string> {
   return git(dir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
 }
 
-/** Tracked modifications only: ignore untracked (`??`) entries. A rename names both sides. */
+/**
+ * Tracked modifications only: ignore untracked (`??`) entries. Read with -z
+ * so paths arrive unquoted, matching changedPaths; a rename or copy record is
+ * `XY new\0old\0` and names both sides.
+ */
 async function trackedDirtyFiles(worktree: string): Promise<string[]> {
-  const out = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain"])
-  if (out === "") return []
+  const out = await gitPlain(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-z"])
+  const records = out.split("\0")
   const files: string[] = []
-  for (const line of out.split("\n")) {
-    if (line === "") continue
-    // NOTE: git() trims the whole output, so the first line loses a leading
-    // status space (" M f" -> "M f"). Accept both the 3-char ("XY path")
-    // and the trimmed 2-char ("X path") prefix.
-    if (line.trimStart().startsWith("??")) continue
-    let rest: string
-    if (line.length >= 3 && line[2] === " ") rest = line.slice(3)
-    else if (line.length >= 2 && line[1] === " ") rest = line.slice(2)
-    else rest = line.split(" ").pop() ?? ""
-    for (const side of rest.split(" -> ")) {
-      const file = side.trim()
-      if (file !== "" && !files.includes(file)) files.push(file)
-    }
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i] ?? ""
+    if (record.length < 4) continue
+    const status = record.slice(0, 2)
+    if (status.trim() === "??") continue
+    const path = record.slice(3)
+    // A rename or copy carries the source path in the next record.
+    const sides = status.includes("R") || status.includes("C") ? [path, records[++i] ?? ""] : [path]
+    for (const file of sides) if (file !== "" && !files.includes(file)) files.push(file)
   }
   return files
 }
 
 /** Paths a landing from `from` to `to` would change; with --no-renames a rename is both paths. */
 async function changedPaths(worktree: string, from: string, to: string): Promise<string[]> {
-  const out = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--no-renames", "-z", from, to])
+  const out = await gitPlain(worktree, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--no-renames", "-z", from, to])
   return out.split("\0").filter(Boolean)
 }
 
