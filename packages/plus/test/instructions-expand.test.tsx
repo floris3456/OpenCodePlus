@@ -97,12 +97,12 @@ test("the hovered pane wins over the keyboard focus", async () => {
   await reach(fixture, "item:project:build:tool:bash", "bash")
   // Collapse Teams in the sidebar, then give the list the keyboard focus.
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab list"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc close"))
   await moveTo(fixture, "Teams")
   expect(dispatch(fixture, "left")).toBe(true)
   await fixture.waitForFrame((frame) => rowState(frame, "Teams") === "collapsed")
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab sidebar"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
   // Hovering Agents targets the sidebar, not the focused list: the collapsed
   // Teams expands back and the list's collapsed rows stay collapsed.
   await hover(fixture, "nav", "Agents")
@@ -118,7 +118,7 @@ test("a hovered list row wins while the sidebar has the keyboard focus", async (
   await using fixture = await renderInstructionsRoute({ snapshots: [snapshot()], width: 130, height: 45 })
   await reach(fixture, "item:project:build:tool:bash", "bash")
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab list"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc close"))
   // Hovering a list row retargets E: bash expands, read (active) stays closed,
   // and the sidebar is untouched.
   await hover(fixture, "list", "read")

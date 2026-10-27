@@ -34,12 +34,12 @@ test("shift+tab moves to the next level and wraps; tab still switches pane", asy
     await fixture.waitForFrame((frame) => breadcrumb(frame).trimStart().startsWith(label))
   }
   // tab is untouched: it still toggles the pane, and shift+tab does not.
-  expect(footer(fixture.captureCharFrame())).toContain("tab list")
+  expect(footer(fixture.captureCharFrame())).toContain("esc close")
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab sidebar"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
   expect(dispatch(fixture, "shift+tab")).toBe(true)
   await fixture.waitForFrame((frame) => breadcrumb(frame).trimStart().startsWith("Global"))
-  expect(footer(fixture.captureCharFrame())).toContain("tab sidebar")
+  expect(footer(fixture.captureCharFrame())).toContain("esc sidebar")
 })
 
 test("every previous/next alias switches the level", async () => {
@@ -101,14 +101,14 @@ test("the owner, category, row and expansions survive a level switch", async () 
   // Collapse the Teams catalogue in the sidebar too (the selected owner build
 // stays visible, so the list keeps its place).
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab list"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc close"))
   expect(dispatch(fixture, "home")).toBe(true)
   await fixture.waitForFrame((frame) => selectedRow(frame).includes("Agents"))
   await moveTo(fixture, "Teams")
   expect(dispatch(fixture, "left")).toBe(true)
   await fixture.waitForFrame((frame) => TEAMS_COLLAPSED.test(sidebar(frame)))
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab sidebar"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
   // One level over: same owner, category, row and expansions (bash open,
   // Teams collapsed); the same back at Project.
   expect(dispatch(fixture, ">")).toBe(true)

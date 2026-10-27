@@ -5,7 +5,7 @@ import { batch, createEffect, createMemo, createSignal, For, onCleanup, Show, un
 import type { Resolution } from "../../instructions/model.js"
 import { isValueRow, limitOf } from "../../instructions/permission-catalog.js"
 import { manual } from "../../instructions/sections.js"
-import { controlKind, findLazy, lazyPath, materialize, type Memo, type TreeNode } from "../../instructions/tree.js"
+import { controlKind, findLazy, lazyPath, materialize, type Lazy, type Memo, type TreeNode } from "../../instructions/tree.js"
 import { isDefaultSwitchField, isModelDefaultRowId, isModelFieldRowId, isModelSettingRowId, MODELS_GROUP_ID, parseColdDefaultItemId, parseColdModelItemId, parseModelFieldItemId, parseModelSettingItemId } from "../../instructions/model-settings.js"
 import { isAgentsFile, isModelPrompt, toolsItemId } from "../../instructions/system-order.js"
 import { isEditable } from "./detail-pane.js"
@@ -146,6 +146,9 @@ export function stopListMountLog(): void {
 // without the window a large level creates one native text handle per row and
 // can exhaust the renderer's SyntaxStyle handles.
 export const LIST_WINDOW_MARGIN = 12
+
+// The most entries the key bar shows besides ? help and esc.
+export const HINTS_MAX = 7
 
 // The footer keeps the first hints that fit, in priority order, and always
 // its last two (? help, esc): everything else is in the help dialog.
@@ -1583,50 +1586,73 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     if (state.move()?.isSection) return [["↑↓", "reorder siblings"], ["←→", "cross-parent unsupported"], ["enter", "drop"], ["esc", "cancel"]]
     if (state.move()?.inSystem) return [["↑↓", "move in the request"], ["enter", "drop"], ["esc", "cancel"]]
     if (state.move() !== undefined) return [["↑↓", "move"], ["→", "into folder"], ["←", "out"], ["enter", "drop"], ["esc", "cancel"]]
+    // The bar shows only what acts on this row (or the whole selection), in
+    // priority order, then always ? help and esc. Everything else is in the
+    // help dialog: navigation, panes, categories, links, compare, pins and so on.
     const node = current()
-    const row = currentRow()
-    const hints: [string, string][] = [["↑↓", "move"]]
-    hints.push(["x", node !== undefined && state.selection().has(node.id) ? "deselect" : "select row"])
+    const hints: [string, string][] = []
+    // With rows selected the bar speaks for the whole selection: its count
+    // first, then only the actions that apply to every one of them.
+    const selection = state.selection().size > 0 && state.selectionContains(node!)
+    const rows = selection ? [...state.selection()] : node === undefined ? [] : [node.id]
+    const targets = rows.map((id) => findLazy(state.memo()!, id)).filter((row): row is Lazy => row !== undefined)
+    if (selection) hints.push([`${state.selection().size}`, "selected"])
+    // The row's primary action.
+    const primary = selection ? undefined : primaryHint(node)
+    if (primary !== undefined) hints.push([primary[0], primary[1]])
+    // Space toggles (or makes the agent current) where it does something.
+    if (!selection && canToggle(node)) hints.push(["space", node?.address?.item.startsWith("perm:") === true && (permItem(node!)?.patterns ?? []).length === 0 ? "switch" : "toggle"])
+    else if (!selection && selectableAgent(node) !== undefined) hints.push(["space", "select"])
     hints.push(...clipboardHints(node))
-    if (focus() === "nav") {
-      if (row?.role === "owner" || row?.role === "every") hints.push(["→", "open"])
-      else if (row?.expandable === true) hints.push(["←→", row.expanded ? "close" : "open"])
-    }
-    if (inList()) {
-      const perm = node === undefined ? undefined : permItem(node)
-      const control = controlKind(node?.address?.item)
-      const settings = node === undefined ? undefined : settingsTarget(node, state.snapshot()?.items.some((item) => item.id === "tool:execute") ?? false)
-      if (settings !== undefined) hints.push(["enter →", `go to ${settings.label}`])
-      else if (node?.badges.disabled !== undefined) hints.push(["", "local settings unavailable in Remote"])
-      else if (control === "cycle") hints.push(["enter", "cycle"])
-      else if (isReview(node)) hints.push(["enter", "review"])
-      else if (control === "toggle") hints.push(["enter", "toggle"])
-      else if (node !== undefined && isModelFieldRowId(node.id)) hints.push(["enter", "edit field"])
-      else if (isModelRow(node)) hints.push(["enter", "open fields"])
-      else if (perm !== undefined && isValueRow(perm)) hints.push(["enter", "edit number"])
-      else if (perm !== undefined && (perm.patterns ?? []).length > 0) hints.push(["enter", "edit rule"])
-      else if (isEditable(node)) hints.push(["enter", "edit"])
-      if (row?.expandable === true) hints.push(["←→", row.expanded ? "close" : "open"])
-    }
-    if (canToggle(node)) hints.push(["space", node?.address?.item.startsWith("perm:") === true && (permItem(node!)?.patterns ?? []).length === 0 ? "switch" : "toggle"])
-    else if (selectableAgent(node) !== undefined) hints.push(["space", "select"])
-    if (canToggle(node) && selectableAgent(node) !== undefined) hints.push(["ctrl+space", "select"])
-    if (inList() && comparable(node) && state.threeWay(node!) !== undefined) hints.push(["c", "compare"])
-    if (canPin(node)) hints.push(["p", "pin"])
-    if (node?.actions?.requires === true) hints.push(["w", node.address !== undefined && node.address.section === null && isModelPrompt(node.address.item) ? "models · shown when" : "shown when"])
-    hints.push(["a", "add"])
-    if (node?.actions?.remove === true || folderName(node) !== undefined) hints.push(["d", "delete"])
-    if (node?.address !== undefined) hints.push(["L", state.linkPrimary() === undefined ? "row links" : "finish link"])
-    if (isLinkable(node?.owner)) hints.push(["l", "preset link"])
-    if (moveCandidate(node)) hints.push(["m", "move"])
-    if (renameCandidateOf(node, state.snapshot())?.target !== undefined || folderName(node) !== undefined) hints.push(["shift+r", "rename"])
-    if (canReset(node)) hints.push(["r", node?.enabledRow === undefined ? "reset" : "reset controls"])
-    if (node?.actions?.split === true) hints.push(["s", "split"])
-    if ((workspace().levels.find((entry) => entry.id === level())?.review ?? 0) > 0) hints.push(["n", "next review"])
-    if (workspace().categories.length > 1) hints.push(["[ ]", "category"])
-    hints.push(["tab", focus() === "nav" ? "list" : "sidebar"], ["/", "filter"], ["?", "help"])
-    hints.push(["esc", state.clipboard()?.mode === "cut" ? "cancel cut" : state.selection().size > 0 ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
+    if (targets.every((row) => addApplies(materialize(row)))) hints.push(["a", "add"])
+    if (targets.length > 0 && targets.every((row) => row.actions.remove)) hints.push(["d", "delete"])
+    if (!selection && moveCandidate(node)) hints.push(["m", "move"])
+    if (targets.every((row) => canReset(materialize(row)))) hints.push(["r", "reset"])
+    const renamable = renameCandidateOf(node, state.snapshot())?.target !== undefined || (node !== undefined && folderName(node) !== undefined)
+    if (!selection && renamable) hints.push(["shift+r", "rename"])
+    // At most seven actions (the selection count is not one), lowest priority
+    // dropped first; the tail (? help, esc) is always kept.
+    const cap = selection ? HINTS_MAX + 1 : HINTS_MAX
+    if (hints.length > cap) hints.splice(cap)
+    hints.push(["?", "help"])
+    hints.push(["esc", state.clipboard()?.mode === "cut" ? "cancel cut" : selection ? "clear selection" : focus() === "nav" ? "close" : "sidebar"])
     return hints
+  }
+
+  // The row's primary action: what enter (or the row's own gesture) does here.
+  function primaryHint(node: TreeNode | undefined): readonly [string, string] | undefined {
+    if (node === undefined) return undefined
+    if (focus() === "nav") {
+      const row = currentRow()
+      if (row?.role === "owner" || row?.role === "every") return ["enter", "open"]
+      if (row?.expandable === true) return ["enter", row.expanded ? "close" : "open"]
+      return undefined
+    }
+    const perm = permItem(node)
+    const control = controlKind(node?.address?.item)
+    const settings = settingsTarget(node, state.snapshot()?.items.some((item) => item.id === "tool:execute") ?? false)
+    if (settings !== undefined) return ["enter →", `go to ${settings.label}`]
+    if (node.badges.disabled !== undefined) return undefined
+    if (node.badges.reviewOf?.includes("layout") === true) return ["enter", "review layout"]
+    if (control === "cycle") return ["enter", "cycle"]
+    if (isReview(node)) return ["enter", "review"]
+    if (control === "toggle") return ["enter", "toggle"]
+    if (isModelFieldRowId(node.id)) return ["enter", "edit field"]
+    if (isModelRow(node)) return ["enter", "open fields"]
+    if (perm !== undefined && isValueRow(perm)) return ["enter", "edit number"]
+    if (perm !== undefined && (perm.patterns ?? []).length > 0) return ["enter", "edit rule"]
+    if (isEditable(node)) return ["enter", "edit"]
+    if (node.address?.item.startsWith("system:model/") === true) return ["enter", "edit"]
+    if (node.owner !== undefined || node.address === undefined) return ["enter", "open"]
+    return undefined
+  }
+
+  // a: the row's own add, or the generic picker, which adds nothing to a fixed
+  // heading (it only lists what a row inside it can hold).
+  function addApplies(node: TreeNode): boolean {
+    if (node.add !== undefined) return true
+    if (node.kind === "item" && node.address?.item.startsWith("tool:") === true && node.actions?.split === true) return true
+    return node.kind !== "root"
   }
 
   // The rows ctrl+c / ctrl+x / ctrl+d act on: the selection when the cursor is
