@@ -161,11 +161,14 @@ export function editRefusal(table: PermissionTable | undefined, agent: string, d
     teamMembers: table.teamMembers,
   })
   if (decision.refuse !== undefined) return decision.refuse
+  // One resource, as core's file access names it: the checkout-relative path
+  // inside the directory, the absolute one outside. Matching both let a
+  // checkout under .../teams/... hit `*/teams/*.md` on every Markdown file.
   const absolute = path.resolve(directory, file)
-  const relative = path.relative(directory, absolute)
+  const resource = isOutside(file, directory) ? absolute : path.relative(directory, absolute)
   for (const row of table.ruleRows(agent, "edit")) {
     if (row.on) continue
-    if ((row.item.patterns ?? []).some((pattern) => wildcardMatch(relative, pattern) || wildcardMatch(absolute, pattern)))
+    if ((row.item.patterns ?? []).some((pattern) => wildcardMatch(resource, pattern)))
       return messageOf(row, `${row.item.title} cannot be changed here`)
   }
   return undefined
