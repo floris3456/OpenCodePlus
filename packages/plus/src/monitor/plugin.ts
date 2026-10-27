@@ -473,9 +473,10 @@ async function hostSessionFacts(ctx: Context, ledger: Ledger, ids: readonly stri
   const running = await Effect.runPromise(Effect.suspend(() => ctx.session.active())).catch(() => undefined)
   const shown = new Set(ids)
   for (const id of Object.keys(running ?? {})) if (shown.has(id)) states.set(id, "running")
-  ledger.db.query<{ session_id: string }, [string]>("select distinct session_id from request where ended is null and session_id in (select value from json_each(?))")
-    .all(JSON.stringify(ids))
-    .forEach((row) => { if (!states.has(row.session_id)) states.set(row.session_id, "running") })
+  // The few open requests, rather than every request of every listed session.
+  ledger.db.query<{ session_id: string }, []>("select distinct session_id from request indexed by request_open where ended is null")
+    .all()
+    .forEach((row) => { if (shown.has(row.session_id) && !states.has(row.session_id)) states.set(row.session_id, "running") })
   // The outcome vocabulary is the host's; show its meaning plainly.
   const label = (outcome: string) =>
     outcome === "succeeded" ? "completed" : outcome === "failed" ? "error" : outcome

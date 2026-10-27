@@ -254,7 +254,6 @@ create table if not exists step (
   primary key (session_id, message_id)
 );
 create index if not exists step_ended on step(ended);
-create index if not exists step_started on step(started);
 create index if not exists step_session on step(session_id, epoch, idx);
 
 create table if not exists call (
@@ -728,6 +727,18 @@ function migrateCacheColumns(db: Database) {
   db.exec("create index if not exists request_ended on request(session_id) where ended is not null")
 }
 
+// A Monitor tab over all history reads these indexes, never the wide rows they
+// cover: the ledger file is large, fragmented and mostly out of the page cache,
+// where reading every step or request row takes seconds. Step totals and v1
+// steps by time; a ping's next request, with its end and exchange scope.
+function migrateReadIndexes(db: Database) {
+  db.exec(`create index if not exists step_window on step(started, session_id, message_id, agent, provider, model,
+    input, output, reasoning, cache_read, cache_write, cost)`)
+  db.exec("drop index if exists step_started")
+  db.exec(`create index if not exists request_follow on request(session_id, started, id, kind, is_title,
+    coalesce(json_extract(observation, '$.scope'), ''), ended)`)
+}
+
 /** `monitor.db` next to the teams data, under the XDG data directory. */
 // Freed pages are reused in place, so pruning stops the file growing but does
 // not shrink it; only a manual `VACUUM` reclaims the space. 1.2.0 deliberately
@@ -794,6 +805,7 @@ export function createLedger(file: string): Ledger {
   }
   db.exec("create index if not exists request_fingerprint_base on request_fingerprint(prefix_base)")
   migrateCacheColumns(db)
+  migrateReadIndexes(db)
   // The fold's own wording of a saved result (report.ts); rows saved before it are saved again.
   if (!db.query<{ name: string }, []>("pragma table_info(cache_result)").all().some((column) => column.name === "fold")) db.exec("alter table cache_result add column fold text")
   db.exec("create index if not exists cache_result_unfolded on cache_result(started) where fold is null")

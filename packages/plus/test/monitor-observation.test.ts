@@ -148,6 +148,8 @@ test("unknown payloads survive supported reopen and writes without supplying mea
 test("schema-2 migrates without backfilling presence; future schema refuses before changing metadata or tables", async () => {
   const db = await ledger()
   db.requestStarted({ id: "legacy", sessionID: "s", kind: "step", started: 100 })
+  // A schema-2 ledger has neither the column nor the later index that reads it.
+  db.db.exec("drop index request_follow")
   db.db.exec("alter table request drop column observation")
   db.db.exec("update meta set value = '2' where key = 'schema'")
   const migrated = createLedger(db.path)

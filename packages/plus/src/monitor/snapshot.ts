@@ -470,13 +470,18 @@ export function savedTotals(ledger: Ledger, input: MonitorQueryInput, context: Q
       })) as unknown as Sums, { requests: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, missTokens: 0, misses: 0, coldRequests: 0, pricedMisses: 0, missCost: 0, coldTokens: 0, steps: 0, work: 0, errors: 0, useful: 0, measuredRequests: 0, measuredInput: 0, measuredRead: 0, last: 0 })
     : ledger.db.query<Sums, Bindings>(`${filter.cte} select ${TOTALS} from cache_result where ${filter.where}`).get(filter.bindings)!
   const ping = savedFilter(input, context, window, "p")
+  // A saved result carries its request's session and start, which never change:
+  // joined on all three, the ping, its next request and that one's verdict are
+  // read from indexes (request_follow, cache_result_session_totals) alone.
   const pingRows = ledger.db.query<{ verdict: string | null; cost: number }, Bindings>(`${ping.cte}
-    select (select coalesce(result.verdict, 'unknown') from request next left join cache_result result on result.request_id = next.id
+    select (select coalesce(result.verdict, 'unknown') from request next indexed by request_follow
+        left join cache_result result on result.session_id = next.session_id and result.started = next.started and result.request_id = next.id
       where next.session_id = p.session_id and next.started >= r.ended and next.started < $until
         and next.id != r.id and next.kind != 'ping' and next.is_title = 0
         and coalesce(json_extract(next.observation, '$.scope'), '') != 'exchange'
       order by next.started, next.id limit 1) verdict, p.cost cost
-    from cache_result p join request r on r.id = p.request_id where ${ping.where} and p.kind = 'ping'`).all(ping.bindings)
+    from cache_result p join request r indexed by request_follow on r.session_id = p.session_id and r.started = p.started and r.id = p.request_id
+    where ${ping.where} and p.kind = 'ping'`).all(ping.bindings)
   const pings = { sent: pingRows.length, cost: 0, followedByHit: 0, followedByMiss: 0, followedByCold: 0, unused: 0, unknown: 0, unknownReasons: {} as Record<string, number> }
   pingRows.forEach((row) => {
     pings.cost += row.cost
