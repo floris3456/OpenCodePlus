@@ -24,7 +24,7 @@ import { saveRun } from "../../src/teams/run.js"
 import type { RunRecord } from "../../src/teams/run.js"
 import { registerInstructionTools } from "../../src/tools.js"
 import { agentHarness, agentInfo, context, fullContext, toolHarness } from "../harness.js"
-import { change, linked, presetInput, presetTable, resolvedStates, type TeamMember } from "./preset-table.js"
+import { change, linked, presetInput, presetTable, resolvedStates, shippedTeam, type TeamMember } from "./preset-table.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -156,13 +156,11 @@ test("an implementer-preset member's rows resolve to the old implementer answers
   const off = tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()
   expect(off).toEqual(
     [
-      "shell", "question", "subagent", "web_tavily_search", "web_tavily_fetch",
+      "shell", "question", "subagent", "web_tavily_search", "web_tavily_fetch", "web_opencode_search",
       "team_delegate", "team_followup", "team_integrate", "team_stop", "team_status", "team_list",
       ...seatOnlyTools,
     ].toSorted(),
   )
-  // OpenCode's search stays in Code Mode, which the member does not have: denied whole.
-  expect(has(permissions, "web_opencode_search", "*", "deny")).toBe(true)
   expect(tools.find((plan) => plan.tool === "team_checkpoint")).toBeUndefined()
   // Secret read rows and the outside-checkout rule are core denies.
   expect(has(permissions, "read", "*.key", "deny")).toBe(true)
@@ -179,9 +177,8 @@ test("an orchestrator-preset member keeps shell and reads outside its checkout",
   expect(tools.find((plan) => plan.tool === "shell")).toBeUndefined()
   // It leaves web search to the planner.
   expect(tools.filter((plan) => !plan.enabled).map((plan) => plan.tool).toSorted()).toEqual(
-    ["question", "subagent", "web_tavily_search", "web_tavily_fetch", ...seatOnlyTools].toSorted(),
+    ["question", "subagent", "web_tavily_search", "web_tavily_fetch", "web_opencode_search", ...seatOnlyTools].toSorted(),
   )
-  expect(has(permissions, "web_opencode_search", "*", "deny")).toBe(true)
   expect(has(permissions, "external_directory", "*", "deny")).toBe(false)
   expect(has(permissions, "read", "*.key", "deny")).toBe(true)
 })
@@ -192,16 +189,36 @@ test("members other than the build seat get search direct and no execute; the se
   const plans = sessionPlans(presetInput(options), presetTable(options))
   const direct = (agent: string) => plans.exposure.filter((entry) => entry.agent === agent && entry.mode === "direct").map((entry) => entry.tool).toSorted()
   const denied = (agent: string) => plans.denials.filter((entry) => entry.agent === agent).map((entry) => entry.tool).toSorted()
-  // The web tools a member uses go direct, OpenCode's fetch with them.
-  expect(direct("planner")).toEqual(["web_exa_code_search", "web_opencode_fetch", "web_tavily_fetch", "web_tavily_search"])
-  // OpenCode's search is off for members, and stays in Code Mode: denied whole with execute.
-  expect(denied("planner")).toEqual(["execute", "web_opencode_search"])
-  // Tavily is off for an implementer: direct and off, so it is simply not sent.
-  expect(direct("implementer")).toEqual(["web_exa_code_search", "web_opencode_fetch", "web_tavily_fetch", "web_tavily_search"])
-  expect(denied("implementer")).toEqual(["execute", "web_opencode_search"])
+  // Without Code Mode every web tool goes direct; OpenCode's search is off for
+  // members, and Tavily for an implementer: direct and off, so simply not sent.
+  const web = ["web_exa_code_search", "web_opencode_fetch", "web_opencode_search", "web_tavily_fetch", "web_tavily_search"]
+  expect(direct("planner")).toEqual(web)
+  expect(denied("planner")).toEqual(["execute"])
+  expect(plans.native.find((plan) => plan.agent === "planner" && plan.tool === "web_opencode_search")?.enabled).toBe(false)
+  expect(direct("implementer")).toEqual(web)
+  expect(denied("implementer")).toEqual(["execute"])
   expect(plans.native.find((plan) => plan.agent === "implementer" && plan.tool === "web_tavily_search")?.enabled).toBe(false)
   expect(direct("build-seat")).toEqual([])
   expect(denied("build-seat")).toEqual([])
+})
+
+// Live theorysnap: its members have no preset and no Code Mode. Once the web
+// tools moved into Code Mode they had none ("no web tools are available");
+// without Code Mode every web tool goes direct, as before, and keeps its row's state.
+test("a member without a preset or Code Mode gets the web tools direct; switching Code Mode on puts them back", () => {
+  const member = { id: "runner", team: shippedTeam }
+  const web = ["web_exa_code_search", "web_opencode_fetch", "web_opencode_search", "web_tavily_fetch", "web_tavily_search"]
+  // OpenCode's search and fetch switched on for it, as the theorysnap lead did.
+  const opencode = ["web_opencode_fetch", "web_opencode_search"]
+  const on = opencode.map((tool) => change(member, `tool:${tool}`, { state: "on" }))
+  const plans = (records: CustomizationRecord[]) => sessionPlans(presetInput({ members: [member], records }), presetTable({ members: [member], records }))
+  const without = plans(on)
+  expect(without.exposure.filter((entry) => entry.agent === member.id).map((entry) => [entry.tool, entry.mode]).toSorted()).toEqual(web.map((tool) => [tool, "direct"]))
+  expect(without.denials.filter((entry) => entry.agent === member.id).map((entry) => entry.tool)).toEqual(["execute"])
+  expect(without.native.filter((plan) => plan.agent === member.id && opencode.includes(plan.tool)).map((plan) => [plan.tool, plan.enabled]).toSorted()).toEqual(opencode.map((tool) => [tool, true]))
+  const withCodeMode = plans([...on, change(member, "tool:execute", { state: "on" })])
+  expect(withCodeMode.exposure.filter((entry) => entry.agent === member.id)).toEqual([])
+  expect(withCodeMode.denials.filter((entry) => entry.agent === member.id && opencode.includes(entry.tool))).toEqual([])
 })
 
 test("a reviewer and a scout, with no skill on, get no skill tool; an implementer keeps it", async () => {

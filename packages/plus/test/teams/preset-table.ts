@@ -62,8 +62,8 @@ function rowItem(id: string, kind: Item["kind"], group: Item["group"]): Item {
 const tools: readonly Item[] = [
   ...teamTools.map((name) => toolItem(`team_${name}`, "plus")),
   ...nativeTools.map((name) => toolItem(name, "native")),
-  ...searchTools.map((name): Item => ({ ...toolItem(name, "plus"), codemode: true })),
-  ...otherTools.map((name): Item => ({ ...toolItem(name, "native"), codemode: true })),
+  ...searchTools.map((name): Item => ({ ...toolItem(name, "plus"), codemode: true, namespace: "web" })),
+  ...otherTools.map((name): Item => ({ ...toolItem(name, "native"), codemode: true, namespace: "web" })),
   ...prefixedTools.map((name) => toolItem(name, "plus")),
 ]
 
