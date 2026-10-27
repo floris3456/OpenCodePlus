@@ -914,13 +914,19 @@ function* verifyEphemeralDeltas(s: Scenario, kind: FragmentKind) {
   const prompt = `Stream ${kind}`
   const chunks = Array.from({ length: 32 }, (_, index) => `${index},`)
   const fixture = fragmentFixture(kind, fragmentID(kind, "many"), chunks)
-  const expectedContext = [{ type: "user", text: prompt }, fixture.expectedAssistant]
+  // A step that only reasons is not an answer: the runner asks once more, and this one answers.
+  const answer = kind === "reasoning"
+  const expectedContext = [
+    { type: "user", text: prompt },
+    fixture.expectedAssistant,
+    ...(answer ? [{ type: "synthetic" }, Expected.assistant({ finish: "stop" }, [Expected.text("Answer")])] : []),
+  ]
   yield* s.admit(prompt)
   const live = fixture.delta
     ? yield* s.bus.subscribe(fixture.delta).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
     : undefined
   yield* Effect.yieldNow
-  yield* s.llm.push(fixture.completeEvents)
+  yield* s.llm.push(fixture.completeEvents, ...(answer ? [TestLLM.text("Answer", "answer")] : []))
 
   yield* s.resume
 
@@ -4583,6 +4589,10 @@ describe("SessionRunnerLLM", () => {
             anthropic: { ignored: true },
           },
         }),
+        // Reasoning alone is not an answer (the runner would ask again).
+        LLMEvent.textStart({ id: "answer" }),
+        LLMEvent.textDelta({ id: "answer", text: "Answer" }),
+        LLMEvent.textEnd({ id: "answer" }),
       ),
     )
     yield* s.resume
@@ -4601,6 +4611,7 @@ describe("SessionRunnerLLM", () => {
           text: "Encrypted thought",
           state: { itemId: "rs_1", reasoningEncryptedContent: "encrypted-state" },
         },
+        Expected.text("Answer"),
       ]),
     ])
 
@@ -4619,6 +4630,7 @@ describe("SessionRunnerLLM", () => {
         text: "Encrypted thought",
         providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: "encrypted-state" } },
       },
+      { type: "text", text: "Answer" },
     ])
   })
 
@@ -6405,6 +6417,54 @@ describe("SessionRunnerLLM", () => {
       expect(yield* recordedEventTypes(sessionID)).not.toContain("session.retry.scheduled.1")
     })
   }
+
+  // Live: DeepSeek ended a subagent's step after its reasoning with "stop" and nothing else;
+  // taken as the end of the turn, the parent received an empty result.
+  const emptyNudge =
+    "Your last response ended without any answer or tool call. Continue the task: answer, or call the tool you need."
+  const reasoningOnly = (blank?: boolean) =>
+    TestLLM.stop(
+      LLMEvent.reasoningStart({ id: "thought" }),
+      LLMEvent.reasoningDelta({ id: "thought", text: "Let me organize the results:" }),
+      LLMEvent.reasoningEnd({ id: "thought" }),
+      ...(blank
+        ? [LLMEvent.textStart({ id: "blank" }), LLMEvent.textDelta({ id: "blank", text: "\n\n" }), LLMEvent.textEnd({ id: "blank" })]
+        : []),
+    )
+
+  for (const blank of [false, true]) {
+    scenario(`asks again after a step that only reasons${blank ? " and writes blank text" : ""}`, function* (s) {
+      yield* s.llm.push(reasoningOnly(blank), TestLLM.text("Results", "results"))
+
+      yield* s.runPrompt("Write the results")
+
+      expect(s.requests).toHaveLength(2)
+      expect(s.requests[1]?.messages.at(-1)).toMatchObject({ role: "user", content: [{ type: "text", text: emptyNudge }] })
+      expect((yield* s.context).map((message) => message.type)).toEqual(["user", "assistant", "synthetic", "assistant"])
+      expect((yield* s.context).at(-1)).toMatchObject(Expected.assistant({ finish: "stop" }, [Expected.text("Results")]))
+    })
+  }
+
+  scenario("fails after three empty answers in a row and starts over for new input", function* (s) {
+    yield* s.llm.push(reasoningOnly(), reasoningOnly(), reasoningOnly())
+
+    expect(yield* s.runPrompt("Write the results").pipe(Effect.flip)).toMatchObject({ error: { type: "empty-response" } })
+    expect(s.requests).toHaveLength(3)
+    expect((yield* s.context).filter((message) => message.type === "synthetic")).toHaveLength(2)
+
+    // New input breaks the streak: one empty answer asks again instead of failing.
+    yield* s.llm.push(reasoningOnly(), TestLLM.text("Results", "results"))
+    yield* s.runPrompt("Try again")
+    expect(s.requests).toHaveLength(5)
+    expect((yield* s.context).at(-1)).toMatchObject(Expected.assistant({ finish: "stop" }, [Expected.text("Results")]))
+  })
+
+  scenario("ends the turn on a response with no output at all", function* (s) {
+    yield* s.llm.push(TestLLM.stop())
+    yield* s.runPrompt("Nothing to say")
+    expect(s.requests).toHaveLength(1)
+    expect((yield* s.context).some((message) => message.type === "synthetic")).toBe(false)
+  })
 
   for (const tools of ["hosted", "unfinished"] as const) {
     scenario(`caps output token limit continuations and resets for new input (${tools})`, function* (s) {

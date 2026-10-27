@@ -40,6 +40,8 @@ export type Outcome = Data.TaggedEnum<{
   RecoverFull: {}
   Compacted: {}
   OutputLimit: { readonly needsContinuation: boolean }
+  /** The provider finished normally after reasoning, without text or a tool call. */
+  EmptyReply: {}
 }>
 export const Outcome = Data.taggedEnum<Outcome>()
 
@@ -299,6 +301,10 @@ export const make = Effect.gen(function* () {
         if (record.endTurn) return Outcome.Completed({ needsContinuation: false })
         const needsContinuation = input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation
         if (record.finish?.finish === "length") return Outcome.OutputLimit({ needsContinuation })
+        // Live: DeepSeek ended a subagent's step after its reasoning with "stop" and no text
+        // or tool call; taken as a finished turn, the parent got an empty result. A response
+        // with no output at all stays a plain end of turn.
+        if (record.finish?.finish === "stop" && record.outputStarted && !record.replied) return Outcome.EmptyReply()
         return Outcome.Completed({ needsContinuation })
       }),
     )
