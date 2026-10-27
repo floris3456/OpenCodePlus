@@ -35,6 +35,7 @@ import {
   ToolError,
   WorktreeState,
   WorktreeStates,
+  budgetDimensions,
   budgetExhaustion,
   parseDuration,
   pathList,
@@ -318,6 +319,28 @@ test("F1.2 status.budget overBy/exhausted math", () => {
   )
   expect(under.overBy).toEqual({ turns: 0, tokens: 0, wallMs: 0 })
   expect(under.exhausted).toBe(false)
+})
+
+test("the wall budget counts attempt time, not run age while a settled run waits", () => {
+  const settledAt = Date.parse("2026-10-27T14:08:00Z")
+  const attempt = { startedAt: "2026-10-27T14:05:00Z", endedAt: "2026-10-27T14:08:00Z" }
+  const settled = {
+    attempts: [attempt],
+    budget: { wallMs: 1_200_000 },
+    createdAt: "2026-10-27T14:05:00Z",
+  }
+  expect(budgetDimensions(settled, { now: settledAt }).find((d) => d.name === "wall")?.used).toBe(180_000)
+  // 47 minutes later the settled run has not spent another millisecond.
+  expect(budgetDimensions(settled, { now: settledAt + 47 * 60_000 }).find((d) => d.name === "wall")?.used).toBe(180_000)
+  expect(budgetExhaustion(settled, { now: settledAt + 47 * 60_000 }).exhausted).toBe(false)
+
+  // An open attempt counts to now; earlier attempts keep their measured time.
+  const running = {
+    attempts: [attempt, { startedAt: "2026-10-27T14:54:00Z" }],
+    budget: { wallMs: 1_200_000 },
+    createdAt: "2026-10-27T14:05:00Z",
+  }
+  expect(budgetDimensions(running, { now: settledAt + 47 * 60_000 }).find((d) => d.name === "wall")?.used).toBe(240_000)
 })
 
 describe("parseDuration", () => {

@@ -4149,12 +4149,20 @@ export async function sessionCompactDefaults(
   const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
   if (session?.agent === undefined || session.model === undefined) return undefined
   const model = session.model
-  return compactDefaultsOf(
+  const defaults = compactDefaultsOf(
     state,
     session.agent,
     { providerID: model.providerID, id: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) },
     (await plusSettings.read()).coldCompact,
   )
+  // A delegated worker chat is not read by a person: compacting it before its
+  // cache goes cold wakes a settled run about an hour later, and the wake was
+  // read as a new team turn (a scout ran its task again). Warming still keeps
+  // the cache warm; team_followup arms cold compaction explicitly on resume.
+  if ((await bySession(teamsDataDir(), sessionID))?.kind === "w") {
+    return { ...defaults, compactWarm: false, compactWarmFrom: "built-in" }
+  }
+  return defaults
 }
 
 // Plus's `compaction.decide`: the per-model settings for (agent, chat model),

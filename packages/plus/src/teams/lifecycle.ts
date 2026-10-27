@@ -226,9 +226,18 @@ export async function onSessionEvent(
   if ((event.type === "session.execution.started" || SessionOutcomes[event.type] !== undefined) && movedRun(run, event.created)) return undefined
 
   if (event.type === "session.execution.started") {
-    const applied = { changed: false }
+    const applied = { changed: false, staleStop: false }
     const working = await updateRun(root, run.id, (record) => {
       const resuming = record.state === "stopped" || record.state === "dead"
+      // A prompt admitted before a stop can start a new execution after the
+      // stop was saved. That execution belongs to the stopped turn, not a new
+      // one: resuming it here would open another attempt after team_stop.
+      // A real resume is admitted after the stop, so its event is newer.
+      const startedAt = event.created
+      if (resuming && startedAt !== undefined && startedAt <= Date.parse(record.lastUsed)) {
+        applied.staleStop = true
+        return record
+      }
       if (record.state !== "idle" && record.state !== "starting" && !resuming) {
         if (record.retrying === undefined) return record
         applied.changed = true
@@ -244,6 +253,13 @@ export async function onSessionEvent(
       // stopped run starting here was started from outside: a held run resumes.
       return withoutHold(withoutRetrying(transition(resuming ? consumeStopIntent(admitted) : admitted, "working", trigger)))
     })
+    if (applied.staleStop) {
+      if (run.sessionID !== null && run.sessionID !== undefined)
+        await Effect.runPromise(
+          Effect.ignore(ctx.session.interrupt({ sessionID: Session.ID.make(run.sessionID) })),
+        )
+      return undefined
+    }
     if (working === undefined || !applied.changed) return undefined
     return working
   }
@@ -559,7 +575,7 @@ function toIdle(run: RunRecord): RunRecord {
 export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: string): Promise<RunRecord> {
   const open = run.attempts.at(-1)
   const waiting = open !== undefined && !isAttemptTerminal(open.state)
-  const ended = interruptOpenAttempt(run)
+  const ended = toIdle(interruptOpenAttempt(run))
   const stoppedTransition = transition(transition(ended, "stopping", "shutdown"), "stopped", "exited")
   const stopped = by !== undefined ? { ...stoppedTransition, stoppedBy: by } : stoppedTransition
   const attempt = stopped.attempts.at(-1)
@@ -1112,6 +1128,11 @@ export async function checkBudgets(
     const record = await loadRecordSafe(root, entry)
     if (record === undefined || isTerminal(record.state)) continue
     if (record.state !== "working" || !record.parent) continue
+    // A run whose last attempt is terminal has settled, even when a host event
+    // left its state at working for a moment: it is not doing run work, so it
+    // must not be billed wall time or ping its parent.
+    const lastAttempt = record.attempts.at(-1)
+    if (lastAttempt !== undefined && isAttemptTerminal(lastAttempt.state)) continue
     const parentRecord = await loadRecordSafe(root, record.parent)
     if (parentRecord === undefined || isTerminal(parentRecord.state) || parentRecord.state === "dead") continue
 

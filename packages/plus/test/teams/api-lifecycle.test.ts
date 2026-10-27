@@ -177,6 +177,59 @@ test("stop on an idle child stops and records both history rows", async () => {
   })
 })
 
+test("stop on a settled run a host event left working stops it now and starts no attempt", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentWithChild("main-0123456789abcdef", "w-settled-working", {
+      state: "working",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const value = required(await stopHandler(context({ session: sessions.domain }), { run: child.id }, callerFor(parent))) as {
+      run: string
+      state: string
+    }
+    expect(value).toMatchObject({ run: child.id, state: "stopped" })
+    const stored = await loadRun(root, child.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(stored?.attempts[0]?.state).toBe("succeeded")
+    expect(stored?.history).toEqual([
+      { at: expect.any(String), from: "working", to: "idle", trigger: "turn_ended" },
+      { at: expect.any(String), from: "idle", to: "stopping", trigger: "shutdown" },
+      { at: expect.any(String), from: "stopping", to: "stopped", trigger: "exited" },
+    ])
+    expect(sessions.interrupted).toHaveLength(1)
+  })
+})
+
+test("stop on a stopping run whose attempt already settled finishes the stop", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentWithChild("main-0123456789abcdef", "w-stopping-settled", {
+      state: "stopping",
+      stopRequested: true,
+      stopRequestedBy: "main-0123456789abcdef",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const sessions = recordSession()
+    const value = required(await stopHandler(context({ session: sessions.domain }), { run: child.id }, callerFor(parent))) as {
+      run: string
+      state: string
+    }
+    expect(value).toMatchObject({ run: child.id, state: "stopped" })
+    const stored = await loadRun(root, child.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.stoppedBy).toBe(parent.id)
+    expect(stored?.history).toEqual([{ at: expect.any(String), from: "stopping", to: "stopped", trigger: "exited" }])
+    expect(sessions.interrupted).toHaveLength(0)
+  })
+})
+
 test("stop on a working child sets stopRequested and reports stopping, and is idempotent", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const now = new Date().toISOString()

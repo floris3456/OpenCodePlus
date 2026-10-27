@@ -93,6 +93,28 @@ test.each(["dead", "superseded", "reaped"] as const)("budget sweeps never ping a
   })
 })
 
+test("a settled run the host left marked working is not pinged", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({ id: "main-settled-parent", role: "orchestrator", sessionID: "ses_parent_settled" })
+    const started = new Date(0).toISOString()
+    const ended = new Date(1_000).toISOString()
+    const child = baseRun({
+      id: "w-settled-working",
+      parent: parent.id,
+      state: "working",
+      sessionID: "ses_settled_working",
+      budget: { wallMs: 1 },
+      createdAt: started,
+      attempts: [{ n: 1, state: "succeeded", startedAt: started, endedAt: ended, trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await checkBudgets(context(), root, undefined, Date.parse("2026-10-27T14:55:00Z"))
+    expect(await peek(root, parent.id)).toEqual([])
+    expect((await loadRun(root, child.id))?.lastBudgetPingAt).toBeUndefined()
+  })
+})
+
 test("budget notices batch for delivery and repeat only after consumption and the interval", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const parent = baseRun({ id: "main-parent", role: "orchestrator", sessionID: "ses_parent" })

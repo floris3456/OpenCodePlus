@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import { teamsDataDir } from "../instructions/paths.js"
 import { put } from "./inbox.js"
 import { stopIdle, evictRunFolder } from "./lifecycle.js"
-import { isTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
+import { isAttemptTerminal, isTerminal, loadRun, saveRun, transition, type RunRecord } from "./run.js"
 import { StopInput } from "./schema.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { mayReach, relationOf } from "./reach.js"
@@ -41,19 +41,38 @@ async function interruptSession(ctx: Context, sessionID: string | null): Promise
   await Effect.runPromise(Effect.ignore(sessions.interrupt({ sessionID: Session.ID.make(sessionID) })))
 }
 
+// A run whose last attempt is terminal has no turn left to settle, whatever
+// state a host event left on the record. Stopping it is a stop now, not a
+// request to stop at a step that will never come.
+function settled(record: RunRecord): boolean {
+  const last = record.attempts.at(-1)
+  return last !== undefined && isAttemptTerminal(last.state)
+}
+
+async function finalizeStopping(ctx: Context, root: string, run: RunRecord): Promise<RunRecord> {
+  const moved = transition(run, "stopped", "exited")
+  const stopped = run.stopRequestedBy === undefined ? moved : { ...moved, stoppedBy: run.stopRequestedBy }
+  await saveRun(root, stopped)
+  await evictRunFolder(ctx, stopped)
+  return stopped
+}
+
 export async function stopRun(ctx: Context, runID: string): Promise<TeamApiResult> {
   const root = teamsDataDir()
   const run = await loadRun(root, runID)
   if (run === undefined) return fail("run.unknown", `Run ${runID} not found in this namespace.`)
-  if (run.state === "working") return fail("E_BUSY", `Run ${runID} is working; interrupt it first.`)
   if (run.state === "stopped") return succeeded({ run: run.id, state: "stopped" })
-  if (run.state === "stopping") return succeeded({ run: run.id, state: "stopping" })
   if (isTerminal(run.state)) return succeeded({ run: run.id, state: run.state })
-  if (run.state === "idle") {
+  if (run.state === "stopping") {
+    if (!settled(run)) return succeeded({ run: run.id, state: "stopping" })
+    return succeeded({ run: run.id, state: (await finalizeStopping(ctx, root, run)).state })
+  }
+  if (run.state === "idle" || ((run.state === "working" || run.state === "starting") && settled(run))) {
     await interruptSession(ctx, run.sessionID)
     await stopIdle(ctx, root, run)
     return succeeded({ run: run.id, state: "stopped" })
   }
+  if (run.state === "working") return fail("E_BUSY", `Run ${runID} is working; interrupt it first.`)
   if (run.state === "dead") {
     const stopped = transition(run, "stopped", "reconcile")
     await saveRun(root, stopped)
@@ -80,13 +99,16 @@ export async function stopHandler(ctx: Context, args: StopInput, caller: TeamCal
   const found = await loadRun(root, args.run)
   if (found === undefined || !(await reachable(root, parent, found, caller.agent, table))) return notChild(parent, args.run)
   if (found.state === "stopped") return stopResult(found.id, "stopped")
-  if (found.state === "stopping") return stopResult(found.id, "stopping")
+  if (found.state === "stopping") {
+    if (!settled(found)) return stopResult(found.id, "stopping")
+    return stopResult(found.id, (await finalizeStopping(ctx, root, found)).state)
+  }
   const child = args.reason === undefined ? found : { ...found, stopReason: args.reason }
   // Stopping a deeper descendant: the run's own parent learns why from its
   // next batch of messages, without being woken for it.
   if (args.reason !== undefined && child.parent !== null && child.parent !== parent.id)
     await put(root, child.parent, { kind: "notify", from: child.id, text: `${parent.id} stops run ${child.id}: ${args.reason}`.replace(/\r?\n/g, " ") })
-  if (child.state === "idle") {
+  if (child.state === "idle" || ((child.state === "working" || child.state === "starting") && settled(child))) {
     await interruptSession(ctx, child.sessionID)
     await stopIdle(ctx, root, child, parent.id)
     return stopResult(child.id, "stopped")
