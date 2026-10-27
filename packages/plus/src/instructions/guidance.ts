@@ -5,53 +5,11 @@
 // an ordinary System row: a level can turn a section off, rewrite it, or add
 // its own section with its own `requires` line.
 //
-// What a tool does stays in its description and how a value must look in its
-// schema; a section here says only when or why to reach for it, and only
-// where that is not obvious from the description. Keep each to a line or two:
-// it is sent on every request of every agent that has the row.
+// It ships empty: an agent receives nothing from it until a level adds a
+// section. What a tool does stays in its description and how a value must
+// look in its schema; a section here says only when or why to reach for it,
+// and only where that is not obvious from the description. Keep each to a
+// line or two: it is sent on every request of every agent that has the row.
 export const guidanceTitle = "Tools and rules"
 
-export const guidanceContent = `# Tools and rules
-
-## Code search
-<!-- requires: tool:web_exa_code_search -->
-For external APIs and libraries, check current usage with web.exa_code_search
-instead of relying on memory.
-
-## Documentation search
-<!-- requires: tool:web_tavily_search -->
-For current documentation, release notes and changelogs, search with
-web.tavily_search.
-
-## Reading web pages
-<!-- requires: tool:web_tavily_fetch -->
-Read a page you found in full with web.tavily_fetch.
-
-## Terminal UIs
-<!-- requires: skill:pilotty -->
-After changing terminal UI code, check it in a real terminal with the pilotty
-skill before you report it done.
-
-## Questions
-<!-- requires: tool:question -->
-When only a person can make a decision, ask with the question tool instead of
-guessing.
-
-## Subagents
-<!-- requires: tool:subagent -->
-A subagent starts with no context: give it everything it needs, and use it for
-self-contained work whose result you can check.
-
-## Commands
-<!-- requires: tool:shell -->
-Keep a foreground command under about 10 minutes: run longer work in the
-background, and give every wait or polling loop its own time limit.
-
-## Commits
-<!-- requires: !perm:shell:git-commit, tool:team_checkpoint -->
-You cannot commit through the shell here: commit with team_checkpoint.
-
-## Pushing
-<!-- requires: !perm:shell:git-push -->
-You cannot push here.
-`
+export const guidanceContent = ""

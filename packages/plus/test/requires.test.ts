@@ -7,13 +7,13 @@ import type { SessionHooks } from "@opencode/plugin/effect/session"
 import { Effect } from "effect"
 import { apply, roleUpdates, type ApplyInput } from "../src/instructions/apply.js"
 import { discover } from "../src/instructions/discover.js"
-import { guidanceContent } from "../src/instructions/guidance.js"
 import { fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
 import { guidancePath, guidanceItemId } from "../src/instructions/paths.js"
 import { chainContext } from "../src/instructions/presets.js"
 import { applyRequires, gatedSections, mentionWarnings, mentions, parseRequirements } from "../src/instructions/requires.js"
 import { currentRowId } from "../src/instructions/tool-renames.js"
 import { expandedTree } from "../src/instructions/tree.js"
+import { toolsAndRulesSample } from "./fixtures/tools-and-rules.js"
 import { agentHarness, agentInfo, context, skillHarness, skillInfo, toolHarness } from "./harness.js"
 
 // Instructions follow capabilities: a section that depends on a row reaches
@@ -111,6 +111,25 @@ function off(agent: string, item: string): CustomizationRecord {
 }
 
 test("turning a skill on for an agent brings its Tools and rules section; off takes it away", async () => {
+  // Plus ships the row empty: no agent receives any part of it.
+  const shipped = await received((items) => items)
+  expect(shipped.text).toBe("")
+  expect(shipped.alpha).toEqual([])
+  expect(shipped.beta).toEqual([])
+
+  // A level that adds sections: each follows the row it names.
+  const added = await received((items) =>
+    items.map((item) => (item.id === guidanceItemId ? { ...item, text: toolsAndRulesSample, fingerprint: fingerprint(toolsAndRulesSample) } : item)),
+  )
+  const part = added.alpha.find((entry) => (entry.metadata as { instruction?: { path?: string } } | undefined)?.instruction?.path === guidancePath())
+  expect(part?.text).toBe("# Tools and rules\n\n## Terminal UIs\nCheck terminal UI changes with the pilotty skill.")
+  // beta has pilotty off, and nothing else in the row applies to it: no part at all.
+  expect(added.beta).toEqual([])
+})
+
+// What alpha and beta receive (beta has pilotty off) from the discovered rows,
+// after `rows` changes them.
+async function received(rows: (items: readonly Item[]) => readonly Item[]) {
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
     agent: agentHarness([agentInfo("alpha", "upstream"), agentInfo("beta", "upstream")]).domain,
@@ -124,19 +143,15 @@ test("turning a skill on for an agent brings its Tools and rules section; off ta
     },
   })
   const discovered = await discover({ ctx, records: [], baseTemplates: [], activeBase: () => undefined })
-  expect(discovered.items.find((item) => item.id === guidanceItemId)?.text).toBe(guidanceContent)
-  await apply(ctx, input(discovered.items, [off("beta", "skill:pilotty")], ["alpha", "beta"]))
-  const run = callbacks[0]
-  if (run === undefined) throw new Error("missing context hook")
+  await apply(ctx, input(rows(discovered.items), [off("beta", "skill:pilotty")], ["alpha", "beta"]))
   const alpha = sessionEvent("alpha")
   const beta = sessionEvent("beta")
-  await Effect.runPromise(run(alpha))
-  await Effect.runPromise(run(beta))
-  const part = alpha.system.find((entry) => (entry.metadata as { instruction?: { path?: string } } | undefined)?.instruction?.path === guidancePath())
-  expect(part?.text).toBe("# Tools and rules\n\n## Terminal UIs\nAfter changing terminal UI code, check it in a real terminal with the pilotty\nskill before you report it done.")
-  // beta has pilotty off, and nothing else in the row applies to it: no part at all.
-  expect(beta.system).toEqual([])
-})
+  for (const run of callbacks) {
+    await Effect.runPromise(run(alpha))
+    await Effect.runPromise(run(beta))
+  }
+  return { text: discovered.items.find((item) => item.id === guidanceItemId)?.text, alpha: alpha.system, beta: beta.system }
+}
 
 test("a role section that depends on a tool reaches only the agents that have it on", () => {
   const role: Item = {
@@ -164,7 +179,7 @@ test("the tree says when a section is shown, flags an uncovered mention, and lin
     { id: "tool:team_check", kind: "tool", group: "plus", title: "team_check", text: "Run a check.", enabled: true, fingerprint: "a" },
     { id: "tool:team_status", kind: "tool", group: "plus", title: "team_status", text: "Status.", enabled: true, fingerprint: "b" },
     { id: "tool:web_exa_code_search", kind: "tool", group: "mcp", server: "search", title: "web_exa_code_search", text: "Search.", enabled: true, fingerprint: "c" },
-    { id: guidanceItemId, kind: "system", group: "plus", title: "Tools and rules", text: guidanceContent, enabled: true, fingerprint: fingerprint(guidanceContent) },
+    { id: guidanceItemId, kind: "system", group: "plus", title: "Tools and rules", text: toolsAndRulesSample, enabled: true, fingerprint: fingerprint(toolsAndRulesSample) },
   ]
   const nodes = expandedTree({
     items,
