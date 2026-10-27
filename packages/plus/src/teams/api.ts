@@ -32,7 +32,7 @@ import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
 import { wildcardMatch } from "../instructions/permission-catalog.js"
-import { decide, rowState, type PermissionTable } from "../instructions/permission-enforce.js"
+import { decide, rowState, shellLine, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
 import { render } from "./report.js"
@@ -668,6 +668,9 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
 
   await Effect.runPromise(sessions.prompt({ sessionID: child.id, text: rendered }))
 
+  // Said in the answer, not refused: Plus cannot know whether this Brief needs
+  // commands, and the reader of the answer can still redirect the work.
+  const warning = shellLine(table, brief.role)[0]
   const output = {
     run: childID,
     requestID: brief.requestID,
@@ -676,6 +679,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
     branch: created.branch,
     base: baseSha,
     ...(resolvedModel === null ? {} : { model: `${resolvedModel.providerID}/${resolvedModel.modelID}${resolvedModel.variant === undefined ? "" : `@${resolvedModel.variant}`}` }),
+    ...(warning === undefined ? {} : { warning }),
     next: "If other work is ready, delegate it now; then end your turn: each settlement wakes you with its report.",
   }
   await atomicJson(requestPath, { signature, output, run: childID })

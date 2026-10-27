@@ -20,6 +20,7 @@ import {
   narrowTools,
   permissionTable,
   rowState,
+  shellLine,
   tableActive,
   tableNarrows,
   teamAllows,
@@ -583,10 +584,13 @@ test("narrowTools lists exactly the open members in team_delegate's role and nev
       `Members you may delegate to: ${open.join(", ")}.`,
       "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable.",
       "implementer: files its checks run stay unchanged, unless scope.paths names them.",
+      "implementer has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
       "orchestrator needs a reason: say why this member and not another.",
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
       "reviewer cannot commit: never give it a commit deliverable.",
+      "reviewer has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
       "scout cannot commit: never give it a commit deliverable.",
+      "scout has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
     ].join("\n"),
   )
   expect(orchestrator.tools.glob?.input).toEqual({ type: "object", properties: { pattern: { type: "string" } }, required: ["pattern"] })
@@ -641,11 +645,14 @@ test("narrowTools describes the targets' Brief rows and the caller's Requirement
       "Members you may delegate to: implementer, orchestrator, planner, reviewer, scout.",
       "implementer needs scope.paths (files or dir/* it may edit) for a commit deliverable.",
       "implementer: files its checks run stay unchanged, unless scope.paths names them.",
+      "implementer has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
       "orchestrator needs a reason: say why this member and not another.",
       "planner accepts plan files only: every scope path must match one of its patterns [docs/plans/*, docs/handoffs/*].",
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
       "reviewer cannot commit: never give it a commit deliverable.",
+      "reviewer has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
       "scout cannot commit: never give it a commit deliverable.",
+      "scout has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
     ].join("\n"),
   )
   expect(described(shipped, "implementer").finish).toBe("Report.\nRequirements for done: assigned checks pass at HEAD; worktree committed before done.")
@@ -727,6 +734,59 @@ test("delegateTargets lists the on members, sorted, never the other-teams row", 
   expect(delegateTargets(table.toolRows("ocp-build", "team_delegate"))).toEqual(members.map((member) => member.id).filter((id) => id !== "ocp-build").toSorted())
   expect(delegateTargets(table.toolRows("planner", "team_delegate"))).toEqual(["orchestrator"])
   expect(delegateTargets(table.toolRows("reviewer", "team_delegate"))).toEqual([])
+})
+
+// theorysnap's runner had no preset, so its "Every other command" row shipped
+// off and every command it was given was refused, over two attempts. Its
+// delegator hears that before the Brief, and how far a row opens the shell.
+test("shellLine says a member runs no command, or only what its allow rows name, or has no shell", () => {
+  const runner = { id: "runner", team: "theorysnap" }
+  const lead = { id: "lead", team: "theorysnap" }
+  const members = [runner, lead]
+  // theorysnap's lead: team_delegate on, and the one member it delegates to.
+  const delegating = [change(lead, "tool:team_delegate", { state: "on" }), change(lead, "perm:team_delegate:to.runner", { state: "on" })]
+  const table = (...records: ReturnType<typeof change>[]) => presetTable({ members, records: [...delegating, ...records] })
+  const shell = change(runner, "tool:shell", { state: "on" })
+  const pilotty = change(runner, "perm:shell:commands.pilotty", { state: "on" })
+  const everything = change(runner, "perm:shell:commands.*", { state: "on" })
+  const noCommand = `runner's shell runs no command: its "Every other command" row is off and no allowed row is on, so never give it a Brief that needs commands.`
+
+  expect(shellLine(table(shell), "runner")).toEqual([noCommand])
+  expect(shellLine(table(shell, pilotty), "runner")).toEqual([
+    `runner's shell runs only pilotty (driving terminal apps): its "Every other command" row is off.`,
+  ])
+  expect(shellLine(table(shell, everything), "runner")).toEqual([])
+  expect(shellLine(table(), "runner")).toEqual([
+    "runner has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
+  ])
+  // The line rides with team_delegate's description, after the target's own.
+  const description = (records: ReturnType<typeof change>[]): string | undefined => {
+    const event: Pick<SessionContext, "agent" | "tools"> = {
+      agent: Agent.ID.make("lead"),
+      tools: { team_delegate: { description: "Delegate a task.", input: { type: "object", properties: { role: { type: "string" } } } } },
+    }
+    narrowTools(event, table(...records))
+    return event.tools.team_delegate?.description
+  }
+  // A member with no preset also has no team_checkpoint, so the shell line
+  // follows the "cannot commit" one, as narrowTools orders them.
+  expect(description([shell])).toBe(
+    [
+      "Delegate a task.",
+      "Members you may delegate to: runner.",
+      "runner takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
+      "runner cannot commit: never give it a commit deliverable.",
+      noCommand,
+    ].join("\n"),
+  )
+  expect(description([shell, everything])).toBe(
+    [
+      "Delegate a task.",
+      "Members you may delegate to: runner.",
+      "runner takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report.",
+      "runner cannot commit: never give it a commit deliverable.",
+    ].join("\n"),
+  )
 })
 
 // ── result masking ─────────────────────────────────────────────────────────

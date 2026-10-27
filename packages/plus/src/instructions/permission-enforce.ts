@@ -943,7 +943,7 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target), ...noCommit(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target), ...noCommit(table, target), ...shellLine(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
     }
     if (name === "team_finish") definition.description += requirements(rows, "Requirements for done")
     if (name === "team_checkpoint") definition.description += requirements(rows, "Requirements for a commit")
@@ -983,6 +983,24 @@ function checkFilesRule(table: PermissionTable, target: string): string[] {
 // (E_ROLE): a user who asked the scout for a fix got that refusal first.
 function noCommit(table: PermissionTable, target: string): string[] {
   return table.toolEnabled(target, "team_checkpoint") ? [] : [`${target} cannot commit: never give it a commit deliverable.`]
+}
+
+// A member that cannot run commands, said before a Brief that needs them reaches it: theorysnap's runner,
+// its "Every other command" row off by default, refused every command for two attempts. Only allow-list
+// rows open a closed shell: a user rule you create is a deny-list row, so on it refuses nothing and it is
+// never in the open list.
+export function shellLine(table: PermissionTable, target: string): string[] {
+  if (!table.toolEnabled(target, "shell"))
+    return [`${target} has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).`]
+  const group = table.toolRows(target, "shell").filter((row) => row.item.category === "commands")
+  const fallback = group.find((row) => row.item.fallback === true)
+  if (fallback === undefined || fallback.on) return []
+  const open = group.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
+  return [
+    open.length === 0
+      ? `${target}'s shell runs no command: its "Every other command" row is off and no allowed row is on, so never give it a Brief that needs commands.`
+      : `${target}'s shell runs only ${open.join(", ")}: its "Every other command" row is off.`,
+  ]
 }
 
 // The files an agent may change while its "Files it may change" category is
