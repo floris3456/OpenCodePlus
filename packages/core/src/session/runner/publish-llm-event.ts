@@ -111,7 +111,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     called: boolean
     settled: boolean
     providerExecuted: boolean
-    endTurn?: boolean
+    endTurn?: Tool.Result["endTurn"]
     progress?: Tool.Metadata
     input?: InputExcerpt
     malformed?: boolean
@@ -642,7 +642,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     tool.settled = true
     const content = result.content
     if (!isReadonlyArrayNonEmpty(content)) return yield* Effect.die(new Error(`Tool execution has no content: ${id}`))
-    tool.endTurn = result.endTurn === true
+    tool.endTurn = result.endTurn
     yield* bus.publish(SessionEvent.Tool.Success, {
       sessionID: input.sessionID,
       assistantMessageID,
@@ -672,9 +672,11 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     hasStarted: () => stepStarted,
     /** Immutable snapshot of everything recorded for this step so far. */
     record: (): StepRecord => {
+      const local = Array.from(tools.values()).filter((tool) => !tool.providerExecuted)
       const endTurn =
-        Iterable.some(tools.values(), (tool) => tool.endTurn === true) &&
-        !Iterable.some(tools.values(), (tool) => !tool.settled)
+        !Iterable.some(tools.values(), (tool) => !tool.settled) &&
+        (local.some((tool) => tool.endTurn === true) ||
+          (local.length > 0 && local.every((tool) => tool.endTurn === "alone")))
       return {
         outputStarted,
         providerFailed,

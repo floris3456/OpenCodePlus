@@ -407,6 +407,14 @@ wakes the caller with its report. `team_followup` returns `{ attempt, state, nex
 with `next: "End your turn: its settlement wakes you."`. Session, worktree,
 Brief, budget and model provenance remain in the saved run data.
 
+`team_status` or `team_list` while children still work and no settlement
+waits is a wait: it ends the turn, unbounded or naming only working runs with
+a short answer. It is a plain look instead in the first step after a
+compaction and in a step that answers a person's message rather than a
+settlement (Plus marks settlement prompts with `metadata["plus.team"]:
+"inbox"`). A wait ends the turn only when every call of its step asks to
+(`endTurn: "alone"`), so the model still reads its other calls' results.
+
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
 Permissions → Delegate to`. It holds one row per member of the same team, its

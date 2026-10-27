@@ -2,6 +2,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import { Permission } from "@opencode/schema/permission"
+import { Session } from "@opencode/schema/session"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Exit, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
@@ -14,7 +15,7 @@ import { rowState, unattendedMessage, type PermissionTable } from "../instructio
 import type { TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
 import { attemptTransition, bySession, loadRun, newRunID, openChildren, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
-import { peek } from "./inbox.js"
+import { peek, teamInboxKey } from "./inbox.js"
 import { lock } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import {
@@ -704,16 +705,34 @@ function runGatedInner<A>(
         new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
       )
     }
-    const waiting = name === "status" || name === "list" ? yield* Effect.promise(() => waitingOn(teamsDataDir(), owned.id)) : []
-    if (waiting.length > 0 && onlyAsksAbout(name, input as object, waiting)) return { output: { waiting, next: WAITING }, endTurn: true }
-    return {
-      output: result.value,
-      ...((name === "finish" && owned.parent != null) || waiting.length > 0 ? { endTurn: true } : {}),
-    }
+    const open = name === "status" || name === "list" ? yield* Effect.promise(() => waitingOn(teamsDataDir(), owned.id)) : []
+    const waiting = open.length > 0 && !(yield* answersNews(pluginCtx, sessionID, String(toolCtx.messageID))) ? open : []
+    if (waiting.length > 0 && onlyAsksAbout(name, input as object, waiting)) return { output: { waiting, next: WAITING }, endTurn: "alone" }
+    if (name === "finish" && owned.parent != null) return { output: result.value, endTurn: true }
+    return { output: result.value, ...(waiting.length > 0 ? { endTurn: "alone" as const } : {}) }
   })
 }
 
 const WAITING = "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report."
+
+// A status or list call is a look, not a wait, in the first step after a
+// compaction (the summary is all the model knows of its runs) and in a step
+// that answers a person's message rather than a settlement. Live theorysnap
+// lead: after compaction its first call was team_status, the wait ended the
+// turn, and the owner's message went unanswered until a child settled.
+// Unreadable history keeps the wait.
+function answersNews(ctx: Context, sessionID: string, messageID: string): Effect.Effect<boolean> {
+  return Effect.suspend(() => ctx.session.context({ sessionID: Session.ID.make(sessionID) })).pipe(
+    Effect.map((messages) => {
+      const at = messages.findIndex((message) => message.id === messageID)
+      const before = at === -1 ? messages : messages.slice(0, at)
+      const previous = before.findLastIndex((message) => message.type === "assistant")
+      if (previous === -1) return true
+      return before.slice(previous + 1).some((message) => message.type === "user" && message.metadata?.[teamInboxKey] !== "inbox")
+    }),
+    Effect.catchCause(() => Effect.succeed(false)),
+  )
+}
 
 // A status or list call while a child is still working and no news waits in
 // the caller's inbox is a wait: it ends the turn, and the next settlement

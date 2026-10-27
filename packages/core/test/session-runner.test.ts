@@ -283,6 +283,22 @@ const finishTask = {
   options: { codemode: false },
   execute: () => Effect.succeed({ output: "Task reported", endTurn: true }),
 } satisfies ToolInfo
+const waitRuns = {
+  name: "wait_runs",
+  description: "Wait for runs still working",
+  input: Schema.Struct({}),
+  output: Schema.String,
+  options: { codemode: false },
+  execute: () => Effect.succeed({ output: "Still working", endTurn: "alone" as const }),
+} satisfies ToolInfo
+const noteTask = {
+  name: "note_task",
+  description: "Note something",
+  input: Schema.Struct({}),
+  output: Schema.String,
+  options: { codemode: false },
+  execute: () => Effect.succeed({ output: "Noted" }),
+} satisfies ToolInfo
 const transformTools = (registry: Tool.Interface, tools: Readonly<Record<string, ToolInfo>>, options?: Tool.Options) =>
   registry.transform((editor) =>
     Object.entries(tools).forEach(([name, tool]) => editor.add({ ...tool, name, options: options ?? tool.options })),
@@ -4374,6 +4390,56 @@ describe("SessionRunnerLLM", () => {
           },
         },
       ])
+    })
+  }
+
+  // A wait ends the turn only when every call of its step asks to: beside other
+  // work the model gets a step to read that work's results.
+  for (const step of [
+    { calls: [waitRuns], steps: 1 },
+    { calls: [waitRuns, waitRuns], steps: 1 },
+    { calls: [waitRuns, noteTask], steps: 2 },
+    { calls: [noteTask, waitRuns], steps: 2 },
+    { calls: [waitRuns, finishTask], steps: 1 },
+  ]) {
+    scenario(`a wait beside ${step.calls.map((tool) => tool.name).join(", ")} takes ${step.steps} steps`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) => [waitRuns, noteTask, finishTask].forEach((tool) => editor.add(tool)))
+      yield* s.admit("Check the runs")
+      yield* s.llm.push(
+        TestLLM.complete(
+          { reason: { normalized: "tool-calls" } },
+          ...step.calls.map((tool, index) => LLMEvent.toolCall({ id: `call-${index}`, name: tool.name, input: {} })),
+        ),
+        TestLLM.text("Read the results", "text-after"),
+      )
+
+      yield* s.resume
+
+      expect(s.requests).toHaveLength(step.steps)
+    })
+  }
+
+  for (const script of [
+    { code: "return await tools.wait_runs({})", steps: 1 },
+    { code: "await tools.wait_runs({}); return await tools.wait_runs({})", steps: 1 },
+    { code: "await tools.wait_runs({}); return await tools.note_task({})", steps: 2 },
+    { code: "await tools.wait_runs({}); return await tools.finish_task({})", steps: 1 },
+  ]) {
+    scenario(`Code Mode wait: ${script.code} takes ${script.steps} steps`, function* (s) {
+      const registry = yield* Tool.Service
+      yield* registry.transform((editor) =>
+        [waitRuns, noteTask, finishTask].forEach((tool) => editor.add({ ...tool, options: { codemode: true } })),
+      )
+      yield* s.admit("Check the runs through Code Mode")
+      yield* s.llm.push(
+        TestLLM.tool("call-execute", "execute", { code: script.code }),
+        TestLLM.text("Read the results", "text-after"),
+      )
+
+      yield* s.resume
+
+      expect(s.requests).toHaveLength(script.steps)
     })
   }
 

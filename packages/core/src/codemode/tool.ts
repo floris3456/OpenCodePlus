@@ -89,7 +89,8 @@ export const create = (
         const callIndex = yield* Ref.make(0)
         const files = yield* Ref.make<Array<CollectedFiles>>([])
         const calls = yield* Ref.make<Array<ExecuteCall>>([])
-        const endTurn = yield* Ref.make(false)
+        // Inner calls ask as the step's calls do: any `true` ends the turn, `"alone"` only when every call asks.
+        const endTurn = yield* Ref.make({ alone: 0, end: false })
         const lock = Semaphore.makeUnsafe(1)
         const record = (update: (items: Array<ExecuteCall>) => Array<ExecuteCall>) =>
           lock.withPermit(
@@ -101,7 +102,10 @@ export const create = (
             Effect.gen(function* () {
               const index = yield* Ref.getAndUpdate(callIndex, (index) => index + 1)
               const executed = yield* executeTool(name, tool, input, context)
-              if (executed.endTurn) yield* Ref.set(endTurn, true)
+              yield* Ref.update(endTurn, (asked) => ({
+                alone: asked.alone + (executed.endTurn === "alone" ? 1 : 0),
+                end: asked.end || executed.endTurn === true,
+              }))
               const content =
                 typeof executed.content === "string"
                   ? [{ type: "text" as const, text: executed.content }]
@@ -116,6 +120,8 @@ export const create = (
           progressHooks(record),
         ).execute(code)
         const toolCalls = yield* Ref.get(calls)
+        const asked = yield* Ref.get(endTurn)
+        const ending = asked.end ? true : toolCalls.length > 0 && asked.alone === toolCalls.length ? ("alone" as const) : undefined
         const collected = (yield* Ref.get(files))
           .toSorted((left, right) => left.index - right.index)
           .flatMap((item) => item.files)
@@ -144,7 +150,7 @@ export const create = (
           content,
           metadata,
           // A failed script still needs a model response, even if an earlier call succeeded.
-          ...(result.ok && (yield* Ref.get(endTurn)) ? { endTurn: true } : {}),
+          ...(result.ok && ending !== undefined ? { endTurn: ending } : {}),
         }
       }),
   } satisfies Info

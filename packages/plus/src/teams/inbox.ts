@@ -10,6 +10,10 @@ import { isTerminal, type RunRecord } from "./run.js"
 
 export const DEFAULT_INBOX_UNREAD_BYTES = 262144
 
+// The metadata key that marks a chat message as a team inbox delivery (value
+// "inbox"), so a run can tell a settlement from a person's message.
+export const teamInboxKey = "plus.team"
+
 // child.settled is its own kind so a parent can tell an owned child's outcome
 // from any other notify; it is synthetic like notify and system, so a parent
 // reads a batch of settlements as one text.
