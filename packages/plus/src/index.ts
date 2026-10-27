@@ -86,6 +86,7 @@ import { ensure, read } from "./project.js"
 import { mainCheckout, readProjectChecks, suggestChecks, writeProjectChecks } from "./teams/project-checks.js"
 import { listRunsForNamespace } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
+import { isTeamWorktree } from "./teams/snapshots.js"
 import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
@@ -270,6 +271,7 @@ export default Plugin.define({
       // project store of its own and still needs them, so this stays out of
       // activate/installTooling.
       yield* ensureTeamTooling(ctx, state)
+      yield* disableTeamSnapshots(ctx)
       yield* activate(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
@@ -5876,6 +5878,17 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
     )
     state.teamTooling = [...state.teamTooling, ...installed]
   })
+}
+
+// Team runs commit their work through team checkpoints, so a run's worktree
+// never needs undo snapshots: capturing one on every step is expensive on a big
+// repository. Only ever disables, so a user's global "snapshots": false still
+// applies everywhere, and a failure here never stops the plugin.
+function disableTeamSnapshots(ctx: Context): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    if (!(yield* Effect.promise(() => isTeamWorktree(ctx.location.directory, teamsDataDir())))) return
+    yield* ctx.snapshot.transform((editor) => editor.configure(false))
+  }).pipe(Effect.catchCause((cause) => Effect.logWarning("plus could not turn team-run snapshots off", { cause })))
 }
 
 // Team tools only. Team rules are instructions rows applied by apply.ts, so
