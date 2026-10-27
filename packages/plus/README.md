@@ -118,7 +118,7 @@ Every tool row in `/instructions` — OpenCode, OpenCodePlus, MCP and Code Mode 
 
 The kinds of row:
 
-- **On/off rows.** On means permitted. Off refuses what the row names, and the model reads the row's message instead of a bare denial (`Permission denied: reading PDFs is not allowed here`). Nearly every row ships on; the ones that ship off are the tool limits, the approvals, `question` → When → In delegated team runs, `subagent` → Team members (without a team run), `team_finish` → A commit deliverable has at least one commit, and `team_followup` → Followups per child.
+- **On/off rows.** On means permitted. Off refuses what the row names, and the model reads the row's message instead of a bare denial (`Permission denied: reading PDFs is not allowed here`). Nearly every row ships on; the ones that ship off are the tool limits, the approvals, `question` → When → In delegated team runs, `subagent` → Team members (without a team run), `team_finish` → A commit deliverable has at least one commit, and `team_followup` → Followups per child. A row nothing sets is off for an agent without a preset, so that member's deny-list rows refuse and its shell runs nothing until "Every other command" is on; the refusal note under **Reporting** names the row that refused.
 - **Everything else.** The first row of some categories stands for everything the other rows do not name: `Every other command` (shell), `Every other file` (read, grep), `Every other site`, and `Outside this checkout` under read's and edit's `Where`. On leaves the agent's normal answer; off refuses everything an allow row does not let through (`Outside this checkout` only concerns paths outside the checkout). These rows are checked on each call, so switching one off can never be undone by another row or a team role. `Every other command` off is also enforced on every command the shell parses out of a call, so with only the `pilotty (driving terminal apps)` allow row on, a member may drive terminals and nothing else: `pilotty … && git push` is refused. pilotty runs whatever it is told to spawn, so this narrows the shell to driving terminals; it is not a sandbox.
 - **Allow rows.** `Temporary directories` (`/tmp`, `run/plus/tmp`) under read's and edit's `Where` matters only once `Outside this checkout` is off: while on, it keeps those directories open for that check. It opens nothing any other row or a team role keeps closed.
 - **Switches.** A row with no patterns — a parameter (`Background (background: true)`), a value (a `Formats` or `Effort` row), an approval, a team setting — flips with space; enter only tells you it is a switch. An off parameter or value also leaves the schema the model is offered (direct tools; a Code Mode tool refuses it when called). An off value is refused even when the call leaves the field to the tool's default (webfetch's `Markdown`, `Medium` effort, `queue` delivery, …).
@@ -359,8 +359,10 @@ home, so nothing is said twice or contradicts itself:
 - *Tool descriptions*: what a tool does and when to call it; the first line
   stands alone, because a Code Mode catalog shows only that line. What a row
   decides is added per request from the rows themselves: `team_delegate`
-  lists the members you may delegate to and what each one's "Briefs it
-  accepts" rows require (in the words of their refusals), `team_finish` the
+  lists the members you may delegate to, what each one's "Briefs it accepts"
+  rows require (in the words of their refusals), whether it can commit, and
+  whether it can run commands at all (a member with no shell, or a shell that
+  `Every other command` off keeps to its allow rows), `team_finish` the
   caller's Requirements for done. Change a row and the description follows;
   no text has to.
 - *Input schema field descriptions* (`teams/schema.ts`): how each value must
@@ -400,8 +402,11 @@ Status uses these totals for advisory budgets; no hard interrupt is
 implied. Replaying an identical `requestID` returns the stored admission result
 unchanged without submitting the work again.
 
-`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, next }`;
-`model` is the resolved `provider/model[@variant]` when known. Its `next` says
+`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, warning?, next }`;
+`model` is the resolved `provider/model[@variant]` when known. `warning`, when
+present, is the member's shell line from its description (no shell, or a shell
+that runs no command of its own): it says so up front rather than refusing,
+because Plus cannot know whether this Brief needs commands. Its `next` says
 to delegate other runs in the same step, then end the turn: each settlement
 wakes the caller with its report. `team_followup` returns `{ attempt, state, next }`,
 with `next: "End your turn: its settlement wakes you."`. Session, worktree,

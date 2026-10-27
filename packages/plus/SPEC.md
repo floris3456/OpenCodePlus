@@ -1710,8 +1710,11 @@ and `stop` (native, `codemode: false`), and
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
-Delegate returns `{ run, requestID, task, state, branch, base, model?, next }`,
+Delegate returns `{ run, requestID, task, state, branch, base, model?, warning?, next }`,
 with the resolved model as `provider/model[@variant]` when known and
+`warning` the member's shell line (`shellLine`) when it cannot run commands
+(no shell, or `Every other command` off with no allow row on): the Brief is
+still admitted, and the line lets the delegator redirect the work.
 `next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report."`.
 Followup returns `{ attempt, state, next }`, with
 `next: "End your turn: its settlement wakes you."` for admitted, queued and
@@ -1936,9 +1939,15 @@ One home per kind of guidance, so no line repeats or contradicts another:
 - **What a row decides** (`permission-enforce.ts` `narrowTools`, per request):
   `team_delegate`'s description adds, after the members you may delegate to,
   each target's binding "Briefs it accepts" rows in the words of their
-  refusals (a requirement while on, Corrections by followup while off);
-  `team_finish`'s adds the caller's Requirements for done that are on. No body,
-  Brief or schema text restates them, so a changed row needs no text edit.
+  refusals (a requirement while on, Corrections by followup while off), its
+  Description, whether it can commit (`noCommit`), and whether it can run
+  commands (`shellLine`): no shell at all, or a shell whose `Every other
+  command` row is off, saying which allow rows it still runs (none, or their
+  titles). `team_finish`'s adds the caller's Requirements for done that are
+  on. No body, Brief or schema text restates them, so a changed row needs no
+  text edit. A Brief that reaches a member without commands is not refused —
+  Plus cannot know whether it needs them — so `team_delegate`'s success output
+  carries the same shell line as `warning` when there is one.
 - **Tools and rules** (`instructions/guidance.ts`, row
   `system:tools-and-rules`): instructions that belong to a tool, skill or
   rule, one gated section each, reaching an agent only while that row is on
@@ -2036,7 +2045,10 @@ Tool permission rules carry the same field:
   A rule row's denies carry it, and the tool hook refuses with `Permission
   denied: <message>`; a row without one gets a generated text (`<label> is not
   allowed here`, `<field> "<value>" (<label>) is not allowed here`, `<label>
-  is <n>; this call has <m>`).
+  is <n>; this call has <m>`). A rule row the table can place and that carries
+  no message now refuses with `<title> is not allowed here` plus the row note
+  below; before, its deny went out without a message and core answered with
+  its generic text.
 - Every refusal a permission row causes ends with the row that caused it and
   where that row's state comes from:
   `<message> (denied by <row id> "<row title>": <state words>)`, where the id
