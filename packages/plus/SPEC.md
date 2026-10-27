@@ -2037,6 +2037,17 @@ Tool permission rules carry the same field:
   denied: <message>`; a row without one gets a generated text (`<label> is not
   allowed here`, `<field> "<value>" (<label>) is not allowed here`, `<label>
   is <n>; this call has <m>`).
+- Every refusal a permission row causes ends with the row that caused it and
+  where that row's state comes from:
+  `<message> (denied by <row id> "<row title>": <state words>)`, where the id
+  is the one `instructions.set` takes for that agent's row
+  (`item:<level>:<agent>:<item>`, or `item:<level>:<team>/:<member>:<item>` for
+  a team member) and the state reads `off by default (nothing sets it)`, or
+  `on`/`off` with `set at <level> level`, `as OpenCode ships it`, `as shipped`
+  or the `fromLabel` words (`from preset basic › orchestrator`). `apply.ts`
+  `rowSource` builds it; `permission-enforce.ts` `deniedBy` appends it, and
+  `permDenials`/`shellAllowList` put it on the core rule's own message. A row
+  the table cannot place (one built by hand) keeps the plain refusal.
 - `apply.ts` prefers the user record's message for a custom row and falls back
   to the curated message, then the catalog row's own, for a shipped row
   (`curatedRuleMessage(tool, rule) ?? item.message`); a subagent row has none

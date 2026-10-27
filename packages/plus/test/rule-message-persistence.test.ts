@@ -717,7 +717,9 @@ describe("rule message persistence across boundaries", () => {
 
       const denial = evaluate("shell", "git push --force origin main", alphaRules)
       expect(denial.effect).toBe("deny")
-      expect(denial.message).toBe("force pushes are strictly prohibited by repo rule")
+      expect(denial.message).toBe(
+        'force pushes are strictly prohibited by repo rule (denied by item:project:alpha:perm:shell:no-push "No force pushes": off, set at project level)',
+      )
     })
 
     test("a built-in agent's project-level row off installs the host deny through the real publish path", async () => {
@@ -765,7 +767,7 @@ describe("rule message persistence across boundaries", () => {
       const permissions = installed.permissions ?? []
       const denial = evaluate("shell", "git push origin main", permissions)
       expect(denial.effect).toBe("deny")
-      expect(denial.message).toBe("pushing is not allowed here")
+      expect(denial.message).toBe('pushing is not allowed here (denied by item:project:build:perm:shell:git-push "Git push": off, set at project level)')
       expect(evaluate("shell", "git status", permissions).effect).not.toBe("deny")
     })
   })

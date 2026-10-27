@@ -1362,12 +1362,17 @@ test("a perm rule off installs a core deny proved by Permission.evaluate (not a 
   // The curated rule ships a message, so the installed deny carries it and
   // the model reads it instead of the generic refusal.
   expect(alphaRules.slice(-1)).toEqual([
-    { action: "shell", resource: "git push *", effect: "deny", message: "pushing is not allowed here" },
+    {
+      action: "shell",
+      resource: "git push *",
+      effect: "deny",
+      message: "pushing is not allowed here (denied by item:project:alpha:perm:shell:git-push \"Git push\": off, set at project level)",
+    },
   ])
   expect(agents.state.get("beta")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
   const denied = evaluate("shell", "git push origin", alphaRules)
   expect(denied.effect).toBe("deny")
-  expect(denied.message).toBe("pushing is not allowed here")
+  expect(denied.message).toBe("pushing is not allowed here (denied by item:project:alpha:perm:shell:git-push \"Git push\": off, set at project level)")
   expect(evaluate("shell", "git status", alphaRules).effect).not.toBe("deny")
 })
 
@@ -1414,13 +1419,18 @@ test("a user rule's own message reaches Permission.evaluate through apply", asyn
   await apply(ctx, makeInput({ items, records, rules, agents: [{ id: "alpha", level: "project" }, { id: "beta", level: "project" }] }))
   const alphaRules = agents.state.get("alpha")?.permissions ?? []
   expect(alphaRules.slice(-1)).toEqual([
-    { action: "shell", resource: "git push --force *", effect: "deny", message: "force pushes are not allowed here" },
+    {
+      action: "shell",
+      resource: "git push --force *",
+      effect: "deny",
+      message: "force pushes are not allowed here (denied by item:project:alpha:perm:shell:no-push \"No force pushes\": off, set at project level)",
+    },
   ])
   const denied = evaluate("shell", "git push --force origin", alphaRules)
   expect(denied.effect).toBe("deny")
-  expect(denied.message).toBe("force pushes are not allowed here")
-  // A user rule with no message keeps the generic refusal, even when the
-  // curated identity it shadows ships one.
+  expect(denied.message).toBe("force pushes are not allowed here (denied by item:project:alpha:perm:shell:no-push \"No force pushes\": off, set at project level)")
+  // A user rule with no message still refuses in words: its own title, even
+  // when the curated identity it shadows ships a message, plus the note.
   const silent = [
     {
       id: "perm:shell:git-push",
@@ -1452,7 +1462,14 @@ test("a user rule's own message reaches Permission.evaluate through apply", asyn
   ]
   await apply(ctx, makeInput({ items: silent, records: [makeRecord({ item: "perm:shell:git-push", agent: "alpha", level: "project", state: "off" })], rules: silentRules, agents: [{ id: "alpha", level: "project" }] }))
   const silentDeny = (agents.state.get("alpha")?.permissions ?? []).slice(-1)
-  expect(silentDeny).toEqual([{ action: "shell", resource: "git push *", effect: "deny" }])
+  expect(silentDeny).toEqual([
+    {
+      action: "shell",
+      resource: "git push *",
+      effect: "deny",
+      message: "Git push is not allowed here (denied by item:project:alpha:perm:shell:git-push \"Git push\": off, set at project level)",
+    },
+  ])
 })
 
 // The perm rows of a Defaults-scope agent are visible at every level, so the
@@ -1479,7 +1496,12 @@ function permScopeItems(): ApplyInput["items"] {
   ]
 }
 
-const curatedGitPushDeny = { action: "shell", resource: "git push *", effect: "deny" as const, message: "pushing is not allowed here" }
+const curatedGitPushDeny = {
+  action: "shell",
+  resource: "git push *",
+  effect: "deny" as const,
+  message: "pushing is not allowed here (denied by item:project:build:perm:shell:git-push \"Git push\": off, set at project level)",
+}
 
 test("a Defaults-scope agent's perm row saved off at project level installs the core deny", async () => {
   const { evaluate } = await import("../../core/src/permission.js")
@@ -1503,7 +1525,7 @@ test("a Defaults-scope agent's perm row saved off at project level installs the 
   expect(buildRules.slice(-1)).toEqual([curatedGitPushDeny])
   const denied = evaluate("shell", "git push origin", buildRules)
   expect(denied.effect).toBe("deny")
-  expect(denied.message).toBe("pushing is not allowed here")
+  expect(denied.message).toBe(curatedGitPushDeny.message)
   // The record names one agent, so the other Defaults built-in keeps the tool.
   expect(agents.state.get("plan")?.permissions.some((rule) => rule.action === "shell")).toBe(false)
 })

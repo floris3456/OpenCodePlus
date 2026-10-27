@@ -196,7 +196,7 @@ test("a planner asks before each delegation, changes plan files only and does no
   expect(call("edit", { path: "/repo/repos/opencode/docs/plans/p.md" }).refuse).toBeUndefined()
   expect(call("write", { path: "docs/handoffs/h.md", content: "x" }).refuse).toBeUndefined()
   expect(call("edit", { path: "packages/plus/src/index.ts" }).refuse).toBe(
-    "Permission denied: this file is not one you may change here (Files it may change); still allowed: Plan files (docs/plans/, docs/handoffs/)",
+    'Permission denied: this file is not one you may change here (Files it may change); still allowed: Plan files (docs/plans/, docs/handoffs/) (denied by item:project:opencodeplus-team/:planner:perm:edit:allowed.* "Every other file": off, from preset basic › planner)',
   )
   expect(call("patch", { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch" }).refuse).toContain("Files it may change")
   // An orchestrator's table refuses a source edit too and takes a handoff file; an implementer's refuses neither.

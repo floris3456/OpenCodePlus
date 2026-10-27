@@ -439,6 +439,13 @@ pattern rather than for one call, so the quoted subject is the rule's own
 resource. An `ask` rule's message arrives as `metadata.message` on the
 permission request, which is what the TUI shows when it asks.
 
+Every refusal a row causes also ends with that row and where its state comes
+from, in the id `instructions.set` takes: `Permission denied: shell commands are
+not allowed here (denied by item:project:theorysnap/:runner:perm:shell:commands.*
+"Every other command": off by default (nothing sets it))`. A member with no
+preset has every shared row off that way, so the reader sees which row closed
+the shell instead of guessing from the state alone.
+
 Team tools appear only under the Teams catalogue. An agent that is not a
 member of an enabled team gets a `team.*` wildcard deny, so it sees no
 `team_*` tool and no `tools.team.*` catalog entry in any chat — the answer to

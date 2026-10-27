@@ -35,9 +35,18 @@ test("owner definitions govern tree labels, enforcement, refusal text and scrub 
   expect(table.ruleRows("alpha", "read")[0]?.item.patterns).toEqual(["alpha/*"])
   expect(table.ruleRows("beta", "read")[0]?.item.patterns).toEqual(["shared/*"])
   const plans = sessionPlans(input, table)
+  // Each refusal names the owner's own row and where its state came from.
   expect(plans.permDenies).toEqual(expect.arrayContaining([
-    expect.objectContaining({ agent: "alpha", resource: "alpha/*", message: "Alpha refusal" }),
-    expect.objectContaining({ agent: "beta", resource: "shared/*", message: "Shared refusal" }),
+    expect.objectContaining({
+      agent: "alpha",
+      resource: "alpha/*",
+      message: 'Alpha refusal (denied by item:project:alpha:perm:read:private "Alpha files": off, set at project level)',
+    }),
+    expect.objectContaining({
+      agent: "beta",
+      resource: "shared/*",
+      message: 'Shared refusal (denied by item:project:beta:perm:read:private "Shared files": off, set at project level)',
+    }),
   ]))
   expect(plans.permDenies.some((rule) => rule.agent === "beta" && rule.resource === "alpha/*")).toBe(false)
   expect(plans.scrubByAgent).toEqual([["alpha", ["alpha"]], ["beta", ["shared"]]])

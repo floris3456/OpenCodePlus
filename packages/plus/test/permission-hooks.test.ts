@@ -371,7 +371,9 @@ test("closing Where never reopens what Files it may change closed: no core allow
       directory: "/work",
       teamMembers: new Set(),
     }).refuse
-  expect(edit("/tmp/notes.md")).toBe("Permission denied: this file is not one you may change here (Files it may change); still allowed: Plan files (docs/plans/, docs/handoffs/)")
+  expect(edit("/tmp/notes.md")).toBe(
+    'Permission denied: this file is not one you may change here (Files it may change); still allowed: Plan files (docs/plans/, docs/handoffs/) (denied by item:project:opencodeplus-team/:astra-planner:perm:edit:allowed.* "Every other file": off, from preset basic › planner)',
+  )
   expect(edit("/etc/hosts")).toContain("outside this checkout")
   expect(edit("docs/plans/p.md")).toBeUndefined()
 })

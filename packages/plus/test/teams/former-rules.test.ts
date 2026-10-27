@@ -317,15 +317,26 @@ async function appliedFor(...rows: readonly [string, "on" | "off"][]) {
 test("read's secret Files rows and Where for every tool: off installs the core deny with its words, on installs none", async () => {
   const { evaluate } = await import("../../../core/src/permission.js")
   const secrets = [
-    ["perm:read:files.keys", "secret.key", "Private keys cannot be read here"],
-    ["perm:read:files.credentials", "home/.netrc", "Credential stores cannot be read here"],
-    ["perm:read:files.opencode-config", "/home/x/.config/opencodeplus/opencode.json", "Provider config and service passwords cannot be read here"],
-    ["perm:read:files.databases", "data/opencode.db", "Session databases (*.db, *.sqlite) cannot be read here"],
-    ["perm:read:env", "app/.env", ".env files cannot be read here"],
+    ["perm:read:files.keys", "secret.key", "Private keys cannot be read here", "Private keys"],
+    ["perm:read:files.credentials", "home/.netrc", "Credential stores cannot be read here", "Credential stores"],
+    [
+      "perm:read:files.opencode-config",
+      "/home/x/.config/opencodeplus/opencode.json",
+      "Provider config and service passwords cannot be read here",
+      "Provider config and service passwords",
+    ],
+    ["perm:read:files.databases", "data/opencode.db", "Session databases (*.db, *.sqlite) cannot be read here", "Session databases (*.db, *.sqlite)"],
+    ["perm:read:env", "app/.env", ".env files cannot be read here", ".env files"],
   ] as const
+  // Every refusal names the member's own row and where its state comes from.
+  const by = (id: string, title: string) => ` (denied by item:project:opencodeplus-team/:ocp-alice:${id} "${title}": off, set at project level)`
   const closed = await appliedFor(...secrets.map(([item]) => [item, "off"] as [string, "off"]), ["perm:read:where.external", "off"])
-  for (const [item, file, words] of secrets) expect([item, evaluate("read", file, closed.rules)]).toMatchObject([item, { effect: "deny", message: words }])
-  expect(evaluate("external_directory", "/etc/hosts", closed.rules)).toMatchObject({ effect: "deny", message: "paths outside this checkout are not available here" })
+  for (const [item, file, words, title] of secrets)
+    expect([item, evaluate("read", file, closed.rules)]).toMatchObject([item, { effect: "deny", message: `${words}${by(item, title)}` }])
+  expect(evaluate("external_directory", "/etc/hosts", closed.rules)).toMatchObject({
+    effect: "deny",
+    message: `paths outside this checkout are not available here${by("perm:read:where.external", "Outside this checkout, for every tool (external_directory)")}`,
+  })
   const open = await appliedFor(...secrets.map(([item]) => [item, "on"] as [string, "on"]), ["perm:read:where.external", "on"])
   for (const [item, file] of secrets) expect([item, evaluate("read", file, open.rules).effect]).not.toEqual([item, "deny"])
   expect(evaluate("external_directory", "/etc/hosts", open.rules).effect).not.toBe("deny")

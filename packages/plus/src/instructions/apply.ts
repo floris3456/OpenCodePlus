@@ -13,6 +13,7 @@ import { Effect, Exit, Scope } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { agentBody } from "./discover.js"
+import { fromLabel } from "./from-label.js"
 import { builtinBody } from "./teams.js"
 import type { BuiltinTeam } from "./builtin-teams.js"
 import { parseTeamFields, runSpecialRegistration, runTeamRegistration, type TeamFields } from "./teams-apply.js"
@@ -30,6 +31,7 @@ import {
   runtimeScope,
   type AgentSource,
   type CustomizationRecord,
+  type From,
   type Item,
   type Level,
   type ModelRecord,
@@ -637,10 +639,18 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
     teamMembers: input.teamAgents ?? [],
     resolve: (item, agentId) => {
       const agent = byId.get(agentId)
-      if (agent === undefined || (!touched(input).has(item.id) && plain(input.scopes, agentId)))
-        return { enabled: item.enabled, text: item.text }
+      if (agent === undefined) return { enabled: item.enabled, text: item.text }
+      if (!touched(input).has(item.id) && plain(input.scopes, agentId))
+        return {
+          enabled: item.enabled,
+          text: item.text,
+          source: rowSource(item, agent, input.scopes, {
+            enabled: item.enabled,
+            from: { kind: input.scopes.native === undefined ? "upstream" : "native" },
+          }),
+        }
       const resolved = resolvedFor(item, agent, input)
-      return { enabled: resolved.enabled, text: resolved.text }
+      return { enabled: resolved.enabled, text: resolved.text, source: rowSource(item, agent, input.scopes, resolved) }
     },
     // The description applyAgentControls installs on the agent: team_delegate
     // shows it beside each member a delegator may choose.
@@ -808,6 +818,34 @@ function runtimeRule(item: Item, agent: ApplyAgent, args: ChainArgs): Item | und
     level: runtime.level, agent: agent.id, item: item.id, section: null,
     ...(agent.team === undefined ? {} : { team: agent.team }),
   })
+}
+
+// The row and where its state comes from, in the words a refusal appends after
+// its reason: the id instructions.set takes for that agent's row, the row's
+// title, and its state. A team member's row is addressed under its team
+// (`item:<level>:<team>/:<member>:<item>`), an agent's under itself.
+export function rowSource(
+  item: Item,
+  agent: ApplyAgent,
+  scopes: Scopes,
+  resolved: { readonly enabled: boolean; readonly from: From },
+): string {
+  const id =
+    agent.team === undefined
+      ? `item:${runtimeScope(agent, scopes).level}:${agent.id}:${item.id}`
+      : `item:${agent.team.level}:${agent.team.team}/:${agent.id}:${item.id}`
+  const state =
+    resolved.from.kind === "off"
+      ? "off by default (nothing sets it)"
+      : `${resolved.enabled ? "on" : "off"}, ${originOf(resolved.from)}`
+  return `${id} "${item.title}": ${state}`
+}
+
+function originOf(from: From): string {
+  if (from.kind === "level") return `set at ${from.level} level`
+  if (from.kind === "native") return "as OpenCode ships it"
+  if (from.kind === "upstream") return "as shipped"
+  return fromLabel(from)
 }
 
 function isNoop(item: Item, resolved: { assembled: string; enabled: boolean }): boolean {
@@ -1052,18 +1090,19 @@ function permDenials(input: ApplyInput): Rule[] {
       if ((item.permKind ?? "rule") !== "rule") return []
       if (item.patterns === undefined || item.patterns.length === 0) return []
       if (!applies(item, agent.id)) return []
-      if (resolvedFor(item, agent, input).enabled) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.enabled) return []
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
       const action = item.permAction ?? actionForToolId(tool)
-      const message = item.custom === true ? item.message : curatedRuleMessage(tool, item.ruleId ?? "") ?? item.message
+      const base = item.custom === true ? item.message : curatedRuleMessage(tool, item.ruleId ?? "") ?? item.message
       return item.patterns.map((pattern) => ({
         agent: agent.id,
         action,
         resource: pattern,
         effect: "deny" as const,
         refusal: true,
-        ...(message === undefined ? {} : { message }),
+        message: `${base ?? `${item.title} is not allowed here`} (denied by ${rowSource(item, agent, input.scopes, resolved)})`,
       }))
     }),
   )
@@ -1081,14 +1120,24 @@ function shellAllowList(input: ApplyInput): Rule[] {
   if (closing === undefined) return []
   const action = closing.permAction ?? actionForToolId("shell")
   return input.agents.flatMap((agent): Rule[] => {
-    if (!applies(closing, agent.id) || resolvedFor(closing, agent, input).enabled) return []
-    const opened = rows.flatMap((row) => {
-      const item = runtimeRule(row, agent, input)
+    if (!applies(closing, agent.id)) return []
+    const resolved = resolvedFor(closing, agent, input)
+    if (resolved.enabled) return []
+    const row = runtimeRule(closing, agent, input) ?? closing
+    const opened = rows.flatMap((candidate) => {
+      const item = runtimeRule(candidate, agent, input)
       return item !== undefined && item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled ? [item] : []
     })
-    const message = allowListMessage(runtimeRule(closing, agent, input)?.message ?? "this command is not allowed here", opened.map((item) => item.title))
+    const message = allowListMessage(row.message ?? "this command is not allowed here", opened.map((item) => item.title))
     return [
-      { agent: agent.id, action, resource: "*", effect: "deny", allowList: "closing", message },
+      {
+        agent: agent.id,
+        action,
+        resource: "*",
+        effect: "deny",
+        allowList: "closing",
+        message: `${message} (denied by ${rowSource(row, agent, input.scopes, resolved)})`,
+      },
       ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
     ]
   })

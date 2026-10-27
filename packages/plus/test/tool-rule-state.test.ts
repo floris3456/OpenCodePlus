@@ -284,6 +284,8 @@ describe("tool state mutations preserve rule messages and catalogue identity", (
     if (installed === undefined) throw new Error("alpha missing from the installed agent list")
     const denial = evaluate("shell", "git push --force origin main", installed.permissions ?? [])
     expect(denial.effect).toBe("deny")
-    expect(denial.message).toBe("force pushes are not allowed here")
+    expect(denial.message).toBe(
+      'force pushes are not allowed here (denied by item:project:alpha:perm:shell:no-force "No force push": off, set at project level)',
+    )
   })
 })
