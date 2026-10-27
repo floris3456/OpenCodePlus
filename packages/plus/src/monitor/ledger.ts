@@ -805,9 +805,12 @@ function compactBeforeOpen(file: string, options: LedgerOptions) {
   Effect.runSync(Effect.logInfo("plus monitor ledger compaction started", { file, bytes: size, pages, free: freelist, autoVacuum: auto }))
   db.exec("pragma auto_vacuum = incremental")
   db.exec("vacuum")
-  const compacted = fs.statSync(file).size
+  // VACUUM writes its result through the WAL; only a truncating checkpoint
+  // makes the main file's own size shrink.
+  db.exec("pragma wal_checkpoint(truncate)")
   const compactedPages = db.query<{ page_count: number }, []>("pragma page_count").get()?.page_count ?? 0
   db.close()
+  const compacted = fs.statSync(file).size
   Effect.runSync(Effect.logInfo("plus monitor ledger compaction finished", {
     file,
     durationMs: Date.now() - started,
@@ -859,13 +862,14 @@ export function createLedger(file: string, options: LedgerOptions = {}): Ledger 
     db.close()
     throw new Error("Unsupported monitor analysis index version")
   }
+  // Before the first table, so a new ledger starts in incremental mode; on an
+  // existing one this is a no-op until the next `VACUUM` (compactBeforeOpen
+  // already ran one when it was needed). It must also precede the journal-mode
+  // switch: on an empty file, setting WAL first stops it from persisting.
+  db.exec("pragma auto_vacuum = incremental")
   db.exec("pragma journal_mode = wal")
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")
-  // Before the first table, so a new ledger starts in incremental mode; on an
-  // existing one this is a no-op until the next `VACUUM` (compactBeforeOpen
-  // already ran one when it was needed).
-  db.exec("pragma auto_vacuum = incremental")
   db.exec(schema)
   // Explicit additive migration replaces the old plain triggers, which
   // CREATE IF NOT EXISTS alone would silently keep on an existing database.
