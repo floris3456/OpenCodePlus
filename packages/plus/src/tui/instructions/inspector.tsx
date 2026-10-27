@@ -258,7 +258,14 @@ export function factsOf(node: TreeNode, snapshot: Snapshot, children: readonly R
 export function notesOf(node: TreeNode, snapshot: Snapshot, memo?: Memo): string[] {
   const notes = controlDetail(node, snapshot, memo).filter((line) => !line.startsWith("Value: "))
   const detail = structureDetail(node)
-  return [...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot), ...modelImageNotes(node), ...modelColdFirstNotes(node)]
+  return [...codeModeOffNotes(node), ...notes, ...(detail === undefined ? [] : [detail]), ...modelsNotes(node), ...modelDefaultsNotes(node, snapshot), ...modelImageNotes(node), ...modelColdFirstNotes(node)]
+}
+
+// Anything in a Code Mode group whose owner has execute off: it is still
+// configured, but no call reaches it.
+function codeModeOffNotes(node: TreeNode): string[] {
+  if (node.badges.codeModeOff === undefined) return []
+  return ["Disabled: execute is off for this agent, so nothing in Code Mode can be called. Switch execute on (OpenCode › execute), or set a tool's Exposure to direct."]
 }
 
 // An Images field under an agent/member/preset model row (a Defaults row says it in modelDefaultsNotes).
@@ -402,7 +409,7 @@ export function Inspector(props: InspectorProps) {
                   </For>
                   <For each={notesOf(node(), snapshot(), props.memo?.())}>
                     {(line) => (
-                      <text flexShrink={0} fg={node().badges.disabled === undefined ? theme().text.muted : theme().text.formfield.disabled} wrapMode="word">
+                      <text flexShrink={0} fg={node().badges.disabled === undefined && node().badges.codeModeOff === undefined ? theme().text.muted : theme().text.formfield.disabled} wrapMode="word">
                         {line}
                       </text>
                     )}
