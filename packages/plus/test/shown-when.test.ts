@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test"
 import { resolvedFor, roleUpdates, rowGate, type ApplyInput } from "../src/instructions/apply.js"
 import { badgeLabels } from "../src/instructions/from-label.js"
-import { guidanceContent } from "../src/instructions/guidance.js"
 import { fingerprint, type CustomizationRecord, type Item, type Level } from "../src/instructions/model.js"
 import { setRequires } from "../src/instructions/ops.js"
 import { guidanceItemId } from "../src/instructions/paths.js"
@@ -9,6 +8,7 @@ import { chainContext } from "../src/instructions/presets.js"
 import { findCollapse, query } from "../src/instructions/query.js"
 import { isReplacementBarrier, type RowlinkRecord } from "../src/instructions/rowlinks.js"
 import { expandedTree, type MemoInput } from "../src/instructions/tree.js"
+import { toolsAndRulesSample } from "./fixtures/tools-and-rules.js"
 
 // "Shown when" is a setting of its own: a level can set which rows a system
 // row or section is sent under, stored as rowlink gate records (B43) — not a
@@ -31,7 +31,7 @@ Run checks with team_check.
 
 const items: Item[] = [
   { id: "system:role", kind: "system", group: "none", title: "Role", text: roleText, enabled: true, fingerprint: fingerprint(roleText), agents: ["alpha", "beta"] },
-  { id: guidanceItemId, kind: "system", group: "plus", title: "Tools and rules", text: guidanceContent, enabled: true, fingerprint: fingerprint(guidanceContent) },
+  { id: guidanceItemId, kind: "system", group: "plus", title: "Tools and rules", text: toolsAndRulesSample, enabled: true, fingerprint: fingerprint(toolsAndRulesSample) },
   { id: "tool:team_check", kind: "tool", group: "plus", title: "team_check", text: "Run a check.", enabled: true, fingerprint: "a" },
   { id: "tool:question", kind: "tool", group: "native", title: "question", text: "Ask.", enabled: true, fingerprint: "b" },
   { id: "tool:reader", kind: "tool", group: "native", title: "reader", text: "Read.", enabled: true, fingerprint: "c" },
@@ -113,7 +113,7 @@ test("a Tools and rules section can be tied to another row, and the tool row lis
   const row = items.find((item) => item.id === guidanceItemId)!
   const agent = { id: "alpha", level: "project" as Level }
   expect(resolvedFor(row, agent, input, rowGate(input, agent)).assembled).not.toContain("## Questions")
-  // beta follows the shipped line (question on): it still gets the section.
+  // beta follows the text's line (question on): it still gets the section.
   const beta = { id: "beta", level: "project" as Level }
   expect(resolvedFor(row, beta, input, rowGate(input, beta)).assembled).toContain("## Questions")
 })

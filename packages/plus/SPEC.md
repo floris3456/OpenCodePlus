@@ -1942,7 +1942,7 @@ One home per kind of guidance, so no line repeats or contradicts another:
 - **Tools and rules** (`instructions/guidance.ts`, row
   `system:tools-and-rules`): instructions that belong to a tool, skill or
   rule, one gated section each, reaching an agent only while that row is on
-  (or, for `!`, off) for it.
+  (or, for `!`, off) for it. Shipped empty; a level adds its own sections.
 - **Tool descriptions** (`teams/tools.ts`): what the tool does and when to call
   it; each first line stands alone, since a Code Mode catalog shows only it.
   `toolGuidance` (namespace and `get_context`) only says which tools are direct

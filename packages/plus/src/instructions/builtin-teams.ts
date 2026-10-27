@@ -117,9 +117,9 @@ with its report.`
 
 // A section that depends on one tool says so on its first line
 // (`<!-- requires: tool:… -->`, requires.ts): turning that tool off for a member
-// also drops the section, so no line refers to a tool the member lacks. The
-// tool-specific usage lines every agent shares (code search, documentation
-// search, pilotty, …) live in the Tools and rules row (guidance.ts).
+// also drops the section, so no line refers to a tool the member lacks.
+// Tool-specific lines every agent shares belong in the Tools and rules row
+// (guidance.ts), which ships empty.
 
 // ── # <Role> ──────────────────────────────────────────────────────────────
 

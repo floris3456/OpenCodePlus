@@ -293,10 +293,10 @@ section is shown.
 
 Instructions that belong to a tool, skill or rule rather than a role live in
 the System row **Tools and rules** (`system:tools-and-rules`,
-`instructions/guidance.ts`), one section per row: code search, documentation
-search, pilotty, questions, subagents, and two restrictions (no shell
-commits, no push). Turning such a row on for an agent adds its section;
-off removes it; the row is planned for an agent only when a section applies.
+`instructions/guidance.ts`), one section per row. Plus ships it empty: a
+level adds the sections it wants. Turning such a row on for an agent adds
+its section; off removes it; the row is planned for an agent only when a
+section applies, so an empty row sends nothing.
 A tool or skill row's inspector (and `read`) lists its sections. The Basic
 role texts carry markers on sections that depend on one tool (Delegating on
 `team_delegate`, Reporting on `team_finish`, the implementer's Checks and
@@ -939,7 +939,7 @@ Stored rows, rules, `requires` lists and markers that name a tool by its old id 
 - **Keys & authentication**: Keys are read at call time from key files under the Plus data directory (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, or `OPENCODEPLUS_SEARCH_KEYS_DIR`; file mode `0600` strictly enforced, value trimmed), falling back to `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment. No key is ever written to a config file, a row, a log, a report, or a commit. A key file with another mode, or a missing key (`<KEY> is not set in the host environment`), makes the call fail with that message.
   For `bin/opencodeplus`, place the key files in `<XDG_DATA_HOME>/opencode/opencodeplus/search/` (e.g. `$HOME/.local/share/opencode/opencodeplus/search/exa.key` and `tavily.key`, or `run/plus/data/opencode/opencodeplus/search/{exa,tavily}.key` if `XDG_DATA_HOME` is set to `run/plus/data`) and ensure permissions are restricted (`chmod 600 <file>`).
 - **Query & filtering**: `instructions.find where:"server:<name>"` (and TUI filter `server:<name>`) matches both the `mcp:<name>` server configuration row and all tool rows exposed by that server.
-- **Team prompts & policy**: The Tools and rules row names `web.exa_code_search`, `web.tavily_search` and `web.tavily_fetch`, each in a section that depends on that tool, so an agent reads the line exactly while it has the tool. The Basic team's member presets turn Tavily off for implementer, reviewer and scout while keeping code search on; each tool lists its own Permissions rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
+- **Team prompts & policy**: No shipped prompt names the search tools; their descriptions say when to use them. The Basic team's member presets turn Tavily off for implementer, reviewer and scout while keeping code search on; each tool lists its own Permissions rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
 
 ### Through CLIProxyAPI
 
