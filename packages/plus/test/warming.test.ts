@@ -22,6 +22,7 @@ import {
   activeSessionsOf,
   compactDefaultsOf,
   createState,
+  sessionCompactDefaults,
   warmingRowsOf,
   decideWarmingFor,
   parentChatOf,
@@ -806,6 +807,66 @@ test("a chat's parent is its subagent parent session or its team run's parent ch
     // Control: a top-level chat and a root run have no parent chat.
     expect(await parentChatOf(ctx, "ses_lead")).toBeUndefined()
     expect(await parentChatOf(ctx, "ses_unknown")).toBeUndefined()
+  } finally {
+    if (prior === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = prior
+  }
+})
+
+test("a delegated worker's chat does not compact before cold; a main chat keeps its model setting", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "plus-warming-worker-compact-"))
+  temps.push(dir)
+  const prior = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = dir
+  try {
+    const now = new Date().toISOString()
+    const run = (id: string, kind: "main" | "w", sessionID: string, parent: string | null): RunRecord => ({
+      id,
+      role: "implementer",
+      kind,
+      repo: "opencode",
+      repoKey: "opencode",
+      directory: dir,
+      paths: [],
+      branch: `team/implementer/${id}`,
+      base: "0123456789abcdef0123456789abcdef01234567",
+      head: "0123456789abcdef0123456789abcdef01234567",
+      state: "idle",
+      attempts: [{ n: 1, state: "succeeded", startedAt: now, endedAt: now, trigger: "delegate" }],
+      task: null,
+      parent,
+      children: [],
+      briefSha: "abc",
+      bundle: "team-test",
+      budget: {},
+      createdAt: now,
+      lastUsed: now,
+      sessionID,
+      configDigest: null,
+      history: [],
+    })
+    await saveRun(teamsDataDir(), run("main-root0000000001", "main", "ses_lead_compact", null))
+    await saveRun(teamsDataDir(), run("w-worker0000000001", "w", "ses_worker_compact", "main-root0000000001"))
+    const ctx = context({
+      session: {
+        get: () =>
+          Effect.succeed({
+            agent: "implementer",
+            model: { providerID: "cliproxyapi", id: "claude-opus-5-5" },
+          } as never),
+      },
+    })
+    const state = { ...createState(), cachedModelSettings: [defaultsRecord({ compactWarm: "on" })] }
+    expect(await sessionCompactDefaults(ctx, state, "ses_worker_compact")).toMatchObject({
+      compactWarm: false,
+      compactWarmFrom: "built-in",
+    })
+    expect(await sessionCompactDefaults(ctx, state, "ses_lead_compact")).toMatchObject({
+      compactWarm: true,
+      compactWarmFrom: "model",
+    })
+    // A session with no run keeps the interactive default.
+    expect(await sessionCompactDefaults(ctx, state, "ses_unknown_compact")).toMatchObject({ compactWarm: true })
   } finally {
     if (prior === undefined) delete process.env.XDG_DATA_HOME
     else process.env.XDG_DATA_HOME = prior

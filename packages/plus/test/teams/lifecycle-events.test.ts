@@ -49,6 +49,7 @@ async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promi
 
 function recordSession() {
   const prompted: Array<{ sessionID: string; text: string }> = []
+  const interrupted: string[] = []
   const domain = {
     get: () => Effect.succeed({ id: "ses_child_010" }),
     prompt: (input: { sessionID: unknown; text: unknown }) => {
@@ -56,8 +57,12 @@ function recordSession() {
       return Effect.succeed(undefined as never)
     },
     wait: () => Effect.succeed(undefined),
+    interrupt: (input: { sessionID: unknown }) => {
+      interrupted.push(String(input.sessionID))
+      return Effect.succeed({ interrupted: true })
+    },
   } as unknown as SessionDomain
-  return { prompted, domain }
+  return { prompted, interrupted, domain }
 }
 
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
@@ -866,6 +871,39 @@ test("session.execution.started resumes a stopped run to working", async () => {
     expect(loaded?.state).toBe("working")
     expect(loaded?.history[loaded.history.length - 1]?.from).toBe("stopped")
     expect(loaded?.history[loaded.history.length - 1]?.to).toBe("working")
+  })
+})
+
+test("a start event from before the stop does not resume the stopped run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const stoppedAt = Date.parse("2026-10-27T13:55:00Z")
+    const run = baseRun({
+      id: "w-stopped-stale-start",
+      state: "stopped",
+      lastUsed: new Date(stoppedAt).toISOString(),
+      attempts: [
+        {
+          n: 1,
+          state: "succeeded",
+          startedAt: new Date(stoppedAt - 3 * 60_000).toISOString(),
+          endedAt: new Date(stoppedAt - 47 * 60_000).toISOString(),
+          trigger: "delegate",
+        },
+      ],
+      sessionID: "ses_stopped_stale_start",
+    })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const moved = await onSessionEvent(context({ session: sessions.domain }), root, {
+      type: SessionEvent.Execution.Started.type,
+      data: { sessionID: "ses_stopped_stale_start" },
+      created: stoppedAt - 1_000,
+    })
+    expect(moved).toBeUndefined()
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(sessions.interrupted).toEqual(["ses_stopped_stale_start"])
   })
 })
 
