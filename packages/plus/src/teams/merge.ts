@@ -105,7 +105,7 @@ function getHead(dir: string): Promise<string> {
 async function trackedDirtyFiles(worktree: string): Promise<string[]> {
   const out = await gitPlain(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-z"])
   const records = out.split("\0")
-  const files: string[] = []
+  const files = new Set<string>()
   for (let i = 0; i < records.length; i++) {
     const record = records[i] ?? ""
     if (record.length < 4) continue
@@ -114,9 +114,9 @@ async function trackedDirtyFiles(worktree: string): Promise<string[]> {
     const path = record.slice(3)
     // A rename or copy carries the source path in the next record.
     const sides = status.includes("R") || status.includes("C") ? [path, records[++i] ?? ""] : [path]
-    for (const file of sides) if (file !== "" && !files.includes(file)) files.push(file)
+    for (const file of sides) if (file !== "") files.add(file)
   }
-  return files
+  return [...files]
 }
 
 /** Paths a landing from `from` to `to` would change; with --no-renames a rename is both paths. */
