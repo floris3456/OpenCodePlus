@@ -247,8 +247,10 @@ export interface TeamMonitorTabProps {
   /** The chat whose team tree the tree view follows; absent outside a chat. */
   sessionID?: string
   active: () => boolean
-  /** Closes the Monitor, before a run's chat opens. */
-  close: () => void
+  /** Opens a run's chat; the list's place goes with it, for the Monitor that opens there. */
+  open: (sessionID: string, place: TeamPlace) => void
+  /** Takes where the list starts (the place a Monitor had when it opened a run's chat); called once, at mount. */
+  place?: () => TeamPlace | undefined
   selected?: () => number
   onSelect?: (index: number) => void
   context: Plugin.Context
@@ -256,6 +258,14 @@ export interface TeamMonitorTabProps {
   setShowInactive?: (val: boolean | ((prev: boolean) => boolean)) => void
   treeView?: () => boolean
   setTreeView?: (val: boolean | ((prev: boolean) => boolean)) => void
+}
+
+/** The run list's selected row, filters and scroll offset. */
+export interface TeamPlace {
+  readonly selected: number
+  readonly showInactive: boolean
+  readonly treeView: boolean
+  readonly scrollTop: number
 }
 
 /**
@@ -273,10 +283,17 @@ export function stopRunMountLog(): void {
 
 export function TeamMonitorTab(props: TeamMonitorTabProps) {
   const plus = props.context.client.rpc(Definition)
-  const [store, setStore] = createStore({ selected: 0, loaded: false, runs: [] as readonly TeamRunEntry[] })
+  const place = props.place?.()
+  const [store, setStore] = createStore({
+    selected: place?.selected ?? 0,
+    loaded: false,
+    runs: [] as readonly TeamRunEntry[],
+  })
   const renderer = useRenderer()
   let scroll: ScrollBoxRenderable | undefined
   let revealPending = true
+  // A place's scroll offset applies once, at the first layout with rows.
+  let restoreScroll = place?.scrollTop
   const selected = () => props.selected?.() ?? store.selected
   const select = (index: number) => {
     setStore("selected", index)
@@ -292,6 +309,8 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   const revealAfterLayout = () => {
     if (!revealPending || !scroll || scroll.viewport.height === 0) return
     revealPending = false
+    if (restoreScroll !== undefined) scroll.scrollTo(restoreScroll)
+    restoreScroll = undefined
     revealSelection()
   }
   // Resizing can clamp scrollTop after onSizeChange. Follow once after layout,
@@ -300,14 +319,14 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
   onCleanup(() => renderer.off("frame", revealAfterLayout))
   // Runs are keyed by id: a poll that returns the same runs updates them in
   // place instead of rebuilding every row component.
-  const [internalShowInactive, setInternalShowInactive] = createSignal(false)
+  const [internalShowInactive, setInternalShowInactive] = createSignal(place?.showInactive ?? false)
   const showInactive = () => (props.showInactive ? props.showInactive() : internalShowInactive())
   const setShowInactive = (val: boolean | ((prev: boolean) => boolean)) => {
     if (props.setShowInactive) props.setShowInactive(val)
     else setInternalShowInactive(val)
   }
 
-  const [internalTreeView, setInternalTreeView] = createSignal(true)
+  const [internalTreeView, setInternalTreeView] = createSignal(place?.treeView ?? true)
   const treeView = () => (props.treeView ? props.treeView() : internalTreeView())
   const setTreeView = (val: boolean | ((prev: boolean) => boolean)) => {
     if (props.setTreeView) props.setTreeView(val)
@@ -415,12 +434,14 @@ export function TeamMonitorTab(props: TeamMonitorTabProps) {
     revealSelection()
   })
 
-  // Close first: the Monitor's own close navigates back to where it opened from.
   function attachRun(run: TeamRunEntry) {
-    if (run.sessionID) {
-      props.close()
-      props.context.ui.router.navigate({ type: "session", sessionID: run.sessionID })
-    }
+    if (!run.sessionID) return
+    props.open(run.sessionID, {
+      selected: selected(),
+      showInactive: showInactive(),
+      treeView: treeView(),
+      scrollTop: scroll?.scrollTop ?? 0,
+    })
   }
 
   async function handleAction(run: TeamRunEntry) {

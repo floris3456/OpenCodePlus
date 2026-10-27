@@ -37,7 +37,7 @@ import { PromptTab, type PromptController } from "./tabs/prompt.js"
 import { SessionsTab } from "./tabs/sessions.js"
 import { TeamTab } from "./tabs/team.js"
 import { groupMountLog, resetGroupMountLog, stopGroupMountLog, ToolsTab } from "./tabs/tools.js"
-import type { ActiveTeamInfo } from "../active-team.js"
+import type { ActiveTeamInfo, TeamPlace } from "../active-team.js"
 
 export { groupMountLog, resetGroupMountLog, stopGroupMountLog }
 export const TOOLS_BODY_ROWS = 10
@@ -80,6 +80,16 @@ export interface MonitorViewProps {
   readonly target?: () => MonitorTarget | undefined
   /** The view took the target; the caller clears it so it is applied once. */
   readonly onTarget?: () => void
+  /** Opens a chat from the Monitor (a Team run's), with the place to start from there. */
+  readonly onOpenSession?: (sessionID: string, place: MonitorPlace) => void
+  /** Takes the place a Monitor had when it opened this chat; called once, at mount. */
+  readonly place?: () => MonitorPlace | undefined
+}
+
+/** Where a Monitor was: its drill-downs (scope, tab) and the Team tab's row and scroll. */
+export interface MonitorPlace {
+  readonly drills: readonly Drill[]
+  readonly team: TeamPlace
 }
 
 export interface MonitorTarget {
@@ -133,15 +143,24 @@ export function MonitorView(props: MonitorViewProps) {
   const defaultScope = props.full ? "session" : "tree"
   const store = createMonitorSettings(props.context, defaultScope, props.full ? "monitor" : "monitor-composer")
   const initialSessionID = props.initialSession ? props.sessionID() : undefined
+  const place = props.place?.()
   const [drills, setDrills] = createSignal<readonly Drill[]>(
-    initialSessionID === undefined
-      ? []
-      : [{
-          settings: { ...store.settings(), scope: "session", sessionIDs: [initialSessionID] },
-          sessionID: initialSessionID,
-        }],
+    place?.drills ??
+      (initialSessionID === undefined
+        ? []
+        : [{
+            settings: { ...store.settings(), scope: "session", sessionIDs: [initialSessionID] },
+            sessionID: initialSessionID,
+          }]),
   )
   const [helpOpen, setHelpOpen] = createSignal(false)
+  // The Team tab starts from the place once; shown again, it starts fresh.
+  let teamPlace = place?.team
+  const takeTeamPlace = () => {
+    const team = teamPlace
+    teamPlace = undefined
+    return team
+  }
 
   // Drill-downs are temporary and do not rewrite stored settings.
   const settings = () => drills().at(-1)?.settings ?? (
@@ -1511,7 +1530,12 @@ export function MonitorView(props: MonitorViewProps) {
                   context={props.context}
                   sessionID={sessionID}
                   active={() => props.active() && tab() === "team" && !helpOpen()}
-                  close={props.onClose}
+                  open={(id, team) =>
+                    props.onOpenSession === undefined
+                      ? props.context.ui.router.navigate({ type: "session", sessionID: id })
+                      : props.onOpenSession(id, { drills: drills(), team })
+                  }
+                  place={takeTeamPlace}
                   location={location}
                 />
               </Show>
