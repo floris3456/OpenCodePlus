@@ -14,6 +14,20 @@ export interface GitResult {
 
 // Non-throwing variant: captures exit code, trimmed stdout and trimmed stderr.
 export async function gitRaw(dir: string, args: string[], env: Record<string, string> = {}): Promise<GitResult> {
+  const r = await spawnGit(dir, args, env)
+  return { code: r.code, out: r.out.trim(), err: r.err.trim() }
+}
+
+// Throwing variant with stdout untrimmed: a -z list is NUL-terminated, and
+// trimming would eat the first record's status space and a path's own
+// leading or trailing spaces.
+export async function gitPlain(dir: string, args: string[], env: Record<string, string> = {}): Promise<string> {
+  const r = await spawnGit(dir, args, env)
+  if (r.code !== 0) throw new Error(r.err.trim() || r.out.trim() || `git ${args.join(" ")} exited ${r.code}`)
+  return r.out
+}
+
+async function spawnGit(dir: string, args: string[], env: Record<string, string>): Promise<GitResult> {
   const p = Bun.spawn(["git", ...args], {
     cwd: dir,
     env: { ...process.env, PATH: systemPath(), ...env },
@@ -25,7 +39,7 @@ export async function gitRaw(dir: string, args: string[], env: Record<string, st
     new Response(p.stderr).text(),
     p.exited,
   ])
-  return { code, out: out.trim(), err: err.trim() }
+  return { code, out, err }
 }
 
 // Throwing variant: rejects with the stderr text on non-zero exit,

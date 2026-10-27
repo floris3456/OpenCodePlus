@@ -10,7 +10,7 @@ import type { MergeContext, MergeEntry } from "./merge.js"
 import { gitRaw } from "./git.js"
 import { loadRun, updateRun, type RunRecord } from "./run.js"
 import { IntegrateInput } from "./schema.js"
-import type { Check } from "./schema.js"
+import { pathList, type Check } from "./schema.js"
 import { readJson } from "./store.js"
 import { remove } from "./worktree.js"
 import { evictRunFolder } from "./lifecycle.js"
@@ -169,7 +169,7 @@ function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
   const fresh = `a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then team_stop this child`
   const next =
     entry.state === "conflict"
-      ? `Not landed: the child's commits conflict with your HEAD in [${(entry.conflictFiles ?? []).join(", ")}]. Send it team_followup with rebase: true: it resolves the conflict in its own worktree and keeps its context. Only if it cannot resume, delegate ${fresh}.`
+      ? `Not landed: the child's commits conflict with your HEAD in [${pathList(entry.conflictFiles ?? [])}]. Send it team_followup with rebase: true: it resolves the conflict in its own worktree and keeps its context. Only if it cannot resume, delegate ${fresh}.`
       : `Not landed: checks [${red}] fail on the combined change (the child's own checks or new failures against your HEAD). Send the child a team_followup with rebase: true and what fails (it keeps its context), or delegate ${fresh}.`
   return {
     entry: entry.id,
