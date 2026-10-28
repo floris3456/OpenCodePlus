@@ -28,9 +28,12 @@ const pruned = new Set<string>()
 
 /** Synchronous quota callbacks must not make credential selection fail. */
 export function monitorFact(fact: ContextFact, open: () => Ledger = ledgerAt): void {
-  Effect.runSync(Effect.sync(() => open().contextFact(fact)).pipe(
+  // A Monitor write, so it waits with the others while the ledger is rewritten.
+  const write = () => Effect.runSync(Effect.sync(() => open().contextFact(fact)).pipe(
     Effect.catchCause(() => Effect.logWarning("plus monitor fact failed", { kind: fact.kind })),
   ))
+  if (open === ledgerAt && whileHeld(defaultLedgerPath(), write)) return
+  write()
 }
 
 export function watchMonitor(
