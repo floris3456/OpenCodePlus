@@ -210,17 +210,25 @@ export const layer = (options?: Options) =>
         resumeSuspendedSessions: Effect.gen(function* () {
           const active = yield* execution.active
           // A subagent record can read cancelled although its child was only cut by the
-          // shutdown: a deliberate stop releases the child's claim with its terminal event,
-          // so a child that still holds its claim was mid-turn when the process stopped and
-          // is resumed like a running one (theorysnap 2026-10-28: four restarts reported
-          // running background subagents as cancelled and nothing resumed them).
+          // shutdown (theorysnap 2026-10-28: five restarts reported running background
+          // subagents as cancelled and nothing resumed them). A deliberate stop ends the
+          // child's turn with a terminal event: it releases the claim and projects an idle
+          // message. A child that still holds its claim, or whose history does not end in an
+          // idle message, was mid-turn when the process stopped and is resumed like a running one.
           const claimed = new Set(yield* store.listSuspendedChildren())
-          const pending = (yield* jobs.pendingBackground).map((background) =>
-            background.recovery.kind === "subagent" &&
-            background.status === "cancelled" &&
-            claimed.has(background.recovery.childSessionID)
-              ? { ...background, status: "running" as const }
-              : background,
+          const cut = Effect.fnUntraced(function* (childID: SessionSchema.ID) {
+            if (claimed.has(childID)) return true
+            const last = (yield* store
+              .messages({ sessionID: childID, order: "desc", limit: 1 })
+              .pipe(Effect.orElseSucceed(() => [])))[0]
+            return last !== undefined && last.type !== "idle"
+          })
+          const pending = yield* Effect.forEach(yield* jobs.pendingBackground, (background) =>
+            Effect.gen(function* () {
+              if (background.recovery.kind !== "subagent" || background.status !== "cancelled") return background
+              if (!(yield* cut(background.recovery.childSessionID))) return background
+              return { ...background, status: "running" as const }
+            }),
           )
           const children = pending.flatMap((background) =>
             background.status === "running" && background.recovery.kind === "subagent"
