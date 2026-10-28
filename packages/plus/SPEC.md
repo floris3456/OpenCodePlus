@@ -1905,6 +1905,9 @@ refused, a requirement demands nothing, a bound is absent.
 | reviewer cannot be followed up | `perm:team_get_context:accepts.followup`, … → Corrections by followup (off: `E_NO_FOLLOWUP`) | the child |
 | Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, status, diff, list; shipped off | the caller |
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
+| a report's summary length | `perm:team_finish:limits.summary`, Limits → Report summary (lines), 15 shipped, a scout 20; `E_SUMMARY` names it | the finishing member |
+| a wall at delegation | `perm:team_delegate:limits.wall`, Limits → Longest wall at delegation (minutes), 480 shipped; `E_TOO_LONG` names it; `brief.wall` sets the child's budget | the caller |
+| a budget raise to a child that takes no corrections | the same `accepts.followup` row, which a budget-only `followup` (no prompt) ignores | the child |
 | read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `databases`, and the curated `perm:read:env` | core rules |
 | subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
 | external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots; the on allow rows of read's Where (Temporary directories) stay open for it (`apply.ts` `externalAllowList`, the shell allow-list's shape) | core rule / tool hook |
@@ -2024,14 +2027,17 @@ member of an enabled team (`policyMembersOf` keeps every one):
 The other catalog rows of the team tools (the per-tool table under Permission
 rules) are read by the same handlers: `team_delegate` Limits — Children
 working at once 4, Delegation depth 3, Brief size 6000 characters, Attached
-brief file 8000 characters, Live team runs in total 12, all on (`E_BOUNDS`,
-`E_ROLE`, `E_TOO_LONG`; an off row removes the bound; an attachment over the
-attachment limit is named by path only, must be committed at the child's base
+brief file 8000 characters, Live team runs in total 12, Longest wall at
+delegation 480 minutes, all on (`E_BOUNDS`, `E_ROLE`, `E_TOO_LONG`; an off row
+removes the bound; a `wall` above the wall row is refused by it, `E_TOO_LONG`
+naming `limits.wall`; an attachment over the attachment limit is named by path
+only, must be committed at the child's base
 (`E_PATHS` otherwise), and does not count toward the brief limit); `team_followup` Limits (Followups per child 5, shipped off,
 `E_ROUNDS`; Child context limit 400000 tokens, on, `E_CONTEXT`; Budget reminder
 interval 15 minutes); `team_finish` Requirements for done (Assigned checks pass at HEAD,
 on, `E_DIRTY` before checks on uncommitted work, otherwise `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
-`E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
+`E_NO_COMMIT`) and Limits (Report summary lines, 15 shipped, read for the
+member reporting; `E_SUMMARY`); `team_integrate` Outcomes it lands (done, done_with_concerns;
 `E_NOT_DONE`) and Branches it lands on (Protected branches `main`, `master`,
 `v2`, `release*`, shipped on; off refuses landing while the
 parent's branch matches, `E_BRANCH`); `team_get_context` Contents (Sibling
@@ -2168,7 +2174,11 @@ accepted: ["packages/plus/src/*","packages/plus/test/*"]
 `finish` handlers through `validateChecks` / `validateSummary`, not by schema
 filters, and both carry `accepted`.
 
-Report summaries allow 40 lines for every deliverable, including commits.
+A report summary's line limit is the reporting member's own `team_finish`
+Limits → Report summary row (15 shipped; a scout ships 20; a role outside the
+shipped presets reads its default, fixer-god 25). `team_finish` loads the run
+first and refuses a longer summary with `E_SUMMARY`, naming the count, the
+limit, the role and `team_finish limits.summary`.
 A `commit` Brief is refused with `E_ROLE` if the target member's resolved
 `tool:team_checkpoint` row is off. The refusal names the target and lists
 reachable members whose checkpoint tool is on (`accepted: { roles: [...] }`),
@@ -2178,7 +2188,7 @@ Error codes carrying `accepted` today:
 - `E_PATHS`: valid scope paths array (`["packages/plus/src/*","packages/plus/test/*"]`); for a target whose Plan files only row is on, `<target> accepts plan files only: every scope path must match one of its patterns [<patterns>]; outside them: [<paths>].` with the row's patterns
 - `E_ROLE`: the first member open to the caller (`{"role":"<member>"}`), present only when one is. The message ends in what is open — `You may delegate to: <members>.` or `No member is open to you for delegation.` — after `<agent> may not delegate.`, `"<role>" is not a member of an enabled team.` or `<agent> may not delegate to "<role>".`. A delegated run whose Delegate from a delegated run row is off gets `<agent>: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead` with `"report blocked with needs=[{kind:\"decision\"}]"`. The depth bound keeps `Depth limit <n> reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.` with `"report blocked with needs=[{kind:\"decision\"}]"`.
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
-- `E_SUMMARY`: summary length guidance (`"a summary of ≤40 lines"`)
+- `E_SUMMARY`: the member's line limit (`"a summary of ≤<limit> lines"`)
 - `E_BRIEF`: the target's A check (`{"checks":1}`), Paths per brief (`{"paths":<n>}`) or Checks per brief (`{"checks":<n>}`) row refuses the brief: `<target> needs at least one check (Briefs it accepts → A check).`, `<target> accepts at most <n> scope paths per brief (Brief limits → Paths per brief); this brief has <m>.`, `<target> accepts at most <n> checks per brief (Brief limits → Checks per brief); this brief has <m>.`
 - `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
@@ -2187,7 +2197,7 @@ Error codes carrying `accepted` today:
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
 - `E_BOUNDS`: delegation and followup both name `In-flight limit <n> reached (<runs>).` or `Live team runs limit <n> reached (<runs>).`, then ask the caller to end its turn and retry after a run settles. `<n>` is the caller's Children working at once / Live team runs in total row. Both count only slot-holding team member runs, excluding `kind: "main"` user chats and idle runs with terminal attempts; a session id and a live `starting|working|idle|blocked_input` state are required. The total remains install-wide across projects. Delegation's accepted guidance is `"end your turn and delegate after a child settles"`; followup's is `"retry after a run settles"`.
-- `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
+- `E_NO_FOLLOWUP`: a `followup` carrying a `prompt` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.` with `"delegate a fresh run"`. A call carrying only `budget` (and its `reason`), `paths` or `rebase` is not a correction: it applies without prompting the child and is not refused by the row.
 - `E_ROUNDS`: `"team_stop and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
 - `E_CONTEXT`: `"team_delegate a fresh run"` when a followup that sends text (`prompt`, `paths` or `rebase`) targets a child whose latest step holds more context than the caller's Child context limit row (default 400000); the message names the run, its token size, the limit, `team_followup limits.context`, and the fresh run's Brief carrying this run's report and branch
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
@@ -2993,11 +3003,11 @@ the shipped limits):
 | `execute` | Limits (Tool calls per run 50, refuse: Code Mode inner calls per `execute` call) |
 | `opencode_session_move` | Sessions (param `sessionID`: other sessions) · Destinations (input `directory`: absolute paths, `../`) |
 | `opencode_session_rename` | Sessions (param `sessionID`) · Limits (Longest title 80 characters, refuse) |
-| `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 12, on) · Requirements (team: reason) · Approval |
+| `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 8000, 12, 480, on) · Requirements (team: reason) · Approval |
 | `team_followup` | Delivery (value `delivery`) · Parameters (`budget`, `paths`) · Limits (team: Followups per child 5, off; Child context limit 400000, on) · Approval |
 | `team_integrate` | Outcomes it lands (team) · Branches it lands on (team: protected branches) · Approval |
 | `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
-| `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |
+| `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) · Limits (team: Report summary lines 15, on) |
 | `team_stop` | Approval |
 | `team_status` | — |
 | `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |

@@ -817,6 +817,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "brief", label: "Brief size (characters)", on: true, limit: 6000 },
         { id: "attachment", label: "Attached brief file (characters)", on: true, limit: 8000 },
         { id: "members", label: "Live team runs in total", on: true, limit: 12 },
+        { id: "wall", label: "Longest wall at delegation (minutes)", on: true, limit: 480 },
       ],
     },
     approval(),
@@ -924,6 +925,15 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "commit", label: "A commit deliverable has a commit", on: false },
         { id: "clean", label: "Worktree committed before done", on: false },
       ],
+    },
+    // Enforced by team_finish, not by a prompt: the report's summary is counted
+    // in lines before the report is recorded, and the refusal names the number.
+    {
+      id: "limits",
+      label: "Limits",
+      kind: "team",
+      summary: "How long this member's report summary may be. Edit the row to change the number; off leaves the role's own default.",
+      rows: [{ id: "summary", label: "Report summary (lines)", on: true, limit: 15 }],
     },
   ],
   team_stop: [runs("team_stop"), approval()],
@@ -1436,3 +1446,17 @@ export function limitOf(text: string): number | undefined {
   const value = Number(match[0].replaceAll("_", ""))
   return Number.isFinite(value) ? value : undefined
 }
+
+/**
+ * A member's report summary limit: the number its own team_finish Limits →
+ * Report summary row resolves to, else 15. The row ships 15; a shipped member
+ * preset sets a role whose report is long by nature to 20 (scout), and a role
+ * outside the shipped presets takes its default here (fixer-god 25). A number
+ * the row resolves to always wins. team_finish refuses a longer summary,
+ * naming the number, the role and the row.
+ */
+export function summaryLineLimit(limit: number | undefined, role: string): number {
+  return limit ?? roleSummaryLines[role] ?? 15
+}
+
+const roleSummaryLines: Readonly<Record<string, number>> = { scout: 20, "fixer-god": 25 }

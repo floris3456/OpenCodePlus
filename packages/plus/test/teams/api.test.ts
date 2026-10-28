@@ -7,7 +7,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { context, fullContext } from "../harness.js"
-import { change, presetTable, shippedMembers, teamState } from "./preset-table.js"
+import { change, presetTable, shippedMembers, shippedTeam, teamState } from "./preset-table.js"
 import plus, { activationDirectory, createHandlers, createPlusApi, createState } from "../../src/index.js"
 import { formatMarkdown } from "../../src/agents/files.js"
 import { load, save } from "../../src/instructions/store.js"
@@ -1332,6 +1332,144 @@ test("finish blocked without needs fails E_NEEDS", async () => {
     }
   })
 })
+
+// ── the report summary limit is the member's own row ────────────────────────
+
+function summaryLines(n: number): string {
+  return Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")
+}
+
+// A run of a role with no preset (a "runner" configured outside the Basic
+// team): every one of its rows is off, so the catalogue's shipped 15 is what
+// team_finish enforces.
+function runnerChild(id: string, repo: { dir: string; head: string }, role: string): RunRecord {
+  const now = new Date().toISOString()
+  return baseRun({
+    id,
+    role,
+    directory: repo.dir,
+    paths: ["docs/*"],
+    base: repo.head,
+    head: repo.head,
+    state: "working",
+    attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    parent: "main-0123456789abcdef",
+    sessionID: `ses_summary_${id.slice(2, 6)}`,
+  })
+}
+
+test("team_finish refuses a report over the member's summary lines and names the limit and the row", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const runner = runnerChild("w-runnnnnnnnnnnnnn", repo, "runner")
+      await saveRun(root, runner)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const refused = rejected(await api.finish(finishInput({ status: "blocked", summary: summaryLines(16), needs: [{ kind: "info", detail: "waiting" }] }), callerFor(runner)))
+      expect(refused.code).toBe("E_SUMMARY")
+      expect(refused.message).toBe(
+        "summary is 16 lines (max 15 for runner, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.",
+      )
+      expect(refused.accepted).toBe("a summary of ≤15 lines")
+      // 15 lines pass the limit and reach the next gate (blocked needs one need).
+      expect(rejected(await api.finish(finishInput({ status: "blocked", summary: summaryLines(15) }), callerFor(runner))).code).toBe("E_NEEDS")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("team_finish gives fixer-god 25 summary lines and scout 20, and a record can raise any member's", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const god = runnerChild("w-fixergodddddddd", repo, "fixer-god")
+      await saveRun(root, god)
+      // fixer-god is a member of a team configured outside the Basic presets:
+      // it has no preset, so its row reads off and its 25 is the role default.
+      const godApi = createTeamApi(
+        context({ session: recordSession().domain }),
+        teamState(presetTable({ members: [...shippedMembers(), { id: "fixer-god", team: shippedTeam }] })),
+      )
+      expect(rejected(await godApi.finish(finishInput({ status: "blocked", summary: summaryLines(26) }), callerFor(god))).message).toBe(
+        "summary is 26 lines (max 25 for fixer-god, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.",
+      )
+      expect(rejected(await godApi.finish(finishInput({ status: "blocked", summary: summaryLines(25) }), callerFor(god))).code).toBe("E_NEEDS")
+
+      // A scout ships its own row at 20.
+      const scout = runnerChild("w-scoooooooooooooo", repo, "scout")
+      await saveRun(root, scout)
+      const scoutApi = createTeamApi(context({ session: recordSession().domain }), teamState())
+      expect(rejected(await scoutApi.finish(finishInput({ status: "blocked", summary: summaryLines(21) }), callerFor(scout))).message).toStartWith("summary is 21 lines (max 20 for scout, team_finish limits.summary).")
+      expect(rejected(await scoutApi.finish(finishInput({ status: "blocked", summary: summaryLines(20) }), callerFor(scout))).code).toBe("E_NEEDS")
+
+      // A record setting the runner's row to 30 lets 30 through. The runner has
+      // no preset, so its rows are off until a record turns this one on.
+      const runner = runnerChild("w-runnnnnnnnnnnnnn", repo, "runner")
+      await saveRun(root, runner)
+      const runnerMember = { id: "runner", team: shippedTeam }
+      const raised = presetTable({ members: [...shippedMembers(), runnerMember], records: [change(runnerMember, "perm:team_finish:limits.summary", { state: "on", text: "30" })] })
+      const raisedApi = createTeamApi(context({ session: recordSession().domain }), teamState(raised))
+      expect(rejected(await raisedApi.finish(finishInput({ status: "blocked", summary: summaryLines(31) }), callerFor(runner))).message).toStartWith("summary is 31 lines (max 30 for runner, team_finish limits.summary).")
+      expect(rejected(await raisedApi.finish(finishInput({ status: "blocked", summary: summaryLines(30) }), callerFor(runner))).code).toBe("E_NEEDS")
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+// ── the wall at delegation ──────────────────────────────────────────────────
+
+test("delegate takes a wall and stores it as the child's budget", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_wall",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(await api.delegate(delegateInput({ requestID: "wall-1", wall: "2.5h" }), callerFor(parent))) as { run: string }
+      expect((await loadRun(root, value.run))?.budget.wallMs).toBe(9_000_000)
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("delegate refuses an unreadable wall with E_DURATION and a wall over the member's limit", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "orchestrator",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_wall",
+      })
+      await saveRun(root, parent)
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const invalid = rejected(await api.delegate(delegateInput({ requestID: "wall-bad", wall: "soon" }), callerFor(parent)))
+      expect(invalid.code).toBe("E_DURATION")
+      expect(invalid.message).toBe(`Invalid duration "soon". Expected format like "7d", "24h", "30m", "60s", or "500ms".`)
+      const over = rejected(await api.delegate(delegateInput({ requestID: "wall-long", wall: "10h" }), callerFor(parent)))
+      expect(over.code).toBe("E_TOO_LONG")
+      expect(over.message).toBe(
+        "wall 10h is 600 minutes (max 480 minutes, team_delegate limits.wall). Shorten it or raise the row (Permissions → Limits → Longest wall at delegation).",
+      )
+      expect(await fs.readdir(path.join(root, "runs")).then((names) => names.filter((name) => name.startsWith("w-")))).toEqual([])
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
 
 test("get_context returns the rendered brief once the session no longer holds it, with checks and scope", async () => {
   await withIsolatedTeamsRoot(async (root) => {

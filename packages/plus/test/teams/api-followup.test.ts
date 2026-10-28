@@ -227,7 +227,7 @@ test("a reviewer-preset child refuses a followup with its row's message", async 
     const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "rev-1" }), callerFor(parent)))
     expect(error.code).toBe("E_NO_FOLLOWUP")
     expect(error.message).toBe(
-      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).",
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.",
     )
     expect(error.accepted).toBe("delegate a fresh run")
   })
@@ -256,6 +256,51 @@ test("a child with no preset takes no correction: the row falls back to off", as
     const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "alice-1" }), callerFor(parent)))
     expect(error.code).toBe("E_NO_FOLLOWUP")
     expect(error.message).toStartWith("ocp-alice takes no corrections by followup")
+  })
+})
+
+// A budget raise is no correction: a working child whose Corrections by
+// followup row is off still takes one, because it carries no prompt. A call
+// with text is refused as before, now saying how to raise a budget alone.
+test("a budget-only followup raises a working child's budget even with Corrections by followup off", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", {
+      role: "reviewer",
+      state: "working",
+      budget: { turns: 30, tokens: 1000, wallMs: 5000 },
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const session = recordSession()
+    const api = createTeamApi(context({ session: session.domain }), teamState())
+    const value = required(
+      await api.followup({ run: child.id, requestID: "budget-only-1", budget: { wallMs: 9_000_000 }, reason: "The review needs more time" }, callerFor(parent)),
+    )
+    expect(value).toMatchObject({ attempt: 1, state: "working", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
+    const updated = await loadRun(root, child.id)
+    expect(updated?.budget).toEqual({ turns: 30, tokens: 1000, wallMs: 9_000_000 })
+    expect(updated?.history.some((entry) => "reason" in entry && entry.reason === "The review needs more time")).toBe(true)
+    // No prompt was sent: the child reads nothing and its turn is untouched.
+    expect(session.prompted).toEqual([])
+    expect(await peek(root, child.id)).toEqual([])
+
+    const refused = rejected(
+      await api.followup(
+        { run: child.id, requestID: "budget-with-text", prompt: "Also check the CLI path.", budget: { wallMs: 9_500_000 }, reason: "More time for the CLI" },
+        callerFor(parent),
+      ),
+    )
+    expect(refused.code).toBe("E_NO_FOLLOWUP")
+    expect(refused.message).toBe(
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.",
+    )
+    expect((await loadRun(root, child.id))?.budget.wallMs).toBe(9_000_000)
+
+    // A widened scope sends the child a note too, so it is a correction.
+    const widened = rejected(await api.followup({ run: child.id, requestID: "paths-only", paths: ["docs/notes.md"] }, callerFor(parent)))
+    expect(widened.code).toBe("E_NO_FOLLOWUP")
   })
 })
 
