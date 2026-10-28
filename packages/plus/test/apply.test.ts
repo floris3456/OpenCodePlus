@@ -1797,6 +1797,134 @@ test("a broad scrub keyword never empties a tool description, and system text is
   expect(event.system.map((part) => part.text).join("\n")).toBe(description)
 })
 
+// A member's role text and Core's skill list name team members, and the
+// subagent rows that name them are off; none of that cuts system text now.
+test("system text naming agents and git commit reaches the request whole", async () => {
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  const role = "The runner passes each step to the fixer-god.\nRun git commit before you report."
+  const toolText = "Run commands.\nUse git commit to save.\nThe runner reports back.\nInspect with git status."
+  const items = [
+    { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: toolText, enabled: true, fingerprint: fingerprint(toolText) },
+    {
+      id: "perm:shell:git-commit",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "Git commit",
+      text: "Git commit\ngit commit",
+      enabled: true,
+      fingerprint: fingerprint("Git commit\ngit commit"),
+      permTool: "shell",
+      ruleId: "git-commit",
+      patterns: ["git commit"],
+      keywords: ["git commit"],
+    },
+    // A stored subagent row keeps its keywords, yet never scrubs: Core already
+    // lists only the subagents the agent may run.
+    {
+      id: "perm:subagent:runner",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "runner",
+      text: "runner\nrunner",
+      enabled: true,
+      fingerprint: fingerprint("runner\nrunner"),
+      permTool: "subagent",
+      ruleId: "runner",
+      patterns: ["runner"],
+      keywords: ["runner"],
+    },
+  ]
+  const records = [
+    makeRecord({ item: "perm:shell:git-commit", agent: "alpha", level: "project", state: "off" }),
+    makeRecord({ item: "perm:subagent:runner", agent: "alpha", level: "project", state: "off" }),
+  ]
+  const applied = await apply(ctx, makeInput({ items, records, agents: [{ id: "alpha", level: "project" }] }))
+  expect(applied.registrations.length).toBeGreaterThan(0)
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("alpha", { shell: { description: toolText, input: { type: "object" } } }, [{ type: "text", text: role }])
+  await Effect.runPromise(run(event))
+  // The rule still cuts its own line from the tool description, and the
+  // subagent row's keyword cuts nothing anywhere…
+  expect(event.tools["shell"]?.description).toBe("Run commands.\nThe runner reports back.\nInspect with git status.")
+  // …and never touches the role text, whatever names it mentions.
+  expect(event.system.map((part) => part.text).join("\n")).toBe(role)
+})
+
+test("Core's skill list reaches a member whole although its own subagent row is off", async () => {
+  const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
+  const ctx = context({
+    tool: toolDomainFor([nativeTool("reader", "read things")]),
+    session: {
+      hook: (name, callback) => {
+        if (name === "context") callbacks.push(callback as (event: SessionHooks["context"]) => Effect.Effect<void>)
+        return Effect.succeed({ dispose: Effect.void })
+      },
+    },
+  })
+  // Core renders <available_skills> from core/src/skill/instructions.ts; a
+  // member's private copy is `plus/<agent>/<skill>`, so the id names the agent.
+  const skills = [
+    "<available_skills>",
+    "  <skill>",
+    "    <id>plus/fixer-god/okf-docs</id>",
+    "    <name>okf-docs</name>",
+    "    <description>Write docs</description>",
+    "  </skill>",
+    "</available_skills>",
+  ].join("\n")
+  const items = [
+    // Kept so a context hook installs at all: without one nothing could cut
+    // anything and this test would prove only that no hook exists.
+    { id: "tool:shell", kind: "tool" as const, group: "native" as const, title: "shell", text: "Run commands.\nUse git commit to save.", enabled: true, fingerprint: fingerprint("Run commands.\nUse git commit to save.") },
+    {
+      id: "perm:shell:git-commit",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "Git commit",
+      text: "Git commit\ngit commit",
+      enabled: true,
+      fingerprint: fingerprint("Git commit\ngit commit"),
+      permTool: "shell",
+      ruleId: "git-commit",
+      patterns: ["git commit"],
+      keywords: ["git commit"],
+    },
+    {
+      id: "perm:subagent:fixer-god",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "fixer-god",
+      text: "fixer-god\nfixer-god",
+      enabled: true,
+      fingerprint: fingerprint("fixer-god\nfixer-god"),
+      permTool: "subagent",
+      ruleId: "fixer-god",
+      patterns: ["fixer-god"],
+      keywords: ["fixer-god"],
+    },
+  ]
+  const records = [
+    makeRecord({ item: "perm:shell:git-commit", agent: "fixer-god", level: "project", state: "off" }),
+    makeRecord({ item: "perm:subagent:fixer-god", agent: "fixer-god", level: "project", state: "off" }),
+  ]
+  await apply(ctx, makeInput({ items, records, agents: [{ id: "fixer-god", level: "project" }] }))
+  const run = callbacks[0]
+  if (!run) throw new Error("missing context hook")
+  const event = sessionEvent("fixer-god", {}, [{ type: "text", text: skills }])
+  await Effect.runPromise(run(event))
+  expect(event.system.map((part) => part.text).join("\n")).toBe(skills)
+})
+
 test("editing the teaching row for one agent replaces that agent's part only", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "plus-apply-teaching-"))
   applyRoots.push(parent)
