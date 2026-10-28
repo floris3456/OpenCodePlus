@@ -87,6 +87,19 @@ describe("brief", () => {
     expect(nothing).toContain(`Checks at ${to.slice(0, 12)}: none recorded.`)
   })
 
+  test("an Environment section names the worktree, and its LFS pointer line only when pointers", () => {
+    const dir = "/home/dev/teams/worktrees/opencode/implementer/t1-20261028-1012"
+    const pointers = render(briefBase(), { budget: policy.effort.small, worktree: { directory: dir, lfs: "pointers" } })
+    expect(pointers).toContain(
+      `## Environment\nWorktree: ${dir} (your session's working directory).\nLFS files here are pointer files; \`git lfs pull --include <path>\` fetches one.`,
+    )
+    const full = render(briefBase(), { budget: policy.effort.small, worktree: { directory: dir } })
+    expect(full).toContain(`## Environment\nWorktree: ${dir} (your session's working directory).\n\n## Budget`)
+    expect(full).not.toContain("pointer files")
+    // No worktree named, no section: a Brief rendered without one lists nothing.
+    expect(render(briefBase(), { budget: policy.effort.small })).not.toContain("## Environment")
+  })
+
   test("attached material over the attachment limit is replaced with a pointer", () => {
     const big = "x".repeat(8_001)
     const out = render(briefBase(), { budget: policy.effort.small, attached: { path: "big.md", content: big } })
