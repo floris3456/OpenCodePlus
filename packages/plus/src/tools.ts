@@ -143,7 +143,7 @@ const FindDescription =
 const ReadDescription =
   "Read one row: its text and where it comes from (view resolved, the default).\n" +
   "On an agent, group or root, resolved lists the rows under it. assembled appears only when what reaches the model differs from text.\n" +
-  "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt).\n" +
+  "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt; its dropped list names every line a rule cut, with the rule).\n" +
   "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source.\n" +
   "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] }."
 
@@ -2270,7 +2270,14 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const patterns = upstream.patterns === undefined ? [] : [...upstream.patterns]
       const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
       const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
-      const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
+      // Only the parent tool description is scrubbed live (apply.ts
+      // applyRuleScrub); system text and skills are never cut, and a subagent
+      // row drops nothing (Core already lists only the subagents an agent may
+      // run), whatever keywords a stored record holds.
+      const scrubbed =
+        parent === undefined || upstream.permTool === "subagent"
+          ? { text: "", hidden: 0, preview: [] as readonly string[] }
+          : scrubLines(parent.text, keywords)
       const message = upstream.custom === true ? upstream.message : curatedRuleMessage(upstream.permTool ?? "", upstream.ruleId ?? "") ?? upstream.message
       return {
         output: {

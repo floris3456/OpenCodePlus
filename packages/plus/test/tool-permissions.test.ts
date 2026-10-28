@@ -113,9 +113,9 @@ test("validateRuleInput trims a message and drops a blank one", () => {
   expect(absent.message).toBeUndefined()
 })
 
-test("idRules builds one exact rule per discovered id", () => {
+test("idRules builds one exact rule per discovered id, with no scrub keywords", () => {
   expect(idRules("subagent", ["reviewer"])).toEqual([
-    { tool: "subagent", id: "reviewer", label: "reviewer", patterns: ["reviewer"], keywords: ["reviewer"] },
+    { tool: "subagent", id: "reviewer", label: "reviewer", patterns: ["reviewer"], keywords: [] },
   ])
   expect(idRules("skill", [])).toEqual([])
 })

@@ -663,7 +663,7 @@ export interface Item {
   readonly ruleId?: string
   /** Perm rule rows only: core wildcard patterns denied when the row is off. Only discovery ever sets it. */
   readonly patterns?: readonly string[]
-  /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern. Only discovery ever sets it. */
+  /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern (none on a subagent row: Core already lists only the subagents an agent may run). Only discovery ever sets it. */
   readonly keywords?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
@@ -1433,12 +1433,20 @@ exactly as apply does (`apply.ts` `resolvedFor`), over the agents and context
 a publish applies (`index.ts` `publishChain`): a team member, and an enabled
 team's Special agent, resolves with its team.
 
+`dropped` lists every line a rule cut from a tool or catalog description, with
+`where` (`tool:<id>` or `catalog:<id>`), `rule` (the perm item id whose keyword
+matched, first match wins) and `line`. It is omitted when nothing was dropped,
+and holds nothing for system text or skills: those are never scrubbed. As in
+the live request, a description that would be emptied entirely keeps its
+original text, and nothing is listed for it.
+
 ```ts
 export interface Assembled {
   readonly agent: string
   readonly system: readonly string[]
   readonly tools: readonly AssembledTool[]
   readonly skills: readonly { readonly id: string; readonly content: string }[]
+  readonly dropped?: readonly { readonly where: string; readonly rule: string; readonly line: string }[]
 }
 export interface AssembledTool {
   readonly id: string
@@ -2557,7 +2565,9 @@ export interface DeleteInput extends Rows { readonly confirm: true }
   `enabled`, `source`, `category`, `kind` — the row's `permKind`, `rule` when
   absent — plus `field` and `value` when the row has them and `limit` — the
   resolved number, `null` when the text holds none — on a limit or bound row;
-  plus a scrub preview: `scrub.hidden` lines would drop,
+  plus a scrub preview of its own tool's description: `scrub.hidden` lines
+  the rule really drops there (always `0` for a subagent rule, and nothing
+  else is scanned — system text and skills are never scrubbed),
   `scrub.preview` shows up to 3; plus `message` when the rule has one — a
   user rule's own text, or for a shipped row the curated text, else the
   catalog row's own; plus `policy` on a team role row). Team and member rows
@@ -2794,14 +2804,22 @@ path is skipped.
   to its first meaningful segment (`*.git*` → `[".git"]`). Catalog rows ship
   no keywords — their patterns name common words (`cp`, `touch`, `tee`) that a
   derived keyword would strip from unrelated guidance — so turning one off
-  scrubs no prompt line. Saving one through the rule editor or `rule.update`
-  makes it a user rule, whose blank keywords derive like any rule's.
+  drops no prompt line. Saving one through the rule editor or `rule.update`
+  makes it a user rule, whose blank keywords derive like any rule's. A
+  subagent rule carries no keywords at all (`idRules`): Core already lists
+  only the subagents an agent may run (its subagent tool description filters
+  by permission), so a keyword would cut only prose that names an agent, and
+  `scrubKeywordsByAgent` ignores a subagent row whatever keywords a stored
+  record holds.
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
-  description plus every system part, after the text plans), the
-  `session.catalog` hook (Code Mode catalog descriptions, after the
-  text/pin plans), and the `assembled` view (registry descriptions, system,
-  and skill content). Empty keyword sets install no extra hooks.
+  description, after the text plans), the `session.catalog` hook (Code Mode
+  catalog descriptions, after the text/pin plans), and the `assembled` view
+  (registry and catalog descriptions only). System parts (role rows, user
+  System rows, base prompts, Core's own parts such as the skill list) and
+  skills are author or host text and are never cut: a denied action is
+  enforced by its permission rule, not by hiding prose. Empty keyword sets
+  install no extra hooks.
 
 #### The per-tool catalog (`permission-catalog.ts`)
 

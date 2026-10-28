@@ -862,10 +862,94 @@ test("an all-matching scrub preserves the original in assembled, matching the li
   })
   if ("ok" in result) throw new Error("expected assembled result")
   // The raw scrub empties the text; the live request keeps the original
-  // (apply.ts preservation), so the readback must agree.
+  // (apply.ts preservation), so the readback must agree and list nothing.
   expect(scrubLines("git push", ["git push"]).text).toBe("")
   expect(result.system).toEqual(["git push"])
   expect(result.tools.find((entry) => entry.id === "shell")?.description).toBe("git push")
+  expect(result.dropped).toBeUndefined()
+})
+
+// Every line an off rule cuts is listed with the rule that cut it, and system
+// text never appears: it is not scrubbed live either (apply.ts applyRuleScrub).
+test("assembled lists each dropped tool line with its rule and never a system line", async () => {
+  const { project } = await tempRoot()
+  const agents = agentHarness([agentInfo("alpha", "The runner passes steps on.\nRun git commit before you report.")])
+  const location = fullContext({ directory: project }).location
+  const toolText = "Run commands.\nUse git commit to save.\nInspect with git status."
+  const tools = toolHarness([{ id: "shell", description: toolText, options: { codemode: false } }])
+  const ctx = context({ location, agent: agents.domain, tool: tools.domain, mcp: fullContext({ directory: project }).mcp })
+  const items = [
+    {
+      id: "tool:shell",
+      kind: "tool" as const,
+      group: "native" as const,
+      title: "shell",
+      text: toolText,
+      enabled: true,
+      fingerprint: fingerprint(toolText),
+    },
+    {
+      id: "perm:shell:git-commit",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "Git commit",
+      text: "Git commit\ngit commit",
+      enabled: true,
+      fingerprint: fingerprint("Git commit\ngit commit"),
+      permTool: "shell",
+      ruleId: "git-commit",
+      patterns: ["git commit"],
+      keywords: ["git commit"],
+    },
+    {
+      id: "perm:subagent:runner",
+      kind: "perm" as const,
+      group: "none" as const,
+      title: "runner",
+      text: "runner\nrunner",
+      enabled: true,
+      fingerprint: fingerprint("runner\nrunner"),
+      permTool: "subagent",
+      ruleId: "runner",
+      patterns: ["runner"],
+      keywords: ["runner"],
+    },
+  ]
+  const records = [
+    {
+      type: "customization" as const,
+      level: "project" as const,
+      agent: "alpha",
+      item: "perm:shell:git-commit",
+      section: null,
+      state: "off" as const,
+      basedOn: fingerprint("Git commit\ngit commit"),
+      updated: UPDATED,
+    },
+    {
+      type: "customization" as const,
+      level: "project" as const,
+      agent: "alpha",
+      item: "perm:subagent:runner",
+      section: null,
+      state: "off" as const,
+      basedOn: fingerprint("runner\nrunner"),
+      updated: UPDATED,
+    },
+  ]
+  const result = await assembled({
+    ctx,
+    agent: "alpha",
+    items,
+    agents: [{ id: "alpha", level: "project" as const }],
+    records,
+    splits: [],
+    scopes: { global: new Set<string>(), defaults: new Set<string>() },
+  })
+  if ("ok" in result) throw new Error("expected assembled result")
+  expect(result.system).toEqual(["The runner passes steps on.\nRun git commit before you report."])
+  expect(result.tools.find((entry) => entry.id === "shell")?.description).toBe("Run commands.\nInspect with git status.")
+  expect(result.dropped).toEqual([{ where: "tool:shell", rule: "perm:shell:git-commit", line: "Use git commit to save." }])
 })
 
 // The readback lists the system parts in the order the agent's requests carry

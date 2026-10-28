@@ -1520,10 +1520,71 @@ test("show with each view returns the right shape, diff returns two diffs plus s
   expect(unknown.message).toContain(unknownRowRefusal("item:project:alpha:does:not:exist"))
 })
 
-// A reader whose upstream description changes under a customization made
-// against an earlier description. Changes alternate with unchanged sentences
-// on each side, so each is its own merge unit: yours-only (Alpha), upstream-only
-// (Gamma), both changed differently (Epsilon), both changed the same (Eta).
+// An off rule previews what it really cuts: whole-word lines of its parent
+// tool description. A subagent row drops nothing at all, whatever keywords a
+// stored record holds (Core already lists only the subagents an agent may run).
+test("a subagent rule reports no scrub, and a tool rule previews its own cut lines", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "The runner takes the next step.\nRun git commit before you report.")],
+    tools: [
+      { id: "shell", description: "Run shell.\nUse git commit to save.\nInspect with git status.", options: { codemode: false } },
+      { id: "subagent", description: "Run a subagent.", options: { codemode: false } },
+    ],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  // The discovered agents resolve at Defaults here, so the records live there.
+  // The stored subagent rule keeps the keywords an older record could hold;
+  // discovery ships the row without any, and no keyword ever cuts a line.
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      { type: "link", level: "defaults", agent: "alpha", preset: { kind: "agent", id: "build" }, updated: "2026-01-01T00:00:00.000Z" },
+      { type: "customization", level: "defaults", agent: "alpha", item: "perm:subagent:runner", section: null, state: "off", basedOn: "any", updated: "2026-01-01T00:00:00.000Z" },
+      { type: "rule", level: "defaults", agent: "alpha", tool: "subagent", id: "runner", label: "runner", patterns: ["runner"], keywords: ["runner"], updated: "2026-01-01T00:00:00.000Z" },
+      { type: "customization", level: "defaults", agent: "alpha", item: "perm:shell:git", section: null, state: "on", basedOn: "any", updated: "2026-01-01T00:00:00.000Z" },
+      { type: "customization", level: "defaults", agent: "alpha", item: "perm:shell:git-commit", section: null, state: "off", basedOn: "any", updated: "2026-01-01T00:00:00.000Z" },
+    ],
+  })
+  if (!saved.ok) throw new Error("expected records to save")
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const rows = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const rowOf = (item: string) => {
+    const node = rows.find((candidate) => candidate.address?.item === item && candidate.address?.agent === "alpha")
+    if (node === undefined) throw new Error(`missing ${item} row`)
+    return node
+  }
+  const subagentShown = (await runOk(need(tools, "instructions_read"), { id: rowOf("perm:subagent:runner").id })) as {
+    keywords: string[]
+    scrub: { hidden: number; preview: readonly string[] }
+  }
+  // The stored record's keywords are reported (a user rule keeps its own
+  // definition), yet they cut nothing: a subagent row never scrubs.
+  expect(subagentShown.keywords).toEqual(["runner"])
+  expect(subagentShown.scrub).toEqual({ hidden: 0, preview: [] })
+  const gitShown = (await runOk(need(tools, "instructions_read"), { id: rowOf("perm:shell:git-commit").id })) as {
+    scrub: { hidden: number; preview: readonly string[] }
+  }
+  expect(gitShown.scrub).toEqual({ hidden: 1, preview: ["Use git commit to save."] })
+  // read({ view: "assembled" }) passes the same list through, so the model sees
+  // every line a rule cut and which rule cut it; system text never appears.
+  const agentRow = rows.find((node) => node.kind === "agent" && node.label === "alpha")
+  if (agentRow === undefined) throw new Error("missing alpha agent row")
+  const assembled = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled" })) as {
+    system: readonly string[]
+    tools: readonly { id: string; description: string }[]
+    dropped?: readonly { where: string; rule: string; line: string }[]
+  }
+  expect(assembled.tools.find((entry) => entry.id === "shell")?.description).toBe("Run shell.\nInspect with git status.")
+  expect(assembled.system).toContain("The runner takes the next step.\nRun git commit before you report.")
+  expect(assembled.dropped).toEqual([{ where: "tool:shell", rule: "perm:shell:git-commit", line: "Use git commit to save." }])
+})
+
 // Stored original and yours have no final newline; the live upstream keeps one (B41).
 const mergeOriginal = "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven."
 const mergeMine = "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."

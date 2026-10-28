@@ -192,14 +192,19 @@ export function scrubInfo(
     const upstream = upstreamFor(derived, address)
     if (upstream?.kind !== "perm") return undefined
     const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
-    if (keywords.length === 0) return { hidden: 0, preview: [], keywords: [] }
+    // A subagent row drops nothing whatever a stored record holds: Core already
+    // lists only the subagents an agent may run (tool-permissions.ts idRules).
+    if (keywords.length === 0 || upstream.permTool === "subagent") return { hidden: 0, preview: [], keywords: [] }
     const parent = derived.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
     if (parent === undefined) return { hidden: 0, preview: [], keywords }
     const scrubbed = scrubLines(parent.text, keywords)
     return { hidden: scrubbed.hidden, preview: scrubbed.preview, keywords }
   }
+  // Only a tool row previews the scrub: an off rule cuts tool and catalog
+  // descriptions, never system text or skills (apply.ts applyRuleScrub).
+  if (!address.item.startsWith("tool:")) return undefined
   const keywords = derived.items.flatMap((item) => {
-    if (item.kind !== "perm" || item.keywords === undefined) return []
+    if (item.kind !== "perm" || item.permTool === "subagent" || item.keywords === undefined) return []
     const owner = address.agent
     if (owner === null) {
       if (item.agents !== undefined) return []
