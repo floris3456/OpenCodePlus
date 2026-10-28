@@ -744,12 +744,25 @@ export const AssembledSkill = Schema.Struct({
   content: Schema.String,
 }).annotate({ identifier: "Plus.AssembledSkill" })
 
+// One line an off perm row dropped from a tool or catalog description, and the
+// rule that dropped it: `where` is `tool:<id>` or `catalog:<id>`, `rule` the
+// perm item id (`perm:<tool>:<rule>`) whose keyword matched. System text and
+// skills never appear: they are never scrubbed.
+export interface AssembledDropped extends Schema.Schema.Type<typeof AssembledDropped> {}
+export const AssembledDropped = Schema.Struct({
+  where: Schema.String,
+  rule: Schema.String,
+  line: Schema.String,
+}).annotate({ identifier: "Plus.AssembledDropped" })
+
 export interface Assembled extends Schema.Schema.Type<typeof Assembled> {}
 export const Assembled = Schema.Struct({
   agent: Schema.String,
   system: Schema.Array(Schema.String),
   tools: Schema.Array(AssembledTool),
   skills: Schema.Array(AssembledSkill),
+  // Present only when at least one line was dropped.
+  dropped: Schema.optionalKey(Schema.Array(AssembledDropped)),
 }).annotate({ identifier: "Plus.Assembled" })
 
 export interface AgentPermissionRule extends Schema.Schema.Type<typeof AgentPermissionRule> {}
