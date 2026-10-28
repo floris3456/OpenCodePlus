@@ -227,7 +227,7 @@ test("a reviewer-preset child refuses a followup with its row's message", async 
     const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "rev-1" }), callerFor(parent)))
     expect(error.code).toBe("E_NO_FOLLOWUP")
     expect(error.message).toBe(
-      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).",
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.",
     )
     expect(error.accepted).toBe("delegate a fresh run")
   })
