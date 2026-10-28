@@ -43,9 +43,9 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const DelegateDescription =
   "Start a run for a team member in its own worktree, from your last commit.\nEach call starts one run; to start several, make their calls together in one step. Its settlement wakes you with the report, so end your turn instead of polling."
 const FinishDescription =
-  "In a delegated run: report your task's outcome to your parent; it ends your turn. Once per attempt; corrections arrive as new messages. In the user's chat, answer the user instead."
+  "In a delegated run: report your task's outcome to your parent; it ends your turn. Once per attempt; corrections arrive as new messages. The summary's line limit is your member's, and a longer one is refused. In the user's chat, answer the user instead."
 const FollowupDescription =
-  "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
+  "Send a correction, more scope, work or budget to your child. Budget alone (with reason) needs no corrections row and prompts nothing. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
 const IntegrateDescription =
   "Land a done child's commits on your branch: rebased onto your HEAD, verified (its checks, landed children's and your Brief's; only its own failures or new breakages block), then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."

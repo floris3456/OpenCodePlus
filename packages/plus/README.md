@@ -390,7 +390,9 @@ shipped Basic roles keep their old answers (a planner's target accepts plan
 files only, an orchestrator's target needs a reason, and so on).
 
 Every agent also has `team_delegate` bounds that ship on — 4 children working
-at once, depth 3, briefs of up to 6000 characters, 12 live team runs; in a
+at once, depth 3, briefs of up to 6000 characters, 12 live team runs, and a
+wall per delegation of at most 480 minutes (`wall: "2.5h"` sets the child's
+budget directly; over the row, `E_TOO_LONG` names `limits.wall`); in a
 delegated run, which nobody watches, questions and approvals are refused
 rather than left waiting. Each delegated Session's edits and checkpoints are
 limited to its saved brief's `scope.paths`; `scope.forbidden` wins. A member
@@ -541,8 +543,10 @@ Delegation and followup capacity counts only slot-holding team member runs,
 never users' `main` chat runs. The total remains install-wide across projects.
 `E_BOUNDS` names the in-flight or total limit, its number and the counted run ids.
 A `commit` Brief requires the target member's `team_checkpoint` tool to be on;
-otherwise `E_ROLE` names the reachable members that can commit. Every report
-summary, including a commit deliverable's, may contain up to 40 lines.
+otherwise `E_ROLE` names the reachable members that can commit. Every member's
+report summary has its own line limit (`team_finish` → Limits → Report summary,
+15 lines shipped, 20 for a scout), and `team_finish` refuses a longer one naming
+the limit and the row rather than trusting a prompt.
 
 A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.execution.succeeded`,
@@ -625,6 +629,11 @@ retried … (last: …)` before `next:` when the run recovered.
   working parent gets it through its own idle handoff. When that parent itself
   stopped the child, the no-report settlement says nothing is needed and
   `team_followup` resumes it with its context.
+- A `team_followup` that carries only `budget` (with its `reason`) is not a
+  correction: any child still working takes it and Plus records the new budget
+  without prompting it, even while its Corrections by followup row is off. A
+  call that carries text to such a child is refused, and the refusal says a
+  budget raise alone is accepted.
 - The Brief a child receives (`brief.ts`) has no empty sections; says what
   done means for its deliverable; marks a read-only task as such; states the
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
