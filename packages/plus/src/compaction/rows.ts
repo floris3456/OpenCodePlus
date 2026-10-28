@@ -2,6 +2,7 @@ import type { PlusState } from "../index.js"
 import { runtimeScope, type Level } from "../instructions/model.js"
 import { effectiveCompaction, everySettings, resolveModelCompactionFields, settingsFor } from "../instructions/model-settings.js"
 import { dedupeAgents } from "../instructions/teams-apply.js"
+import { TEAM_CONTEXT_TOKENS } from "../teams/schema.js"
 
 // The (agent, model) resolution inputs that compaction and warming decisions
 // walk: the agent's model rows down its runtime chain plus Defaults › Models.
@@ -52,15 +53,31 @@ export function compactionRowsOf(
  * The early input threshold (Compaction › Input token threshold) the agent
  * and model resolve: its model rows, then Defaults › Models › this model, then
  * Every model. Undefined when none sets one, or one turns it off.
+ *
+ * A team member whose rows set none condenses at TEAM_CONTEXT_TOKENS; an
+ * explicit row at any level, and "off", still decide.
  */
 export function inputThresholdOf(
   state: RowsState,
   agentID: string,
   model: { readonly providerID: string; readonly id: string; readonly variant?: string },
 ): number | undefined {
-  const threshold = modelCompactionOf(state, agentID, model).compactionInput.value
-  // "off" resolves to 0, as the trigger reads it.
-  return threshold !== undefined && threshold > 0 ? threshold : undefined
+  return teamInputThreshold(modelCompactionOf(state, agentID, model).compactionInput.value, isTeamMember(state, agentID))
+}
+
+/**
+ * The early input threshold a decision uses, from the resolved value and
+ * whether the chat's agent is a team member: an unset value is the team's own
+ * context budget, "off" (0) and a set value pass through.
+ */
+export function teamInputThreshold(threshold: number | undefined, team: boolean): number | undefined {
+  if (threshold !== undefined) return threshold > 0 ? threshold : undefined
+  return team ? TEAM_CONTEXT_TOKENS : undefined
+}
+
+/** Whether the agent is a member of an enabled team (its cached source carries one). */
+export function isTeamMember(state: RowsState, agentID: string): boolean {
+  return state.cachedAgents.some((entry) => entry.id === agentID && entry.team !== undefined)
 }
 
 /**

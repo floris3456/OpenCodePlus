@@ -101,7 +101,7 @@ import { agentAttention, mergeAttention, type AttentionRow } from "./attention-s
 import { attentionStore } from "./attention.js"
 import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
-import { armedColdListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
+import { armedColdListOf, compactionRowsOf, inputThresholdOf, isTeamMember, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionInstructionsUpdate, SessionWarming } from "@opencode/plugin/effect/session"
@@ -4239,6 +4239,7 @@ export function decideCompactionFor(
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),
       ...(agentWide === undefined ? {} : { agent: agentWide }),
+      ...(isTeamMember(state, event.agent) ? { team: true } : {}),
       ...(consulted && cold !== undefined ? { cold } : {}),
     })
   })

@@ -208,6 +208,11 @@ function field<S extends Schema.Constraint>(
   return Schema.withDecodingDefaultTypeKey<S, never>(Effect.sync(def))(schema)
 }
 
+// A team member's context at which it condenses or starts fresh, unless an
+// Instructions row sets Compaction › Input token threshold for it. Read by the
+// compaction decision and by team_followup's own context limit.
+export const TEAM_CONTEXT_TOKENS = 400_000
+
 // Identity primitives.
 export const Head = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))
 export type Head = typeof Head.Type

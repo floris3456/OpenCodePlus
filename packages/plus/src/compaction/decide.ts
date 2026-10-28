@@ -2,6 +2,7 @@ import type { SessionCompactionDecision } from "@opencode/plugin/compaction-deci
 import { Model } from "@opencode/schema/model"
 import type { WarmingStatus } from "../warming.js"
 import { decideCompactionTriggers } from "./triggers.js"
+import { teamInputThreshold } from "./rows.js"
 import {
   effectiveCompaction,
   type CompactionDefaults,
@@ -62,6 +63,11 @@ export interface CompactionDecisionContext {
   readonly agent?: CompactionDefaults
   /** The shared Defaults `compaction:*` rows for every agent. */
   readonly agents?: CompactionDefaults
+  /**
+   * The chat's agent is a team member: with no threshold row it condenses at
+   * TEAM_CONTEXT_TOKENS instead of core's window.
+   */
+  readonly team?: boolean
   /** The models armed for this chat's next compaction (#1 writes, #2… fall back), when some were armed. */
   readonly armed?: readonly string[]
   /** Absent when cold compacting is not consulted: Compact cold chats first is off for the chat's model. */
@@ -110,7 +116,7 @@ export function decideCompaction(event: SessionCompactionDecision, context: Comp
     event.explanation = { ...event.explanation, trigger: "cold" }
   }
   decideCompactionTriggers(event, {
-    input: effective.compactionInput.value,
+    input: teamInputThreshold(effective.compactionInput.value, context.team === true),
     output: effective.compactionOutput.value,
   })
 }
