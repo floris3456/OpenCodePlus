@@ -5,53 +5,77 @@ import { For } from "solid-js"
 
 export type HelpGroup = readonly [string, readonly (readonly [string, string])[]]
 
+/**
+ * The complete key reference (?): every key the browse layer binds, grouped by
+ * what it is for. The footer (route.tsx hints) shows only what acts on the
+ * current row; this dialog is where navigation and the less frequent keys live.
+ */
 export const HELP: readonly HelpGroup[] = [
   [
-    "Move",
+    "Navigate",
     [
+      ["↑ ↓", "previous / next row"],
+      ["pgup pgdn", "a page at a time; home / end: first / last row"],
+      ["← →", "close or back to the sidebar / open the row, or into its list"],
       ["tab", "switch between the sidebar and the list"],
-      ["shift+tab", "next level (wraps) · < > goes back / forward"],
+      ["shift+tab", "next level (wraps)"],
       ["shift+← →", "previous / next level (same gesture)"],
       ["shift+[ ] { }", "previous / next level (terminal aliases)"],
+      ["< >", "previous / next level"],
       ["shift+1–4", "Project / Global / Defaults / Presets (! @ # $ too)"],
-      ["↑↓ pgup pgdn", "move (home / end: first / last)"],
-      ["→ / ←", "open or into the list / close or back to the sidebar"],
-      ["[ ]  1-8", "previous / next category, or jump to one"],
+      ["[ ]", "previous / next category"],
+      ["1–9", "jump to a category"],
+      ["/", "filter this level as you type; esc clears"],
       ["n / N", "next / previous row to review in this level"],
-      ["E", "expand or collapse every other row in the hovered or focused pane"],
-      ["ctrl+E", "the same, including the row under the cursor"],
-      ["W / alt+W", "resize the panels (wide): ←/[ move divider left · →/] move divider right · tab switch · enter/esc save"],
-      ["/", "filter this level as you type · esc clears"],
-      ["esc", "back one step; from the sidebar it closes the screen"],
-      ["x · shift+↑↓ · ctrl+a", "select a row · select a range · select visible rows; Esc clears"],
-      ["", "selected rows stay selected across agents and tabs; edits reflect to compatible settings"],
-      ["ctrl+c / ctrl+x / ctrl+v", "copy / cut / paste selected rows; cut stays pending until paste succeeds; Esc cancels"],
+      ["shift+e", "expand or collapse every other row in the hovered or focused pane"],
+      ["ctrl+e", "the same, including the row under the cursor"],
+      ["shift+w", "resize the panels (wide): ←/[ move divider left · →/] move divider right · tab switch · enter/esc save"],
     ],
   ],
   [
-    "Change",
+    "Select",
     [
-      ["space", "turn a row, agent or team on/off"],
+      ["x", "select or deselect the row"],
+      ["shift+↑ ↓", "extend the selection a row at a time"],
+      ["ctrl+a", "select every visible row"],
+      ["esc", "clear the selection (then: cancel a cut, close the list, close the screen)"],
+      ["", "selected rows stay selected across agents and tabs; edits reflect to the compatible settings"],
       ["ctrl+space", "make an enabled primary agent the current agent"],
-      ["enter", "edit text · edit a rule's patterns or a limit · edit a model · cycle Strategy/Compaction · review"],
-      ["e", "edit text full width (ctrl+d previews the change)"],
-      ["c", "compare your text with upstream (a real diff)"],
-      ["r", "reset this level's override"],
-      ["p", "pin a Code Mode tool"],
-      ["w", "shown when: send a system row or section only while chosen rows are on · on a model prompt also its models"],
-      ["s", "split text into sections"],
-      ["m", "pick a row or folder up: ↑/↓ move, → into the folder below, ← out, enter drops, esc restores · on a cold-cache model list: ↑/↓ reorder the try order"],
-      ["shift+r", "rename a user category, user agent, team member or team"],
     ],
   ],
   [
-    "Create and link",
+    "Edit the row",
     [
-      ["a", "add (name, then preset): agent, team, member, entry, preset, model, skill, rule, section, category · in Model prompts: a model prompt"],
-      ["l", "link an agent, member, team, entry or User preset to a preset (or unlink)"],
-      ["L", "row links: select primary, navigate to another row, L finishes; Esc cancels"],
-      ["", "link list: Enter edits type; Space enables/disables; d deletes a local link"],
+      ["enter", "the row's own action: edit text · edit a rule or a limit · edit a model · cycle Strategy/Compaction · toggle · review · open"],
+      ["space", "turn a row, agent or team on/off (on a permission row with no patterns: switch)"],
+      ["e", "edit the text full width"],
+      ["shift+r", "rename a user agent, team member, team or folder"],
+      ["r", "reset this level's override (on an agent or member: its controls)"],
+      ["p", "pin a Code Mode tool"],
+      ["s", "split the text into sections"],
+      ["w", "shown when: send a system row or section only while chosen rows are on · on a model prompt also its models"],
+      ["shift+l", "row links: select the first row, navigate to another, shift+l finishes; esc cancels"],
+      ["l", "link an agent, member, team, entry or user preset to a preset (or unlink)"],
+      ["c", "compare your text with upstream (a real diff)"],
+      ["n / N", "the next / previous row to review"],
+    ],
+  ],
+  [
+    "Add, copy, move",
+    [
+      ["a", "add: agent, team, member, entry, preset, model, skill, rule, section, folder, system row · a tool row offers Section or Permission rule"],
+      ["ctrl+c", "copy the selected rows, else the row under the cursor"],
+      ["ctrl+x", "cut them (pending until the paste succeeds; esc cancels)"],
+      ["ctrl+v", "paste onto the row under the cursor: the same row of another agent, an agent onto an agent, or into a category"],
+      ["ctrl+d", "duplicate: an independent copy right after the original, one row named \"<name> copy\" (esc keeps it): agent, team, member, skill, preset, System row, folder with its contents"],
+      ["m", "move: ↑/↓ move, → into the folder below, ← out, enter drops, esc restores · a cold-cache list: ↑/↓ reorder the try order"],
       ["d", "delete (asks first; a user category's rows go home)"],
+    ],
+  ],
+  [
+    "Panels",
+    [
+      ["shift+w", "resize the panels: ←/[ and →/] move the divider, tab switches panel, enter or esc saves"],
     ],
   ],
   [
@@ -64,21 +88,21 @@ export const HELP: readonly HelpGroup[] = [
     ],
   ],
   [
-    "Colours and marks",
-    [
-      ["● ○", "on / off"],
-      ["◆  blue bar", "set at this level"],
-      ["!  yellow bar", "needs review (!3: three below)"],
-      ["dim text", "where an inherited value comes from"],
-    ],
-  ],
-  [
     "Filter",
     [
       ["words", "match labels and ids"],
       ["key:value", "kind item group server namespace level agent state modified review source overridden active inactive unsupported codemode pinned execute can has id label updated team acked excluded tool"],
       ["! , sort:", "negate · or · sort by a key (text upstream tokens delta … are slower)"],
       ["item:perm tool:X", "permission rows of one tool (e.g. tool:shell)"],
+    ],
+  ],
+  [
+    "Colours and marks",
+    [
+      ["● ○", "on / off"],
+      ["◆  blue bar", "set at this level"],
+      ["!  yellow bar", "needs review (!3: three below)"],
+      ["dim text", "where an inherited value comes from"],
     ],
   ],
 ]

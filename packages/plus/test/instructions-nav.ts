@@ -144,9 +144,12 @@ export async function expand(fixture: TestFixture): Promise<void> {
 
 /** Select a category tab of the shown owner by its label. */
 export async function category(fixture: TestFixture, label: string): Promise<void> {
-  if (footer(fixture.captureCharFrame()).includes("tab list")) {
+  // The footer names where esc goes: "close" means the sidebar has the focus.
+  // Flush first so a focus change just dispatched is in the frame.
+  await fixture.flush()
+  if (footer(fixture.captureCharFrame()).includes("esc close")) {
     dispatch(fixture, "tab")
-    await fixture.waitForFrame((frame) => footer(frame).includes("tab sidebar"))
+    await fixture.waitForFrame((frame) => footer(frame).includes("esc sidebar"))
   }
   // Built-in labels come first, then user categories; cycle past both.
   for (let step = 0; step < 24; step++) {

@@ -24,6 +24,9 @@ export function captureRows(source: MemoInput, rows: readonly string[], mode: Cl
   if (roots.length === 0) return { refusal: "Select rows to copy or cut" }
   const fixed = roots.find((row) => row.address === undefined && folderIdOfRef(rowToken(materialize(row)) ?? "") === undefined && row.owner === undefined)
   if (fixed !== undefined) return { refusal: `"${fixed.label}" is a fixed navigation section; select its contents instead` }
+  // Pasting a cut owner would refuse anyway (it cannot move): say so now.
+  const owner = mode === "cut" ? roots.find((row) => (row.kind === "agent" || row.kind === "team") && row.owner !== undefined && row.address === undefined) : undefined
+  if (owner !== undefined) return { refusal: `"${owner.label}" cannot be cut: copy it (ctrl+c) to give another one its configuration, or cut its rows` }
   return { source: structuredClone(source), rows: roots.map((row) => row.id), mode }
 }
 
@@ -34,8 +37,23 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
   const source = buildTreeMemo(clipboard.mode === "cut" ? current : clipboard.source)
   const draft = { memo: current, layout: { folders: current.folders ?? [], orders: current.orders ?? [] }, rows: [] as string[] }
   const activatedOwners = new Set<string>()
+  // Ops and row lookups share one memo per draft state: rebuilding it for
+  // every pasted row made an agent's paste take most of a minute.
+  const memos = new WeakMap<MemoInput, Memo>()
+  const built = (): Memo => {
+    const cached = memos.get(draft.memo)
+    if (cached !== undefined) return cached
+    const memo = buildTreeMemo(draft.memo)
+    memos.set(draft.memo, memo)
+    return memo
+  }
   const apply = (result: OpResult): string | undefined => {
     if ("refusal" in result) return result.refusal
+    // An op that wrote nothing keeps the draft (and its built memo) as it is.
+    const kept = new Set(draft.memo.records)
+    const count = (type: string) => draft.memo.records.filter((record) => record.type === type).length
+    if (result.models === undefined && result.rowlinks === undefined && result.records.length === count("customization") && result.splits.length === count("split")
+      && [...result.records, ...result.splits].every((record) => kept.has(record))) return undefined
     draft.memo = { ...draft.memo, records: [
       ...draft.memo.records.filter((record) => record.type !== "customization" && record.type !== "split" && (result.models === undefined || record.type !== "model") && (result.rowlinks === undefined || record.type !== "rowlink")),
       ...result.records, ...result.splits, ...(result.models ?? []), ...(result.rowlinks ?? []),
@@ -47,18 +65,19 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     draft.memo = { ...draft.memo, ...next }
   }
   const maskLinks = (memo: Memo, root: Lazy) => {
-    const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink") }
+    const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink"), changed: false }
     for (const row of collectSkeleton([root])) {
       if (row.address === undefined) continue
       for (const link of rowlinkView(memo.ctx.scopes.rowlinks ?? [], memo.ctx.scopes, row.address, row.address)) {
         links.rows = writeRowlink(links.rows, row.address, { item: link.item, section: link.section }, { item: link.target, section: link.targetSection }, link.type, false, new Date().toISOString())
+        links.changed = true
       }
     }
-    draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
+    if (links.changed) draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
   }
   const copyLinks = (origin: Lazy, destination: Lazy): string | undefined => {
     if (destination.address === undefined) return "The link destination has no owner"
-    const memo = buildTreeMemo(draft.memo)
+    const memo = built()
     const rows = collectSkeleton([origin])
     const endpoint = (value: RowlinkEndpoint): RowlinkEndpoint | undefined => {
       const row = rows.find((row) => row.address?.item === value.item && row.address.section === value.section)
@@ -66,7 +85,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       const next = correspondingRow(source, origin, row, memo, destination)?.address
       return next === undefined ? undefined : { item: next.item, section: next.section }
     }
-    const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink") }
+    const links = { rows: draft.memo.records.filter((record): record is RowlinkRecord => record.type === "rowlink"), changed: false }
     const seen = new Set<string>()
     for (const row of rows) {
       if (row.address === undefined) continue
@@ -78,14 +97,15 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         const to = endpoint({ item: link.target, section: link.targetSection })
         if (from === undefined || to === undefined) return "The destination lacks a linked setting"
         links.rows = writeRowlink(links.rows, destination.address, from, to, link.type, link.enabled, new Date().toISOString())
+        links.changed = true
       }
     }
-    draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
+    if (links.changed) draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((record) => record.type !== "rowlink"), ...links.rows] }
     return undefined
   }
   const transfer = (id: string, into: string): string | undefined => {
     const origin = findLazy(source, id)
-    const memo = buildTreeMemo(draft.memo)
+    const memo = built()
     const path = lazyPath(memo, into)
     const target = path.at(-1)
     if (origin === undefined || target === undefined) return "A source or destination row no longer exists"
@@ -143,7 +163,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       const existing = new Set(collectSkeleton([target]).map((row) => row.id))
       const refusal = apply(addSection(draft.memo, into, origin.label, resolved.fullText ?? resolved.text, undefined, sourceSplit.kind === "heading"))
       if (refusal !== undefined) return refusal
-      const insertedMemo = buildTreeMemo(draft.memo)
+      const insertedMemo = built()
       const inserted = collectSkeleton([findLazy(insertedMemo, into)!]).find((row) => row.kind === "section" && row.address?.section !== null && !existing.has(row.id) && row.label === origin.label)
       if (inserted === undefined) return "The pasted section could not be identified"
       for (const row of collectSkeleton([origin])) {
@@ -162,7 +182,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       }
       if (clipboard.mode === "cut") {
         maskLinks(source, origin)
-        const current = buildTreeMemo(draft.memo)
+        const current = built()
         const root = lazyPath(current, id).find((row) => row.address?.item === origin.address!.item && row.address.section === null)
         if (root === undefined) return "The section's source document is unavailable"
         const whole = wholeOf(current, origin.address.level, origin.address.agent, item, origin.address.catalogue, rowTeamOf(origin.address))
@@ -187,9 +207,9 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       draft.rows.push(inserted.id)
       return undefined
     }
-    const sourceTab = lazyPath(source, id).findLast((row) => tabOfGroupId(row.id) !== undefined)
-    const destinationTab = path.findLast((row) => tabOfGroupId(row.id) !== undefined && tabOfGroupId(row.id) === (sourceTab === undefined ? undefined : tabOfGroupId(sourceTab.id)))
-      ?? collectSkeleton([target]).find((row) => tabOfGroupId(row.id) === (sourceTab === undefined ? undefined : tabOfGroupId(sourceTab.id)))
+    const sourceTab = lazyPath(source, id).findLast((row) => categoryOf(row.id) !== undefined)
+    const destinationTab = path.findLast((row) => categoryOf(row.id) !== undefined && categoryOf(row.id) === (sourceTab === undefined ? undefined : categoryOf(sourceTab.id)))
+      ?? collectSkeleton([target]).find((row) => categoryOf(row.id) === (sourceTab === undefined ? undefined : categoryOf(sourceTab.id)))
     if (origin.address === undefined) {
       if (destinationTab === undefined) return `The destination does not have ${sourceTab?.label ?? origin.label}`
       for (const child of origin.children()) {
@@ -198,7 +218,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       }
       return undefined
     }
-    if (destinationTab === undefined || sourceTab === undefined || tabOfGroupId(sourceTab.id) !== tabOfGroupId(destinationTab.id)) return `"${origin.label}" belongs in ${sourceTab?.label ?? "its own section"}`
+    if (destinationTab === undefined || sourceTab === undefined || categoryOf(sourceTab.id) !== categoryOf(destinationTab.id)) return `"${origin.label}" belongs in ${sourceTab?.label ?? "its own section"}`
     const destinationOwner = target.address ?? path.findLast((row) => row.owner !== undefined)?.owner
     if (destinationOwner !== undefined && !sameOwnerView(origin.address, { ...destinationOwner, item: origin.address.item, section: null })) {
       const rules = collectSkeleton([origin]).flatMap((row): RuleRecord[] => {
@@ -236,7 +256,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         updated: new Date().toISOString(),
       }
       draft.memo = { ...draft.memo, records: [...draft.memo.records.filter((row) => row.type !== "model" || !scopedTo(row, address) || !sameModelCandidate(row, model)), record] }
-      const next = collectSkeleton([findLazy(buildTreeMemo(draft.memo), destinationTab.id)!]).find((row) => row.address?.item === origin.address!.item)
+      const next = collectSkeleton([findLazy(built(), destinationTab.id)!]).find((row) => row.address?.item === origin.address!.item)
       if (next === undefined) return "The destination model could not be resolved"
       if (draft.rows.includes(next.id)) return `Several clipboard rows target the same model: ${origin.label}`
       if (origin.partial().active) {
@@ -262,7 +282,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     }
     const sourceItem = isControl(origin.address.item) ? controlItemFor(source.ctx.items, origin.address) : source.ctx.items.find((item) => item.id === origin.address!.item)
     const targetItem = target.address === undefined ? undefined : isControl(target.address.item) ? controlItemFor(memo.ctx.items, target.address) : memo.ctx.items.find((item) => item.id === target.address!.item)
-    const updatedMemo = buildTreeMemo(draft.memo)
+    const updatedMemo = built()
     const addressed = collectSkeleton([findLazy(updatedMemo, targetItem?.kind === "tool" && sourceItem?.kind !== "tool" ? target.id : destinationTab.id)!]).filter((row) => row.address?.section === null)
     const destinationRow = target.address !== undefined && sourceItem !== undefined && sourceItem.kind !== "tool" && targetItem?.kind === sourceItem.kind
       ? target : addressed.find((row) => row.address?.item === origin.address!.item || sourceItem?.kind === "param" && targetItem?.kind === "tool" && memo.ctx.items.some((item) => item.id === row.address?.item && item.kind === "param" && item.title === sourceItem.title))
@@ -293,7 +313,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
         const upstream = isControl(address.item) ? controlItemFor(source.ctx.items, address) : source.ctx.items.find((item) => item.id === address.item && (address.agent === null || applies(item, address.agent)))
         const item = upstream === undefined ? undefined : ruleItem(upstream, source.ctx.rules, source.ctx.scopes, address)
         if (item === undefined) return `"${row.label}" needs a specialized configuration transfer`
-        const nextMemo = buildTreeMemo(draft.memo)
+        const nextMemo = built()
         const root = findLazy(nextMemo, destinationRow.id)!
         const next = correspondingRow(source, origin, row, nextMemo, root)
         if (next === undefined) return `The destination lacks ${row.label}`
@@ -301,10 +321,10 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
           ? wholeOf(source, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
           : sectionResolveOf(source, address.level, address.agent, item, address.section, address.catalogue, rowTeamOf(address))
         if ((item.kind !== "perm" || isValueRow(item)) && row.actions.edit && next.actions.edit) {
-          const refusal = apply(saveText(draft.memo, next.id, resolved.fullText ?? resolved.text))
+          const refusal = apply(saveText(draft.memo, next.id, resolved.fullText ?? resolved.text, built()))
           if (refusal !== undefined) return refusal
           if (address.section === null && next.address !== undefined) {
-            const current = buildTreeMemo(draft.memo)
+            const current = built()
             const upstream = isControl(next.address.item) ? controlItemFor(current.ctx.items, next.address) : current.ctx.items.find((entry) => entry.id === next.address!.item)
             if (upstream === undefined) return `The destination lacks ${row.label}`
             draft.memo = { ...draft.memo, records: [
@@ -321,28 +341,30 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
           }
         }
         if (row.actions.toggle && next.actions.toggle) {
-          const refusal = apply(setEnabled(draft.memo, next.id, resolved.enabled))
+          const refusal = apply(setEnabled(draft.memo, next.id, resolved.enabled, built()))
           if (refusal !== undefined) return refusal
         }
         if (row.actions.pin && next.actions.pin) {
-          const refusal = apply(setPin(draft.memo, next.id, resolved.pinned))
+          const refusal = apply(setPin(draft.memo, next.id, resolved.pinned, built()))
           if (refusal !== undefined) return refusal
         }
         if (row.actions.requires && next.actions.requires) {
-          const refusal = apply(setRequires(draft.memo, next.id, resolved.requires?.ids ?? []))
+          const refusal = apply(setRequires(draft.memo, next.id, resolved.requires?.ids ?? [], built()))
           if (refusal !== undefined) return refusal
         }
       }
-      const linked = copyLinks(origin, findLazy(buildTreeMemo(draft.memo), destinationRow.id)!)
+      const linked = copyLinks(origin, findLazy(built(), destinationRow.id)!)
       if (linked !== undefined) return linked
     }
     if (origin.address.item.startsWith("tool:") && (target.id.includes(":codemode") || target.id.endsWith(":native"))) {
-      const exposure = collectSkeleton([findLazy(buildTreeMemo(draft.memo), destinationRow.id)!]).find((row) => row.address?.item.startsWith("toolmode:"))
+      const exposure = collectSkeleton([findLazy(built(), destinationRow.id)!]).find((row) => row.address?.item.startsWith("toolmode:"))
       if (exposure === undefined) return `"${origin.label}" cannot change exposure`
       const refusal = apply(saveText(draft.memo, exposure.id, target.id.includes(":codemode") ? "codemode" : "direct"))
       if (refusal !== undefined) return refusal
     }
-    if (folderIdOfRef(rowToken(materialize(target)) ?? "") !== undefined || target.id === destinationTab.id) {
+    // System (with its Base group) and Skills have no folders: a paste onto
+    // them only transfers configuration.
+    if (folderIdOfRef(rowToken(materialize(target)) ?? "") !== undefined || (target.id === destinationTab.id && !["system", "base", "skills"].includes(categoryOf(target.id)!))) {
       const moved = planRowMove(draft.memo, draft.layout, destinationRow.id, { into: target.id }, new Date().toISOString())
       if ("refusal" in moved) return moved.refusal
       layout(moved.layout)
@@ -363,4 +385,12 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     if (refusal !== undefined) return { refusal }
   }
   return draft
+}
+
+// The category a group row is: a layout tab, or an owner's Skills list (which
+// has no layout of its own, so tabOfGroupId does not name it). A folder named
+// like a category ("…:folder:…:system") is not one.
+function categoryOf(id: string): string | undefined {
+  if (!id.startsWith("group:") || id.includes(":folder:")) return undefined
+  return tabOfGroupId(id) ?? (id.endsWith(":skills") ? "skills" : undefined)
 }

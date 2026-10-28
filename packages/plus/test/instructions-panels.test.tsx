@@ -114,7 +114,7 @@ test("the wide layout renders both divider hit targets between fixed panes", asy
   const teams = frame.findIndex((line, y) => y > 1 && line.slice(0, 30).includes("Teams"))
   await fixture.mockMouse.click(frame[teams]!.indexOf("Teams") + 1, teams)
   await fixture.waitForFrame((entry) => selectedRow(entry).includes("Teams"))
-  expect(footer(fixture.captureCharFrame())).toContain("tab list")
+  expect(footer(fixture.captureCharFrame())).toContain("esc close")
 })
 
 test("a mouse drag moves each divider and the list absorbs the same delta", async () => {
@@ -393,7 +393,7 @@ test("resize mode coexists with Tab/Shift+Tab levels and E / ctrl+E", async () =
   await fixture.waitForFrame((frame) => frame.includes("▾ ● bash"))
   // Tab switches the pane, Shift+Tab the level.
   expect(dispatch(fixture, "tab")).toBe(true)
-  await fixture.waitForFrame((frame) => footer(frame).includes("tab list"))
+  await fixture.waitForFrame((frame) => footer(frame).includes("esc close"))
   expect(dispatch(fixture, "shift+tab")).toBe(true)
   await fixture.waitForFrame((frame) => breadcrumb(frame).trimStart().startsWith("Global"))
   expect(dispatch(fixture, "shift+tab")).toBe(true)

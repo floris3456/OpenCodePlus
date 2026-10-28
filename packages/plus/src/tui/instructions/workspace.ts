@@ -62,7 +62,7 @@ export function settingsTarget(node: Pick<TreeNode, "id" | "address">, hasExecut
 }
 
 /** A folder's name when `node` is one of its group rows (S1a), else undefined. */
-export function folderName(node: TreeNode | undefined): string | undefined {
+export function folderName(node: Pick<TreeNode, "kind" | "id" | "label"> | undefined): string | undefined {
   if (node?.kind !== "group" || !node.id.includes(":folder:")) return undefined
   return node.label
 }

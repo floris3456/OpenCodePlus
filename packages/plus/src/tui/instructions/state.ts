@@ -250,6 +250,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   async function clipboardOperation(action: "copy" | "cut" | "paste", node: TreeNode): Promise<boolean> {
     await awaitDrain()
     const previous = clipboard()
+    // A paste carries every row's configuration and can take a while (a whole agent).
+    if (action === "paste" && previous !== undefined) setStatus(`Pasting ${previous.rows.length} row(s)…`)
     try {
       const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
         action,
@@ -269,11 +271,41 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
         await refresh()
         const row = decoded.value.rows.at(-1)
         const memo = treeMemo()
-        if (row !== undefined && memo !== undefined) reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
+        // Pasted onto an agent or member, every row of it changed: stay on it.
+        if (row !== undefined && memo !== undefined && node.kind !== "agent" && node.kind !== "team") reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
       }
       if (decoded.value.clipboard !== undefined && decoded.value.mode !== undefined)
         setClipboard({ id: decoded.value.clipboard, mode: decoded.value.mode, rows: decoded.value.rows })
       setStatus(decoded.value.status)
+      return true
+    } catch (error) {
+      setStatus(errorMessage(error))
+      return false
+    }
+  }
+
+  // ctrl+d: copies of the rows, each right after its original; the last one
+  // becomes the cursor row. `name` names the copy of a single row.
+  async function duplicateRows(ids: readonly string[], name?: string): Promise<boolean> {
+    await awaitDrain()
+    setStatus(ids.length === 1 ? "Duplicating…" : `Duplicating ${ids.length} rows…`)
+    try {
+      const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
+        action: "duplicate", ids: [...ids], ...(name === undefined ? {} : { name }),
+      } }, { location: context.location })
+      if (disposed) return false
+      const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsClipboardOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
+      if (Option.isNone(decoded)) { setStatus("Unexpected duplicate response"); return false }
+      if ("error" in decoded.value) { setStatus(decoded.value.error.message); return false }
+      if (ids.length > 1) setSelection(new Set<string>())
+      await refresh()
+      const row = decoded.value.rows.at(-1)
+      const memo = treeMemo()
+      if (row !== undefined && memo !== undefined) reveal(lazyPath(memo, row).slice(0, -1).map((entry) => entry.id), row)
+      setStatus(decoded.value.status)
+      // A copy that is a new file reloads the screen once the host notices
+      // it, which clears the status line: the toast stays, as for a create.
+      context.ui.toast.show({ variant: "success", message: decoded.value.status })
       return true
     } catch (error) {
       setStatus(errorMessage(error))
@@ -1900,6 +1932,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       return pending?.mode === "cut" && memo !== undefined && lazyPath(memo, node.id).some((row) => pending.rows.includes(row.id))
     },
     clipboardOperation,
+    duplicateRows,
     cancelClipboard,
     setSelection,
     reflect,
