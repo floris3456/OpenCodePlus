@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { drain, enqueue, pending, queue } from "../../src/teams/merge.js"
 import type { MergeContext } from "../../src/teams/merge.js"
 import { create, load } from "../../src/teams/tasks.js"
@@ -10,6 +10,7 @@ import { list as listWorktrees } from "../../src/teams/worktree.js"
 import { saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
 import { execute, lastReceipt, stale } from "../../src/teams/checks.js"
+import { writeProjectChecks } from "../../src/teams/project-checks.js"
 
 let scratch = ""
 let stateDir = ""
@@ -36,6 +37,24 @@ async function makeParent(name: string): Promise<{ dir: string; head: string }> 
   const dir = join(scratch, `parent-${name}`)
   const branch = `parent-${name}`
   await git(repoRoot, ["worktree", "add", "-b", branch, dir, mainHead])
+  return { dir, head: await headOf(dir) }
+}
+
+/** Commit files in the fixture's main checkout, so a child's merge base is `main`. */
+async function commitMain(files: Record<string, string>, message: string): Promise<string> {
+  for (const [rel, content] of Object.entries(files)) {
+    await mkdir(dirname(join(repoRoot, rel)), { recursive: true })
+    await writeFile(join(repoRoot, rel), content)
+    await git(repoRoot, ["add", rel])
+  }
+  await git(repoRoot, ["commit", "-m", message])
+  return headOf(repoRoot)
+}
+
+/** A parent worktree on `base`, holding its own branch (the base a child forks from). */
+async function parentAt(name: string, base: string): Promise<{ dir: string; head: string }> {
+  const dir = join(scratch, `parent-${name}`)
+  await git(repoRoot, ["worktree", "add", "-b", `parent-${name}`, dir, base])
   return { dir, head: await headOf(dir) }
 }
 
@@ -354,6 +373,106 @@ describe("merge queue", () => {
     expect(await statusOf(parent.dir)).toBe("")
     const after = await listWorktrees(repoRoot)
     expect(after.length).toBe(before.length)
+  })
+
+  test("a landing never runs another run's change-scoped check; its own still judges it", async () => {
+    // The gate judges the change a run made: files changed since the fork from
+    // main. A later child's landing must not inherit an earlier child's gate.
+    const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const base = out("merge-base", "HEAD", "main")
+const changed = out("diff", "--name-only", "--no-renames", base, "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) {
+  console.error("gate-small: " + changed.length + " files changed since " + base.slice(0, 7) + ": " + changed.join(", "))
+  process.exit(1)
+}
+`
+    const behaviour = 'import { test, expect } from "bun:test"\ntest("parent contract", async () => expect(await Bun.file("README.md").text()).toBe("fixture\\n"))\n'
+    const base = await commitMain(
+      { "tools/teamgate/gate.ts": gate, "ok.test.ts": behaviour, ".gitignore": ".opencodeplus/\n" },
+      "test: change gate and behaviour check",
+    )
+    const size = { id: "size", argv: ["bun", "tools/teamgate/gate.ts"] }
+    const ok = { id: "ok", argv: ["bun", "test", "ok.test.ts"] }
+    await writeProjectChecks(repoRoot, {
+      version: 1,
+      checks: {
+        size: { argv: size.argv, description: "at most 1 file", scope: "change" },
+        ok: { argv: ok.argv, description: "parent contract" },
+      },
+    })
+
+    const parent = await parentAt("scoped", base)
+    const parentRun = "scoped-parent"
+    const firstRun = "scoped-first"
+    const secondRun = "scoped-second"
+    // A run stores its resolved commands, without the scope.
+    const first = await makeChild("scoped-first", base, { "first.txt": "first\n" }, "feat: first")
+    const second = await makeChild("scoped-second", base, { "second.txt": "second\n" }, "feat: second")
+    await commitFile(second.dir, "third.txt", "third\n", "feat: second again")
+    const secondHead = await headOf(second.dir)
+    await atomicJson(join(stateDir, "runs", firstRun, "checks.json"), [size, ok])
+    await atomicJson(join(stateDir, "runs", secondRun, "checks.json"), [ok])
+    await create(stateDir, secondRun, [{ id: secondRun, title: "Second", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["second.txt"], checks: [ok] }])
+    for (const [childRun, child, head] of [[firstRun, first, first.head], [secondRun, second, secondHead]] as const)
+      await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: head })
+
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.processed[0]).toMatchObject({ childRun: firstRun, state: "landed" })
+    expect(result.processed[0].skippedChecks).toBeUndefined()
+    // Before the fix this landing went red on the earlier child's size gate.
+    expect(result.processed[1]).toMatchObject({ childRun: secondRun, state: "landed", skippedChecks: [{ id: "size", runID: firstRun }] })
+    expect(result.processed[1].redChecks).toBeUndefined()
+    const landedHead = result.processed[1].landedHead!
+    expect(await lastReceipt(stateDir, secondRun, "ok", landedHead)).toMatchObject({ passed: true })
+    // The skipped gate left no receipt of its own for this child.
+    expect(await lastReceipt(stateDir, secondRun, "size")).toBeUndefined()
+    expect(await headOf(parent.dir)).toBe(landedHead)
+  })
+
+  test("the landing child's own change-scoped check still judges its change", async () => {
+    const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const base = out("merge-base", "HEAD", "main")
+const changed = out("diff", "--name-only", "--no-renames", base, "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) process.exit(1)
+`
+    const base = await commitMain({ "tools/teamgate/own-gate.ts": gate }, "test: own change gate")
+    const size = { id: "size", argv: ["bun", "tools/teamgate/own-gate.ts"] }
+    await writeProjectChecks(repoRoot, { version: 1, checks: { size: { argv: size.argv, scope: "change" } } })
+    const parent = await parentAt("own-scope", base)
+    const parentRun = "own-scope-parent"
+    const childRun = "own-scope-child"
+    // Two files: the child's own gate must fail on its own change.
+    const child = await makeChild("own-scope", base, { "one.txt": "one\n" }, "feat: one")
+    await commitFile(child.dir, "two.txt", "two\n", "feat: two")
+    const childHead = await headOf(child.dir)
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [size])
+    await create(stateDir, childRun, [{ id: childRun, title: "Own", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["one.txt"], checks: [size] }])
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.processed[0]).toMatchObject({ state: "red", redChecks: ["size"] })
+    expect(result.processed[0].skippedChecks).toBeUndefined()
+  })
+
+  test("an earlier child's behaviour check that a later child breaks still blocks it", async () => {
+    const behaviour = 'import { test, expect } from "bun:test"\ntest("parent contract", async () => expect(await Bun.file("README.md").text()).toBe("fixture\\n"))\n'
+    const base = await commitMain({ "contract.test.ts": behaviour }, "test: behaviour check")
+    const parent = await parentAt("behaviour", base)
+    const parentRun = "behaviour-parent"
+    const firstRun = "behaviour-first"
+    const secondRun = "behaviour-second"
+    const check = { id: "contract", argv: ["bun", "test", "contract.test.ts"] }
+    const first = await makeChild("behaviour-first", base, { "first.txt": "first\n" }, "feat: first")
+    const second = await makeChild("behaviour-second", base, { "README.md": "broken\n" }, "docs: second breaks contract")
+    await atomicJson(join(stateDir, "runs", firstRun, "checks.json"), [check])
+    await atomicJson(join(stateDir, "runs", secondRun, "checks.json"), [])
+    await create(stateDir, secondRun, [{ id: secondRun, title: "Second", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["README.md"], checks: [] }])
+    for (const [childRun, child] of [[firstRun, first], [secondRun, second]] as const)
+      await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.processed[0]).toMatchObject({ state: "landed" })
+    expect(result.processed[1]).toMatchObject({ state: "red", redChecks: ["contract"] })
   })
 
   test("enqueue guards: stale head, dirty parent, already landed", async () => {
