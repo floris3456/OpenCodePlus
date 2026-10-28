@@ -198,18 +198,18 @@ async function delegateTo(root: string, pointers: boolean) {
     role: "implementer",
     objective: "Read the binary asset and describe what its bytes start with.",
     deliverable: { kind: "report" },
-    scope: { paths: ["asset.bin"] },
+    scope: { paths: ["asset.bin", "notes.md"] },
     checks: [],
     effort: "small",
   })
   const result = await api.delegate(brief, caller)
   if (!result.ok) throw new Error(`delegate failed: ${JSON.stringify(result.error)}`)
-  return { value: result.value as { run: string }, sessions }
+  return { value: result.value as { run: string }, sessions, api }
 }
 
 test.skipIf(skip !== false)("delegate gives a pointers member pointer files, a record field and a Brief line", async () => {
   await withIsolatedTeamsRoot(async (root) => {
-    const { value, sessions } = await delegateTo(root, true)
+    const { value, sessions, api } = await delegateTo(root, true)
     const child = await loadRun(root, value.run)
     if (child === undefined) throw new Error("missing child run")
     expect(child.lfs).toBe("pointers")
@@ -222,6 +222,17 @@ test.skipIf(skip !== false)("delegate gives a pointers member pointer files, a r
     // The child reads exactly the file on disk, so the Brief it was prompted
     // with is the stored one.
     expect(sessions.prompted[0]?.text).toBe(brief)
+    // Plus's own team_checkpoint (stage, commit, read HEAD) leaves the pointer
+    // file alone and the tree clean: it never re-smudges.
+    await fs.writeFile(path.join(child.directory, "notes.md"), "pointer worktree note\n")
+    const checkpoint = await api.checkpoint(
+      { expectedHead: child.head, files: ["notes.md"], message: "docs: note in a pointer worktree" },
+      { sessionID: "ses_child_1", agent: child.role, run: child },
+    )
+    if (!checkpoint.ok) throw new Error(`checkpoint failed: ${JSON.stringify(checkpoint.error)}`)
+    expect(checkpoint.value).toMatchObject({ committed: true, subject: "docs: note in a pointer worktree" })
+    expect(await git(child.directory, ["status", "--porcelain"])).toBe("")
+    expect((await fs.readFile(path.join(child.directory, "asset.bin"), "utf8")).startsWith(POINTER)).toBe(true)
   })
 })
 
