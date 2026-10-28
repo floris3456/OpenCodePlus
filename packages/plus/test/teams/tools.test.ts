@@ -258,59 +258,11 @@ test("every team tool registers direct under namespace team with its permission"
   }
 })
 
-// Live b9-s12, b13-s13, b15-s12: a lead said it was waiting, then called team_status
-// for a child still working. Such a call gets a short answer and ends the turn.
-test("team_status and team_list answer briefly and end the turn while a child works and no news waits; otherwise they do not", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const directory = path.join(root, "repo")
-    await fs.mkdir(directory, { recursive: true })
-    await initRepo(directory)
-    const head = await git(directory, ["rev-parse", "HEAD"])
-    const parent: RunRecord = { ...makeRun("main-0123456789abcdef", "orchestrator", "ses_wait_parent"), kind: "main", directory, base: head, head, state: "working", children: ["w-0123456789abcdef"] }
-    const child: RunRecord = { ...makeRun("w-0123456789abcdef", "implementer", "ses_wait_child"), parent: parent.id, directory, base: head, head, state: "working" }
-    await saveRun(root, parent)
-    await saveRun(root, child)
-    // This step answers a settlement: the step before it, then the inbox delivery.
-    const created = testToolContext({ session: { context: () => Effect.succeed(history(["assistant", "inbox", "current"])) } })
-    const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState()), shippedTable)
-    try {
-      const caller = toolContext("ses_wait_parent", "orchestrator")
-      const call = async (name: string) => (await Effect.runPromise(need(created.tools, name).execute({}, caller))).endTurn
-      const brief = {
-        output: { waiting: [child.id], next: "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report." },
-        endTurn: "alone" as const,
-      }
-      for (const name of ["team_status", "team_list"])
-        expect(await Effect.runPromise(need(created.tools, name).execute({}, caller))).toEqual(brief)
-      // A status that names only runs still working is the same wait.
-      expect(await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))).toEqual(brief)
-      // One that names another run gets what it asked for, and is still a wait.
-      const named = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [parent.id, child.id] }, caller))
-      expect(named.endTurn).toBe("alone")
-      expect((named.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[parent.id, "working"], [child.id, "working"]])
-      await put(root, parent.id, { kind: "child.settled", from: child.id, text: "[team] settled" })
-      expect(await call("team_list")).toBeUndefined()
-      await take(root, parent.id, (await peek(root, parent.id)).map((item) => item.id))
-      const now = new Date().toISOString()
-      await saveRun(root, { ...child, state: "idle", attempts: [{ n: 1, state: "succeeded", trigger: "delegate", startedAt: now, endedAt: now }] })
-      expect(await call("team_status")).toBeUndefined()
-    } finally {
-      await Effect.runPromise(registration.dispose)
-    }
-  })
-})
-
-// Live theorysnap lead: after a compaction its first step called team_status
-// (and shell); the wait ended the turn and the owner's message went unanswered
-// until a child settled. A status call is a look in the first step after a
-// compaction and in a step that answers a person, a wait only after a settlement.
-for (const [label, kinds, wait] of [
-  ["the first step after a compaction", ["compaction", "current"], false],
-  ["a step that answers a person after a compaction", ["compaction", "assistant", "user", "current"], false],
-  ["a step that answers a settlement after a compaction", ["compaction", "assistant", "inbox", "current"], true],
-  ["a later step of the same turn", ["compaction", "user", "assistant", "current"], true],
-] as const) {
-  test(`team_status in ${label} is ${wait ? "a wait" : "a look"}`, async () => {
+// Owner, 2026-10-28: team_status and team_list never end the caller's turn,
+// whatever its children are doing and whatever the step answers; waiting is
+// the agent's own decision.
+for (const kinds of [["assistant", "inbox", "current"], ["compaction", "current"], ["compaction", "user", "assistant", "current"]] as const) {
+  test(`team_status and team_list answer in full and never end the turn (${kinds.join(", ")})`, async () => {
     await withIsolatedTeamsRoot(async (root) => {
       const directory = path.join(root, "repo")
       await fs.mkdir(directory, { recursive: true })
@@ -323,11 +275,14 @@ for (const [label, kinds, wait] of [
       const created = testToolContext({ session: { context: () => Effect.succeed(history(kinds)) } })
       const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState()), shippedTable)
       try {
-        const result = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, toolContext("ses_look_parent", "orchestrator")))
-        if (wait) expect(result).toMatchObject({ output: { waiting: [child.id] }, endTurn: "alone" })
-        if (!wait) {
+        const caller = toolContext("ses_look_parent", "orchestrator")
+        const status = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))
+        expect(status.endTurn).toBeUndefined()
+        expect((status.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[child.id, "working"]])
+        for (const name of ["team_status", "team_list"]) {
+          const result = await Effect.runPromise(need(created.tools, name).execute({}, caller))
           expect(result.endTurn).toBeUndefined()
-          expect((result.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[child.id, "working"]])
+          expect(result.output).not.toHaveProperty("waiting")
         }
       } finally {
         await Effect.runPromise(registration.dispose)
