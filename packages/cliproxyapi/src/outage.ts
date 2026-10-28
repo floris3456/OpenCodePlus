@@ -68,12 +68,7 @@ export function createOutageRetry(now: () => number) {
       // caller can move the work to another provider, and a reset inside that
       // window keeps whatever Core decided.
       const quota = quotaReset(event.error, now())
-      if (quota !== undefined && quota.untilMs - now() > QUOTA_RETRY_WINDOW) {
-        event.decision = { retry: false }
-        since.delete(event.sessionID)
-        extensions.delete(event.sessionID)
-        return
-      }
+      if (quota !== undefined && quota.untilMs - now() > QUOTA_RETRY_WINDOW) event.decision = { retry: false }
       since.delete(event.sessionID)
       extensions.delete(event.sessionID)
     },
