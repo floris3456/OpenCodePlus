@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import type { Job } from "../job.js"
 import type { Session } from "../session.js"
 import type { SessionMessage } from "./message.js"
+import type { SessionSchema } from "./schema.js"
 
 export const NO_TEXT = "Subagent completed without a text response."
 
@@ -18,22 +19,31 @@ export function text(message: SessionMessage.Info | undefined) {
   )
 }
 
+/** Why a restarted server could not resume a subagent, in the parent's words. */
+export function notResumed(reason: string, childID: SessionSchema.ID) {
+  return `Subagent stopped; it was not resumed after the server restart (${reason}). Resume it with subagent({ sessionID: "${childID}", ... }) if it should continue.`
+}
+
 export const deliver = Effect.fnUntraced(function* (
   sessions: Pick<Session.Interface, "synthetic">,
   jobs: Pick<Job.Interface, "completeBackground">,
   input: Pick<Job.Info, "status" | "output" | "error" | "notificationID"> & {
     recovery: Extract<Job.Recovery, { kind: "subagent" }>
     resume?: boolean
+    /** Restart recovery's reason for reporting a cancelled subagent it could not resume. */
+    notResumed?: string
   },
 ) {
   if (input.status === "running") return
   const recovery = input.recovery
   const text =
-    input.status === "completed"
-      ? (input.output ?? NO_TEXT)
-      : input.status === "error"
-        ? (input.error ?? "Subagent failed")
-        : "Subagent cancelled"
+    input.notResumed !== undefined
+      ? notResumed(input.notResumed, recovery.childSessionID)
+      : input.status === "completed"
+        ? (input.output ?? NO_TEXT)
+        : input.status === "error"
+          ? (input.error ?? "Subagent failed")
+          : "Subagent cancelled"
   yield* sessions.synthetic({
     ...(input.notificationID ? { id: input.notificationID } : {}),
     sessionID: recovery.parentSessionID,

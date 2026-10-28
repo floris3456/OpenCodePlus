@@ -141,27 +141,44 @@ export const layer = (options?: Options) =>
         suspended: ReadonlySet<SessionSchema.ID>,
       ) {
         const child = yield* store.get(recovery.childSessionID)
-        if (!child || child.parentID !== recovery.parentSessionID || !(yield* store.get(recovery.parentSessionID))) {
-          yield* jobs.completeBackground(background.notificationID)
-          return
-        }
+        const parent = yield* store.get(recovery.parentSessionID)
 
-        const notify = Effect.fnUntraced(function* (result: Pick<Job.Background, "status" | "output" | "error">) {
+        const notify = Effect.fnUntraced(function* (
+          result: Pick<Job.Background, "status" | "output" | "error">,
+          notResumed?: string,
+        ) {
           yield* SubagentCompletion.deliver(sessions, jobs, {
             ...result,
             recovery,
             notificationID: background.notificationID,
             resume: suspended.has(recovery.parentSessionID) ? false : undefined,
+            ...(notResumed === undefined ? {} : { notResumed }),
           }).pipe(Effect.orDie)
         })
 
+        // Nobody can be told without a parent; otherwise say why the child is not coming back.
+        if (!parent) {
+          yield* jobs.completeBackground(background.notificationID)
+          return
+        }
+        if (!child || child.parentID !== recovery.parentSessionID) {
+          yield* notify({ status: "cancelled" }, "its child session is gone")
+          return
+        }
+
         if (background.status !== "running") {
+          // The record only says a stop happened, not who asked for it, so a cancelled
+          // record keeps the deliberate-cancel wording: recovery cannot claim a restart
+          // caused it when a user stop writes the same status.
           yield* notify(background)
           return
         }
         if (yield* execution.isActive(recovery.childSessionID)) return
         if (!(yield* prepareResume(recovery.childSessionID))) {
-          yield* notify({ status: "error", error: RESUME_EXHAUSTED.message })
+          yield* notify(
+            { status: "error", error: RESUME_EXHAUSTED.message },
+            "it used up its automatic resume budget: execution was interrupted repeatedly and will not be resumed automatically",
+          )
           return
         }
 
@@ -192,7 +209,19 @@ export const layer = (options?: Options) =>
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
           const active = yield* execution.active
-          const pending = yield* jobs.pendingBackground
+          // A subagent record can read cancelled although its child was only cut by the
+          // shutdown: a deliberate stop releases the child's claim with its terminal event,
+          // so a child that still holds its claim was mid-turn when the process stopped and
+          // is resumed like a running one (theorysnap 2026-10-28: four restarts reported
+          // running background subagents as cancelled and nothing resumed them).
+          const claimed = new Set(yield* store.listSuspendedChildren())
+          const pending = (yield* jobs.pendingBackground).map((background) =>
+            background.recovery.kind === "subagent" &&
+            background.status === "cancelled" &&
+            claimed.has(background.recovery.childSessionID)
+              ? { ...background, status: "running" as const }
+              : background,
+          )
           const children = pending.flatMap((background) =>
             background.status === "running" && background.recovery.kind === "subagent"
               ? [background.recovery.childSessionID]
