@@ -3105,7 +3105,7 @@ function duplicateFolder(api: PlusApi, snapshot: Plus.Snapshot, memo: MemoInput,
     if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: `${written.error.code}: ${written.error.message}` }))
     const stats = { copied: 0, skipped: new Map<string, number>() }
     yield* copyFolderRows(api, source.row, row, updated, actor, stats)
-    const reasons = new Map([["tool row", "they exist once per agent"], ["parameter row", "they exist once per agent"], ["rule row", "they exist once per agent"], ["model row", "they exist once per agent"], ["folder", "its rows cannot be copied"]])
+    const reasons = new Map([["tool row", "they exist once per agent"], ["parameter row", "they exist once per agent"], ["rule row", "they exist once per agent"], ["model row", "they exist once per agent"]])
     const skipped = [...stats.skipped].map(([what, count]) => `${count} ${what}${count === 1 ? "" : "s"} skipped${reasons.get(what) === undefined ? "" : ` (${reasons.get(what)})`}`)
     const status = `Duplicated folder "${source.name}" as "${added.name}": ${stats.copied === 0 ? "empty" : `${stats.copied} row${stats.copied === 1 ? "" : "s"} copied`}${skipped.length === 0 ? "" : `, ${skipped.join(", ")}`}`
     return { row, status }
@@ -3132,6 +3132,7 @@ function copyFolderRows(api: PlusApi, sourceFolder: string, destination: string,
           target: made.target, status: `Created folder "${inside.name}"`, actor,
         }))
         if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: `${written.error.code}: ${written.error.message}` }))
+        stats.copied += 1
         yield* copyFolderRows(api, child.id, `${inside.owner}:folder:${inside.id}`, updated, actor, stats)
         continue
       }

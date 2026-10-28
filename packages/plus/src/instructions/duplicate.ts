@@ -189,9 +189,13 @@ export function materializedOwnerRecords(
       continue
     }
     const resolved = wholeOf(memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
-    const text = item.kind === "perm" && !isValueRow(item) ? undefined : row.actions.edit ? resolved.fullText ?? resolved.text : undefined
-    const state = row.actions.toggle ? (resolved.enabled ? "on" as const : "off" as const) : undefined
-    const pin = row.actions.pin ? resolved.pinned : undefined
+    // Only values the copy would not resolve on its own: a value still coming
+    // from upstream needs no record (the copy reads it too), and skipping it
+    // keeps a copy's store at the size of what actually differs.
+    const own = resolved.fullText ?? resolved.text
+    const text = item.kind === "perm" && !isValueRow(item) ? undefined : row.actions.edit && resolved.textFrom.kind !== "upstream" ? own : undefined
+    const state = row.actions.toggle && resolved.from.kind !== "upstream" ? (resolved.enabled ? "on" as const : "off" as const) : undefined
+    const pin = row.actions.pin && resolved.pinFrom.kind !== "upstream" ? resolved.pinned : undefined
     if (text !== undefined || state !== undefined || pin !== undefined)
       out.push({
         type: "customization", ...at, item: address.item, section: null,
