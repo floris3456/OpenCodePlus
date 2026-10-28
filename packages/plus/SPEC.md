@@ -1734,6 +1734,25 @@ own failure at the rebased tip refuses the landing. Other red checks run at
 the parent's HEAD too: only a new failure refuses; pre-existing failures
 appear in `stillRed` with a note on the landed result. Passing parent checks,
 including aliases of a deduplicated command, keep receipts at the landed HEAD.
+
+A project check may declare `"scope": "change"` in `.opencodeplus/checks.json`
+(`teams/project-checks.ts`): it judges the change the run it is assigned to
+made — a size, budget or anti-mess gate — where the default (absent or
+`"tree"`) judges the code. A run stores only its resolved commands, so scope
+is decided at landing time by `isChangeScoped(check, project)`, which matches
+the project's current file by cwd and argv (a `{path}` element matches any
+value); runs delegated before the field existed are therefore covered too.
+`process()` skips a change-scoped check for every source but the landing
+child — the parent's and earlier landed children's gates judged a different
+change, and a gate can pass there while failing here for no reason of this
+landing. The landing child's own change-scoped checks still run on the
+rebased commits, where the gate measures the child's own change. Skipped
+checks are recorded as `skippedChecks` (`{id, runID}`) on the merge entry
+only when non-empty, and named in the landed or red answer's `note`; a
+skipped parent check simply keeps no receipt (the parent's own finish runs
+it), so `copyReceipts` is unchanged. Behaviour checks of earlier children
+still run and still compare against the parent's HEAD.
+
 Receipts record `measuredTree` from tracked and untracked, non-ignored files without
 changing the real index; finish on a clean worktree and landing reuse passing
 same-definition, same-tree proof, labelled `reused` with its original `at` time.

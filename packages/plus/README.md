@@ -315,8 +315,14 @@ protected state no run may checkpoint):
   "setup": { "argv": ["uv", "sync", "--frozen"] },
   "checks": {
     "unit": { "argv": ["uv", "run", "pytest"], "description": "all tests" },
-    "test-file": { "argv": ["uv", "run", "pytest", "{path}"], "description": "one file" } } }
+    "test-file": { "argv": ["uv", "run", "pytest", "{path}"], "description": "one file" },
+    "gate-small": { "argv": ["python3", "tools/teamgate/gate.py", "--budget", "small"], "scope": "change" } } }
 ```
+
+`scope` says what a check judges. `"change"` is a size, budget or anti-mess
+gate: it judges the change the run it is assigned to made, so a landing never
+runs it for another run (see [Integration checks](#integration-checks)). Absent
+or `"tree"` (the default) is a check of the code — tests, lint, repo checks.
 
 A delegator gives a check by name (`{id:"unit"}`), with `path` when the
 check takes `{path}` (`{id:"auth", use:"test-file", path:"tests/test_auth.py"}`;
@@ -486,8 +492,18 @@ own Brief checks (a user chat has none). Identical commands with the same
 working directory run once. Landed children come from the merge queue;
 there is no check list for the lead to maintain.
 
-The landing child's checks must pass on the rebased tip. Other failing checks
-run again at the parent's HEAD: new failures block; failures there too are
+A check a project declares with `"scope": "change"` (see **Project checks**)
+judges the change the run it is assigned to made — a size, budget or anti-mess
+gate — not the code. A landing does not run such a check for the parent or for
+an earlier landed child: their change is a different one, so it says nothing
+about this landing (and used to turn it red). The landing child's own
+change-scoped checks still run on the rebased commits, where the gate measures
+the child's own change. The checks not run are named in `skippedChecks` and in
+the answer's `note`.
+
+Among the checks that do run, the landing child's checks must pass on the
+rebased tip. Other failing checks run again at the parent's HEAD: new
+failures block; failures there too are
 reported as `stillRed` and do not block. Passing receipts remain available at
 the new HEAD for the parent's finish.
 Finish and landing reuse a passing receipt with the same check definition and

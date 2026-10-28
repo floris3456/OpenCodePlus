@@ -9,6 +9,7 @@ import { loadRun } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import { isExpectedHead, PATH_LIST_LIMIT, pathList, toolError } from "./schema.js"
 import type { Check, MergeState } from "./schema.js"
+import { isChangeScoped, readProjectChecks } from "./project-checks.js"
 import { errCode, io } from "./io.js"
 
 export interface MergeEntry {
@@ -26,6 +27,12 @@ export interface MergeEntry {
   /** Other assigned checks that already fail without this landing. */
   stillRed?: string[]
   reusedChecks?: { id: string; reused: true; at: number }[]
+  /**
+   * Checks of the parent or of an earlier landed child that this landing did
+   * not run because they judge their own run's change (a size, budget or
+   * anti-mess gate), not the code.
+   */
+  skippedChecks?: { id: string; runID: string }[]
   landedHead?: string
   reworkTask?: string
   at: string
@@ -344,6 +351,9 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
       // The queue already records which children landed; checks need no second
       // registry. Group by command AND directory, retaining child ownership.
       const landed = yield* io(() => queue(root, entry.parentRun))
+      // Whether a check judges its own run's change comes from the project's
+      // CURRENT checks.json: a run stores only its resolved commands.
+      const project = yield* io(() => readProjectChecks(ctx.parentWorktree).catch(() => undefined))
       const sources = yield* io(() =>
         Promise.all(
           [...new Set([entry.childRun, ...landed.filter((item) => item.state === "landed").map((item) => item.childRun)])].map(async (runID) => ({
@@ -353,8 +363,17 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         ),
       )
       const groups = new Map<string, { check: Check; runID: string; own: boolean; bindings: { check: Check; runID: string }[] }>()
+      const skipped: Array<{ check: Check; runID: string }> = []
       for (const source of [{ runID: entry.parentRun, checks: ctx.checks }, ...sources]) {
         for (const check of source.checks) {
+          // A size, budget or anti-mess gate judges the change the run it is
+          // assigned to made. Every source but the landing child made a
+          // different change, so running it here would judge the wrong one
+          // (and go red for a change this child never made).
+          if (source.runID !== entry.childRun && isChangeScoped(check, project)) {
+            skipped.push({ check, runID: source.runID })
+            continue
+          }
           const key = commandKey(check)
           const previous = groups.get(key)
           groups.set(key, {
@@ -365,7 +384,10 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           })
         }
       }
-      let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso() }
+      // The same command may still run as the landing child's own check (it is
+      // then in groups): it is not "not run", so it is no longer reported.
+      const skippedChecks = skipped.filter((item) => !groups.has(commandKey(item.check))).map((item) => ({ id: item.check.id, runID: item.runID }))
+      let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso(), ...(skippedChecks.length === 0 ? {} : { skippedChecks }) }
       yield* io(() => saveEntry(root, cur))
       const tempDir = tempDirFor(ctx, entry.parentRun, entry.id)
       yield* io(() => withRepoLock(root, ctx, () => git(ctx.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "add", "--detach", tempDir, entry.childHead])))

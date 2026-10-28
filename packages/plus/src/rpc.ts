@@ -1449,6 +1449,8 @@ export const ProjectCheckEntry = Schema.Struct({
   argv: Schema.Array(Schema.String),
   cwd: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
+  /** "change": judges the run's own change, not the code. */
+  scope: Schema.optionalKey(Schema.Literals(["tree", "change"])),
   source: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "Plus.ProjectCheckEntry" })
 

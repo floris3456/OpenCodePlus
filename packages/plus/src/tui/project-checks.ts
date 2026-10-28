@@ -11,6 +11,7 @@ type Entry = {
   readonly argv: readonly string[]
   readonly cwd?: string
   readonly description?: string
+  readonly scope?: "tree" | "change"
   readonly source?: string
 }
 
