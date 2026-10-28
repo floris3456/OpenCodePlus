@@ -162,7 +162,7 @@ Texts compare without their final newline, and units without trailing whitespace
 | rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ \`keywords\`, \`message\`, \`level\`, \`agent\`) |
 | folder | \`name\`, \`id\` (the tab or folder row) |
 
-\`create({ kind: "instruction" })\` fails with \`instruction.disabled\`. \`delete({ id, confirm: true })\` deletes a user-owned row (agent, team, member, file, entry, user preset, custom rule, folder); a preset still linked is refused.
+\`create({ kind: "instruction" })\` fails with \`instruction.disabled\`. A skill body may carry its own frontmatter: it is merged into the one block the file needs, and a \`name\` there must equal the skill's name; a project skill is in the tree as soon as the call returns. \`delete({ id, confirm: true })\` deletes a user-owned row (agent, team, member, file, entry, user preset, custom rule, folder); a preset still linked is refused.
 
 ## CLI
 

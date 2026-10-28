@@ -2600,7 +2600,12 @@ export interface DeleteInput extends Rows { readonly confirm: true }
   requested level. A create whose row
   cannot be found fails with `create.failed` and does not invent an id; file-
   derived rows (skills, MCP servers) are given a short window for the host's
-  watcher to publish them before that failure. `create` takes an optional
+  watcher to publish them before that failure. A project skill's window is a
+  forced config reload, so the host rescans `<project>/.opencode/skill` and the
+  row is there when the call returns. A skill `body` may itself begin with a
+  frontmatter block: it is merged into the one block the file needs (its keys
+  kept, a missing `name` or `description` added, and a `name` that differs from
+  the skill's refused as `skill.invalid` before anything is written). `create` takes an optional
   `catalogue` (`agents|teams`, default `agents`) that picks which catalogue a
   shared (`agent: null`) `model` or `rule` lands in; `base`, `instruction` and
   `mcp` create one file both catalogues list, so `catalogue` does not change
