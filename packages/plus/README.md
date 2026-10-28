@@ -624,7 +624,26 @@ retried … (last: …)` before `next:` when the run recovered.
   (`notified` on the attempt). An idle parent is prompted with it now; a
   working parent gets it through its own idle handoff. When that parent itself
   stopped the child, the no-report settlement says nothing is needed and
-  `team_followup` resumes it with its context.
+  `team_followup` resumes it with its context. `notified` is written only after
+  the item is in the parent's inbox: a failed write leaves the attempt open so
+  the next idle retries, and a dead or terminal parent records `notifyError`
+  (`parent <id> is <state>`) on the attempt, which `team_status` shows.
+- An attempt that settles without a report (`no_report`, `failed`, `interrupted`,
+  or a session that does not come back) saves its worktree's uncommitted work
+  first: `<root>/runs/<run>/uncommitted-<n>.patch` holds `git diff --binary HEAD`
+  plus one `--no-index` diff per untracked file (skipping `node_modules/`, files
+  over 5 MB, and everything past a 50 MB cap, each listed as skipped). The
+  settlement ends with `Uncommitted work saved: <file> (<n> files, <bytes> bytes)`,
+  the same object is `patch` on `team_status`, and the worktree and index are
+  read, never changed: apply it in a worktree with `git apply --index <file>`.
+  A clean worktree saves nothing and says nothing.
+- One message may carry several inbox items. Settlements come first, in the
+  order they arrived, then budget notices and prompts; when it holds more than
+  one item it opens with `[team] <k> items:` and one summary per item, so a
+  settlement is never hidden behind a notice.
+- Inbox items left pending by a restart are delivered by the first sweep pass
+  after the plugin starts, for every non-terminal run that has some; the usual
+  guards still apply (a busy parent gets them at its next idle).
 - The Brief a child receives (`brief.ts`) has no empty sections; says what
   done means for its deliverable; marks a read-only task as such; states the
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
