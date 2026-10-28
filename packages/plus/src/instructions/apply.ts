@@ -61,6 +61,7 @@ import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
+import { installToolOutputCap, toolOutputCap } from "./tool-output-cap.js"
 import { isAttentionRow, type AttentionRow } from "../attention-settings.js"
 import { runPublish } from "./publish-runtime.js"
 import type { OrderRecord } from "./folders.js"
@@ -274,6 +275,12 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
       if (reg !== undefined) installed.push(reg)
     }
 
+    const toolCaps = toolOutputCapsOf(input)
+    if (toolCaps.size > 0) {
+      const reg = await installToolOutputCap(ctx, toolCaps)
+      if (reg !== undefined) installed.push(reg)
+    }
+
     const ctlPlans = input.deferAgentControls ? [] : controlPlans(input)
     if (ctlPlans.length > 0) {
       const reg = await applyControlsWithPlans(ctx, ctlPlans)
@@ -455,7 +462,16 @@ export async function applyPublishParts(
     agentReload = true
   }
 
-  // 8. teamFiles
+  // 8. tool-result cap
+  const toolCaps = toolOutputCapsOf(input.applyInput)
+  const toolCapsFp = JSON.stringify([...toolCaps].sort((left, right) => (left[0] < right[0] ? -1 : 1)))
+  if (toolCapsFp !== state.appliedParts.get("toolOutput")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("toolOutput")?.registrations ?? []))
+    const reg = toolCaps.size === 0 ? undefined : await installToolOutputCap(ctx, toolCaps)
+    state.appliedParts.set("toolOutput", { fingerprint: toolCapsFp, registrations: reg === undefined ? [] : [reg] })
+  }
+
+  // 9. teamFiles
   const filePlans = await teamFilePlans(input.fileAgents ?? [], input.teamRoleOverrides, input.specialRoleOverrides)
   const fileFp = JSON.stringify(filePlans)
   const installedFileIds: string[] = filePlans.agents.map((a: { id: string }) => a.id)
@@ -473,7 +489,7 @@ export async function applyPublishParts(
     agentReload = true
   }
 
-  // 9. teamBuiltin
+  // 10. teamBuiltin
   const builtinPlans = teamBuiltinPlans(input.builtinWinners ?? [], input.builtins ?? [], input.teamRoleOverrides)
   const builtinFp = JSON.stringify(builtinPlans)
   const installedBuiltinIds: string[] = builtinPlans.map((a: { id: string }) => a.id)
@@ -508,7 +524,8 @@ export async function applyPublishParts(
 export function controlPlans(input: ApplyInput): readonly { agent: string; rows: readonly { id: string; text: string; enabled: boolean }[] }[] {
   return input.agents.flatMap((agent) => {
     // Notification rows change no agent field: Plus reads them itself (attentionRowsOf).
-    const rows = input.items.filter((item) => isControl(item.id) && !isAttentionRow(item.id) && applies(item, agent.id))
+    // The tool-result cap is Plus's too (toolOutputCapsOf): no agent field carries it.
+    const rows = input.items.filter((item) => isControl(item.id) && !isAttentionRow(item.id) && item.id !== "setting:tool-output" && applies(item, agent.id))
     const unique = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
       const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
       if (item === undefined) return []
@@ -537,6 +554,24 @@ export function attentionRowsOf(input: ApplyInput): ReadonlyMap<string, Readonly
         return text === "" ? [] : [[id, text] as const]
       })
       return [agent.id, Object.fromEntries(texts)] as const
+    }),
+  )
+}
+
+/**
+ * Every agent's resolved tool-result cap in tokens, absent when it has none.
+ * Like attention rows this changes no agent field: Plus's own hook reads it
+ * (tool-output-cap.ts). A team member with an empty row takes the member
+ * default; any other agent with an empty row has no cap.
+ */
+export function toolOutputCapsOf(input: ApplyInput): ReadonlyMap<string, number> {
+  return new Map(
+    input.agents.flatMap((agent) => {
+      const rows = input.items.filter((item) => item.id === "setting:tool-output" && applies(item, agent.id))
+      const item = controlItemFor(rows, { agent: agent.id, item: "setting:tool-output", team: agent.team })
+      if (item === undefined) return []
+      const cap = toolOutputCap(resolvedFor(item, agent, input, gateFor(input, agent)).assembled, agent.team !== undefined)
+      return cap === undefined ? [] : [[agent.id, cap] as const]
     }),
   )
 }

@@ -152,7 +152,7 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 
 Agent/member rows also accept `state` and `mode` edits. Their `setting:*` and
 `compaction:*` rows reuse scoped customization records; resetting the entity
-clears only those nine controls. See [Agent controls](agent-controls.md) for
+clears only those ten controls. See [Agent controls](agent-controls.md) for
 scope, inheritance, remote-compaction behavior, and examples. The canonical
 control IDs and validation live in
 `packages/plus/src/instructions/agent-controls.ts`.

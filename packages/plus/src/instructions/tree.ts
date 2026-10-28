@@ -2115,6 +2115,8 @@ export function controlValue(item: string, text: string, enabled: boolean): stri
   if (item === "compaction:model") return "Inherited model"
   if (item === "compaction:instructions") return "Empty prompt"
   if (item === "setting:steps") return "Unlimited"
+  // Empty is a value here, not "not set": it means the member default or no cap.
+  if (item === "setting:tool-output") return "Default"
   return "Not set"
 }
 

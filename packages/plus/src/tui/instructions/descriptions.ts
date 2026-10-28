@@ -99,7 +99,7 @@ function presetOriginDetail(catalogue: Catalogue, origin: Origin): string {
 function sharedDetail(catalogue: Catalogue, category: string): string {
   const noun = catalogue === "agents" ? "stand-alone agent" : "team member"
   if (category === "settings")
-    return `Settings shared by every ${noun} unless a more specific row overrides them: Enabled, Mode, Description, Hidden, Color and Steps.`
+    return `Settings shared by every ${noun} unless a more specific row overrides them: Enabled, Mode, Description, Hidden, Color, Steps and Tool result cap.`
   if (category === "models")
     return `Model candidates shared by every ${noun}, unioned down each one's chain and grouped by provider, then AI lab. The first active row down the chain wins, else the upstream model.`
   if (category === "compaction")
@@ -179,7 +179,7 @@ function ownerCategoryDetail(part: OwnerGroup): string | undefined {
   if (part.tail.length > 0) return undefined
   const subject = subjectOf(part)
   if (part.category === "settings")
-    return `${capitalize(subject)}'s settings: Enabled, Mode, Description, Hidden, Color, Steps and Notifications. Space toggles Enabled; enter edits a value.`
+    return `${capitalize(subject)}'s settings: Enabled, Mode, Description, Hidden, Color, Steps, Tool result cap and Notifications. Space toggles Enabled; enter edits a value.`
   if (part.category === "notifications")
     return `Notifications and sounds for ${subject}'s chats: each event's desktop notification and sound, and how many levels of subagents and team members raise "done". Empty rows follow Settings › Notifications; enter changes a row, r returns it to Settings.`
   if (part.category === "models")

@@ -167,6 +167,7 @@ export function fitHints(hints: readonly (readonly [string, string])[], width: n
 
 function controlHelp(item: string | undefined): string {
   if (item === "setting:steps") return "Positive whole number; empty means unlimited"
+  if (item === "setting:tool-output") return "Tokens; empty = 10000 for team members, off = no cap"
   if (item === "setting:color") return "#RRGGBB; empty clears the color"
   if (item === "compaction:model") return "provider/model#variant; empty inherits"
   return "Empty clears it"
