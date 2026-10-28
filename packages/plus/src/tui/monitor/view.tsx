@@ -50,6 +50,8 @@ const LIVE_FOR_MS = 60_000
 
 export function refreshInterval(report: Plus.MonitorReport | undefined): number {
   if (report === undefined) return REFRESH_MS
+  // A rewrite of the ledger file is short: ask again promptly rather than at idle pace.
+  if (report.compacting === true) return REFRESH_MS
   // Take the newest timestamp available anywhere: the newest tool feed entry,
   // the last (newest) request, or the newest ping. `requests` is oldest-first,
   // so its newest row is the last one. Reading only the first request would
@@ -474,9 +476,21 @@ export function MonitorView(props: MonitorViewProps) {
     }
     setDrills((stack) => (stack.length === 0 ? [drill] : [...stack.slice(0, -1), { ...stack.at(-1)!, ...drill }]))
   }
-  const checklistFlight = { generation: 0 }
+  const checklistShown = () => props.full && tab() === "sessions" && props.active()
+  // A load for changed inputs supersedes the answers still out. A poll never
+  // does: while one is out it waits for it and asks once more, so an answer
+  // slower than the poll interval is still shown.
+  const checklistFlight = { generation: 0, out: 0, again: false }
+  const pollChecklist = () => {
+    if (checklistFlight.out > 0) {
+      checklistFlight.again = true
+      return
+    }
+    void loadChecklist()
+  }
   const loadChecklist = (expand: readonly string[] = []) => {
     const generation = ++checklistFlight.generation
+    checklistFlight.out++
     const query = currentQuery()
     const chat = props.sessionID()
     return plus["monitor.sessions"](
@@ -505,17 +519,25 @@ export function MonitorView(props: MonitorViewProps) {
         setFailure(error instanceof Error ? error.message : String(error))
         return undefined
       },
-    )
+    ).finally(() => {
+      checklistFlight.out--
+      if (checklistFlight.out > 0 || !checklistFlight.again) return
+      checklistFlight.again = false
+      if (checklistShown()) void loadChecklist()
+    })
   }
   createEffect(() => {
-    if (!props.full || tab() !== "sessions" || !props.active()) return
+    if (!checklistShown()) return
     allSessions()
     expanded()
     treeOffset()
     settings().window
     props.sessionID()
     untrack(() => void loadChecklist())
-    const timer = setInterval(() => void loadChecklist(), pace())
+  })
+  createEffect(() => {
+    if (!checklistShown()) return
+    const timer = setInterval(pollChecklist, pace())
     onCleanup(() => clearInterval(timer))
   })
   /** Space: check or uncheck a whole tree, opening it first so every session in it is known. */
@@ -1284,8 +1306,12 @@ export function MonitorView(props: MonitorViewProps) {
           {(message) => <text fg={theme().text.feedback.error.base}>{`tools unavailable: ${message()}`}</text>}
         </Show>
         <Show
-          when={report()}
-          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading…" : ""}</text>}
+          when={report()?.compacting === true ? undefined : report()}
+          fallback={
+            <text fg={theme().text.muted}>
+              {failure() !== undefined ? "" : report()?.compacting === true ? "Compacting the Monitor ledger…" : "Loading…"}
+            </text>
+          }
         >
           {(current) => (
             <box flexDirection="column" flexShrink={0}>
@@ -1383,7 +1409,7 @@ export function MonitorView(props: MonitorViewProps) {
       <Show when={tab() === "cache" && report()?.requestPage}>
         {(page) => (
           <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
-            {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
+            {`${page().returned}/${page().total} requests${(report()?.cachePending ?? 0) > 0 ? ` · ${report()?.cachePending} not analyzed yet` : ""} · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
           </text>
         )}
       </Show>
@@ -1443,8 +1469,16 @@ export function MonitorView(props: MonitorViewProps) {
       {/* Tab Contents or Help */}
       <Show when={!helpOpen()} fallback={<MonitorHelp context={props.context} onClose={() => setHelpOpen(false)} />}>
         <Show
-          when={report()}
-          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading monitor data…" : ""}</text>}
+          when={report()?.compacting === true ? undefined : report()}
+          fallback={
+            <text fg={theme().text.muted}>
+              {failure() !== undefined
+                ? ""
+                : report()?.compacting === true
+                  ? "Compacting the Monitor ledger… the file is being rewritten, nothing is lost"
+                  : "Loading monitor data…"}
+            </text>
+          }
         >
           {(_current) => (
             <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>

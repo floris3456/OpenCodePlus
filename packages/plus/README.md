@@ -875,10 +875,10 @@ or polling it never replays or diffs session history.
   labelled as such.
 - RPCs: `monitor.cache` (cache results), `monitor.prompt` (a request's rows; a
   poll naming the request already shown answers `unchanged` without rows) and
-  `monitor.query` (Tools/Sessions; the agent tool's overview/steps views still
-  use the history analysis, and refuse with `monitor.too_large` when they would
-  first fold more than 2,000 requests of sessions with no kept analysis: that
-  fold runs on the service's one thread). Totals are index-only reads of numeric columns on
+  `monitor.query` (every view reads saved results: each request's result, each
+  cache write's unread tokens once its lifetime ends, and each request's changed
+  prompt segments; no query folds a session's history, and `analysisPending`
+  counts what the background backfill has not saved yet). Totals are index-only reads of numeric columns on
   `cache_result`; an unchanged ledger answers a repeated read from memory. A
   read first saves the few results of just-ended requests; a larger historical
   backlog is filled in the background with a visible pending count. Old sent

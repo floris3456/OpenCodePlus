@@ -30,7 +30,7 @@ import { listOps, runOp, toolRegistry, withCliActor } from "./instructions-cli.j
 import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchTools, retireSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
-import { buildRunTree, byDirectory, bySession, loadRun } from "./teams/run.js"
+import { byDirectory, bySession, loadRun } from "./teams/run.js"
 import { readJson } from "./teams/store.js"
 import { onSessionEvent, slowWarning, startSweep } from "./teams/lifecycle.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
@@ -84,7 +84,7 @@ import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
 import { ensure, read } from "./project.js"
 import { mainCheckout, readProjectChecks, suggestChecks, writeProjectChecks } from "./teams/project-checks.js"
-import { listRunsForNamespace } from "./teams/api-query.js"
+import { listRunsForNamespace, listRunTree } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
 import { isTeamWorktree } from "./teams/snapshots.js"
 import { Definition, type Plus } from "./rpc.js"
@@ -3807,8 +3807,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const root = teamsDataDir()
         if (input.tree !== false && input.sessionID) {
-          const allRuns = yield* Effect.promise(() => listRunsForNamespace(root, { all: true }))
-          const runs = buildRunTree(allRuns, input.sessionID, { all: input.all })
+          const sessionID = input.sessionID
+          const runs = yield* Effect.promise(() => listRunTree(root, sessionID, { all: input.all }))
           return { runs }
         }
         const runs = yield* Effect.promise(() => listRunsForNamespace(root, input))

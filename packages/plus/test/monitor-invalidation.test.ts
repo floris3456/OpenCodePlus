@@ -3,7 +3,7 @@ import { fingerprintWireBody } from "../src/monitor/fingerprint.js"
 import { createLedger } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import { ANALYSIS_CACHE_LIMIT, sessionFold, sessionFoldResumeFrom } from "../src/monitor/report.js"
-import { cleanupLedgers, ledger } from "./monitor-fixture.js"
+import { cleanupLedgers, ledger, saveAll } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
@@ -27,13 +27,15 @@ test("late first fingerprint and correction match a fresh handle, including cros
     other.requestFingerprint({ requestID: "b", sessionID: "synthetic", ...fingerprintWireBody({ input: [{ role: "user", content: "changed" }] }, { protocol: "openai-responses" }) })
     expect(query().detail?.segments.length).toBeGreaterThan(0)
     expect(query()).toEqual(queryMonitor(other, { scope: "session", sessionID: "synthetic", view: "cache", id: "b" }, { now: 100 }))
-    expect(sessionFoldResumeFrom(db, "synthetic")).toBe(0)
     other.requestFingerprint({ requestID: "b", sessionID: "synthetic", ...fingerprintWireBody({ input: [{ role: "user", content: "first" }] }, { protocol: "openai-responses" }) })
+    // The correction drops what it can affect, from b on: a's saved result stays.
+    const saved = () => db.db.query<{ request_id: string }, []>("select request_id from cache_result order by request_id").all().map((row) => row.request_id)
+    expect(saved()).toEqual(["a"])
     const fresh = createLedger(db.db.filename)
     try {
       expect(query()).toEqual(queryMonitor(fresh, { scope: "session", sessionID: "synthetic", view: "cache", id: "b" }, { now: 100 }))
       expect(query().detail?.segments).toEqual([])
-      expect(sessionFoldResumeFrom(db, "synthetic")).toBe(1)
+      expect(saved()).toEqual(["a", "b"])
     } finally { fresh.close() }
   } finally { other.close() }
 })
@@ -55,17 +57,19 @@ test("narrow window reads only relevant histories but retains predecessor contex
     db.requestEnded(session, { status: "completed", ended: 2 })
   }
   db.requestStarted({ id: "recent", sessionID: "selected", kind: "step", started: 20 })
-  const reads = spyOn(db, "getRequests")
+  saveAll(db)
+  const reads = spyOn(db, "getRequestsBetween")
   const report = queryMonitor(db, { scope: "all", view: "cache", since: 10 }, { now: 30 })
-  expect(reads.mock.calls).toEqual([["selected"]])
+  expect(reads.mock.calls.map((call) => call[0])).toEqual(["selected"])
   expect(reads.mock.results[0]?.value).toHaveLength(2)
   expect(report.requests?.map((r) => r.id)).toEqual(["recent"])
   reads.mockRestore()
 })
 
-test("analysis retention is bounded and eviction changes work, not query results", async () => {
+// Reports read saved results; the session fold keeps its own bounded cache.
+test("analysis retention is bounded and eviction changes work, not fold results", async () => {
   const db = await ledger()
-  const query = (sessionID: string) => queryMonitor(db, { scope: "session", sessionID, view: "cache" }, { now: 100 })
+  const query = (sessionID: string) => sessionFold(db, sessionID).analysis.summaries
   for (let i = 0; i <= ANALYSIS_CACHE_LIMIT.sessions; i++) {
     db.requestStarted({ id: `r${i}`, sessionID: `s${i}`, kind: "step", started: 1 })
     query(`s${i}`)

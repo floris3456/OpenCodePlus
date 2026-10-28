@@ -26,7 +26,7 @@ import {
   type MonitorTarget,
 } from "../src/tui/monitor/view.js"
 import { createSignal } from "solid-js"
-import { cleanupLedgers, collect, contractFixtureReport, ledger, script, usage } from "./monitor-fixture.js"
+import { cleanupLedgers, collect, contractFixtureReport, ledger, saveAll, script, usage } from "./monitor-fixture.js"
 import { dispatch, sleep } from "./instructions-nav.js"
 import { createTestTheme, renderPlusFixture, type DialogScript, type TestFixture } from "./tui.js"
 
@@ -376,6 +376,8 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     })
     db.requestEnded(`page-${String(i).padStart(3, "0")}`, { status: "completed", ended: NOW - 200 })
   }
+  // More results than one query saves; the service's background backfill saves the rest.
+  saveAll(db)
   const { fixture, queries } = await render(db, {
     width: 80,
     height: 24,
@@ -401,6 +403,33 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     await fixture.waitForFrame(() => queries.at(-1)?.missesOnly === true && queries.at(-1)?.requestPage === undefined)
   } finally {
     fixture.destroy()
+  }
+})
+
+test("ended requests not analyzed yet are counted beside the request page", async () => {
+  const db = await ledger()
+  const report = { ...contractFixtureReport(NOW), requestPage: { total: 48, returned: 48, limit: 100, complete: true } }
+  const { fixture } = await render(db, {
+    width: 100,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...report, cachePending: 157 }),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("48/48 requests · 157 not analyzed yet · [—] older"))
+  } finally {
+    fixture.destroy()
+  }
+  const settled = await render(db, {
+    width: 100,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...report, cachePending: 0 }),
+  })
+  try {
+    await settled.fixture.waitForFrame((text) => text.includes("48/48 requests · [—] older"))
+  } finally {
+    settled.fixture.destroy()
   }
 })
 
@@ -472,6 +501,8 @@ async function render(
     active?: readonly string[]
     /** A fixed Sessions checklist answer instead of the ledger's. */
     checklist?: Plus.MonitorSessionList
+    /** Holds each Sessions checklist answer until the promise it returns settles. */
+    checklistGate?: () => Promise<void>
     /** A cache notice the view opens on; cleared when the view takes it. */
     target?: () => MonitorTarget | undefined
     onTarget?: () => void
@@ -508,6 +539,7 @@ async function render(
       "monitor.cache": async (input: Plus.MonitorQueryInput) => queryCacheResults(db, input, { directory: "/work/project", now: NOW }),
       "monitor.sessions": async (input: Plus.MonitorSessionsInput) => {
         lists.push(input)
+        await options.checklistGate?.()
         if (options.checklist !== undefined) return options.checklist
         const active = new Set(options.active ?? db.db.query<{ id: string }, []>("select id from session").all().map((row) => row.id))
         return sessionChecklist(db, input, { active, now: NOW, directory: "/work/project" })
@@ -716,6 +748,34 @@ test("the Sessions tab shows a token total that includes cache and reasoning", a
     // The old bug summed only input + output.
     expect(frame).not.toContain(formatTokens(row.input + row.output))
   } finally {
+    fixture.destroy()
+  }
+})
+
+test("a Sessions checklist answer slower than the poll is shown; the poll waits for it and asks once more", async () => {
+  const db = await seeded()
+  const gates: (() => void)[] = []
+  const { fixture, lists } = await render(db, {
+    settings: { ...defaultSettings, tab: "sessions" },
+    checklistGate: () => new Promise<void>((resolve) => gates.push(resolve)),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Loading sessions"))
+    expect(lists).toHaveLength(1)
+    // One real poll interval (REFRESH_MS, 1 s: the seeded chat is live) passes with
+    // the answer still out. A poll used to send a second request and drop this answer.
+    await Bun.sleep(1_200)
+    expect(lists).toHaveLength(1)
+    gates.shift()!()
+    const frame = await fixture.waitForFrame((text) => !text.includes("Loading sessions"))
+    // The chat's row, under the column headings (the scope line names it too).
+    expect(frame.slice(frame.indexOf("Session / Role"))).toContain("Fix the thing")
+    // The poll that came while the answer was out asks again as soon as it is in.
+    const deadline = Date.now() + 5_000
+    while (lists.length < 2 && Date.now() < deadline) await Bun.sleep(10)
+    expect(lists).toHaveLength(2)
+  } finally {
+    gates.splice(0).forEach((open) => open())
     fixture.destroy()
   }
 })

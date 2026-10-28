@@ -65,11 +65,45 @@ from each result's JSON at insert and once by migration), covered by two
 indexes keyed by time and by session. Totals, per-session sums and request
 pages are index-only reads instead of `json_extract` over every result. A read
 with no explicit end at an unchanged ledger revision returns the previous
-answer. Tools and Sessions take their request totals from these results (plus
-v1 steps that have no request row) instead of folding every session's history;
-only the agent tool's overview/steps views still fold. Host session facts are
-looked up for the rows on the returned page only, and team inference from run
-files runs at most once a minute.
+answer. Every view takes its requests and totals from these results (plus v1
+steps that have no request row); no query folds a session's history. Host
+session facts are looked up for the rows on the returned page only, and team
+inference from run files runs at most once a minute.
+
+Overview and steps once folded every selected session's whole history on the
+service's one thread: on a copy of the live ledger (55,187 requests) a project
+overview took 7.4 s and 2.4 GB, one 8,314-request session 34 s and 9 GB, and
+`scope: "all"` ran out of memory, freezing the service for everyone. They now
+read the same saved results, plus two saved analyses that only the overview
+needs, each computed once and summed with SQL:
+
+- `unread_write` (`unread-saved.ts`): each cache write's unread tokens, final
+  once its lifetime has ended and no request started inside it still runs. It
+  equals the fold's per-write term: the write's tokens less the most a later
+  read in the same session and model took from it within the lifetime.
+- `request_change` (`unstable-saved.ts`): each real request's changed prompt
+  segments against the previous real request; unstable-prefix streaks are
+  replayed from these rows.
+
+A query saves about 100 ms of backlog first (results, then changed segments,
+then expired writes); the background backfill does the rest in small batches,
+newest results first, since screens open on the latest requests. It counts
+missing results (two index counts) before looking for them, which reads every
+request. `cachePending` and `analysisPending` count what is not saved yet. Ended
+requests without a saved result are missing from the list and totals until it
+is saved; the Cache tab shows their count beside the request page
+(`48/48 requests · 157 not analyzed yet`).
+
+A result saved by an older release lacks the analysis's own wording (cause,
+evidence and confidence, kept in `cache_result.fold`). Until the backfill saves
+it anew, a report analyzes the rows it shows from the few requests each one
+depends on (`requestAnalysis`), one range per group of overlapping requests,
+never the history between them.
+
+On the same copy, right after the upgrade with all 55,180 results still to save
+again: the 8,313-request session's overview 0.35 s and 173 MB, its Cache view
+0.73 s, the project overview 0.30 s, `scope: "all"` 0.67 s and 483 MB (each
+including the query's own ~100 ms of saving).
 
 Measured on a copy of a live 2.5 GB ledger (32,657 requests, 364 sessions;
 first read after a change / repeated read):

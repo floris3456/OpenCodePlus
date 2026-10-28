@@ -132,6 +132,76 @@ create trigger if not exists request_fingerprint_change_delete after delete on r
 end;`
 }
 
+// Saved analysis the reports read (snapshot.ts cache_result, unread-saved.ts,
+// unstable-saved.ts) follows corrections: a request's saved result reads its
+// predecessors and the facts before it, its changed segments read the previous
+// real request, and a write's unread tokens read the requests in its lifetime.
+// So a change to a request, its fingerprint's content or a fact drops what it
+// can affect, from that point of its session on; the backfill saves it again.
+// `saved_dirty` tells the windowed walks how far back to look for those rows.
+// Deletions (retention) drop nothing else: later results keep what they saw.
+// A fingerprint rewritten with the same content (a repeated capture) drops nothing.
+const FINGERPRINT_CONTENT = [
+  "session_id", "protocol", "system_parts", "tools", "options_hash", "options_keys", "message_prefixes",
+  "prefix_base", "prefix_shared", "prefix_depth", "cache_key", "cache_control", "body_hash", "created",
+  "previous_response_id", "response_id", "fingerprint_version", "policy_version", "system_hash",
+]
+
+function savedSchema(): string {
+  const dirty = (name: string, at: string) => `insert into saved_dirty (name, at) values ('${name}', ${at})
+    on conflict (name) do update set at = min(at, excluded.at);`
+  const drop = (session: string, at: string, id: string) => `
+    delete from cache_result where session_id = ${session} and started >= ${at};
+    delete from request_change where session_id = ${session} and started >= ${at};
+    ${dirty("request_change", at)}
+    delete from unread_write where request_id = ${id};
+    ${dirty("unread_write", at)}
+    update unread_write set unread_real = null, unread_all = null
+      where session_id = ${session} and at < ${at} and expires >= ${at} and unread_real is not null;`
+  return `
+create table if not exists unread_write (
+  request_id text primary key,
+  session_id text not null,
+  at integer not null,
+  expires integer,
+  agent text,
+  model text,
+  is_title integer not null,
+  tokens integer not null,
+  unread_real integer,
+  unread_all integer
+);
+create index if not exists unread_write_session on unread_write(session_id, at);
+create index if not exists unread_write_at on unread_write(at);
+create index if not exists unread_write_due on unread_write(expires) where unread_real is null;
+create index if not exists request_open on request(started) where ended is null;
+create table if not exists request_change (
+  request_id text primary key,
+  session_id text not null,
+  started integer not null,
+  real integer not null,
+  changed text not null
+);
+create index if not exists request_change_session on request_change(session_id, started);
+create table if not exists saved_dirty (name text primary key, at integer not null);
+create trigger if not exists saved_request_update after update on request begin
+  ${drop("old.session_id", "min(old.started, new.started)", "old.id")}
+  ${drop("new.session_id", "min(old.started, new.started)", "new.id")}
+end;
+create trigger if not exists saved_fingerprint_insert after insert on request_fingerprint
+  when exists (select 1 from request where id = new.request_id) begin
+  ${drop("new.session_id", "(select started from request where id = new.request_id)", "new.request_id")}
+end;
+create trigger if not exists saved_fingerprint_update after update on request_fingerprint
+  when (${FINGERPRINT_CONTENT.map((column) => `old.${column} is not new.${column}`).join(" or ")})
+    and exists (select 1 from request where id = new.request_id) begin
+  ${drop("new.session_id", "(select started from request where id = new.request_id)", "new.request_id")}
+end;
+create trigger if not exists saved_fact_insert after insert on context_fact begin
+  delete from cache_result where session_id = new.session_id and started >= new.at;
+end;`
+}
+
 function rollupTriggers(): string {
   return `
 create trigger if not exists call_hour_insert after insert on call begin
@@ -184,7 +254,6 @@ create table if not exists step (
   primary key (session_id, message_id)
 );
 create index if not exists step_ended on step(ended);
-create index if not exists step_started on step(started);
 create index if not exists step_session on step(session_id, epoch, idx);
 
 create table if not exists call (
@@ -603,6 +672,8 @@ export interface Ledger {
   relabelLatestRequest(sessionID: string, fromKind: string, toKind: string): void
   getRequest(id: string): RequestRow | undefined
   getRequests(sessionID: string): readonly RequestRow[]
+  /** The session's requests that started in [from, to], in the same order as getRequests. */
+  getRequestsBetween(sessionID: string, from: number, to: number): readonly RequestRow[]
   getFingerprint(requestID: string): RequestFingerprintData | undefined
   getFingerprints(sessionID: string): readonly RequestFingerprintData[]
   getContextFacts(sessionID: string): readonly ContextFactRow[]
@@ -656,10 +727,46 @@ function migrateCacheColumns(db: Database) {
   db.exec("create index if not exists request_ended on request(session_id) where ended is not null")
 }
 
+// A Monitor tab over all history reads these indexes, never the wide rows they
+// cover: the ledger file is large, fragmented and mostly out of the page cache,
+// where reading every step or request row takes seconds. Step totals and v1
+// steps by time; a ping's next request, with its end and exchange scope.
+function migrateReadIndexes(db: Database) {
+  db.exec(`create index if not exists step_window on step(started, session_id, message_id, agent, provider, model,
+    input, output, reasoning, cache_read, cache_write, cost)`)
+  db.exec("drop index if exists step_started")
+  db.exec(`create index if not exists request_follow on request(session_id, started, id, kind, is_title,
+    coalesce(json_extract(observation, '$.scope'), ''), ended)`)
+}
+
+// Free pages below this share of the file are normal fragmentation.
+const COMPACT_SHARE = 0.3
+// Pages returned to disk after a prune, and the least time between those runs.
+const INCREMENTAL_PAGES = 2000
+const INCREMENTAL_EVERY = HOUR
+
+/**
+ * How this handle tidies the file it holds. The one-time rewrite is not here:
+ * it runs in a worker (compact.ts) so it never blocks the service.
+ */
+export interface LedgerOptions {
+  incrementalPages?: number
+  incrementalEvery?: number
+  /** Share of free pages above which pruning returns some to the disk. */
+  compactShare?: number
+  /** Clock for the once-an-hour prune gate. */
+  now?: () => number
+}
+
 /** `monitor.db` next to the teams data, under the XDG data directory. */
-// Freed pages are reused in place, so pruning stops the file growing but does
-// not shrink it; only a manual `VACUUM` reclaims the space. 1.2.0 deliberately
-// does not vacuum the ledger.
+// Pruning frees pages in place, so the file stops growing but does not shrink;
+// only a `VACUUM` gives that space back. Two things do that now, and neither
+// blocks the service: the one-time rewrite runs in a worker at monitor start
+// (compact.ts), holding writes in memory until it is done; afterwards each
+// prune pass may return a bounded batch of free pages with
+// `incremental_vacuum`, at most hourly. Neither drops a row: the rewrite
+// rewrites live rows, and the incremental form frees only pages SQLite already
+// marks as free.
 export function defaultLedgerPath(): string {
   return path.join(path.dirname(teamsDataDir()), "monitor.db")
 }
@@ -676,7 +783,7 @@ export function ledgerAt(file: string = defaultLedgerPath()): Ledger {
   return created
 }
 
-export function createLedger(file: string): Ledger {
+export function createLedger(file: string, options: LedgerOptions = {}): Ledger {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new Database(file, { create: true })
   // Check before any migration, pragma or metadata write; never downgrade an unknown writer.
@@ -691,6 +798,11 @@ export function createLedger(file: string): Ledger {
     db.close()
     throw new Error("Unsupported monitor analysis index version")
   }
+  // Before the first table, so a new ledger starts in incremental mode; on an
+  // existing one this is a no-op until the next `VACUUM`. It must also precede
+  // the journal-mode switch: on an empty file, setting WAL first stops it from
+  // persisting.
+  db.exec("pragma auto_vacuum = incremental")
   db.exec("pragma journal_mode = wal")
   db.exec("pragma synchronous = normal")
   db.exec("pragma busy_timeout = 2000")
@@ -722,6 +834,11 @@ export function createLedger(file: string): Ledger {
   }
   db.exec("create index if not exists request_fingerprint_base on request_fingerprint(prefix_base)")
   migrateCacheColumns(db)
+  migrateReadIndexes(db)
+  // The fold's own wording of a saved result (report.ts); rows saved before it are saved again.
+  if (!db.query<{ name: string }, []>("pragma table_info(cache_result)").all().some((column) => column.name === "fold")) db.exec("alter table cache_result add column fold text")
+  db.exec("create index if not exists cache_result_unfolded on cache_result(started) where fold is null")
+  db.exec(savedSchema())
   if (
     !db
       .query<{ name: string }, []>("pragma table_info(session)")
@@ -847,6 +964,9 @@ export function createLedger(file: string): Ledger {
   const findRequest = db.query<Record<string, unknown>, [string]>("select * from request where id = ?")
   const findSessionRequests = db.query<Record<string, unknown>, [string]>(
     "select *, rowid as ledger_order from request where session_id = ? order by started asc, rowid asc",
+  )
+  const findSessionRequestsBetween = db.query<Record<string, unknown>, [string, number, number]>(
+    "select *, rowid as ledger_order from request where session_id = ? and started >= ? and started <= ? order by started asc, rowid asc",
   )
   const findFingerprint = db.query<Record<string, unknown>, [string]>(
     "select * from request_fingerprint where request_id = ?",
@@ -1152,6 +1272,7 @@ export function createLedger(file: string): Ledger {
     })
   })
 
+  let lastIncremental = 0
   const ledger: Ledger = {
     db,
     path: file,
@@ -1241,6 +1362,11 @@ export function createLedger(file: string): Ledger {
         db.query("delete from step where started < ?").run(before)
         db.query("delete from cache_wire where request_id in (select id from request where started < ?)").run(before)
         db.query("delete from cache_result where started < ?").run(before)
+        // Saved unread writes and changed segments; their modules create the tables on first use.
+        if (db.query("select 1 from sqlite_master where type = 'table' and name = 'unread_write'").get())
+          db.query("delete from unread_write where at < ?").run(before)
+        if (db.query("select 1 from sqlite_master where type = 'table' and name = 'request_change'").get())
+          db.query("delete from request_change where started < ?").run(before)
         db.query("delete from request where started < ?").run(before)
         db.query("delete from request_fingerprint where created < ?").run(before)
         db.query("delete from context_fact where at < ?").run(before)
@@ -1259,6 +1385,18 @@ export function createLedger(file: string): Ledger {
       archives.forEach((archive) => {
         if (!db.query("select 1 from cache_wire where path = ? limit 1").get(archive.path)) fs.rmSync(archive.path, { force: true })
       })
+      // Returning freed pages to disk is cheap but not free, and pruning runs
+      // every couple of minutes: do it at most hourly, and only when the file
+      // is mostly free space. A full `VACUUM` never runs here: it rewrites the
+      // whole file, and that has its own worker at monitor start.
+      const clock = options.now ?? Date.now
+      const at = clock()
+      if (at - lastIncremental < (options.incrementalEvery ?? INCREMENTAL_EVERY)) return
+      const pages = db.query<{ page_count: number }, []>("pragma page_count").get()?.page_count ?? 0
+      const free = db.query<{ freelist_count: number }, []>("pragma freelist_count").get()?.freelist_count ?? 0
+      if (pages === 0 || free / pages <= (options.compactShare ?? COMPACT_SHARE)) return
+      lastIncremental = at
+      db.exec(`pragma incremental_vacuum(${options.incrementalPages ?? INCREMENTAL_PAGES})`)
     },
     requestStarted: (req) =>
       upsertRequest.run({
@@ -1317,6 +1455,7 @@ export function createLedger(file: string): Ledger {
       return row ? toRequestRow(row) : undefined
     },
     getRequests: (sessionID) => findSessionRequests.all(sessionID).map(toRequestRow),
+    getRequestsBetween: (sessionID, from, to) => findSessionRequestsBetween.all(sessionID, from, to).map(toRequestRow),
     getFingerprint: (requestID) => {
       const row = findFingerprint.get(requestID)
       if (!row) return undefined

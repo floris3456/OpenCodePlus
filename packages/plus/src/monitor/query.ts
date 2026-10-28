@@ -22,7 +22,7 @@ import type {
   MonitorTotals,
 } from "../rpc.js"
 import { HOUR, type Ledger } from "./ledger.js"
-import { requestReport } from "./report.js"
+import { requestReport, settleSavedAnalysis } from "./report.js"
 import { QueryCache, type QueryBoundary } from "./query-cache.js"
 import { legacySteps, savedSessionSums, savedSessions, savedTotals, settleRecentResults } from "./snapshot.js"
 
@@ -66,7 +66,9 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   const window = { since: input.since ?? 0, until: input.until ?? now + 1 }
   const comparison =
     input.compare === undefined ? undefined : { since: input.compare.since ?? 0, until: input.compare.until ?? now + 1 }
+  // Saving changes the ledger revision, so it comes before the revision the answer is cached under.
   if (input.view === "tools" || input.view === "sessions") settleRecentResults(ledger)
+  else settleSavedAnalysis(ledger)
   const cache = queryCaches.get(ledger) ?? new QueryCache()
   queryCaches.set(ledger, cache)
   const key = JSON.stringify([
@@ -80,8 +82,7 @@ export function queryMonitor(ledger: Ledger, input: MonitorQueryInput, context: 
   if (cached) return { ...cached, now }
   const group = input.group ?? "tool"
   const top = clamp(input.top ?? DEFAULT_TOP)
-  // Tools and Sessions read saved per-request results; only the agent tool's
-  // overview and steps views still fold session histories.
+  // Every view reads saved per-request results; tools and sessions need no request rows.
   const saved = input.view === "tools" || input.view === "sessions"
   const reportOf = (target: Window) => saved ? savedReport(ledger, input, context, target) : requestReport(ledger, input, context, target)
   const requests = reportOf(window)

@@ -2,9 +2,9 @@
 // requests and 1,500 messages (monitor-golden-fixture.ts). Old confident verdicts
 // were not provider truth: this legacy fixture cannot establish sparse field
 // presence. Accounting, deterministic folding and the speed gates still stand.
-// The analysis cache must answer a repeat at no cost, ignore other chats'
-// writes, and fold a change in this chat incrementally to the same result a
-// cold analysis gives.
+// Reports read saved results: a repeat costs nothing, other chats' writes leave
+// this chat's results alone, and a change in this chat drops only the results
+// it can affect, saved again to what a cold analysis gives.
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -14,6 +14,7 @@ import { createLedger, type Ledger } from "../src/monitor/ledger.js"
 import { queryMonitor } from "../src/monitor/query.js"
 import type { MonitorQueryInput } from "../src/rpc.js"
 import golden from "./fixtures/monitor-golden-anthropic.json"
+import { saveAll } from "./monitor-fixture.js"
 import { GOLDEN_SESSION, writeGoldenSession } from "./monitor-golden-fixture.js"
 
 const NOW = 1_800_000_000_000
@@ -27,6 +28,7 @@ beforeAll(async () => {
   file = path.join(dir, "monitor.db")
   db = createLedger(file)
   writeGoldenSession(db)
+  saveAll(db)
 })
 
 afterAll(async () => {
@@ -34,21 +36,28 @@ afterAll(async () => {
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-// Counts the ledger reads one session's analysis makes.
+// Counts the ledger reads this chat's analysis makes: whole histories, the
+// rows of ranged reads, and single fingerprints.
 function counted(ledger: Ledger) {
-  const reads = { requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 }
+  const zero = { requests: 0, fingerprints: 0, ranged: 0, fingerprint: 0, requestRows: 0, factRows: 0 }
+  const reads = { ...zero }
   const wrapped: Ledger = {
     ...ledger,
     getRequests: (id) => {
       if (id === GOLDEN_SESSION) reads.requests++
       return ledger.getRequests(id)
     },
+    getRequestsBetween: (id, from, to) => {
+      const rows = ledger.getRequestsBetween(id, from, to)
+      if (id === GOLDEN_SESSION) reads.ranged += rows.length
+      return rows
+    },
     getFingerprints: (id) => {
       reads.fingerprints++
       return ledger.getFingerprints(id)
     },
     getFingerprint: (id) => {
-      reads.fingerprint++
+      if (id.startsWith(GOLDEN_SESSION)) reads.fingerprint++
       return ledger.getFingerprint(id)
     },
     changedRequests: (id, since) => {
@@ -62,7 +71,7 @@ function counted(ledger: Ledger) {
       return rows
     },
   }
-  return { ledger: wrapped, reads, reset: () => Object.assign(reads, { requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 }) }
+  return { ledger: wrapped, reads, reset: () => Object.assign(reads, zero) }
 }
 
 // The same query through a second handle, whose analysis cache is cold.
@@ -133,27 +142,33 @@ test("a long legacy Anthropic chat keeps accounting, unknown diagnoses and loads
   expect(coldMs).toBeLessThan(10_000)
 }, 120_000)
 
-test("a repeat costs nothing, other chats' writes are ignored, and a change folds incrementally", () => {
+test("a repeat costs nothing, other chats' writes leave this chat alone, and a change drops only what it affects", () => {
+  const saved = () => db.db.query<{ n: number }, [string]>("select count(*) n from cache_result where session_id = ?").get(GOLDEN_SESSION)!.n
   const probe = counted(db)
+  // Saved results answer; only the running step is analyzed, from the few rows it reads.
   const first = queryMonitor(probe.ledger, cache, { now: NOW })
-  expect(probe.reads).toEqual({ requests: 1, fingerprints: 1, fingerprint: 0, requestRows: 0, factRows: 0 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, ranged: 3, fingerprint: 3, requestRows: 0, factRows: 0 })
 
   // Nothing changed: nothing is read again.
   probe.reset()
   const started = performance.now()
   expect(plain(queryMonitor(probe.ledger, cache, { now: NOW }))).toEqual(plain(first))
   expect(performance.now() - started).toBeLessThan(1_000)
-  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, ranged: 0, fingerprint: 0, requestRows: 0, factRows: 0 })
 
-  // Another chat writes: this chat's analysis stands.
+  // Another chat writes: this chat's saved results stand; only its running step is analyzed again.
   db.requestStarted({ id: "other-1", sessionID: "ses_other", kind: "step", started: NOW - 10_000 })
   db.requestFingerprint({ ...db.getFingerprint(`${GOLDEN_SESSION}-00010`)!, requestID: "other-1", sessionID: "ses_other" })
   db.contextFact({ sessionID: "ses_other", at: NOW - 10_000, kind: "warming", detail: { state: "on" } })
+  expect(saved()).toBe(1499)
   probe.reset()
   expect(plain(queryMonitor(probe.ledger, cache, { now: NOW }))).toEqual(plain(first))
-  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 0, requestRows: 0, factRows: 0 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, ranged: 3, fingerprint: 3, requestRows: 0, factRows: 0 })
 
-  // The running step completes and a new one starts: only its fingerprint is loaded.
+  // The running step completes and a new one starts. Its result and changed
+  // segments read its 3 nearest rows; the one earlier write whose lifetime
+  // covers it is counted again over that lifetime's 16 requests; the new step
+  // reads 2. Nothing earlier is touched.
   const rows = db.getRequests(GOLDEN_SESSION)
   const running = rows.at(-1)!
   db.requestEnded(running.id, {
@@ -164,22 +179,28 @@ test("a repeat costs nothing, other chats' writes are ignored, and a change fold
   const next = `${GOLDEN_SESSION}-next`
   db.requestStarted({ id: next, sessionID: GOLDEN_SESSION, kind: "step", agent: "build", provider: "cliproxyapi", model: "claude-opus-5-5", variant: "xhigh", started: running.started + 10_000 })
   db.requestFingerprint({ ...db.getFingerprint(running.id)!, requestID: next, created: running.started + 10_000 })
+  expect(saved()).toBe(1499)
   probe.reset()
   const appended = plain(queryMonitor(probe.ledger, cache, { now: NOW }))
-  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 1, requestRows: 2, factRows: 0 })
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, ranged: 5, fingerprint: 25, requestRows: 0, factRows: 0 })
+  expect(saved()).toBe(1500)
   expect(appended.requests.at(-2)).toMatchObject({ cacheRead: 400_000, cacheWrite: 2_000, verdict: "none", measurement: { state: "legacy-unknown" } })
   expect(appended).toEqual(cold(cache))
 
   // Changes deep in the history: a corrected early fingerprint and a fact back
-  // in time. The fold resumes there and still matches a cold analysis.
+  // in time drop the results from that point on; saved again, they match a cold analysis.
   const early = rows[200]!
   db.requestFingerprint({ ...db.getFingerprint(early.id)!, optionsKeys: { max_tokens: "changed" } })
+  expect(saved()).toBe(200)
   db.contextFact({ sessionID: GOLDEN_SESSION, at: rows[600]!.started - 1, kind: "account_switch", detail: { from: "Large", to: "Small" } })
+  saveAll(db)
+  expect(saved()).toBe(1500)
   probe.reset()
   for (const view of ["cache", "overview"] as const) {
     expect(plain(queryMonitor(probe.ledger, { ...cache, view }, { now: NOW }))).toEqual(cold({ ...cache, view }))
   }
-  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, fingerprint: 1, requestRows: 0, factRows: 1 })
+  // Each of the two reports reads only the running step's 2 rows.
+  expect(probe.reads).toEqual({ requests: 0, fingerprints: 0, ranged: 4, fingerprint: 4, requestRows: 0, factRows: 0 })
 
   // Another process (here a second connection) completes a request of this chat.
   const other = createLedger(file)

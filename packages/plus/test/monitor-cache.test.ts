@@ -6,7 +6,9 @@ import { MonitorReport } from "../src/rpc.js"
 import { FINGERPRINT_POLICY_VERSION, FINGERPRINT_VERSION, fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { prefixDiff } from "../src/monitor/cache.js"
 import { queryMonitor } from "../src/monitor/query.js"
-import { MonitorFoldLimit, sessionFold } from "../src/monitor/report.js"
+import { backfillCacheBatch } from "../src/monitor/snapshot.js"
+import { settleUnreadWrites } from "../src/monitor/unread-saved.js"
+import { settleRequestChanges } from "../src/monitor/unstable-saved.js"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { createLedger } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger } from "./monitor-fixture.js"
@@ -751,10 +753,13 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
     { name: "all cache", input: { scope: "all" as const, view: "cache" as const } },
   ]
 
-  // An overview refuses to fold 40,000 requests on the spot (MONITOR_FOLD_LIMIT);
-  // the polls below work from the kept folds these build.
-  expect(() => queryMonitor(db, { scope: "all", view: "overview" }, { directory: "/project" })).toThrow(MonitorFoldLimit)
-  for (const session of sessions) sessionFold(db, session.id)
+  // Reports read saved results and saved analysis; a query saves only about
+  // 100 ms of a backlog, so save all 40,000 first, as the background backfill does.
+  const saving = performance.now()
+  while (backfillCacheBatch(db, 1_000) > 0) continue
+  while (settleRequestChanges(db, 1_000) > 0) continue
+  while (settleUnreadWrites(db, Date.now(), 1_000) > 0) continue
+  console.log(`Saving results and analysis took: ${performance.now() - saving}ms`)
 
   // Warmup / First call
   const firstTimes: Record<string, number> = {}

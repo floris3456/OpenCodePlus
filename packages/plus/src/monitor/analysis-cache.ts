@@ -34,11 +34,6 @@ export class AnalysisCache {
 
   constructor(private readonly limits: Limits = ANALYSIS_CACHE_LIMIT) {}
 
-  /** Whether a fold is kept for the session, without moving it in the LRU. */
-  has(id: string) {
-    return this.entries.has(id)
-  }
-
   get(id: string) {
     const entry = this.entries.get(id)
     if (!entry) return

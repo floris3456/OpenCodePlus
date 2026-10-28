@@ -3,7 +3,7 @@
 // prefix of the Anthropic warming-ping wire shape. No mocks of the code under
 // test; every case is driven through analyzeSession/requestReport/monitorQuery or
 // the real watchMonitor hooks.
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
@@ -18,7 +18,7 @@ import { analyzeSession, windowedSessionSignals } from "../src/monitor/cache.js"
 import { createLedger, defaultLedgerPath, ledgerAt, type Ledger } from "../src/monitor/ledger.js"
 import { monitorQuery, watchMonitor } from "../src/monitor/plugin.js"
 import { queryMonitor } from "../src/monitor/query.js"
-import { cleanupLedgers, ledger } from "./monitor-fixture.js"
+import { cleanupLedgers, ledger, saveAll } from "./monitor-fixture.js"
 import { context } from "./harness.js"
 
 const priorData = process.env.XDG_DATA_HOME
@@ -547,7 +547,7 @@ test("#8: totals include reasoning, cache read and cache write", async () => {
   expect(agent?.tokens).toBe(11 + 44 + 55 + 22 + 33)
 })
 
-test("#8: advancing-now polls reuse the analysis fold and still evolve windowed signals", async () => {
+test("#8: advancing-now polls reuse saved analysis and still evolve windowed signals", async () => {
   const db = await ledger()
   const raw = db.db
   const SESSIONS = 40
@@ -577,16 +577,19 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
     }
   }
   raw.exec("COMMIT")
+  // The background backfill saves every request's analysis.
+  saveAll(db)
 
   const input = { scope: "all" as const, view: "cache" as const, top: 20, feed: 10 }
-  // The first query folds every session; later polls with an advancing `now`
-  // cross no write, so the expensive analysis fold is reused while expiry and
-  // windowed unread signals evolve with the advancing clock.
+  // Later polls with an advancing `now` cross no write, so saved analysis is
+  // reused while expiry and windowed unread signals evolve with the clock.
   const firstStart = performance.now()
   const first = queryMonitor(db, input, { now: base + REQUESTS * 1000 + 1000 })
   const firstMs = performance.now() - firstStart
 
   const repeatPolls = [base + 310_000, base + 320_000, base + 350_000]
+  const ranged = spyOn(db, "getRequestsBetween")
+  const histories = spyOn(db, "getRequests")
   const repeatTimes: number[] = []
   const unreadLevels: number[] = [first.unread ?? 0]
   let last = first
@@ -600,9 +603,9 @@ test("#8: advancing-now polls reuse the analysis fold and still evolve windowed 
   expect(first.totals.requests).toBeGreaterThan(0)
   expect(last.totals.requests).toBe(first.totals.requests)
   expect(unreadLevels).toEqual([0, 200_000, 400_000, 780_000])
-  // Repeat polls are strictly cheaper than the cold fold on a fixture this size.
-  const repeatMax = Math.max(...repeatTimes)
-  expect(repeatMax).toBeLessThan(firstMs)
+  // Repeat polls analyze nothing again: no request's rows and no history are read.
+  expect(ranged).not.toHaveBeenCalled()
+  expect(histories).not.toHaveBeenCalled()
 }, 60_000)
 
 // --- Real host boundary: an active chat with a prior outcome stays running. ---

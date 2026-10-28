@@ -138,8 +138,9 @@ test("first load of 3000 saved requests does not rebuild histories", async () =>
   db.requestObserved("seed", { version: 1, completeness: "final", inputTokens: 10000, cacheReadInputTokens: 10000, cacheWriteInputTokens: 0 })
   projectCacheResult(db, "seed")
   db.db.exec(`with recursive n(x) as (values(1) union all select x+1 from n where x < 3000)
-    insert into cache_result select 'r-' || x, 'chat', x + 10, verdict,
-      json_set(summary, '$.id', 'r-' || x, '$.at', x + 10), detail, ${CACHE_COLUMNS.map(([name]) => name).join(", ")}
+    insert into cache_result (request_id, session_id, started, verdict, summary, detail, fold, ${CACHE_COLUMNS.map(([name]) => name).join(", ")})
+      select 'r-' || x, 'chat', x + 10, verdict,
+      json_set(summary, '$.id', 'r-' || x, '$.at', x + 10), detail, fold, ${CACHE_COLUMNS.map(([name]) => name).join(", ")}
       from n, cache_result where request_id = 'seed'`)
   const start = performance.now()
   const report = queryCacheResults(db, { scope: "session", sessionID: "chat" }, { now: 10000 })
