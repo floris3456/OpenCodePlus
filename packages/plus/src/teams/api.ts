@@ -32,7 +32,7 @@ import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
 import { wildcardMatch } from "../instructions/permission-catalog.js"
-import { decide, rowState, type PermissionTable } from "../instructions/permission-enforce.js"
+import { decide, rowState, shellLine, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
 import { render } from "./report.js"
@@ -61,12 +61,14 @@ import {
   IntegrateInput,
   ListInput,
   ModelIdentity,
+  PATH_LIST_LIMIT,
   Policy,
   Report,
   StatusInput,
   StopInput,
   budgetExhaustion,
   isExpectedHead,
+  pathList,
   toolError,
   validateSummary,
   type Check,
@@ -350,8 +352,8 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   if (unseen.length > 0)
     return fail(
       "E_PATHS",
-      `The Brief names [${unseen.join(", ")}], which ${unseen.length === 1 ? "has" : "have"} uncommitted changes in your checkout; the child starts from a commit and will not see them. Attach one file as briefFile, or commit with team_checkpoint, then delegate.`,
-      { files: unseen },
+      `The Brief names [${pathList(unseen)}], which ${unseen.length === 1 ? "has" : "have"} uncommitted changes in your checkout; the child starts from a commit and will not see them. Attach one file as briefFile, or commit with team_checkpoint, then delegate.`,
+      { files: unseen.slice(0, PATH_LIST_LIMIT) },
     )
 
   const childID = newRunID("w")
@@ -666,6 +668,9 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
 
   await Effect.runPromise(sessions.prompt({ sessionID: child.id, text: rendered }))
 
+  // Said in the answer, not refused: Plus cannot know whether this Brief needs
+  // commands, and the reader of the answer can still redirect the work.
+  const warning = shellLine(table, brief.role)[0]
   const output = {
     run: childID,
     requestID: brief.requestID,
@@ -674,6 +679,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
     branch: created.branch,
     base: baseSha,
     ...(resolvedModel === null ? {} : { model: `${resolvedModel.providerID}/${resolvedModel.modelID}${resolvedModel.variant === undefined ? "" : `@${resolvedModel.variant}`}` }),
+    ...(warning === undefined ? {} : { warning }),
     next: "If other work is ready, delegate it now; then end your turn: each settlement wakes you with its report.",
   }
   await atomicJson(requestPath, { signature, output, run: childID })
@@ -750,8 +756,8 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   if (done && allows(table, stored.role, "finish", "requirements.checks") && assigned.length > 0 && dirtyFiles.length > 0)
     return fail(
       "E_DIRTY",
-      `Worktree has uncommitted changes in [${dirtyFiles.join(", ")}]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.`,
-      { files: [...dirtyFiles] },
+      `Worktree has uncommitted changes in [${pathList(dirtyFiles)}]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.`,
+      { files: dirtyFiles.slice(0, PATH_LIST_LIMIT) },
     )
 
   // Compound behaviour: reuse same-tree proof only for a clean worktree;
@@ -786,8 +792,8 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   if (args.status === "done" && allows(table, stored.role, "finish", "requirements.clean") && dirtyFiles.length > 0)
     return fail(
       "E_DIRTY",
-      `Worktree has uncommitted changes in [${dirtyFiles.join(", ")}]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.`,
-      { files: [...dirtyFiles] },
+      `Worktree has uncommitted changes in [${pathList(dirtyFiles)}]. Call team_checkpoint first, or list them in deferred with a reason and use done_with_concerns.`,
+      { files: dirtyFiles.slice(0, PATH_LIST_LIMIT) },
     )
 
   if ((args.status === "blocked" || args.status === "needs_context" || args.status === "rejected") && args.needs.length === 0)
@@ -852,7 +858,18 @@ async function finishHandler(args: Report, caller: TeamCaller, table: Permission
   await saveRun(root, idle)
   // The child wrote the report: echoing it back costs its next request the
   // whole text again (a scout's 6 KB of findings). It gets what Plus added.
-  return succeeded({ run: body.run, attempt: n, status: args.status, head, commits, checks: reportChecks, dirty: body.dirty, dirtyFiles: body.dirtyFiles, reportPath })
+  return succeeded({
+    run: body.run,
+    attempt: n,
+    status: args.status,
+    head,
+    commits,
+    checks: reportChecks,
+    dirty: body.dirty,
+    dirtyFiles: body.dirtyFiles.slice(0, PATH_LIST_LIMIT),
+    ...(body.dirtyFiles.length > PATH_LIST_LIMIT ? { dirtyCount: body.dirtyFiles.length } : {}),
+    reportPath,
+  })
 }
 
 async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
@@ -918,7 +935,7 @@ async function checkpointHandler(args: CheckpointInput, caller: TeamCaller, tabl
     const wanted = new Set(files)
     const offenders = staged.filter((line) => !wanted.has(line))
     if (offenders.length > 0)
-      return fail("E_STAGED", `Index has staged changes [${offenders.join(", ")}] not in files[]; include them or unstage.`)
+      return fail("E_STAGED", `Index has staged changes [${pathList(offenders)}] not in files[]; include them or unstage.`)
     if (files.length === 0) return succeeded({ head, committed: false })
     // Ref-writing git ops serialize per repository, like the reference.
     const committed = await lock(root, "repo", record.repoKey, async () => {

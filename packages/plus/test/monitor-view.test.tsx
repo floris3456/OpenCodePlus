@@ -26,7 +26,7 @@ import {
   type MonitorTarget,
 } from "../src/tui/monitor/view.js"
 import { createSignal } from "solid-js"
-import { cleanupLedgers, collect, contractFixtureReport, ledger, script, usage } from "./monitor-fixture.js"
+import { cleanupLedgers, collect, contractFixtureReport, ledger, saveAll, script, usage } from "./monitor-fixture.js"
 import { dispatch, sleep } from "./instructions-nav.js"
 import { createTestTheme, renderPlusFixture, type DialogScript, type TestFixture } from "./tui.js"
 
@@ -34,7 +34,7 @@ afterEach(cleanupLedgers)
 
 const NOW = 1_800_000_000_000
 
-test("the Sessions checklist opens with this chat's tree open and only the chat checked; Enter and space check sessions and trees", async () => {
+test("the Sessions checklist opens with this chat's tree open and only the chat checked; space and ctrl+space check sessions and trees", async () => {
   const db = await seeded()
   const { fixture, queries, lists, closed } = await render(db, {
     initialSession: true,
@@ -49,19 +49,19 @@ test("the Sessions checklist opens with this chat's tree open and only the chat 
     expect(first).toMatch(/\[ \] {3}└─ ses_child/)
     expect(first).toContain("Active sessions · 1 tree")
 
-    // Enter checks the subagent too; the filter stays one Back step.
+    // space checks the subagent too; the filter stays one Back step.
     await dispatch(fixture, "down")
-    await dispatch(fixture, "return")
+    await dispatch(fixture, "space")
     await fixture.waitForFrame((text) => text.includes("2 sessions") && text.includes("filters 1"))
     expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat", "ses_child"])
-    await dispatch(fixture, "return")
+    await dispatch(fixture, "space")
     await fixture.waitForFrame((text) => !text.includes("2 sessions"))
     expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat"])
 
-    // space checks the whole tree, and unchecks it when all of it is checked.
-    await dispatch(fixture, "space")
+    // ctrl+space checks the whole tree, and unchecks it when all of it is checked.
+    await dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame(() => queries.at(-1)?.sessionIDs?.length === 2)
-    await dispatch(fixture, "space")
+    await dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame((text) => text.includes("No session checked"))
     expect(queries.at(-1)?.sessionIDs).toEqual([])
 
@@ -351,8 +351,8 @@ test("Sessions and session/facet pickers request further pages only on explicit 
     await dispatch(fixture, "]")
     await fixture.waitForFrame((text) => text.includes("trees 101-125/125"))
     expect(lists.at(-1)?.page).toEqual({ offset: 100 })
-    // Enter checks a session of the second page.
-    await dispatch(fixture, "return")
+    // space checks a session of the second page.
+    await dispatch(fixture, "space")
     await fixture.waitForFrame(() => queries.some((q) => q.scope === "session" && q.sessionIDs?.length === 1))
     await dispatch(fixture, "l")
     await fixture.waitForFrame((text) => text.includes("trees 1-100/125"))
@@ -376,6 +376,8 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     })
     db.requestEnded(`page-${String(i).padStart(3, "0")}`, { status: "completed", ended: NOW - 200 })
   }
+  // More results than one query saves; the service's background backfill saves the rest.
+  saveAll(db)
   const { fixture, queries } = await render(db, {
     width: 80,
     height: 24,
@@ -401,6 +403,33 @@ test("request page keys fetch only explicit pages, polling preserves cursor and 
     await fixture.waitForFrame(() => queries.at(-1)?.missesOnly === true && queries.at(-1)?.requestPage === undefined)
   } finally {
     fixture.destroy()
+  }
+})
+
+test("ended requests not analyzed yet are counted beside the request page", async () => {
+  const db = await ledger()
+  const report = { ...contractFixtureReport(NOW), requestPage: { total: 48, returned: 48, limit: 100, complete: true } }
+  const { fixture } = await render(db, {
+    width: 100,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...report, cachePending: 157 }),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("48/48 requests · 157 not analyzed yet · [—] older"))
+  } finally {
+    fixture.destroy()
+  }
+  const settled = await render(db, {
+    width: 100,
+    height: 24,
+    settings: { ...defaultSettings, tab: "cache" },
+    customReport: () => ({ ...report, cachePending: 0 }),
+  })
+  try {
+    await settled.fixture.waitForFrame((text) => text.includes("48/48 requests · [—] older"))
+  } finally {
+    settled.fixture.destroy()
   }
 })
 
@@ -472,6 +501,8 @@ async function render(
     active?: readonly string[]
     /** A fixed Sessions checklist answer instead of the ledger's. */
     checklist?: Plus.MonitorSessionList
+    /** Holds each Sessions checklist answer until the promise it returns settles. */
+    checklistGate?: () => Promise<void>
     /** A cache notice the view opens on; cleared when the view takes it. */
     target?: () => MonitorTarget | undefined
     onTarget?: () => void
@@ -508,6 +539,7 @@ async function render(
       "monitor.cache": async (input: Plus.MonitorQueryInput) => queryCacheResults(db, input, { directory: "/work/project", now: NOW }),
       "monitor.sessions": async (input: Plus.MonitorSessionsInput) => {
         lists.push(input)
+        await options.checklistGate?.()
         if (options.checklist !== undefined) return options.checklist
         const active = new Set(options.active ?? db.db.query<{ id: string }, []>("select id from session").all().map((row) => row.id))
         return sessionChecklist(db, input, { active, now: NOW, directory: "/work/project" })
@@ -720,6 +752,34 @@ test("the Sessions tab shows a token total that includes cache and reasoning", a
   }
 })
 
+test("a Sessions checklist answer slower than the poll is shown; the poll waits for it and asks once more", async () => {
+  const db = await seeded()
+  const gates: (() => void)[] = []
+  const { fixture, lists } = await render(db, {
+    settings: { ...defaultSettings, tab: "sessions" },
+    checklistGate: () => new Promise<void>((resolve) => gates.push(resolve)),
+  })
+  try {
+    await fixture.waitForFrame((text) => text.includes("Loading sessions"))
+    expect(lists).toHaveLength(1)
+    // One real poll interval (REFRESH_MS, 1 s: the seeded chat is live) passes with
+    // the answer still out. A poll used to send a second request and drop this answer.
+    await Bun.sleep(1_200)
+    expect(lists).toHaveLength(1)
+    gates.shift()!()
+    const frame = await fixture.waitForFrame((text) => !text.includes("Loading sessions"))
+    // The chat's row, under the column headings (the scope line names it too).
+    expect(frame.slice(frame.indexOf("Session / Role"))).toContain("Fix the thing")
+    // The poll that came while the answer was out asks again as soon as it is in.
+    const deadline = Date.now() + 5_000
+    while (lists.length < 2 && Date.now() < deadline) await Bun.sleep(10)
+    expect(lists).toHaveLength(2)
+  } finally {
+    gates.splice(0).forEach((open) => open())
+    fixture.destroy()
+  }
+})
+
 test("S shows inactive sessions from any tab, and on the Sessions tab steps back to active only", async () => {
   const db = await seeded()
   db.session({ id: "ses_old", title: "Old chat" }, NOW - 86_400_000)
@@ -754,14 +814,14 @@ test("checking sessions is a temporary filter: Backspace restores the stored sco
     expect(first).not.toContain("[x]")
     expect(queries[0]).toMatchObject({ scope: "project", view: "cache" })
 
-    // Enter starts a selection of the session, as a temporary drill.
-    dispatch(fixture, "return")
+    // space starts a selection of the session, as a temporary drill.
+    dispatch(fixture, "space")
     await fixture.waitForFrame((text) => text.includes("filters 1") && text.includes("[x] ▼ Fix the thing"))
     expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"], agents: ["build"] })
     expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings).toMatchObject({ scope: "project", agent: "build" })
 
-    // space adds the rest of the tree to the same drill.
-    dispatch(fixture, "space")
+    // ctrl+space adds the rest of the tree to the same drill.
+    dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame(() => queries.at(-1)?.sessionIDs?.length === 2)
     expect(await fixture.waitForFrame((text) => text.includes("filters 1"))).not.toContain("filters 2")
 

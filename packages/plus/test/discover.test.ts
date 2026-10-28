@@ -16,7 +16,7 @@ import { Effect, Schema, type Types } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { agentBody, discover, type BaseTemplate } from "../src/instructions/discover.js"
+import { agentBody, discover, userRuleItem, type BaseTemplate } from "../src/instructions/discover.js"
 import { teachingFilePath, teachingItemId } from "../src/instructions/paths.js"
 import { seedSystemInstruction, teachingContent } from "../src/instructions/teaching.js"
 import { captureBaselines, createState } from "../src/index.js"
@@ -1489,4 +1489,27 @@ test("only the title built-in is Special; hidden and file-backed agents keep the
     expect(built?.path).toBe(path.join(directory, ".opencode", "agent", `${id}.md`))
     expect(fileBacked.agents.find((entry) => entry.id === id && entry.scope === "defaults")?.origin).toBe(byId.get(id)?.origin)
   }
+})
+
+// T1: a shell rule whose id starts with `allow.` is an allow row of Commands
+// (like pilotty), so the row discovery builds for it carries the allow role.
+// Every other stored rule keeps the plain deny-list row it had.
+test("a user shell rule named allow.<name> is discovered as an allow row of Commands", () => {
+  const record = (tool: string, id: string) => ({ type: "rule" as const, level: "project" as const, agent: "alpha", tool, id, label: id, patterns: [`${id} *`], keywords: [id], updated: "2026-10-27T00:00:00.000Z" })
+  expect(userRuleItem(record("shell", "allow.inspect"), "shell")).toMatchObject({
+    id: "perm:shell:allow.inspect",
+    allow: true,
+    permKind: "input",
+    field: "command",
+    category: "commands",
+    custom: true,
+    permTool: "shell",
+    ruleId: "allow.inspect",
+  })
+  for (const plain of [userRuleItem(record("shell", "mine"), "shell"), userRuleItem(record("read", "allow.inspect"), "read")]) {
+    expect(plain).not.toHaveProperty("allow")
+    expect(plain).not.toHaveProperty("permKind")
+    expect(plain).not.toHaveProperty("field")
+  }
+  expect(userRuleItem(record("shell", "mine"), "shell")).toMatchObject({ category: "commands", custom: true })
 })

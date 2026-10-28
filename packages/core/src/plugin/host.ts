@@ -28,6 +28,7 @@ import { ReleaseRequestStore } from "../release/request.js"
 import { Rpc } from "../rpc.js"
 import { AbsolutePath, type DeepMutable } from "../schema.js"
 import { Skill } from "../skill.js"
+import { Snapshot } from "../snapshot.js"
 import { State } from "../state.js"
 import { Tool } from "../tool.js"
 import { Workspace } from "../workspace.js"
@@ -82,6 +83,7 @@ export const make = Effect.fn("PluginHost.make")(function* (
   const release = yield* ReleaseRequestStore.Service
   const rpc = yield* Rpc.Service
   const skill = yield* Skill.Service
+  const snapshot = yield* Snapshot.Service
   const tools = yield* Tool.Service
   const vcs = yield* Vcs.Service
   const websearch = yield* WebSearch.Service
@@ -574,6 +576,7 @@ const decodeWorktree = Schema.decodeUnknownEffect(Worktree.Info)
           })
         }),
     },
+    snapshot: { transform: snapshot.transform },
     storage: pluginStorage(pluginID),
     shell: {
       hook: (name, callback) => hooks.register("shell", name, callback),
@@ -717,6 +720,7 @@ export const requirements = LayerNode.group([
   ReleaseRequestStore.node,
   Rpc.node,
   Skill.node,
+  Snapshot.node,
   Tool.node,
   Vcs.node,
   WebSearch.node,

@@ -221,18 +221,40 @@ function tailMissing(from: SegmentInfo, to: SegmentInfo, boundary: number): bool
 // change to these is a real cache-prefix change; the tail's own markers are
 // replaced with the tail and must not be counted.
 function reusableMarkerSignature(fp: RequestFingerprintData, boundary: number): string {
-  const known = signatureCache.get(fp) ?? new Map<number, string>()
+  return markerSignatureAt(fp, boundary).signature
+}
+
+// sha256 of reusableMarkerSignature, kept with it.
+function reusableMarkerHash(fp: RequestFingerprintData, boundary: number): string {
+  const entry = markerSignatureAt(fp, boundary)
+  entry.hash ??= sha256(entry.signature)
+  return entry.hash
+}
+
+// The relevant markers are the non-message ones plus the message markers at or
+// before the boundary, so the signature changes only where a boundary passes a
+// message marker. It is kept per count of those, not per boundary: a long chat
+// has thousands of boundaries and only a few markers.
+function markerSignatureAt(fp: RequestFingerprintData, boundary: number): { readonly signature: string; hash?: string } {
+  const known = signatureCache.get(fp) ?? {
+    positions: (fp.cacheControl ?? []).flatMap((marker) => {
+      const match = /messages\[(\d+)\]/.exec(marker.target)
+      return match === null ? [] : [Number(match[1])]
+    }),
+    byCount: new Map<number, { readonly signature: string; hash?: string }>(),
+  }
   signatureCache.set(fp, known)
-  const cached = known.get(boundary)
+  const count = known.positions.filter((position) => position <= boundary).length
+  const cached = known.byCount.get(count)
   if (cached !== undefined) return cached
   const relevant = (fp.cacheControl ?? []).filter((marker) => {
     const match = /messages\[(\d+)\]/.exec(marker.target)
     return match === null || Number(match[1]) <= boundary
   })
   // canonicalJson([cacheKey, relevant]), with each marker's text computed once.
-  const signature = `[${canonicalJson(fp.cacheKey ?? null)},[${relevant.map(markerJson).join(",")}]]`
-  known.set(boundary, signature)
-  return signature
+  const entry = { signature: `[${canonicalJson(fp.cacheKey ?? null)},[${relevant.map(markerJson).join(",")}]]` }
+  known.byCount.set(count, entry)
+  return entry
 }
 
 function markerJson(marker: CacheControlMarker): string {
@@ -243,9 +265,9 @@ function markerJson(marker: CacheControlMarker): string {
   return json
 }
 
-// Marker signatures per fingerprint (and boundary), and each marker's
-// canonical text: each fingerprint is compared with several others.
-const signatureCache = new WeakMap<RequestFingerprintData, Map<number, string>>()
+// Marker signatures per fingerprint (and relevant-marker count), and each
+// marker's canonical text: each fingerprint is compared with several others.
+const signatureCache = new WeakMap<RequestFingerprintData, { readonly positions: readonly number[]; readonly byCount: Map<number, { readonly signature: string; hash?: string }> }>()
 const shapeCache = new WeakMap<RequestFingerprintData, string>()
 const markerCache = new WeakMap<CacheControlMarker, string>()
 
@@ -908,9 +930,17 @@ export function unreadFingerprintKeys(fp: RequestFingerprintData | undefined, wr
     const key = known?.mode === mode ? known.key : { key: `append:${mode}:${prefix}` }
     if (work && known?.mode === mode) work.sharedKeys++
     read.push(key)
+    // A use moves the entry to the back, so eviction drops the least recently
+    // used prefix: first-in eviction dropped the start of every long chat's
+    // chain, which each of its requests needs first.
+    if (known !== undefined && known.mode === mode) {
+      unreadAppendCache.delete(identity)
+      unreadAppendCache.set(identity, known)
+    }
     if (part.kind === "message" && known?.mode !== mode) {
       const bytes = Buffer.byteLength(JSON.stringify([identity, { prefix, mode, key, bytes: UNREAD_METADATA_CACHE_LIMIT.bytes }])) + 1
       if (bytes <= UNREAD_METADATA_CACHE_LIMIT.bytes) {
+        unreadAppendCache.delete(identity)
         unreadAppendCache.set(identity, { prefix, mode, key, bytes })
         unreadMetadataBytes.append += bytes - (known?.bytes ?? 0)
         while (unreadAppendCache.size > UNREAD_METADATA_CACHE_LIMIT.entries || unreadMetadataBytes.append > UNREAD_METADATA_CACHE_LIMIT.bytes) {
@@ -952,7 +982,7 @@ export function unreadFingerprintKeys(fp: RequestFingerprintData | undefined, wr
         .filter((part, index, parts) => parts.findIndex((other) => other.name === part.name && other.hash === part.hash) === index)
         .sort((a, b) => a.index! - b.index! || a.name.localeCompare(b.name) || a.hash.localeCompare(b.hash))
         .toReversed().reduce((hash, part) => sha256(canonicalJson([part.name, part.hash, hash])), "")
-      const key = `${identity}:${sha256(reusableMarkerSignature(fp, boundary))}`
+      const key = `${identity}:${reusableMarkerHash(fp, boundary)}`
       read.push({ key: `tail:atLeast:${mode}:${key}`, tail: suffix })
       if (boundary === info.boundary) read.push({ key: `tail:exact:${mode}:${key}`, tail: suffix })
       modes.forEach((mode) => writes.push({ key: `tail:${boundary === info.boundary ? "atLeast" : "exact"}:${mode}:${key}`, tail: suffix }))
@@ -1306,32 +1336,7 @@ export function windowedSessionSignals(
       selectedModel(d.request.provider, d.request.model) &&
       selectedAgent(d.request.agent),
   )
-  const pings = inWindow.filter((d) => d.request.kind === "ping")
-  let followedByHit = 0
-  let followedByMiss = 0
-  let followedByCold = 0
-  let unused = 0
-  let unknown = 0
-  const unknownReasons: Record<string, number> = {}
-  let cost = 0
-  for (const ping of pings) {
-    cost += ping.request.cost
-    // Only a next request inside this window under the same selection describes
-    // the ping's effect; an excluded request belongs to another query.
-    const next = inWindow.find(
-      (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
-    )
-    if (!next) { unused++; continue }
-    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "unknown" || next.request.verdict === "error") {
-      unknown++
-      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : next.request.verdict === "unknown" ? "follow-up-incomplete" : "follow-up-unmeasured"
-      unknownReasons[reason] = (unknownReasons[reason] ?? 0) + 1
-      continue
-    }
-    if (next.request.verdict === "cold") { followedByCold++; continue }
-    if (next.request.verdict === "hit") followedByHit++
-    else if (next && isMiss(next.request)) followedByMiss++
-  }
+  const pings = windowPings(inWindow)
 
   // Unstable prefix: a segment changing on 3+ consecutive requests.
   // We retain each qualifying request's streak and identity, and for each
@@ -1350,6 +1355,39 @@ export function windowedSessionSignals(
   return {
     unread,
     unstable: [...latestUnstable.values()].map((entry) => ({ segment: entry.segment, streak: entry.streak })),
-    pings: { sent: pings.length, cost, followedByHit, followedByMiss, followedByCold, unused, unknown, unknownReasons },
+    pings,
   }
+}
+
+/**
+ * What followed each warming ping of one session's selected requests (in start
+ * order): only the next request inside the same selection describes its effect;
+ * an excluded request belongs to another query.
+ */
+export function windowPings(inWindow: readonly { readonly request: MonitorRequest }[]): WindowedPings {
+  const pings = inWindow.filter((d) => d.request.kind === "ping")
+  let followedByHit = 0
+  let followedByMiss = 0
+  let followedByCold = 0
+  let unused = 0
+  let unknown = 0
+  const unknownReasons: Record<string, number> = {}
+  let cost = 0
+  for (const ping of pings) {
+    cost += ping.request.cost
+    const next = inWindow.find(
+      (d) => d.request.at > ping.request.at && d.request.kind !== "ping" && d.request.kind !== "title",
+    )
+    if (!next) { unused++; continue }
+    if (ping.request.outcome !== "completed" || ping.request.measurement?.state !== "reported" || next.request.verdict === "none" || next.request.verdict === "unknown" || next.request.verdict === "error") {
+      unknown++
+      const reason = ping.request.outcome !== "completed" ? "ping-failed" : ping.request.measurement?.state !== "reported" ? "ping-unmeasured" : next.request.verdict === "unknown" ? "follow-up-incomplete" : "follow-up-unmeasured"
+      unknownReasons[reason] = (unknownReasons[reason] ?? 0) + 1
+      continue
+    }
+    if (next.request.verdict === "cold") { followedByCold++; continue }
+    if (next.request.verdict === "hit") followedByHit++
+    else if (isMiss(next.request)) followedByMiss++
+  }
+  return { sent: pings.length, cost, followedByHit, followedByMiss, followedByCold, unused, unknown, unknownReasons }
 }

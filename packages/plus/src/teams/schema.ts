@@ -702,6 +702,24 @@ export interface BudgetDimension {
   ratio: number
 }
 
+/** The attempt fields the wall budget reads; a record written before they
+ * existed simply adds nothing. */
+interface BudgetAttempt {
+  readonly startedAt?: unknown
+  readonly endedAt?: unknown
+}
+
+/** Time spent in attempts, not run age: an idle run that already settled must
+ * not drift into a wall-budget ping while it waits for its parent. */
+function attemptWallMs(attempts: readonly BudgetAttempt[], now: number): number {
+  return attempts.reduce((total, attempt) => {
+    const startedAt = typeof attempt.startedAt === "string" ? Date.parse(attempt.startedAt) : NaN
+    if (!Number.isFinite(startedAt)) return total
+    const endedAt = typeof attempt.endedAt === "string" ? Date.parse(attempt.endedAt) : now
+    return total + Math.max(0, (Number.isFinite(endedAt) ? endedAt : now) - startedAt)
+  }, 0)
+}
+
 export interface BudgetUsageOpts {
   tokensUsed?: number | undefined
   now?: number | undefined
@@ -716,7 +734,7 @@ export interface BudgetUsageOpts {
 /** Per-dimension budget usage; unconfigured dimensions are omitted. */
 export function budgetDimensions(
   run: {
-    attempts: readonly unknown[]
+    attempts: readonly BudgetAttempt[]
     budget: { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined }
     createdAt: string
   },
@@ -743,10 +761,10 @@ export function budgetDimensions(
   }
   const wallBudget = run.budget.wallMs ?? opts?.wallMsFallback
   if (typeof wallBudget === "number" && wallBudget > 0) {
-    const createdAt = Date.parse(run.createdAt)
-    if (typeof run.budget.wallMs === "number" && run.budget.wallMs > 0 && Number.isFinite(createdAt)) {
-      // Run budget wall: run age vs budget.wallMs.
-      const wallUsed = now - createdAt
+    if (typeof run.budget.wallMs === "number" && run.budget.wallMs > 0) {
+      // Run budget wall: time spent in attempts vs budget.wallMs. Idle gaps,
+      // including an idle after the last attempt settled, are not run work.
+      const wallUsed = attemptWallMs(run.attempts, now)
       dims.push({ name: "wall", used: wallUsed, budget: wallBudget, ratio: wallUsed / wallBudget })
     } else {
       // Advisory attempt wall: attempt age vs the fallback denominator.
@@ -762,7 +780,7 @@ export function budgetDimensions(
 
 export function budgetExhaustion(
   run: {
-    attempts: readonly unknown[]
+    attempts: readonly BudgetAttempt[]
     budget: { turns?: number | undefined; tokens?: number | undefined; wallMs?: number | undefined }
     createdAt: string
   },
@@ -797,6 +815,17 @@ export type ToolError = typeof ToolError.Type
 
 export function toolError(code: string, message: string, accepted?: unknown): ToolError {
   return accepted === undefined ? { code, message } : { code, message, accepted }
+}
+
+// How many paths a refusal or a report names before it counts the rest. A
+// worktree with a stale index once listed 56k paths in one E_DIRTY: the 12 MB
+// refusal was more than the provider accepts, and the run died.
+export const PATH_LIST_LIMIT = 50
+
+/** "a, b, c", or the first PATH_LIST_LIMIT paths and "and N more". */
+export function pathList(paths: readonly string[], limit = PATH_LIST_LIMIT): string {
+  if (paths.length <= limit) return paths.join(", ")
+  return `${paths.slice(0, limit).join(", ")} and ${paths.length - limit} more`
 }
 
 const DURATION_RE = /^\s*(?:(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)\s*)+$/i

@@ -13,13 +13,13 @@ import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Tool } from "@opencode/schema/tool"
 import { Effect } from "effect"
-import { apply, orderRules, type ApplyInput } from "../src/instructions/apply.js"
+import { apply, orderRules, permissionTableOf, sessionPlans, type ApplyInput } from "../src/instructions/apply.js"
 import { fingerprint, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { catalogItems } from "../src/instructions/permission-catalog.js"
 import { decide, enforcementState, permissionTable } from "../src/instructions/permission-enforce.js"
 import { actionForToolId } from "../src/instructions/tool-permissions.js"
 import { agentHarness, agentInfo, context, toolHarness } from "./harness.js"
-import { change, linked, presetInput, presetTable } from "./teams/preset-table.js"
+import { change, linked, presetInput, presetTable, type TeamMember } from "./teams/preset-table.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
@@ -182,14 +182,17 @@ test("orderRules puts role defaults first (allow, ask, deny), then what lets thr
 test("an orchestrator-preset member's shell change rows refuse every change command with their own reason", async () => {
   const { evaluate } = await import("../../core/src/permission.js")
   const alice = linked("ocp-alice", "orchestrator")
+  // The row that refuses, as every refusal names it: the member's own row,
+  // which the preset below it sets off.
+  const by = (row: string, title: string) => ` (denied by item:project:opencodeplus-team/:ocp-alice:${row} "${title}": off, from preset basic › orchestrator)`
   const rules = await rulesAfterApply(alice.id, presetInput({ members: [alice] }))
-  expect(evaluate("shell", "git push origin main", rules)).toMatchObject({ effect: "deny", message: "pushing is not allowed here" })
-  expect(evaluate("shell", "git commit -m x", rules)).toMatchObject({ effect: "deny", message: "committing is not allowed here" })
-  expect(evaluate("shell", "git stash", rules)).toMatchObject({ effect: "deny", message: "changing the git working tree is not allowed here" })
-  expect(evaluate("shell", "git merge feature", rules)).toMatchObject({ effect: "deny", message: "merging is not allowed here" })
-  expect(evaluate("shell", "git branch -D x", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
-  expect(evaluate("shell", "git worktree add ../x", rules)).toMatchObject({ effect: "deny", message: "making git worktrees is not allowed here" })
-  expect(evaluate("shell", "echo x > f.txt", rules)).toMatchObject({ effect: "deny", message: "writing files from the shell is not allowed here" })
+  expect(evaluate("shell", "git push origin main", rules)).toMatchObject({ effect: "deny", message: `pushing is not allowed here${by("perm:shell:git-push", "Git push")}` })
+  expect(evaluate("shell", "git commit -m x", rules)).toMatchObject({ effect: "deny", message: `committing is not allowed here${by("perm:shell:git-commit", "Git commit")}` })
+  expect(evaluate("shell", "git stash", rules)).toMatchObject({ effect: "deny", message: `changing the git working tree is not allowed here${by("perm:shell:commands.git-changes", "Git working-tree changes")}` })
+  expect(evaluate("shell", "git merge feature", rules)).toMatchObject({ effect: "deny", message: `merging is not allowed here${by("perm:shell:commands.git-merge", "Git merge")}` })
+  expect(evaluate("shell", "git branch -D x", rules)).toMatchObject({ effect: "deny", message: `changing git refs or worktrees is not allowed here${by("perm:shell:commands.git-refs", "Git branches, tags and worktrees")}` })
+  expect(evaluate("shell", "git worktree add ../x", rules)).toMatchObject({ effect: "deny", message: `making git worktrees is not allowed here${by("perm:shell:commands.git-worktree-add", "Git worktree add")}` })
+  expect(evaluate("shell", "echo x > f.txt", rules)).toMatchObject({ effect: "deny", message: `writing files from the shell is not allowed here${by("perm:shell:commands.file-writes", "Writing files from the shell")}` })
   expect(evaluate("shell", "git status", rules).effect).not.toBe("deny")
   expect(evaluate("shell", "bun test test/a.test.ts", rules).effect).not.toBe("deny")
 
@@ -205,16 +208,17 @@ test("a planner-preset member's shell merges and makes worktrees, and refuses ev
   const { evaluate } = await import("../../core/src/permission.js")
   const planner = linked("ocp-planner", "planner")
   const rules = await rulesAfterApply(planner.id, presetInput({ members: [planner] }))
+  const by = (row: string, title: string) => ` (denied by item:project:opencodeplus-team/:ocp-planner:${row} "${title}": off, from preset basic › planner)`
   for (const command of ["git worktree add -b 1.2.0_search ../1.2.0_search/repo 1.2.0", "git merge 1.2.0_search", "git merge --abort", "git fetch upstream", "git status"])
     expect([command, evaluate("shell", command, rules).effect]).not.toEqual([command, "deny"])
-  expect(evaluate("shell", "git add .", rules)).toMatchObject({ effect: "deny", message: "changing the git working tree is not allowed here" })
-  expect(evaluate("shell", "git branch -D 1.2.0_search", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
-  expect(evaluate("shell", "git worktree remove ../x", rules)).toMatchObject({ effect: "deny", message: "changing git refs or worktrees is not allowed here" })
-  expect(evaluate("shell", "git commit -m x", rules)).toMatchObject({ effect: "deny", message: "committing is not allowed here" })
-  expect(evaluate("shell", "git push origin 1.2.0", rules)).toMatchObject({ effect: "deny", message: "pushing is not allowed here" })
-  expect(evaluate("shell", "git reset --hard HEAD~1", rules)).toMatchObject({ effect: "deny", message: "git history rewrites are not allowed here" })
+  expect(evaluate("shell", "git add .", rules)).toMatchObject({ effect: "deny", message: `changing the git working tree is not allowed here${by("perm:shell:commands.git-changes", "Git working-tree changes")}` })
+  expect(evaluate("shell", "git branch -D 1.2.0_search", rules)).toMatchObject({ effect: "deny", message: `changing git refs or worktrees is not allowed here${by("perm:shell:commands.git-refs", "Git branches, tags and worktrees")}` })
+  expect(evaluate("shell", "git worktree remove ../x", rules)).toMatchObject({ effect: "deny", message: `changing git refs or worktrees is not allowed here${by("perm:shell:commands.git-refs", "Git branches, tags and worktrees")}` })
+  expect(evaluate("shell", "git commit -m x", rules)).toMatchObject({ effect: "deny", message: `committing is not allowed here${by("perm:shell:git-commit", "Git commit")}` })
+  expect(evaluate("shell", "git push origin 1.2.0", rules)).toMatchObject({ effect: "deny", message: `pushing is not allowed here${by("perm:shell:git-push", "Git push")}` })
+  expect(evaluate("shell", "git reset --hard HEAD~1", rules)).toMatchObject({ effect: "deny", message: `git history rewrites are not allowed here${by("perm:shell:git-rewrite", "Git history rewrites")}` })
   expect(evaluate("shell", "rm -rf build", rules).effect).toBe("deny")
-  expect(evaluate("shell", "echo x > f.txt", rules)).toMatchObject({ effect: "deny", message: "writing files from the shell is not allowed here" })
+  expect(evaluate("shell", "echo x > f.txt", rules)).toMatchObject({ effect: "deny", message: `writing files from the shell is not allowed here${by("perm:shell:commands.file-writes", "Writing files from the shell")}` })
   expect(evaluate("shell", "bash -c 'git add .'", rules).effect).toBe("deny")
 })
 
@@ -236,7 +240,9 @@ test("a closed shell allow-list runs only what its rows open, each command of a 
     const refused = parsed.commands.map((part) => evaluate("shell", part.resource, rules)).find((rule) => rule.effect === "deny")
     return refused === undefined ? "runs" : (refused.message ?? "deny")
   }
-  const closedMessage = "shell commands are not allowed here; still allowed: pilotty (driving terminal apps)"
+  // The closing row of the list is the one refusing, and every refusal says so.
+  const by = ` (denied by item:project:opencodeplus-team/:Flash-Implementer:perm:shell:commands.* "Every other command": off, from preset basic › implementer)`
+  const closedMessage = `shell commands are not allowed here; still allowed: pilotty (driving terminal apps)${by}`
   expect(await verdict("pilotty spawn --name t1 bun run dev")).toBe("runs")
   expect(await verdict("pilotty snapshot -s t1 --format text")).toBe("runs")
   expect(await verdict("pilotty key -s t1 Enter")).toBe("runs")
@@ -254,7 +260,7 @@ test("a closed shell allow-list runs only what its rows open, each command of a 
   // With the pilotty row off nothing runs; with Every other command on the
   // allow row changes nothing.
   const none = await rulesAfterApply(tester.id, presetInput({ members: [tester], records: [...closed, change(tester, "perm:shell:commands.pilotty", { state: "off" })] }))
-  expect(evaluate("shell", "pilotty list-sessions", none)).toMatchObject({ effect: "deny", message: "shell commands are not allowed here" })
+  expect(evaluate("shell", "pilotty list-sessions", none)).toMatchObject({ effect: "deny", message: `shell commands are not allowed here${by}` })
   const open = await rulesAfterApply(tester.id, presetInput({ members: [tester], records: [...closed, change(tester, "perm:shell:commands.*", { state: "on" })] }))
   expect(evaluate("shell", "git status", open).effect).not.toBe("deny")
   // A member of any other preset keeps its own shell: the list is the implementer's.
@@ -267,7 +273,12 @@ test("Where and a Files fallback are checked on the call: closing them installs 
   const items = catalogItems([toolItem("read")], actionForToolId)
   const agents = [{ id: "alpha", level: "project" as const }]
   const keyDenies = ["*.key", "*.pem", "*.p12", "*.pfx", "id_rsa", "id_rsa.*", "*/id_rsa", "*/id_rsa.*", "id_ed25519", "*/id_ed25519", "*/id_ed25519.*", "*/id_ecdsa", "*/id_ecdsa.*"].map(
-    (resource) => ({ action: "read", resource, effect: "deny" as const, message: "Private keys cannot be read here" }),
+    (resource) => ({
+      action: "read",
+      resource,
+      effect: "deny" as const,
+      message: "Private keys cannot be read here (denied by item:project:alpha:perm:read:files.keys \"Private keys\": off, set at project level)",
+    }),
   )
   const closed = await rulesAfterApply("alpha", {
     items,
@@ -298,15 +309,193 @@ test("Where and a Files fallback are checked on the call: closing them installs 
   expect(whereRead("src/index.ts").refuse).toBeUndefined()
 })
 
+// T1: the theorysnap case. A team member with no preset has every shared row
+// off by default — "Every other command" included — so its shell is closed to
+// allow rows none of which is on, and nothing said which row did it. Every
+// refusal now names that row and where its state comes from, so the lead can
+// pass the id straight to instructions.set instead of guessing.
+test("a team member with no preset is told which row closed its shell, and opening that row reopens it", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const runner: TeamMember = { id: "runner", team: "theorysnap" }
+  const inputFor = (records: readonly CustomizationRecord[]) => presetInput({ members: [runner], records })
+  const shell = (records: readonly CustomizationRecord[], command: string) =>
+    decide(permissionTableOf(inputFor(records)).toolRows("runner", "shell"), {
+      tool: "shell",
+      input: { command },
+      sessionID: "ses",
+      directory: "/work",
+      teamMembers: new Set(),
+    }).refuse
+  const on = [change(runner, "tool:shell", { state: "on" })]
+  expect(shell(on, "ls")).toBe(
+    'Permission denied: shell commands are not allowed here (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))',
+  )
+  // The closing row on lets Plus run the call; core still refuses the rows
+  // that stay off, each naming itself, and leaves the rest of the shell alone.
+  const listed = [...on, change(runner, "perm:shell:commands.*", { state: "on" })]
+  expect(shell(listed, "ls")).toBeUndefined()
+  const rules = await rulesAfterApply("runner", inputFor(listed))
+  expect(evaluate("shell", "git rev-parse HEAD", rules)).toMatchObject({
+    effect: "deny",
+    message: 'git commands are not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git "Git": off by default (nothing sets it))',
+  })
+  expect(evaluate("shell", "uv run python3 -c 1", rules).effect).not.toBe("deny")
+  // Opening the git row too is enough for a git command.
+  expect(evaluate("shell", "git rev-parse HEAD", await rulesAfterApply("runner", inputFor([...listed, change(runner, "perm:shell:git", { state: "on" })]))).effect).not.toBe("deny")
+  // A row set at the member's own level says so.
+  const pushing = await rulesAfterApply("runner", inputFor([...on, change(runner, "perm:shell:git-push", { state: "off" })]))
+  expect(evaluate("shell", "git push origin main", pushing)).toMatchObject({
+    effect: "deny",
+    message: 'pushing is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git-push "Git push": off, set at project level)',
+  })
+})
+
+// T1: a user shell rule named `allow.<name>` is an allow row of Commands, so
+// theorysnap's runner runs what those six rules name while its "Every other
+// command" row stays off, and the rows that are off still refuse inside it.
+test("a shell allow. rule of a preset-less member opens its own patterns through a closed shell", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const { ShellParse } = await import("../../core/src/shell/parse.js")
+  const runner: TeamMember = { id: "runner", team: "theorysnap" }
+  // theorysnap's real records carry no team field and name the member.
+  const rule = (id: string, label: string, patterns: string[], keywords: string[]) => ({
+    type: "rule" as const,
+    level: "project" as const,
+    agent: "runner",
+    tool: "shell",
+    id,
+    label,
+    patterns,
+    keywords,
+    updated: "",
+  })
+  const rules = [
+    rule("allow.inspect", "Looking around (ls, echo)", ["ls", "ls *", "echo *", "cd *", "true"], ["ls", "echo", "cd", "true"]),
+    rule("allow.repo-python", "Repo scripts (python3 / uv run under tools/)", ["python3 tools/*", "uv run tools/*"], ["python3", "uv run"]),
+    rule("allow.wrappers", "Wrappers (nice, timeout)", ["nice *", "timeout *"], ["nice", "timeout"]),
+  ]
+  const closed = [change(runner, "tool:shell", { state: "on" })]
+  const inputFor = (records: readonly CustomizationRecord[]) => presetInput({ members: [runner], records, rules })
+  const shell = (records: readonly CustomizationRecord[], command: string) =>
+    decide(permissionTableOf(inputFor(records)).toolRows("runner", "shell"), {
+      tool: "shell",
+      input: { command },
+      sessionID: "ses",
+      directory: "/work",
+      teamMembers: new Set(),
+    }).refuse
+  // The closing row names the allow rows that are on, in the order the table lists them.
+  const stillAllowed = "Looking around (ls, echo), Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout)"
+  const closedMessage = `shell commands are not allowed here; still allowed: ${stillAllowed} (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))`
+  for (const command of ["echo hello", "python3 tools/check.py", "timeout 120 python3 tools/benchmark/bench.py report /tmp/opencodeplus/bench/batch1", "cd tools && ls"])
+    expect([command, shell(closed, command)]).toEqual([command, undefined])
+  expect(shell(closed, "git status")).toBe(`Permission denied: ${closedMessage}`)
+
+  // Core: the same four commands run, one part of a chain at a time.
+  const verdict = async (records: readonly CustomizationRecord[], line: string) => {
+    const applied = await rulesAfterApply("runner", inputFor(records))
+    const parsed = await Effect.runPromise(ShellParse.scan(line, "/bin/bash", "/work"))
+    const refused = parsed.commands.map((part) => evaluate("shell", part.resource, applied)).find((entry) => entry.effect === "deny")
+    return refused === undefined ? "runs" : (refused.message ?? "deny")
+  }
+  for (const command of ["echo hello", "python3 tools/check.py", "timeout 120 python3 tools/benchmark/bench.py report /tmp/opencodeplus/bench/batch1", "cd tools && ls"])
+    expect([command, await verdict(closed, command)]).toEqual([command, "runs"])
+  expect(await verdict(closed, "git rev-parse HEAD")).toBe(
+    'git commands are not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git "Git": off by default (nothing sets it))',
+  )
+  expect(await verdict(closed, "echo hi && git push origin main")).toBe(
+    'pushing is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git-push "Git push": off by default (nothing sets it))',
+  )
+  expect(await verdict(closed, "rm -rf build")).toBe(
+    'recursive force removal is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:rm-rf "Recursive force remove": off by default (nothing sets it))',
+  )
+  expect(await verdict(closed, "uv run python3 -c 1")).toBe(closedMessage)
+
+  // A deny-list row that is off still refuses inside what an allow row opens.
+  const noWrites = [...closed, change(runner, "perm:shell:commands.file-writes", { state: "off" })]
+  expect(await verdict(noWrites, "echo x > f.txt")).toBe(
+    'writing files from the shell is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:commands.file-writes "Writing files from the shell": off, set at project level)',
+  )
+  expect(await verdict(noWrites, "echo x")).toBe("runs")
+
+  // The allow row off opens nothing and scrubs nothing.
+  const inspectOff = [...closed, change(runner, "perm:shell:allow.inspect", { state: "off" })]
+  expect(shell(inspectOff, "echo hello")).toBe(
+    `Permission denied: shell commands are not allowed here; still allowed: Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout) (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))`,
+  )
+  expect(await verdict(inspectOff, "echo hello")).toBe(
+    `shell commands are not allowed here; still allowed: Repo scripts (python3 / uv run under tools/), Wrappers (nice, timeout) (denied by item:project:theorysnap/:runner:perm:shell:commands.* "Every other command": off by default (nothing sets it))`,
+  )
+  expect((await rulesAfterApply("runner", inputFor(inspectOff))).some((rule) => rule.action === "shell" && rule.resource === "echo *" && rule.effect === "deny")).toBe(false)
+  const scrubOf = (records: readonly CustomizationRecord[]) =>
+    new Map(sessionPlans(inputFor(records), permissionTableOf(inputFor(records))).scrubByAgent).get("runner") ?? []
+  // A deny-list row that is off still scrubs (git); an allow row never does.
+  expect(scrubOf(inspectOff)).toContain("git")
+  expect(scrubOf(inspectOff)).not.toContain("echo")
+  expect(scrubOf(inspectOff)).not.toContain("ls")
+
+  // With Every other command on the allow rows change nothing.
+  const open = [...closed, change(runner, "perm:shell:commands.*", { state: "on" })]
+  expect(await verdict(open, "uv run python3 -c 1")).toBe("runs")
+  expect(shell(open, "uv run python3 -c 1")).toBeUndefined()
+  expect(await verdict(open, "git status")).toBe(
+    'git commands are not allowed here (denied by item:project:theorysnap/:runner:perm:shell:git "Git": off by default (nothing sets it))',
+  )
+
+  // A rule without the prefix stays a deny-list row: on, its patterns are
+  // refused by the closing row and it opens nothing.
+  const mine = [rule("mine", "Mine", ["mine *"], ["mine"])]
+  const withMine = (records: readonly CustomizationRecord[]) => presetInput({ members: [runner], records, rules: [...rules, ...mine] })
+  const mineVerdict = async (records: readonly CustomizationRecord[]) => {
+    const applied = await rulesAfterApply("runner", withMine(records))
+    const parsed = await Effect.runPromise(ShellParse.scan("mine x", "/bin/bash", "/work"))
+    const refused = parsed.commands.map((part) => evaluate("shell", part.resource, applied)).find((entry) => entry.effect === "deny")
+    return refused === undefined ? "runs" : (refused.message ?? "deny")
+  }
+  const mineRefusal = (records: readonly CustomizationRecord[]) =>
+    decide(permissionTableOf(withMine(records)).toolRows("runner", "shell"), {
+      tool: "shell",
+      input: { command: "mine x" },
+      sessionID: "ses",
+      directory: "/work",
+      teamMembers: new Set(),
+    }).refuse
+  expect(mineRefusal(closed)).toBe(`Permission denied: ${closedMessage}`)
+  expect(await mineVerdict(closed)).toBe(closedMessage)
+  const mineOff = [...open, change(runner, "perm:shell:mine", { state: "off" })]
+  const mineRules = await rulesAfterApply("runner", withMine(mineOff))
+  expect(evaluate("shell", "mine x", mineRules)).toMatchObject({
+    effect: "deny",
+    message: 'Mine is not allowed here (denied by item:project:theorysnap/:runner:perm:shell:mine "Mine": off, set at project level)',
+  })
+})
+
+// The same words for the two fallbacks a row can resolve from: a member
+// preset's shipped value and a native agent's own.
+test("a row's source says the preset it comes from, or that OpenCode ships it", () => {
+  const alice = linked("ocp-alice", "orchestrator")
+  const presetRow = presetTable({ members: [alice] })
+    .ruleRows(alice.id, "shell")
+    .find((row) => row.item.id === "perm:shell:git-push")
+  expect(presetRow?.source).toBe('item:project:opencodeplus-team/:ocp-alice:perm:shell:git-push "Git push": off, from preset basic › orchestrator')
+  const native = permissionTableOf(withNativeAlpha(presetInput({ members: [] })))
+    .ruleRows("alpha", "shell")
+    .find((row) => row.item.id === "perm:shell:git-push")
+  expect(native?.source).toBe('item:project:alpha:perm:shell:git-push "Git push": on, as OpenCode ships it')
+})
+
 // ── enforcement hooks ──────────────────────────────────────────────────────
 
 test("execute.before refuses an implementer-preset member's grep on secret files through its grep rows", async () => {
   const member = "ocp-deepseek-implementer"
   const host = hostFor([member, "alpha"])
   const applied = await apply(host.ctx, withNativeAlpha(presetInput({ members: [linked(member, "implementer")] })))
-  expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", path: ".env" }))).toBe("Permission denied: .env files is not allowed here")
-  expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", path: "config/.env.local" }))).toBe("Permission denied: .env files is not allowed here")
-  expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", include: "*.env" }))).toBe("Permission denied: searching .env files is not allowed here")
+  const envBy = ` (denied by item:project:opencodeplus-team/:${member}:perm:grep:files.env ".env files": off, from preset basic › implementer)`
+  expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", path: ".env" }))).toBe(`Permission denied: .env files is not allowed here${envBy}`)
+  expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", path: "config/.env.local" }))).toBe(`Permission denied: .env files is not allowed here${envBy}`)
+  expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", include: "*.env" }))).toBe(
+    `Permission denied: searching .env files is not allowed here (denied by item:project:opencodeplus-team/:${member}:perm:grep:include.env ".env files": off, from preset basic › implementer)`,
+  )
   expect(await refusalOf(host.tool, beforeEvent(member, "grep", { pattern: "KEY", path: "src" }))).toBeUndefined()
   // A native agent outside the team keeps the shipped rows, which search it.
   expect(await refusalOf(host.tool, beforeEvent("alpha", "grep", { pattern: "KEY", path: ".env" }))).toBeUndefined()
@@ -446,7 +635,7 @@ test("nobody is asked in a delegated run: approval and questions are refused the
   expect(unwatched).toContain("nobody watches a delegated run")
   const ask = { questions: [{ question: "Which one?", options: [] }] }
   expect(await refusalOf(host.tool, beforeEvent("alpha", "question", ask, { session: "ses_child" }))).toBe(
-    "Permission denied: no human watches a delegated run; finish with needs_context instead of asking",
+    'Permission denied: no human watches a delegated run; finish with needs_context instead of asking (denied by item:project:alpha:perm:question:when.delegated "In delegated team runs": off, as shipped)',
   )
   expect(await refusalOf(host.tool, beforeEvent("alpha", "question", ask))).toBeUndefined()
   await dispose(applied.registrations)

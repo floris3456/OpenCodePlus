@@ -376,6 +376,7 @@ const TypedEvent = Schema.StructWithRest(
         Schema.Struct({
           id: optionalNullish(Schema.String),
           service_tier: optionalNull(Schema.String),
+          status: optionalNullish(Schema.String),
           incomplete_details: optionalNull(Schema.Struct({ reason: optionalNullish(Schema.String) })),
           output: optionalNullish(Schema.Array(StreamItem)),
           usage: optionalNull(OpenResponsesUsage),
@@ -881,6 +882,10 @@ const mapFinishReason = (event: Event, hasFunctionCall: boolean): FinishReason =
   if (reason === undefined) {
     if (hasFunctionCall) return "tool-calls"
     if (event.type === "response.incomplete") return "unknown"
+    // Live: CLIProxyAPI's CommandCode route ends a truncated response with
+    // `response.completed`, status "incomplete" and no reason. Read as "stop",
+    // the runner ended the turn after 32,000 reasoning tokens and no answer.
+    if (event.response?.status === "incomplete") return "length"
     return "stop"
   }
   if (reason === "max_output_tokens") return "length"

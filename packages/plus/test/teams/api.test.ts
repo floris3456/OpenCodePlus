@@ -178,6 +178,7 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
         base: string
         task: string | null
         state: string
+        warning: string
         next: string
       }
       const persisted = await loadRun(root, value.run)
@@ -189,6 +190,9 @@ test("delegate creates a worktree session, record, brief and prompt", async () =
         state: "starting",
         branch: persisted.branch,
         base: repo.head,
+        // The shipped implementer has no shell (its preset turns tool:shell
+        // off), so the answer says so before the next step.
+        warning: "implementer has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
         next: "If other work is ready, delegate it now; then end your turn: each settlement wakes you with its report.",
       })
       expect((await fs.stat(persisted.directory)).isDirectory()).toBe(true)
@@ -610,6 +614,46 @@ test("delegate rejects E_ROLE when an implementer delegates", async () => {
     }
   })
 })
+
+test("delegate's answer warns when the named member cannot run commands, and only then", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "build-seat",
+        directory: repo.dir,
+        base: repo.head,
+        head: repo.head,
+        sessionID: "ses_parent_003",
+      })
+      await saveRun(root, parent)
+      const sessions = recordSession()
+      const members = shippedMembers()
+      const implementer = members.find((member) => member.id === "implementer")
+      if (implementer === undefined) throw new Error("no implementer")
+      const answer = async (role: string, requestID: string, records: ReturnType<typeof change>[] = []) =>
+        required(
+          await createTeamApi(context({ session: sessions.domain }), teamState(presetTable({ members, records }))).delegate(
+            delegateInput({ requestID, role, ...(role === "orchestrator" ? { reason: "It owns the integration." } : {}) }),
+            callerFor(parent),
+          ),
+        ) as { warning?: string }
+
+      // An orchestrator keeps its shell: nothing to say.
+      expect((await answer("orchestrator", "warn-none")).warning).toBeUndefined()
+      expect((await answer("implementer", "warn-shell")).warning).toBe(
+        "implementer has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).",
+      )
+      // A shell that only drives terminals runs no command of its own.
+      expect((await answer("implementer", "warn-pilotty", [change(implementer, "tool:shell", { state: "on" })])).warning).toBe(
+        `implementer's shell runs only pilotty (driving terminal apps): its "Every other command" row is off.`,
+      )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
 
 test("delegate rejects E_BASE for an unknown ref", async () => {
   await withIsolatedTeamsRoot(async (root) => {
@@ -1629,6 +1673,54 @@ test("finish done with a spaced path names the full path in E_DIRTY", async () =
       expect(error.message).toBe(
         "Worktree has uncommitted changes in [src/with space.ts]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.",
       )
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("finish done with more than 50 dirty files names the first 50 and counts the rest", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = await dirtyChild(root, repo, "w-2222222222222222")
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const checked = required(await api.check({ id: "t" }, callerFor(child))) as { passed: boolean }
+      expect(checked.passed).toBe(true)
+      const files = Array.from({ length: 60 }, (_, i) => `src/bulk-${String(i).padStart(2, "0")}.ts`)
+      for (const file of files) await fs.writeFile(path.join(repo.dir, file), "export const bulk = 1\n")
+      const error = rejected(await api.finish(finishInput({ status: "done", summary: "Greeting updated." }), callerFor(child)))
+      expect(error.code).toBe("E_DIRTY")
+      expect(error.message).toBe(
+        `Worktree has uncommitted changes in [${files.slice(0, 50).join(", ")} and 10 more]. Assigned checks prove committed work only; team_checkpoint these files (or revert them), then finish.`,
+      )
+      expect(error.message).not.toContain("src/bulk-50.ts")
+      expect(error.accepted).toEqual({ files: files.slice(0, 50) })
+    } finally {
+      await removeRepo(repo.dir)
+    }
+  })
+}, 30000)
+
+test("a dirty finish result names at most 50 files and counts the rest, while the report holds them all", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const child = childInRepo("w-7777777777777777", repo)
+      await saveRun(root, child)
+      const files = Array.from({ length: 60 }, (_, i) => `bulk-${String(i).padStart(2, "0")}.ts`)
+      for (const file of files) await fs.writeFile(path.join(repo.dir, file), "export const bulk = 1\n")
+      const api = createTeamApi(context({ session: recordSession().domain }), teamState())
+      const value = required(await api.finish(finishInput({ status: "done_with_concerns", summary: "Bulk files reviewed." }), callerFor(child))) as {
+        dirty: boolean
+        dirtyFiles: string[]
+        dirtyCount: number
+      }
+      expect(value.dirty).toBe(true)
+      expect(value.dirtyFiles).toEqual(files.slice(0, 50))
+      expect(value.dirtyCount).toBe(60)
+      const report = (await Bun.file(path.join(root, "runs", child.id, "report-1.json")).json()) as { dirtyFiles: string[] }
+      expect(report.dirtyFiles).toEqual(files)
     } finally {
       await removeRepo(repo.dir)
     }

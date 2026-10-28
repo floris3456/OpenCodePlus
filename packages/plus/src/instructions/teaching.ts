@@ -95,7 +95,7 @@ The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and sh
 - System rows and their sections: \`requires: ["tool:<id>", "skill:<id>", "!perm:<tool>:<rule>"]\` sends it only while those rows are on (\`!\`: off) for the agent; \`[]\` always, \`null\` drops this level's condition. A model prompt row (\`system:model/<id>\`) takes \`models\`, the patterns of the models it is sent for.
 - \`reset({ id })\` drops this level's override of the row (a model row: only this level's active flag; an agent row: its settings and compaction controls).
 
-Code Mode tools: \`off\` denies the tool, \`text\` rewrites its catalog line (the first line, up to 120 characters), \`pin\` overrides the default; \`tool:execute\` off removes Code Mode. Filter with \`codemode:true\`, \`pinned:true|false\`, \`namespace:<name>\`.
+Code Mode tools: \`off\` denies the tool, \`text\` rewrites its catalog line (the first line, up to 120 characters), \`pin\` overrides the default; \`tool:execute\` off removes Code Mode, so none of that agent's Code Mode tools can be called even when on (their rows read \`unreachable (execute off)\`): give it execute, or set the tool's Exposure row (\`toolmode:<id>\`) to \`direct\`. Filter with \`codemode:true\`, \`pinned:true|false\`, \`namespace:<name>\`.
 
 ## Models
 
@@ -122,6 +122,8 @@ Compaction, warming and the cold-cache list are model settings at any level; edi
 ## Permission rules
 
 \`perm:<tool>:<rule>\` rows hang under each tool (\`find({ type: "rule", where: "tool:shell" })\`). \`set({ id, state: "off" })\` refuses what the rule matches for that agent and scrubs matching lines from its prompts; \`set({ id, message })\` sets the refusal the model reads; \`label\`, \`patterns\` and \`keywords\` rewrite the rule. \`create({ kind: "rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds one (no \`agent\`: a shared Defaults rule); only user-created rules delete. Definitions are per owner: editing an inherited one makes a local copy. \`edit\` is decided by \`set\`'s rows (Rows it may change, Override text, approval).
+
+A rule row that is off refuses what it matches, whether a level turned it off or nothing sets it: a member with no preset starts with every rule off ("off by default"), so its shell runs no command until \`perm:shell:commands.*\` (Every other command) is on, and its other rules (\`perm:shell:git\`, \`perm:read:git\`, …) refuse until they are on. A rule you \`create\` is a deny-list row: on, it refuses nothing — except a shell rule whose id starts with \`allow.\` (\`create({ kind: "rule", tool: "shell", id: "allow.<name>", … })\`), which is an allow row of Commands: while \`perm:shell:commands.*\` (Every other command) is off, it lets exactly its patterns through while it is on, and the rows that are off (git, rm, …) still refuse inside it. Patterns match the whole command, so a wrapper such as \`timeout *\` lets through any command run under it. Read's \`perm:read:where.tmp\` (Temporary directories) on keeps \`/tmp\` and \`run/plus/tmp\` open for the external_directory check every tool asks, also while \`perm:read:where.external\` is off; edit's Where and glob's and grep's Search roots are rows of their own. Every refusal ends with the row that refused it, as \`(denied by <row id> "<label>": <state>, <where the state comes from>)\`; \`set\` that id to change it.
 
 Patterns are core wildcards, not regex: \`*\` is any run (including spaces), \`?\` one character. For shell the resource is the parsed command, so \`git *\` also matches a bare \`git\`; for file tools the path (\`*.env*\`, \`**/.git/**\`); for opencode_fetch (permission \`webfetch\`) the URL; for subagent and skill the exact id. A \`team_*\` tool row that is off refuses the call.
 
@@ -160,7 +162,7 @@ Texts compare without their final newline, and units without trailing whitespace
 | rule | \`tool\`, \`id\`, \`label\`, \`patterns\` (+ \`keywords\`, \`message\`, \`level\`, \`agent\`) |
 | folder | \`name\`, \`id\` (the tab or folder row) |
 
-\`create({ kind: "instruction" })\` fails with \`instruction.disabled\`. \`delete({ id, confirm: true })\` deletes a user-owned row (agent, team, member, file, entry, user preset, custom rule, folder); a preset still linked is refused.
+\`create({ kind: "instruction" })\` fails with \`instruction.disabled\`. A skill body may carry its own frontmatter: it is merged into the one block the file needs, and a \`name\` there must equal the skill's name; a project skill is in the tree as soon as the call returns. \`delete({ id, confirm: true })\` deletes a user-owned row (agent, team, member, file, entry, user preset, custom rule, folder); a preset still linked is refused.
 
 ## CLI
 

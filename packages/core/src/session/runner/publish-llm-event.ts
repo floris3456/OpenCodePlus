@@ -72,6 +72,8 @@ export interface StepRecord {
   readonly needsContinuation: boolean
   /** A successful local tool ended the turn, and all calls have settled. */
   readonly endTurn: boolean
+  /** The model answered: non-blank text or a tool call. Reasoning alone is not an answer. */
+  readonly replied: boolean
 }
 
 /** Derives canonical model content from a provider-hosted tool result. */
@@ -111,7 +113,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     called: boolean
     settled: boolean
     providerExecuted: boolean
-    endTurn?: boolean
+    endTurn?: Tool.Result["endTurn"]
     progress?: Tool.Metadata
     input?: InputExcerpt
     malformed?: boolean
@@ -127,6 +129,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
   let startSnapshotRecorded = false
   let providerFailed = false
   let outputStarted = false
+  let replied = false
   let stepFailure: SessionError.Error | undefined
   let stepSettlement: StepRecord["finish"]
 
@@ -475,9 +478,11 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         })
         return
       case "text-delta":
+        if (event.text.trim() !== "") replied = true
         yield* text.append(event.id, event.text, providerState(event.providerMetadata))
         return
       case "text-end":
+        if (event.text !== undefined && event.text.trim() !== "") replied = true
         yield* text.end(event.id, providerState(event.providerMetadata), event.text)
         return
       case "reasoning-start":
@@ -642,7 +647,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     tool.settled = true
     const content = result.content
     if (!isReadonlyArrayNonEmpty(content)) return yield* Effect.die(new Error(`Tool execution has no content: ${id}`))
-    tool.endTurn = result.endTurn === true
+    tool.endTurn = result.endTurn
     yield* bus.publish(SessionEvent.Tool.Success, {
       sessionID: input.sessionID,
       assistantMessageID,
@@ -672,15 +677,18 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     hasStarted: () => stepStarted,
     /** Immutable snapshot of everything recorded for this step so far. */
     record: (): StepRecord => {
+      const local = Array.from(tools.values()).filter((tool) => !tool.providerExecuted)
       const endTurn =
-        Iterable.some(tools.values(), (tool) => tool.endTurn === true) &&
-        !Iterable.some(tools.values(), (tool) => !tool.settled)
+        !Iterable.some(tools.values(), (tool) => !tool.settled) &&
+        (local.some((tool) => tool.endTurn === true) ||
+          (local.length > 0 && local.every((tool) => tool.endTurn === "alone")))
       return {
         outputStarted,
         providerFailed,
         failure: stepFailure,
         finish: stepSettlement,
         endTurn,
+        replied: replied || tools.size > 0,
         needsContinuation:
           !endTurn && Iterable.some(tools.values(), (tool) => !tool.providerExecuted && (tool.called || tool.settled)),
       }

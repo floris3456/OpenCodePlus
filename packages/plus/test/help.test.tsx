@@ -53,13 +53,16 @@ test("wide help has two equally starting columns and every group title", async (
   const starts = helpColumns(HELP, HELP_COLUMN_WIDTH).map((column) => column.map(([title]) => start(title)))
   for (const column of starts) expect(new Set(column).size).toBe(1)
   expect(starts[1]![0]).toBeGreaterThan(starts[0]![0]!)
-  // The level keys, bulk expansion and the panel resize mode are documented.
+  // The level keys, bulk expansion, filtering and the panel resize mode are
+  // documented (the footer no longer names them: ? is the complete reference).
   expect(frame).toContain("shift+tab")
   expect(frame).toContain("shift+[ ] { }")
   expect(frame).toContain("shift+1–4")
-  expect(frame).toContain("ctrl+E")
-  expect(frame).toContain("W / alt+W")
+  expect(frame).toContain("ctrl+e")
+  expect(frame).toContain("shift+w")
   expect(frame).toContain("resize the panels")
+  // Every group the reference has.
+  for (const group of ["Navigate", "Select", "Edit the row", "Add, copy, move", "Panels"]) expect(frame).toContain(group)
 })
 
 test("narrow help is one column with wrapped labels", async () => {
@@ -77,9 +80,9 @@ test("narrow help is one column with wrapped labels", async () => {
     if (line === undefined) throw new Error(`no help group "${title}"`)
     return line.indexOf(title)
   }
-  expect(frame).toContain("Move")
-  expect(frame).toContain("Change")
-  expect(start("Change")).toBe(start("Move"))
+  expect(frame).toContain("Navigate")
+  expect(frame).toContain("Select")
+  expect(start("Select")).toBe(start("Navigate"))
   expect(frame).toContain("shift+[ ] { }")
   // The wrapped label is indented under the key column, not under the key.
   const wrapped = lines.find((line) => line.includes("previous / next level (terminal")) ?? ""
@@ -124,6 +127,16 @@ test("a modal dialog dims the workspace and closing restores it exactly", async 
   expect(fixture.captureCharFrame()).toBe(before)
   expect(rowSpan()?.bg.equals(theme.background.action.primary.focused)).toBe(true)
 })
+test("help covers every browse key and invents none: keys match the key layer", () => {
+  const entries = HELP.flatMap((group) => group[1])
+  const keys = new Set(entries.map(([key]) => key))
+  // Every key the browse layer binds is named in the dialog.
+  for (const key of ["↑ ↓", "pgup pgdn", "← →", "tab", "shift+tab", "shift+← →", "shift+[ ] { }", "< >", "shift+1–4", "[ ]", "1–9", "/", "n / N", "shift+e", "ctrl+e", "shift+w", "x", "shift+↑ ↓", "ctrl+a", "esc", "ctrl+space", "enter", "space", "e", "shift+r", "r", "p", "s", "w", "shift+l", "l", "c", "a", "ctrl+c", "ctrl+x", "ctrl+v", "ctrl+d", "m", "d"])
+    expect(keys.has(key), key).toBe(true)
+  // Nothing that is not a key.
+  for (const invented of ["ctrl+z", "ctrl+s", "ctrl+n", "F2"]) expect(keys.has(invented)).toBe(false)
+})
+
 test("help names the model edit on enter and no warming key", () => {
   const entries = HELP.flatMap((group) => group[1])
   // `w` is "shown when" now, never the retired warming key.

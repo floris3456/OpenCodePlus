@@ -658,7 +658,7 @@ test("wrong expectedParentHead is refused with E_STALE_PARENT", async () => {
   })
 })
 
-test("dirty parent is refused with E_DIRTY naming the file", async () => {
+test("a dirty parent file the child does not change still lands and keeps its content", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const repo = await makeRepo()
     try {
@@ -695,11 +695,66 @@ test("dirty parent is refused with E_DIRTY naming the file", async () => {
       await saveRun(root, child)
       await writeReport(root, child.id, 1, "done")
       await fs.writeFile(path.join(repo.dir, "README.md"), "# integrate test modified\n")
-      const error = rejected(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable()))
+      const landed = required(await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: parentHead }, callerFor(parent), shippedTable())) as { state: string; head: string }
+      expect(landed).toMatchObject({ state: "landed", head: childWork.head })
+      expect(await Bun.file(path.join(repo.dir, "README.md")).text()).toBe("# integrate test modified\n")
+      expect(await git(repo.dir, ["status", "--porcelain"])).toBe("M README.md")
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+})
+
+test("a dirty parent file the child changes is refused with E_DIRTY naming only that file", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const parentHead = repo.head
+      const parent = baseRun({
+        id: "main-0123456789abcdef",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base: parentHead,
+        head: parentHead,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: new Date().toISOString(), trigger: "delegate" }],
+        sessionID: "ses_parent_005b",
+        children: ["w-eeeeeeeeeeeeeeef"],
+      })
+      const childWork = await makeChild(repo.scratch, repo.dir, "dirty-overlap", parentHead, { "README.md": "# child README\n" }, "docs: child edits README")
+      const now = new Date().toISOString()
+      const child = baseRun({
+        id: "w-eeeeeeeeeeeeeeef",
+        role: "muse-implementer",
+        directory: childWork.dir,
+        branch: childWork.branch,
+        base: parentHead,
+        head: childWork.head,
+        state: "idle",
+        attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+        parent: parent.id,
+        sessionID: "ses_child_005b",
+        task: null,
+      })
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      await writeReport(root, child.id, 1, "done")
+      await fs.writeFile(path.join(repo.dir, "README.md"), "# integrate test modified\n")
+      await fs.writeFile(path.join(repo.dir, "parent-notes.txt"), "parent notes\n")
+      await git(repo.dir, ["add", "parent-notes.txt"])
+      await git(repo.dir, ["commit", "-m", "docs: parent notes"])
+      const movedHead = await git(repo.dir, ["rev-parse", "HEAD"])
+      await fs.writeFile(path.join(repo.dir, "parent-notes.txt"), "parent notes, uncommitted\n")
+      const error = rejected(
+        await integrateHandler(ctxFor(), { run: child.id, expectedParentHead: movedHead }, callerFor(parent), shippedTable()),
+      )
       expect(error.code).toBe("E_DIRTY")
       expect(error.message).toBe(
-        "Your worktree has tracked modifications [README.md]; commit or discard them; the merge queue is paused until clean.",
+        `Your worktree has uncommitted changes to [README.md], which ${child.id}'s commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.`,
       )
+      expect(error.accepted).toEqual(["README.md"])
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }
@@ -1302,6 +1357,82 @@ test("new failures refuse with a rebase followup; pre-existing failures land wit
       expect(theirs.stillRed).toEqual(["gate"])
       expect(theirs.note).toContain("already fail at the parent's HEAD")
       expect(await git(repo.dir, ["rev-parse", "HEAD"])).toBe(theirs.head)
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 60000)
+
+// A size, budget or anti-mess gate judges the change its own run made, so a
+// later landing does not run it (and does not go red on it).
+test("a landing does not run an earlier child's change-scoped check, and its answer says so", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const changed = out("diff", "--name-only", "--no-renames", out("merge-base", "HEAD", "main"), "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) process.exit(1)
+`
+      await fs.mkdir(path.join(repo.dir, "tools"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, "tools", "gate.ts"), gate)
+      await git(repo.dir, ["add", "tools/gate.ts"])
+      await git(repo.dir, ["commit", "-m", "test: change gate"])
+      const base = await git(repo.dir, ["rev-parse", "HEAD"])
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "checks.json"),
+        JSON.stringify({ version: 1, checks: { size: { argv: ["bun", "tools/gate.ts"], scope: "change" } } }),
+      )
+      const now = new Date().toISOString()
+      const parent = baseRun({
+        id: "main-abcdefabcdefabcd",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base,
+        head: base,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_parent_scope",
+        children: ["w-8888888888888888", "w-9999999999999999"],
+      })
+      await saveRun(root, parent)
+      const childOf = (id: string, work: { dir: string; branch: string; head: string }) =>
+        baseRun({
+          id,
+          role: "implementer",
+          directory: work.dir,
+          branch: work.branch,
+          base,
+          head: work.head,
+          state: "idle",
+          attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+          parent: parent.id,
+          sessionID: `ses_${id}`,
+          task: null,
+        })
+      // The first child is given the gate; the second has no checks of its own.
+      const first = childOf("w-8888888888888888", await makeChild(repo.scratch, repo.dir, "first-scope", base, { "first.txt": "first\n" }, "feat: first"))
+      await atomicJson(path.join(root, "runs", first.id, "checks.json"), [{ id: "size", argv: ["bun", "tools/gate.ts"] }])
+      await saveRun(root, first)
+      await writeReport(root, first.id, 1, "done")
+      const landed = required(await integrateHandler(ctxFor(), { run: first.id }, callerFor(parent), shippedTable())) as { state: string }
+      expect(landed.state).toBe("landed")
+      const second = childOf("w-9999999999999999", await makeChild(repo.scratch, repo.dir, "second-scope", base, { "second.txt": "second\n" }, "feat: second"))
+      await atomicJson(path.join(root, "runs", second.id, "checks.json"), [])
+      await saveRun(root, second)
+      await writeReport(root, second.id, 1, "done")
+      const value = required(await integrateHandler(ctxFor(), { run: second.id }, callerFor(parent), shippedTable())) as {
+        state: string
+        note: string
+        skippedChecks: Array<{ id: string; runID: string }>
+      }
+      expect(value.state).toBe("landed")
+      expect(value.skippedChecks).toEqual([{ id: "size", runID: first.id }])
+      expect(value.note).toBe(`Not run at this landing: size (${first.id}): they judge their own run's change.`)
+      expect(await lastReceipt(root, second.id, "size")).toBeUndefined()
     } finally {
       await fs.rm(repo.scratch, { recursive: true, force: true })
     }

@@ -8,8 +8,7 @@ import { createHandlers, createState } from "../src/index.js"
 import { Schema } from "effect"
 import { basicBody, builtinTeams } from "../src/instructions/builtin-teams.js"
 import { derive } from "../src/instructions/sections.js"
-import { applyRequires, gatedSections, mentionWarnings } from "../src/instructions/requires.js"
-import { guidanceContent } from "../src/instructions/guidance.js"
+import { applyRequires, mentionWarnings } from "../src/instructions/requires.js"
 import * as TeamSchema from "../src/teams/schema.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { validateTeamName } from "../src/instructions/teams.js"
@@ -172,19 +171,11 @@ test("no built-in prompt names a tool that left the namespace", () => {
   }
 })
 
-// Search tools are named in the Tools and rules row by their MCP-served ids,
-// each in a section that depends on that tool, so a member reads the line
-// exactly while it has the tool; no role text names them.
-test("search tools are named in Tools and rules, each in a section that depends on it", () => {
+// No role text names a search tool: a member that lacks it would read a line
+// about a tool it cannot call.
+test("no Basic role text names a search tool", () => {
   const team = builtinTeams.find((entry) => entry.name === "basic")
   if (team === undefined) throw new Error("missing basic")
-  for (const tool of ["web_exa_code_search", "web_tavily_search", "web_tavily_fetch"]) {
-    // The innermost section that names it (the whole-row heading names every one).
-    const section = gatedSections(guidanceContent)
-      .filter((entry) => guidanceContent.slice(entry.start, entry.end).includes(tool))
-      .toSorted((left, right) => right.depth - left.depth)[0]
-    expect([tool, section?.requires]).toEqual([tool, [{ id: `tool:${tool}`, on: true }]])
-  }
   for (const member of team.members) expect([member.id, member.body.match(/search_[a-z_]+/g)]).toEqual([member.id, null])
 })
 

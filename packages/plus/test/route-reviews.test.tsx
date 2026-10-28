@@ -408,8 +408,8 @@ test("p key writes a pin through the same status path as toggle", async () => {
   const fixture = await renderInstructionsRoute({ snapshots: [codemodeSnapshot()], width: 120, height: 40 })
   try {
     await goto(fixture, "item:project:Implementer:tool:coder", "coder")
+    // p is secondary, so the bar leaves it to the help dialog; the key works.
     expect(binds(fixture)).toContain("p")
-    expect(footer(fixture.captureCharFrame())).toContain("p pin")
     dispatch(fixture, "p")
     await fixture.waitForFrame((frame) => frame.includes('Pinned "coder"'))
     expect(fixture.fake.mutateInputs.length).toBe(1)

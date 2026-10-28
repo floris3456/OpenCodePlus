@@ -35,6 +35,7 @@ import { ReleaseRequestStore } from "@opencode/core/release/request"
 import { Rpc } from "@opencode/core/rpc"
 import { Skill } from "@opencode/core/skill"
 import { SkillDiscovery } from "@opencode/core/skill/discovery"
+import { Snapshot } from "@opencode/core/snapshot"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Tool } from "@opencode/core/tool"
 import { Vcs } from "@opencode/core/vcs"
@@ -119,6 +120,7 @@ export const makePluginTestLayer = (permission = permissionLayer) =>
       WebSearch.node,
       Worktree.node,
       WorktreeStrategies.node,
+      Snapshot.node,
     ]),
     [
       Location.node.replace(tempLocationLayer),
@@ -127,6 +129,7 @@ export const makePluginTestLayer = (permission = permissionLayer) =>
       Mcp.node.replace(emptyMcpLayer),
       Generate.node.replace(generateLayer),
       Permission.node.replace(permission),
+      Snapshot.node.replace(Snapshot.noopLayer),
     ],
   ).pipe(Layer.provideMerge(configLayer))
 

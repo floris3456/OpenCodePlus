@@ -73,8 +73,9 @@ export function MonitorHelp(props: HelpProps) {
       title: "Sessions Tab",
       entries: [
         { key: "↑ / ↓ (j / k)", desc: "Select session; this chat's tree is open and only this chat is checked at first" },
-        { key: "Enter", desc: "Check or uncheck this session: every other tab reports on the checked sessions" },
-        { key: "space", desc: "Check or uncheck this session's whole tree" },
+        { key: "Enter", desc: "Open the session's chat; the monitor stays open there, on this row" },
+        { key: "space", desc: "Check or uncheck this session: every other tab reports on the checked sessions" },
+        { key: "ctrl+space", desc: "Check or uncheck this session's whole tree" },
         { key: "→ / ←", desc: "Open or close the tree" },
         { key: "S", desc: "Active sessions only (seen since the server started, folder still loaded) or all" },
         { key: "[ / ] · l", desc: "Previous / next page of trees · first page" },
@@ -85,7 +86,7 @@ export function MonitorHelp(props: HelpProps) {
       title: "Team Tab",
       entries: [
         { key: "↑ / ↓", desc: "Select run" },
-        { key: "Enter", desc: "Open the run's chat (closes the monitor)" },
+        { key: "Enter", desc: "Open the run's chat; the monitor stays open there, on this row" },
         { key: "ctrl+a / ctrl+t", desc: "Active or inactive runs · this chat's tree or all runs" },
         { key: "ctrl+d", desc: "Stop an idle run, resume a stopped one" },
         { key: "e", desc: "Edit the project checks (.opencodeplus/checks.json)" },

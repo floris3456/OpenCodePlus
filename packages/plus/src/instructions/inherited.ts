@@ -30,14 +30,21 @@ type Field = "text" | "state" | "pin"
  */
 export function withoutInherited(input: InheritedInput): CustomizationRecord[] {
   const known = new Set([...input.agents.map((agent) => agent.id), ...input.teams.flatMap((team) => team.agents)])
+  // A row resolves from its own item's items and records only (model.ts reads
+  // records by address.item), so each check gets just those: copying and
+  // re-indexing every record per check made this pass quadratic in records.
+  const byId: ById = {
+    items: Map.groupBy(input.items, (item) => item.id),
+    records: Map.groupBy(input.customizations, (record) => record.item),
+  }
   return input.customizations.flatMap((record) => {
     // An edit for an agent that is gone is an orphan, kept for the person to decide on.
     if (record.agent !== null && !known.has(record.agent)) return [record]
-    const readers = readersOf(input, record)
+    const readers = readersOf(input, byId, record)
     if (readers === undefined) return [record]
     // A pin is a whole row's; one on a section is left as it is.
     const dropped = readers.fields.filter(
-      (field) => record[field] !== undefined && !(field === "pin" && record.section !== null) && inherits(input, record, field, readers.addresses),
+      (field) => record[field] !== undefined && !(field === "pin" && record.section !== null) && inherits(input, byId, record, field, readers.addresses),
     )
     if (dropped.length === 0) return [record]
     const kept = dropped.reduce(strip, record)
@@ -55,7 +62,12 @@ export function upstreamFor(items: readonly Item[], address: Address): Item | un
   return matches.find((entry) => applies(entry, owner)) ?? matches[0]
 }
 
-function readersOf(input: InheritedInput, record: CustomizationRecord): { addresses: Address[]; fields: readonly Field[] } | undefined {
+interface ById {
+  readonly items: ReadonlyMap<string, readonly Item[]>
+  readonly records: ReadonlyMap<string, readonly CustomizationRecord[]>
+}
+
+function readersOf(input: InheritedInput, byId: ById, record: CustomizationRecord): { addresses: Address[]; fields: readonly Field[] } | undefined {
   const at = (level: Level): Address => ({ level, agent: record.agent, item: record.item, section: record.section })
   if (record.team !== undefined || record.level === "preset") return undefined
   if (record.agent === null) {
@@ -63,7 +75,7 @@ function readersOf(input: InheritedInput, record: CustomizationRecord): { addres
     // all of them, and on/off falls back differently per agent, so only text
     // and pin, and never a rule (its owner's rule record makes its text).
     if (record.level !== "defaults" || record.item.startsWith("perm:")) return undefined
-    const matches = input.items.filter((item) => item.id === record.item)
+    const matches = byId.items.get(record.item) ?? []
     if (matches.length !== 1 || matches[0]?.agents !== undefined || matches[0]?.ownedBy !== undefined) return undefined
     return { addresses: [{ ...at("defaults"), ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }) }], fields: ["text", "pin"] }
   }
@@ -82,21 +94,22 @@ function readersOf(input: InheritedInput, record: CustomizationRecord): { addres
   }
 }
 
-function inherits(input: InheritedInput, record: CustomizationRecord, field: Field, addresses: readonly Address[]): boolean {
-  const without = input.customizations.map((other) => (other === record ? strip(record, field) : other))
+function inherits(input: InheritedInput, byId: ById, record: CustomizationRecord, field: Field, addresses: readonly Address[]): boolean {
   return addresses.every((address) => {
-    const item = upstreamFor(input.items, address)
+    const item = upstreamFor(byId.items.get(address.item) ?? [], address)
     if (item === undefined) return false
     // A whole rule row reads the rule its owner stores, as the tree does (resolve-memo wholeOf).
     const upstream = address.section === null ? ruleItem(item, input.rules, input.scopes, address) : item
     if (upstream === undefined) return false
+    const records = recordsOf(input, byId, address.item, upstream.permissionSource)
+    const without = records.map((other) => (other === record ? strip(record, field) : other))
     const chain = { upstream, splits: input.splits, scopes: input.scopes, address }
     // A section the row no longer has is an orphan's: kept for the person to decide on.
-    if (address.section !== null && !hasSection(input, upstream, address)) return false
+    if (address.section !== null && !hasSection(input, records, upstream, address)) return false
     // A whole row's on/off alone needs no text assembled.
     if (field === "state" && address.section === null)
-      return resolveEnabled({ ...chain, records: input.customizations }) === resolveEnabled({ ...chain, records: without })
-    const before = resolve({ ...chain, records: input.customizations })
+      return resolveEnabled({ ...chain, records }) === resolveEnabled({ ...chain, records: without })
+    const before = resolve({ ...chain, records })
     const after = resolve({ ...chain, records: without })
     if (field === "state") return before.enabled === after.enabled
     if (field === "pin") return before.pinned === after.pinned
@@ -106,9 +119,15 @@ function inherits(input: InheritedInput, record: CustomizationRecord, field: Fie
 
 // The row's sections as the tree splits them (resolve-memo splitOf): its text,
 // or with section overrides its assembled text.
-function hasSection(input: InheritedInput, upstream: Item, address: Address): boolean {
+// A legacy permission row also reads its source item's records (model.ts wholeRecords), kept in store order.
+function recordsOf(input: InheritedInput, byId: ById, item: string, source: string | undefined): readonly CustomizationRecord[] {
+  if (source === undefined || source === item) return byId.records.get(item) ?? []
+  return input.customizations.filter((record) => record.item === item || record.item === source)
+}
+
+function hasSection(input: InheritedInput, records: readonly CustomizationRecord[], upstream: Item, address: Address): boolean {
   const whole = { ...address, section: null }
-  const resolved = resolve({ upstream, records: input.customizations, splits: input.splits, scopes: input.scopes, address: whole })
+  const resolved = resolve({ upstream, records, splits: input.splits, scopes: input.scopes, address: whole })
   return [resolved.text, resolved.fullText ?? resolved.text].some((text) =>
     resolveSplit({ text, title: upstream.title, splits: input.splits, scopes: input.scopes, address: whole }).sections.some((section) => section.id === address.section),
   )

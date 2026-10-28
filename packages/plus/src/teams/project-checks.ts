@@ -29,11 +29,19 @@ const Command = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
 })
 
+/** What a check judges: the run's own change (size, budget, anti-mess) or the code (the default). */
+const Scope = Schema.Literals(["tree", "change"])
+
+const CheckEntry = Schema.Struct({
+  ...Command.fields,
+  scope: Schema.optionalKey(Scope),
+})
+
 export const ProjectChecksFile = Schema.Struct({
   version: Schema.Literal(1),
   /** Run once in a fresh worktree before its first check (dependencies). Replaces the built-in Bun install. */
   setup: Schema.optionalKey(Command),
-  checks: Schema.Record(Schema.String, Command),
+  checks: Schema.Record(Schema.String, CheckEntry),
 }).annotate({ identifier: "Plus.ProjectChecksFile" })
 export type ProjectChecksFile = typeof ProjectChecksFile.Type
 
@@ -44,6 +52,12 @@ export interface ProjectCheck {
   readonly argv: readonly string[]
   readonly cwd?: string
   readonly description?: string
+  /**
+   * "change": it judges the change the run it is assigned to made (a size,
+   * budget or anti-mess gate). Absent or "tree": it judges the code (tests,
+   * lint, repo checks), the default.
+   */
+  readonly scope?: "tree" | "change"
 }
 
 export interface ProjectChecks {
@@ -130,6 +144,7 @@ export async function readProjectChecks(directory: string): Promise<ProjectCheck
               argv: [...command.argv],
               ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
               ...(command.description === undefined ? {} : { description: command.description }),
+              ...(command.scope === undefined ? {} : { scope: command.scope }),
             }))
             .toSorted((left, right) => left.id.localeCompare(right.id)),
           ...(parsed.file.setup === undefined
@@ -153,12 +168,31 @@ export async function writeProjectChecks(root: string, file: ProjectChecksFile):
   return { ok: true, path: target }
 }
 
+/**
+ * Whether `check` (a run's stored, resolved command) is a change-scoped one in
+ * the project's CURRENT checks.json. A run stores only `{id, argv, cwd}`, so
+ * this compares by command: same cwd, same argv length, every element equal
+ * except where the project's entry holds `{path}` (any value matches there).
+ * Decided at landing time, so runs delegated before a `scope` was added are
+ * covered too.
+ */
+export function isChangeScoped(check: Check, project: ProjectChecks | undefined): boolean {
+  return (project?.checks ?? []).some(
+    (entry) =>
+      entry.scope === "change" &&
+      entry.cwd === check.cwd &&
+      entry.argv.length === check.argv.length &&
+      entry.argv.every((arg, index) => arg === PATH_TOKEN || arg === check.argv[index]),
+  )
+}
+
 /** One line per check for a tool description or an error: `id (description)`, with `path` noted. */
 export function checkList(checks: readonly ProjectCheck[]): string {
   return checks
     .map((check) => {
+      const scope = check.scope === "change" ? " — judges the run's own change" : ""
       const takesPath = check.argv.includes(PATH_TOKEN) ? " — needs path" : ""
-      return `${check.id}${check.description === undefined ? "" : ` (${check.description})`}${takesPath}`
+      return `${check.id}${check.description === undefined ? "" : ` (${check.description})`}${scope}${takesPath}`
     })
     .join("; ")
 }
@@ -267,7 +301,11 @@ export function checksNote(project: ProjectChecks | undefined): string {
  * field's description sits in its non-null branch, which is where it goes.
  */
 export function describeProjectChecks(tools: Record<string, { input: unknown }>, project: ProjectChecks | undefined): void {
-  const note = checksNote(project)
+  describeChecksNote(tools, checksNote(project))
+}
+
+/** describeProjectChecks with a note already made (a chat's pinned one). */
+export function describeChecksNote(tools: Record<string, { input: unknown }>, note: string): void {
   // team_delegate's checks field and team_check's id field: both name a check.
   for (const [name, fieldName] of [["team_delegate", "checks"], ["team_check", "id"]] as const) {
     const definition = tools[name]

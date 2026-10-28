@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { drain, enqueue, pending, queue } from "../../src/teams/merge.js"
 import type { MergeContext } from "../../src/teams/merge.js"
 import { create, load } from "../../src/teams/tasks.js"
@@ -10,6 +10,7 @@ import { list as listWorktrees } from "../../src/teams/worktree.js"
 import { saveRun, type RunRecord } from "../../src/teams/run.js"
 import { atomicJson } from "../../src/teams/store.js"
 import { execute, lastReceipt, stale } from "../../src/teams/checks.js"
+import { writeProjectChecks } from "../../src/teams/project-checks.js"
 
 let scratch = ""
 let stateDir = ""
@@ -36,6 +37,24 @@ async function makeParent(name: string): Promise<{ dir: string; head: string }> 
   const dir = join(scratch, `parent-${name}`)
   const branch = `parent-${name}`
   await git(repoRoot, ["worktree", "add", "-b", branch, dir, mainHead])
+  return { dir, head: await headOf(dir) }
+}
+
+/** Commit files in the fixture's main checkout, so a child's merge base is `main`. */
+async function commitMain(files: Record<string, string>, message: string): Promise<string> {
+  for (const [rel, content] of Object.entries(files)) {
+    await mkdir(dirname(join(repoRoot, rel)), { recursive: true })
+    await writeFile(join(repoRoot, rel), content)
+    await git(repoRoot, ["add", rel])
+  }
+  await git(repoRoot, ["commit", "-m", message])
+  return headOf(repoRoot)
+}
+
+/** A parent worktree on `base`, holding its own branch (the base a child forks from). */
+async function parentAt(name: string, base: string): Promise<{ dir: string; head: string }> {
+  const dir = join(scratch, `parent-${name}`)
+  await git(repoRoot, ["worktree", "add", "-b", `parent-${name}`, dir, base])
   return { dir, head: await headOf(dir) }
 }
 
@@ -215,6 +234,44 @@ describe("merge queue", () => {
     expect(audit.filter((line) => line.kind === "receipt.written" && line.head === head)).toHaveLength(2)
   })
 
+  test("an entry overlapping the parent's uncommitted file pauses the queue there", async () => {
+    const parentRun = "paused-overlap-parent"
+    const parent = await makeParent("paused-overlap")
+    const unrelated = await makeChild("paused-overlap-a", parent.head, { "a.txt": "a\n" }, "feat: a")
+    const overlapping = await makeChild("paused-overlap-b", parent.head, { "README.md": "child\n" }, "docs: child README")
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun: "paused-overlap-a-run", childBranch: unrelated.branch, childHead: unrelated.head })
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun: "paused-overlap-b-run", childBranch: overlapping.branch, childHead: overlapping.head })
+    await writeFile(join(parent.dir, "README.md"), "parent's own\n")
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.paused).toBe(true)
+    expect(result.processed).toHaveLength(1)
+    expect(result.processed[0]).toMatchObject({ childRun: "paused-overlap-a-run", state: "landed" })
+    expect((await pending(stateDir, parentRun)).map((entry) => entry.childRun)).toEqual(["paused-overlap-b-run"])
+    expect(await readFile(join(parent.dir, "README.md"), "utf8")).toBe("parent's own\n")
+  })
+
+  test("a dirty path with a space is named unquoted in E_DIRTY", async () => {
+    const parent = await makeParent("spaced-dirty")
+    const base = await commitFile(parent.dir, "sp ace.txt", "parent\n", "chore: spaced file")
+    const child = await makeChild("spaced-dirty-1", base, { "sp ace.txt": "child\n" }, "feat: child spaced file")
+    await writeFile(join(parent.dir, "sp ace.txt"), "parent uncommitted\n")
+    const dirty = await enqueue(stateDir, {
+      parentRun: "spaced-dirty-parent",
+      parentWorktree: parent.dir,
+      childRun: "spaced-dirty-child",
+      childBranch: child.branch,
+      childHead: child.head,
+      expectedParentHead: base,
+    }).then(
+      () => null,
+      (e) => asErr(e),
+    )
+    expect(dirty?.code).toBe("E_DIRTY")
+    expect(dirty?.message).toBe(
+      "Your worktree has uncommitted changes to [sp ace.txt], which spaced-dirty-child's commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.",
+    )
+  })
+
   test("a clean child lands and the temp worktree is gone", async () => {
     const parentRun = "w-0000000000000001"
     const childRun = "w-0000000000000002"
@@ -318,6 +375,129 @@ describe("merge queue", () => {
     expect(after.length).toBe(before.length)
   })
 
+  test("a landing never runs another run's change-scoped check; its own still judges it", async () => {
+    // The gate judges the change a run made: files changed since the fork from
+    // main. A later child's landing must not inherit an earlier child's gate.
+    const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const base = out("merge-base", "HEAD", "main")
+const changed = out("diff", "--name-only", "--no-renames", base, "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) {
+  console.error("gate-small: " + changed.length + " files changed since " + base.slice(0, 7) + ": " + changed.join(", "))
+  process.exit(1)
+}
+`
+    const behaviour = 'import { test, expect } from "bun:test"\ntest("parent contract", async () => expect(await Bun.file("README.md").text()).toBe("fixture\\n"))\n'
+    const base = await commitMain(
+      { "tools/teamgate/gate.ts": gate, "ok.test.ts": behaviour, ".gitignore": ".opencodeplus/\n" },
+      "test: change gate and behaviour check",
+    )
+    const size = { id: "size", argv: ["bun", "tools/teamgate/gate.ts"] }
+    const ok = { id: "ok", argv: ["bun", "test", "ok.test.ts"] }
+    await writeProjectChecks(repoRoot, {
+      version: 1,
+      checks: {
+        size: { argv: size.argv, description: "at most 1 file", scope: "change" },
+        ok: { argv: ok.argv, description: "parent contract" },
+      },
+    })
+
+    const parent = await parentAt("scoped", base)
+    const parentRun = "scoped-parent"
+    const firstRun = "scoped-first"
+    const secondRun = "scoped-second"
+    // A run stores its resolved commands, without the scope.
+    const first = await makeChild("scoped-first", base, { "first.txt": "first\n" }, "feat: first")
+    const second = await makeChild("scoped-second", base, { "second.txt": "second\n" }, "feat: second")
+    await commitFile(second.dir, "third.txt", "third\n", "feat: second again")
+    const secondHead = await headOf(second.dir)
+    await atomicJson(join(stateDir, "runs", firstRun, "checks.json"), [size, ok])
+    await atomicJson(join(stateDir, "runs", secondRun, "checks.json"), [ok])
+    await create(stateDir, secondRun, [{ id: secondRun, title: "Second", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["second.txt"], checks: [ok] }])
+    for (const [childRun, child, head] of [[firstRun, first, first.head], [secondRun, second, secondHead]] as const)
+      await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: head })
+
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.processed[0]).toMatchObject({ childRun: firstRun, state: "landed" })
+    expect(result.processed[0].skippedChecks).toBeUndefined()
+    // Before the fix this landing went red on the earlier child's size gate.
+    expect(result.processed[1]).toMatchObject({ childRun: secondRun, state: "landed", skippedChecks: [{ id: "size", runID: firstRun }] })
+    expect(result.processed[1].redChecks).toBeUndefined()
+    const landedHead = result.processed[1].landedHead!
+    expect(await lastReceipt(stateDir, secondRun, "ok", landedHead)).toMatchObject({ passed: true })
+    // The skipped gate left no receipt of its own for this child.
+    expect(await lastReceipt(stateDir, secondRun, "size")).toBeUndefined()
+    expect(await headOf(parent.dir)).toBe(landedHead)
+  })
+
+  test("the landing child's own change-scoped check still judges its change", async () => {
+    const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const base = out("merge-base", "HEAD", "main")
+const changed = out("diff", "--name-only", "--no-renames", base, "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) process.exit(1)
+`
+    const base = await commitMain({ "tools/teamgate/own-gate.ts": gate }, "test: own change gate")
+    const size = { id: "size", argv: ["bun", "tools/teamgate/own-gate.ts"] }
+    await writeProjectChecks(repoRoot, { version: 1, checks: { size: { argv: size.argv, scope: "change" } } })
+    const parent = await parentAt("own-scope", base)
+    const parentRun = "own-scope-parent"
+    const childRun = "own-scope-child"
+    // Two files: the child's own gate must fail on its own change.
+    const child = await makeChild("own-scope", base, { "one.txt": "one\n" }, "feat: one")
+    await commitFile(child.dir, "two.txt", "two\n", "feat: two")
+    const childHead = await headOf(child.dir)
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [size])
+    await create(stateDir, childRun, [{ id: childRun, title: "Own", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["one.txt"], checks: [size] }])
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.processed[0]).toMatchObject({ state: "red", redChecks: ["size"] })
+    expect(result.processed[0].skippedChecks).toBeUndefined()
+  })
+
+  test("an earlier child's behaviour check that a later child breaks still blocks it", async () => {
+    const behaviour = 'import { test, expect } from "bun:test"\ntest("parent contract", async () => expect(await Bun.file("README.md").text()).toBe("fixture\\n"))\n'
+    const base = await commitMain({ "contract.test.ts": behaviour }, "test: behaviour check")
+    const parent = await parentAt("behaviour", base)
+    const parentRun = "behaviour-parent"
+    const firstRun = "behaviour-first"
+    const secondRun = "behaviour-second"
+    const check = { id: "contract", argv: ["bun", "test", "contract.test.ts"] }
+    const first = await makeChild("behaviour-first", base, { "first.txt": "first\n" }, "feat: first")
+    const second = await makeChild("behaviour-second", base, { "README.md": "broken\n" }, "docs: second breaks contract")
+    await atomicJson(join(stateDir, "runs", firstRun, "checks.json"), [check])
+    await atomicJson(join(stateDir, "runs", secondRun, "checks.json"), [])
+    await create(stateDir, secondRun, [{ id: secondRun, title: "Second", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["README.md"], checks: [] }])
+    for (const [childRun, child] of [[firstRun, first], [secondRun, second]] as const)
+      await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir))
+    expect(result.processed[0]).toMatchObject({ state: "landed" })
+    expect(result.processed[1]).toMatchObject({ state: "red", redChecks: ["contract"] })
+  })
+
+  test("a change-scoped check the landing child is also given still runs and is not reported skipped", async () => {
+    const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const changed = out("diff", "--name-only", "--no-renames", out("merge-base", "HEAD", "main"), "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) process.exit(1)
+`
+    const base = await commitMain({ "tools/teamgate/shared-gate.ts": gate }, "test: shared change gate")
+    const size = { id: "size", argv: ["bun", "tools/teamgate/shared-gate.ts"] }
+    await writeProjectChecks(repoRoot, { version: 1, checks: { size: { argv: size.argv, scope: "change" } } })
+    const parent = await parentAt("shared-scope", base)
+    const parentRun = "shared-scope-parent"
+    const childRun = "shared-scope-child"
+    const child = await makeChild("shared-scope", base, { "only.txt": "only\n" }, "feat: only")
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [size])
+    await create(stateDir, childRun, [{ id: childRun, title: "Shared", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["only.txt"], checks: [size] }])
+    // The parent's Brief carries the same gate the child is given.
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, [size]))
+    expect(result.processed[0].state).toBe("landed")
+    expect(result.processed[0].skippedChecks).toBeUndefined()
+    expect(await lastReceipt(stateDir, parentRun, "size", result.processed[0].landedHead!)).toMatchObject({ passed: true })
+  })
+
   test("enqueue guards: stale head, dirty parent, already landed", async () => {
     const parent = await makeParent("guards")
     const p = await headOf(parent.dir)
@@ -362,22 +542,35 @@ describe("merge queue", () => {
       (e) => asErr(e),
     )
     expect(wrongShort?.code).toBe("E_STALE_PARENT")
+    // A dirty parent refuses only where the child's own commits change the
+    // same path: README.md here is the parent's, and the child adds child.txt.
     await writeFile(join(parent.dir, "README.md"), "fixture modified\n")
-    const dirty = await enqueue(
-      stateDir,
-      {
-        parentRun: "w-0000000000000041",
-        parentWorktree: parent.dir,
-        childRun: "w-0000000000000042",
-        childBranch: "child-dirty",
-        childHead: p,
-        expectedParentHead: p,
-      },
-    ).then(
+    const elsewhere = await makeChild("guards-elsewhere", p, { "child.txt": "child\n" }, "feat: child file")
+    const allowed = await enqueue(stateDir, {
+      parentRun: "w-0000000000000041",
+      parentWorktree: parent.dir,
+      childRun: "w-0000000000000042",
+      childBranch: elsewhere.branch,
+      childHead: elsewhere.head,
+      expectedParentHead: p,
+    })
+    expect(allowed.state).toBe("pending")
+    const overlapping = await makeChild("guards-overlap", p, { "README.md": "child README\n" }, "docs: child edits README")
+    const dirty = await enqueue(stateDir, {
+      parentRun: "w-0000000000000043",
+      parentWorktree: parent.dir,
+      childRun: "w-0000000000000044",
+      childBranch: overlapping.branch,
+      childHead: overlapping.head,
+      expectedParentHead: p,
+    }).then(
       () => null,
       (e) => asErr(e),
     )
     expect(dirty?.code).toBe("E_DIRTY")
+    expect(dirty?.message).toBe(
+      "Your worktree has uncommitted changes to [README.md], which w-0000000000000044's commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.",
+    )
     await git(parent.dir, ["checkout", "--", "README.md"])
   })
 })

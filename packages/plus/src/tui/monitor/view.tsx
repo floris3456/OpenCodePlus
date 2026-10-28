@@ -37,7 +37,7 @@ import { PromptTab, type PromptController } from "./tabs/prompt.js"
 import { SessionsTab } from "./tabs/sessions.js"
 import { TeamTab } from "./tabs/team.js"
 import { groupMountLog, resetGroupMountLog, stopGroupMountLog, ToolsTab } from "./tabs/tools.js"
-import type { ActiveTeamInfo } from "../active-team.js"
+import type { ActiveTeamInfo, TeamPlace } from "../active-team.js"
 
 export { groupMountLog, resetGroupMountLog, stopGroupMountLog }
 export const TOOLS_BODY_ROWS = 10
@@ -50,6 +50,8 @@ const LIVE_FOR_MS = 60_000
 
 export function refreshInterval(report: Plus.MonitorReport | undefined): number {
   if (report === undefined) return REFRESH_MS
+  // A rewrite of the ledger file is short: ask again promptly rather than at idle pace.
+  if (report.compacting === true) return REFRESH_MS
   // Take the newest timestamp available anywhere: the newest tool feed entry,
   // the last (newest) request, or the newest ping. `requests` is oldest-first,
   // so its newest row is the last one. Reading only the first request would
@@ -80,6 +82,25 @@ export interface MonitorViewProps {
   readonly target?: () => MonitorTarget | undefined
   /** The view took the target; the caller clears it so it is applied once. */
   readonly onTarget?: () => void
+  /** Opens a chat from the Monitor (a Sessions row's or a Team run's), with the place to start from there. */
+  readonly onOpenSession?: (sessionID: string, place: MonitorPlace) => void
+  /** Takes the place a Monitor had when it opened this chat; called once, at mount. */
+  readonly place?: () => MonitorPlace | undefined
+}
+
+/** Where a Monitor was: its drill-downs (scope, tab) and the row of the tab that opened the chat. */
+export interface MonitorPlace {
+  readonly drills: readonly Drill[]
+  readonly team?: TeamPlace
+  readonly sessions?: SessionsPlace
+}
+
+/** The Sessions checklist's selected session, open trees, inactive filter and page of trees. */
+export interface SessionsPlace {
+  readonly selected: string
+  readonly expanded: readonly string[]
+  readonly all: boolean
+  readonly offset: number
 }
 
 export interface MonitorTarget {
@@ -133,15 +154,24 @@ export function MonitorView(props: MonitorViewProps) {
   const defaultScope = props.full ? "session" : "tree"
   const store = createMonitorSettings(props.context, defaultScope, props.full ? "monitor" : "monitor-composer")
   const initialSessionID = props.initialSession ? props.sessionID() : undefined
+  const place = props.place?.()
   const [drills, setDrills] = createSignal<readonly Drill[]>(
-    initialSessionID === undefined
-      ? []
-      : [{
-          settings: { ...store.settings(), scope: "session", sessionIDs: [initialSessionID] },
-          sessionID: initialSessionID,
-        }],
+    place?.drills ??
+      (initialSessionID === undefined
+        ? []
+        : [{
+            settings: { ...store.settings(), scope: "session", sessionIDs: [initialSessionID] },
+            sessionID: initialSessionID,
+          }]),
   )
   const [helpOpen, setHelpOpen] = createSignal(false)
+  // The Team tab starts from the place once; shown again, it starts fresh.
+  let teamPlace = place?.team
+  const takeTeamPlace = () => {
+    const team = teamPlace
+    teamPlace = undefined
+    return team
+  }
 
   // Drill-downs are temporary and do not rewrite stored settings.
   const settings = () => drills().at(-1)?.settings ?? (
@@ -428,11 +458,13 @@ export function MonitorView(props: MonitorViewProps) {
   // shows the rest, this chat's tree first and open. The checked sessions are
   // what every other tab reports on; checking changes only this monitor's
   // temporary filter, never the stored settings.
-  const [allSessions, setAllSessions] = createSignal(false)
+  const [allSessions, setAllSessions] = createSignal(place?.sessions?.all ?? false)
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(
-    new Set(props.sessionID() === undefined ? [] : [props.sessionID()!]),
+    new Set([...(place?.sessions?.expanded ?? []), ...(props.sessionID() === undefined ? [] : [props.sessionID()!])]),
   )
-  const [treeOffset, setTreeOffset] = createSignal(0)
+  const [treeOffset, setTreeOffset] = createSignal(place?.sessions?.offset ?? 0)
+  // A chat opened from a Sessions row starts on that row once its list loads.
+  let selectOnLoad = place?.sessions?.selected
   const [checklist, setChecklist] = createSignal<Plus.MonitorSessionList>()
   const rowsOf = (list: Plus.MonitorSessionList | undefined): readonly Plus.MonitorSessionRow[] => {
     if (list === undefined) return []
@@ -474,9 +506,21 @@ export function MonitorView(props: MonitorViewProps) {
     }
     setDrills((stack) => (stack.length === 0 ? [drill] : [...stack.slice(0, -1), { ...stack.at(-1)!, ...drill }]))
   }
-  const checklistFlight = { generation: 0 }
+  const checklistShown = () => props.full && tab() === "sessions" && props.active()
+  // A load for changed inputs supersedes the answers still out. A poll never
+  // does: while one is out it waits for it and asks once more, so an answer
+  // slower than the poll interval is still shown.
+  const checklistFlight = { generation: 0, out: 0, again: false }
+  const pollChecklist = () => {
+    if (checklistFlight.out > 0) {
+      checklistFlight.again = true
+      return
+    }
+    void loadChecklist()
+  }
   const loadChecklist = (expand: readonly string[] = []) => {
     const generation = ++checklistFlight.generation
+    checklistFlight.out++
     const query = currentQuery()
     const chat = props.sessionID()
     return plus["monitor.sessions"](
@@ -493,7 +537,8 @@ export function MonitorView(props: MonitorViewProps) {
       (list) => {
         if (generation !== checklistFlight.generation) return undefined
         // The selection stays on its session when rows above it come or go.
-        const keep = sessionRows()[selected()]?.sessionID
+        const keep = selectOnLoad ?? sessionRows()[selected()]?.sessionID
+        selectOnLoad = undefined
         const at = keep === undefined ? -1 : rowsOf(list).findIndex((row) => row.sessionID === keep)
         batch(() => {
           setChecklist(list)
@@ -505,20 +550,28 @@ export function MonitorView(props: MonitorViewProps) {
         setFailure(error instanceof Error ? error.message : String(error))
         return undefined
       },
-    )
+    ).finally(() => {
+      checklistFlight.out--
+      if (checklistFlight.out > 0 || !checklistFlight.again) return
+      checklistFlight.again = false
+      if (checklistShown()) void loadChecklist()
+    })
   }
   createEffect(() => {
-    if (!props.full || tab() !== "sessions" || !props.active()) return
+    if (!checklistShown()) return
     allSessions()
     expanded()
     treeOffset()
     settings().window
     props.sessionID()
     untrack(() => void loadChecklist())
-    const timer = setInterval(() => void loadChecklist(), pace())
+  })
+  createEffect(() => {
+    if (!checklistShown()) return
+    const timer = setInterval(pollChecklist, pace())
     onCleanup(() => clearInterval(timer))
   })
-  /** Space: check or uncheck a whole tree, opening it first so every session in it is known. */
+  /** ctrl+space: check or uncheck a whole tree, opening it first so every session in it is known. */
   const checkTree = async (row: Plus.MonitorSessionRow) => {
     const root = row.rootID
     const known = sessionRows().filter((entry) => entry.rootID === root)
@@ -891,9 +944,17 @@ export function MonitorView(props: MonitorViewProps) {
     }
     if (current === "sessions") {
       const row = sessionRows()[selected()]
-      if (row !== undefined) check([row.sessionID], !isChecked(row))
+      if (row === undefined) return
+      openSession(row.sessionID, {
+        sessions: { selected: row.sessionID, expanded: [...expanded()], all: allSessions(), offset: treeOffset() },
+      })
       return
     }
+  }
+
+  const openSession = (id: string, from: Omit<MonitorPlace, "drills">) => {
+    if (props.onOpenSession === undefined) return props.context.ui.router.navigate({ type: "session", sessionID: id })
+    props.onOpenSession(id, { drills: drills(), ...from })
   }
 
   const back = () => {
@@ -1164,6 +1225,15 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "space",
+        title: "Check session",
+        group: "Monitor",
+        run: () => {
+          const row = tab() === "sessions" ? sessionRows()[selected()] : undefined
+          if (row !== undefined) check([row.sessionID], !isChecked(row))
+        },
+      },
+      {
+        bind: "ctrl+space",
         title: "Check session tree",
         group: "Monitor",
         run: () => {
@@ -1249,8 +1319,8 @@ export function MonitorView(props: MonitorViewProps) {
           : "[↑↓] select · [⏎] filter · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] compare · [m] mark · [?] help"
       case "sessions":
         return narrow
-          ? "[↑↓] · [⏎] check · [space] tree · [→←] open · [S] inactive · [?] · [esc]"
-          : "[↑↓] select · [⏎] check session · [space] check tree · [→/←] open/close tree · [S] show inactive · [?] help · [esc] close"
+          ? "[↑↓] · [⏎] open · [space] check · [ctrl+space] tree · [→←] · [S] · [?]"
+          : "[↑↓] select · [⏎] open chat · [space] check · [ctrl+space] check tree · [→/←] open/close tree · [S] show inactive · [?] help"
       case "team":
         return narrow
           ? "[↑↓] · [⏎] open · [ctrl+a/t] inactive/tree · [ctrl+d] stop · [e] checks"
@@ -1284,8 +1354,12 @@ export function MonitorView(props: MonitorViewProps) {
           {(message) => <text fg={theme().text.feedback.error.base}>{`tools unavailable: ${message()}`}</text>}
         </Show>
         <Show
-          when={report()}
-          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading…" : ""}</text>}
+          when={report()?.compacting === true ? undefined : report()}
+          fallback={
+            <text fg={theme().text.muted}>
+              {failure() !== undefined ? "" : report()?.compacting === true ? "Compacting the Monitor ledger…" : "Loading…"}
+            </text>
+          }
         >
           {(current) => (
             <box flexDirection="column" flexShrink={0}>
@@ -1383,7 +1457,7 @@ export function MonitorView(props: MonitorViewProps) {
       <Show when={tab() === "cache" && report()?.requestPage}>
         {(page) => (
           <text fg={theme().text.muted} wrapMode="none" truncate flexShrink={0}>
-            {`${page().returned}/${page().total} requests · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
+            {`${page().returned}/${page().total} requests${(report()?.cachePending ?? 0) > 0 ? ` · ${report()?.cachePending} not analyzed yet` : ""} · [${page().older ? "[" : "—"}] older · [${page().newer ? "]" : "—"}] newer · [l] latest · text: page-local`}
           </text>
         )}
       </Show>
@@ -1443,8 +1517,16 @@ export function MonitorView(props: MonitorViewProps) {
       {/* Tab Contents or Help */}
       <Show when={!helpOpen()} fallback={<MonitorHelp context={props.context} onClose={() => setHelpOpen(false)} />}>
         <Show
-          when={report()}
-          fallback={<text fg={theme().text.muted}>{failure() === undefined ? "Loading monitor data…" : ""}</text>}
+          when={report()?.compacting === true ? undefined : report()}
+          fallback={
+            <text fg={theme().text.muted}>
+              {failure() !== undefined
+                ? ""
+                : report()?.compacting === true
+                  ? "Compacting the Monitor ledger… the file is being rewritten, nothing is lost"
+                  : "Loading monitor data…"}
+            </text>
+          }
         >
           {(_current) => (
             <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
@@ -1511,7 +1593,8 @@ export function MonitorView(props: MonitorViewProps) {
                   context={props.context}
                   sessionID={sessionID}
                   active={() => props.active() && tab() === "team" && !helpOpen()}
-                  close={props.onClose}
+                  open={(id, team) => openSession(id, { team })}
+                  place={takeTeamPlace}
                   location={location}
                 />
               </Show>

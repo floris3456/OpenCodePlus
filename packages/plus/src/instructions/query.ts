@@ -476,17 +476,24 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false, co
       // row id already carries between `item:<level>:` and `:<itemId>`.
       const ownerPath = address === undefined ? "" : lazy.id.slice(`item:${address.level}:`.length, lazy.id.length - address.item.length - 1)
       const tool = item?.kind === "param" && item.paramTool !== undefined ? lookupItem(state, `tool:${item.paramTool}`, address.agent, address) : item
+      const memoGroups = toolGroups.get(state.memo) ?? new Map<string, readonly Lazy[]>()
+      const cachedGroups = memoGroups.get(lazy.id)
       const groups =
-        tool === undefined || tool.kind !== "tool"
+        cachedGroups ??
+        (tool === undefined || tool.kind !== "tool"
           ? []
           : item?.kind === "param"
             ? toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath, item.title)
           : [
-              ...state.memo.ctx.items.filter((entry) => entry.id === `toolmode:${tool.id.slice("tool:".length)}`)
+              ...(state.items.get(`toolmode:${tool.id.slice("tool:".length)}`) ?? [])
                 .map((entry) => lazyControl(state.memo, address.level, address.agent, entry, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath)),
               ...toolParameters(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.id, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
               ...toolPermissions(state.memo.ctx, state.memo, address.level, address.agent, tool, lazy.depth + 1, rowTeamOf(address), address.catalogue, ownerPath),
-            ]
+            ])
+      if (cachedGroups === undefined) {
+        memoGroups.set(lazy.id, groups)
+        toolGroups.set(state.memo, memoGroups)
+      }
       const walk = (node: Lazy) => {
         // A parameter row is a full item (its own text and sections), not a
         // permission row: visit it.
@@ -516,6 +523,9 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false, co
   if (parsed.wantsOrphans) pushOrphans(state, push, skipRows)
   return collapse?.presets === true ? out.filter((candidate) => levelOf(candidate) !== "preset") : out
 }
+
+// Tool groups of an item row depend only on the memo and the row: repeated finds on one memo reuse them.
+const toolGroups = new WeakMap<Memo, Map<string, readonly Lazy[]>>()
 
 const propagatingKeys = new Set(["level", "catalogue", "agent", "item", "group", "server", "codemode", "namespace", "execute", "tool", "folder"])
 // pinned is resolved state like state:/modified: (per-row resolve through the

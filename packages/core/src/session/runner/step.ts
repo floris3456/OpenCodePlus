@@ -40,6 +40,8 @@ export type Outcome = Data.TaggedEnum<{
   RecoverFull: {}
   Compacted: {}
   OutputLimit: { readonly needsContinuation: boolean }
+  /** The provider finished normally after reasoning, without text or a tool call. */
+  EmptyReply: {}
 }>
 export const Outcome = Data.taggedEnum<Outcome>()
 
@@ -132,9 +134,15 @@ export const make = Effect.gen(function* () {
                 restore(executeTool(event)).pipe(
                   Effect.flatMap(toolOutput.truncate),
                   Effect.flatMap((outcome) => publisher.toolExecution(event.id, event.name, outcome)),
-                  Effect.catchTag("Tool.Error", (error) =>
-                    publisher.failTool(event.id, toSessionError(error), error.metadata).pipe(Effect.asVoid),
-                  ),
+                  Effect.catchTag("Tool.Error", (error) => {
+                    // A failure message becomes the tool result the model sees next, so it is bounded too.
+                    const failure = toSessionError(error)
+                    return toolOutput.truncateText(failure.message).pipe(
+                      Effect.flatMap((message) =>
+                        publisher.failTool(event.id, { ...failure, message }, error.metadata).pipe(Effect.asVoid),
+                      ),
+                    )
+                  }),
                 ),
               ).pipe(Effect.forkScoped),
             })
@@ -293,6 +301,10 @@ export const make = Effect.gen(function* () {
         if (record.endTurn) return Outcome.Completed({ needsContinuation: false })
         const needsContinuation = input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation
         if (record.finish?.finish === "length") return Outcome.OutputLimit({ needsContinuation })
+        // Live: DeepSeek ended a subagent's step after its reasoning with "stop" and no text
+        // or tool call; taken as a finished turn, the parent got an empty result. A response
+        // with no output at all stays a plain end of turn.
+        if (record.finish?.finish === "stop" && record.outputStarted && !record.replied) return Outcome.EmptyReply()
         return Outcome.Completed({ needsContinuation })
       }),
     )

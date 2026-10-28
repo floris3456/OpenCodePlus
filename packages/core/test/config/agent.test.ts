@@ -92,7 +92,7 @@ describe("ConfigAgentPlugin.Plugin", () => {
 
   it.live("loads canonical compaction from agent Markdown", () =>
     Effect.gen(function* () {
-      const agent = yield* loadMarkdownAgent(
+      const { agent } = yield* loadMarkdownAgent(
         "compaction:\n  strategy: remote\n  model:\n    providerID: example\n    id: summary\n  system: Keep local settings",
       )
       expect(agent.compaction).toEqual({
@@ -105,7 +105,7 @@ describe("ConfigAgentPlugin.Plugin", () => {
 
   it.live("preserves canonical compaction alongside legacy Markdown generation options", () =>
     Effect.gen(function* () {
-      const agent = yield* loadMarkdownAgent(
+      const { agent } = yield* loadMarkdownAgent(
         `model: example/chat
 temperature: 0.5
 compaction:
@@ -155,7 +155,7 @@ compaction:
     for (const native of [false, true]) {
       it.live(`loads Markdown ${item.name}${native ? " with native request and permissions" : ""}`, () =>
         Effect.gen(function* () {
-          const agent = yield* loadMarkdownAgent(
+          const { agent, file } = yield* loadMarkdownAgent(
             native
               ? `${item.frontmatter}
 request:
@@ -176,7 +176,12 @@ permissions:
             body: native ? { effort: "high" } : {},
           })
           if (native) {
-            expect(agent.permissions).toContainEqual({ action: "edit", resource: "*", effect: "deny" })
+            expect(agent.permissions).toContainEqual({
+              action: "edit",
+              resource: "*",
+              effect: "deny",
+              message: `Permission denied: edit (denied by agent reviewer's rule edit "*": deny in ${file})`,
+            })
             expect(Permission.evaluate("edit", "example.txt", agent.permissions).effect).toBe("deny")
           }
         }),
@@ -186,17 +191,23 @@ permissions:
 
   it.live("keeps Markdown legacy permission precedence in source order", () =>
     Effect.gen(function* () {
-      const agent = yield* loadMarkdownAgent('permission:\n  "*": allow\n  bash: ask\n  edit: deny')
+      const { agent, file } = yield* loadMarkdownAgent('permission:\n  "*": allow\n  bash: ask\n  edit: deny')
       expect(Permission.evaluate("shell", "ls", agent.permissions).effect).toBe("ask")
       expect(Permission.evaluate("edit", "example.txt", agent.permissions).effect).toBe("deny")
       expect(Permission.evaluate("webfetch", "*", agent.permissions).effect).toBe("allow")
+      expect(agent.permissions).toContainEqual({
+        action: "edit",
+        resource: "*",
+        effect: "deny",
+        message: `Permission denied: edit (denied by agent reviewer's rule edit "*": deny in ${file})`,
+      })
     }),
   )
 
   for (const variant of [undefined, "high"]) {
     it.live(`loads Markdown legacy temperature ${variant ? "with" : "without"} a separate variant`, () =>
       Effect.gen(function* () {
-        const agent = yield* loadMarkdownAgent(
+        const { agent } = yield* loadMarkdownAgent(
           `model: example/chat\ntemperature: 0.5${variant ? `\nvariant: ${variant}` : ""}`,
         )
         expect(agent.model).toEqual(Model.Ref.parse(variant ? "example/chat#high" : "example/chat"))
@@ -205,6 +216,128 @@ permissions:
     )
   }
 
+  it.live("names a Markdown agent's own denying rule and the allows after it", () =>
+    Effect.gen(function* () {
+      const { agent, file } = yield* loadMarkdownAgent(
+        `model: example/chat
+permissions:
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: tools/*
+    effect: allow
+  - action: edit
+    resource: packages/*
+    effect: allow
+  - action: edit
+    resource: /tmp/opencodeplus/*
+    effect: allow
+  - action: shell
+    resource: sudo *
+    effect: deny`,
+        "Review carefully.",
+        "pipeline-engineer",
+      )
+
+      expect(agent.permissions).toEqual([
+        ...defaultPermissions,
+        {
+          action: "edit",
+          resource: "*",
+          effect: "deny",
+          message: `Permission denied: edit (denied by agent pipeline-engineer's rule edit "*": deny in ${file}; that file allows edit for tools/*, packages/*, /tmp/opencodeplus/*)`,
+        },
+        { action: "edit", resource: "tools/*", effect: "allow" },
+        { action: "edit", resource: "packages/*", effect: "allow" },
+        { action: "edit", resource: "/tmp/opencodeplus/*", effect: "allow" },
+        {
+          action: "shell",
+          resource: "sudo *",
+          effect: "deny",
+          message: `Permission denied: shell (denied by agent pipeline-engineer's rule shell "sudo *": deny in ${file})`,
+        },
+      ])
+      expect(agent.permissions.filter((rule) => rule.effect !== "deny").every((rule) => !("message" in rule))).toBe(
+        true,
+      )
+
+      const denied = Permission.evaluate("edit", "content/models/x.py", agent.permissions)
+      expect(denied).toEqual({
+        action: "edit",
+        resource: "*",
+        effect: "deny",
+        message: `Permission denied: edit (denied by agent pipeline-engineer's rule edit "*": deny in ${file}; that file allows edit for tools/*, packages/*, /tmp/opencodeplus/*)`,
+      })
+      expect(Permission.evaluate("edit", "tools/x.py", agent.permissions).effect).toBe("allow")
+    }),
+  )
+
+  it.effect("names a global denying rule from a document without a path", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const build = Agent.ID.make("build")
+      yield* agents.transform((editor) => editor.update(build, () => {}))
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provide(
+          Config.testLayer([
+            new Document({
+              type: "document",
+              info: decode({
+                permissions: [{ action: "read", resource: "*.env", effect: "deny", message: "secrets stay closed" }],
+              }),
+            }),
+          ]),
+        ),
+      )
+
+      const agent = yield* agents.get(build)
+      if (!agent) throw new Error("expected configured build agent")
+      const rule = Permission.evaluate("read", ".env", agent.permissions)
+      expect(rule).toEqual({
+        action: "read",
+        resource: "*.env",
+        effect: "deny",
+        message: `secrets stay closed (denied by the rule read "*.env": deny in the configuration)`,
+      })
+    }),
+  )
+
+  it.effect("caps a long list of later allows at eight resources", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const allowed = ["a/*", "b/*", "c/*", "d/*", "e/*", "f/*", "g/*", "h/*", "i/*"]
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provide(
+          Config.testLayer([
+            new Document({
+              type: "document",
+              info: decode({
+                agents: {
+                  capped: {
+                    permissions: [
+                      { action: "edit", resource: "*", effect: "deny" },
+                      ...allowed.map((resource) => ({ action: "edit", resource, effect: "allow" as const })),
+                    ],
+                  },
+                },
+              }),
+            }),
+          ]),
+        ),
+      )
+
+      const capped = yield* agents.get(Agent.ID.make("capped"))
+      if (!capped) throw new Error("expected configured capped agent")
+      expect(capped.permissions).toContainEqual({
+        action: "edit",
+        resource: "*",
+        effect: "deny",
+        message: `Permission denied: edit (denied by agent capped's rule edit "*": deny in the configuration; that configuration allows edit for ${allowed.slice(0, 8).join(", ")}, …)`,
+      })
+    }),
+  )
+
   it.effect("matches POSIX paths against home-relative permissions", () =>
     Effect.gen(function* () {
       const permissions = yield* loadHomePermissions("/home/test")
@@ -212,8 +345,15 @@ permissions:
       expect(Permission.evaluate("external_directory", "/home/test/cache/files/*", permissions).effect).toBe("deny")
       expect(Permission.evaluate("external_directory", "/some/~/path", permissions).effect).toBe("deny")
       expect(Permission.evaluate("external_directory", "$HOMELESS/private/*", permissions).effect).toBe("deny")
-      expect(permissions).toContainEqual({ action: "shell", resource: "$HOME/private/**", effect: "deny" })
-      expect(permissions).not.toContainEqual({ action: "shell", resource: "/home/test/private/**", effect: "deny" })
+      expect(permissions).toContainEqual({
+        action: "shell",
+        resource: "$HOME/private/**",
+        effect: "deny",
+        message: `Permission denied: shell (denied by the rule shell "$HOME/private/**": deny in the configuration)`,
+      })
+      expect(permissions.some((rule) => rule.action === "shell" && rule.resource === "/home/test/private/**")).toBe(
+        false,
+      )
       expect(Permission.evaluate("shell", "$HOME/private/key", permissions).effect).toBe("deny")
     }),
   )
@@ -303,18 +443,58 @@ permissions:
         { action: "edit", resource: "*", effect: "ask" },
         { action: "webfetch", resource: "*", effect: "ask" },
         { action: "read", resource: "*", effect: "allow" },
-        { action: "read", resource: "*.env", effect: "deny" },
-        { action: "read", resource: "*.env.*", effect: "deny" },
+        {
+          action: "read",
+          resource: "*.env",
+          effect: "deny",
+          message: `Permission denied: read (denied by the rule read "*.env": deny in the configuration; that configuration allows read for *.env.example)`,
+        },
+        {
+          action: "read",
+          resource: "*.env.*",
+          effect: "deny",
+          message: `Permission denied: read (denied by the rule read "*.env.*": deny in the configuration; that configuration allows read for *.env.example)`,
+        },
         { action: "read", resource: "*.env.example", effect: "allow" },
-        { action: "read", resource: "*.dev.vars", effect: "deny" },
-        { action: "read", resource: mcpAuth, effect: "deny" },
-        { action: "read", resource: mcpAuth, effect: "deny" },
+        {
+          action: "read",
+          resource: "*.dev.vars",
+          effect: "deny",
+          message: `Permission denied: read (denied by the rule read "*.dev.vars": deny in the configuration)`,
+        },
+        {
+          action: "read",
+          resource: mcpAuth,
+          effect: "deny",
+          message: `Permission denied: read (denied by the rule read "~/.local/share/opencode/mcp-auth.json": deny in the configuration)`,
+        },
+        {
+          action: "read",
+          resource: mcpAuth,
+          effect: "deny",
+          message: `Permission denied: read (denied by the rule read "$HOME/.local/share/opencode/mcp-auth.json": deny in the configuration)`,
+        },
         { action: "external_directory", resource: "*", effect: "ask" },
-        { action: "external_directory", resource: opencodeData, effect: "deny" },
+        {
+          action: "external_directory",
+          resource: opencodeData,
+          effect: "deny",
+          message: `Permission denied: external_directory (denied by the rule external_directory "~/.local/share/opencode/*": deny in the configuration)`,
+        },
         { action: "*", resource: "*", effect: "allow" },
         { action: "external_directory", resource: "*", effect: "allow" },
-        { action: "external_directory", resource: opencodeData, effect: "deny" },
-        { action: "read", resource: "*.env", effect: "deny" },
+        {
+          action: "external_directory",
+          resource: opencodeData,
+          effect: "deny",
+          message: `Permission denied: external_directory (denied by agent build's rule external_directory "~/.local/share/opencode/*": deny in the configuration)`,
+        },
+        {
+          action: "read",
+          resource: "*.env",
+          effect: "deny",
+          message: `Permission denied: read (denied by agent build's rule read "*.env": deny in the configuration)`,
+        },
       ])
       expect(Permission.evaluate("shell", "bun test", build.permissions).effect).toBe("allow")
       expect(Permission.evaluate("edit", "src/index.ts", build.permissions).effect).toBe("allow")
@@ -401,8 +581,18 @@ permissions:
         ...defaultPermissions,
         { action: "bash", resource: "*", effect: "ask" },
         { action: "read", resource: "*", effect: "allow" },
-        { action: "edit", resource: "*", effect: "deny" },
-        { action: "read", resource: "*", effect: "deny" },
+        {
+          action: "edit",
+          resource: "*",
+          effect: "deny",
+          message: `Permission denied: edit (denied by agent reviewer's rule edit "*": deny in the configuration)`,
+        },
+        {
+          action: "read",
+          resource: "*",
+          effect: "deny",
+          message: `Permission denied: read (denied by agent reviewer's rule read "*": deny in the configuration)`,
+        },
       ])
       expect(Permission.evaluate("read", "README.md", reviewer.permissions).effect).toBe("deny")
       expect((yield* agents.get(Agent.ID.make("late")))?.permissions).toEqual([
@@ -555,13 +745,29 @@ Use native v2 fields.`,
             system: "Review carefully.",
             description: "Markdown description",
             request: { body: { temperature: 0.5 } },
-            permissions: [...defaultPermissions, { action: "edit", resource: "*", effect: "deny" }],
+            permissions: [
+              ...defaultPermissions,
+              {
+                action: "edit",
+                resource: "*",
+                effect: "deny",
+                message: `Permission denied: edit (denied by agent reviewer's rule edit "*": deny in ${path.join(tmp.path, "agents", "reviewer.md")})`,
+              },
+            ],
           })
           expect(yield* agents.get(Agent.ID.make("team/helper"))).toMatchObject({ system: "Help the team." })
           expect(yield* agents.get(Agent.ID.make("native"))).toMatchObject({
             system: "Use native v2 fields.",
             request: { headers: { "x-agent": "native" }, body: { effort: "high" } },
-            permissions: [...defaultPermissions, { action: "edit", resource: "*", effect: "deny" }],
+            permissions: [
+              ...defaultPermissions,
+              {
+                action: "edit",
+                resource: "*",
+                effect: "deny",
+                message: `Permission denied: edit (denied by agent native's rule edit "*": deny in ${path.join(tmp.path, "agents", "native.md")})`,
+              },
+            ],
           })
           expect(yield* agents.get(Agent.ID.make("disabled"))).toBeUndefined()
           expect(yield* agents.get(Agent.ID.make("empty"))).toBeUndefined()
@@ -703,20 +909,21 @@ Use native v2 fields.`,
   )
 })
 
-function loadMarkdownAgent(frontmatter: string, system = "Review carefully.") {
+function loadMarkdownAgent(frontmatter: string, system = "Review carefully.", name = "reviewer") {
   return Effect.gen(function* () {
     const tmp = yield* tmpdirScoped()
     const fs = yield* FSUtil.Service
     yield* fs.makeDirectory(path.join(tmp.path, "agents"))
-    yield* fs.writeFileString(path.join(tmp.path, "agents", "reviewer.md"), `---\n${frontmatter}\n---\n${system}`)
+    const file = path.join(tmp.path, "agents", `${name}.md`)
+    yield* fs.writeFileString(file, `---\n${frontmatter}\n---\n${system}`)
     const agents = yield* Agent.Service
     yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
       Effect.provide(Config.testLayer([directoryEntry(tmp.path)])),
     )
-    const agent = yield* agents.get(Agent.ID.make("reviewer"))
+    const agent = yield* agents.get(Agent.ID.make(name))
     if (!agent) throw new Error("expected configured Markdown agent")
     expect(agent.system).toBe(system)
-    return agent
+    return { agent, file }
   })
 }
 

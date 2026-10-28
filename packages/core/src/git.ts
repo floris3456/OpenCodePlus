@@ -55,6 +55,20 @@ const NO_REPOSITORY_PROGRAMS = [
   "commit.gpgSign=false",
 ]
 
+// Git LFS configured globally or system-wide would copy every object it cleans into
+// `<store>/lfs/objects`. An empty driver makes Git use the file as it is, and
+// `required=false` keeps a missing driver from failing the capture.
+const NO_LFS_FILTER = [
+  "-c",
+  "filter.lfs.process=",
+  "-c",
+  "filter.lfs.clean=",
+  "-c",
+  "filter.lfs.smudge=",
+  "-c",
+  "filter.lfs.required=false",
+]
+
 export const TreeID = Schema.String.pipe(Schema.brand("Git.TreeID"))
 export type TreeID = typeof TreeID.Type
 
@@ -70,8 +84,9 @@ export interface CaptureInput {
   readonly repository: Repository
   readonly scopes: readonly RelativePath[]
   /**
-   * Source repository whose ignore rules decide which paths are recorded. Its index also
-   * rebuilds an unreadable snapshot index without rehashing every tracked file.
+   * Source repository whose ignore rules decide which paths are recorded, and whose
+   * attributes mark the LFS paths a capture leaves out. Its index also rebuilds an
+   * unreadable snapshot index without rehashing every tracked file.
    */
   readonly ignores?: Repository
   readonly maximumUntrackedFileBytes?: number
@@ -484,8 +499,8 @@ const layer = Layer.effect(
         )
       const [tracked, untracked] = yield* Effect.all(
         [
-          list(["diff-files", "--name-only", "-z", "--", literalPathspec(scope)]),
-          list(["ls-files", "--others", "--exclude-standard", "-z", "--", literalPathspec(scope)]),
+          list([...NO_LFS_FILTER, "diff-files", "--name-only", "-z", "--", literalPathspec(scope)]),
+          list([...NO_LFS_FILTER, "ls-files", "--others", "--exclude-standard", "-z", "--", literalPathspec(scope)]),
         ],
         { concurrency: 2 },
       )
@@ -499,16 +514,23 @@ const layer = Layer.effect(
       maximumUntrackedFileBytes?: number
       index?: string
       excluded?: ReadonlySet<RelativePath>
+      lfs?: ReadonlySet<RelativePath>
     }) {
       const candidates = [...input.changes.tracked, ...input.changes.untracked]
       if (!candidates.length) return { skipped: [] }
       const excluded =
         input.excluded ??
         (input.ignores ? yield* ignored({ repository: input.ignores, paths: candidates }) : new Set<RelativePath>())
+      const lfs =
+        input.lfs ??
+        (yield* lfsPaths({
+          repository: input.ignores ?? input.repository,
+          paths: candidates.filter((item) => !excluded.has(item)),
+        }))
       const maximum = input.maximumUntrackedFileBytes
       const skipped = maximum
         ? (yield* Effect.forEach(
-            input.changes.untracked.filter((item) => !excluded.has(item)),
+            input.changes.untracked.filter((item) => !excluded.has(item) && !lfs.has(item)),
             (item) =>
               fs.stat(path.join(input.repository.worktree, item)).pipe(
                 Effect.map((info) => (info.type === "File" && Number(info.size) > maximum ? item : undefined)),
@@ -518,9 +540,19 @@ const layer = Layer.effect(
           )).filter((item): item is RelativePath => item !== undefined)
         : []
       const skip = new Set(skipped)
-      const added = candidates.filter((item) => !excluded.has(item) && !skip.has(item))
+      const added = candidates.filter((item) => !excluded.has(item) && !skip.has(item) && !lfs.has(item))
       // Untracked paths are not in the index, so only tracked paths that are now ignored need removing.
       const removed = input.changes.tracked.filter((item) => excluded.has(item))
+      // LFS paths keep the pointer the store's index already records, and assume-unchanged
+      // stops diff-files from listing or content-comparing them on every later capture.
+      const assumed = input.changes.tracked.filter((item) => !excluded.has(item) && lfs.has(item))
+      if (assumed.length)
+        yield* repositoryOperation(
+          "refresh",
+          input.repository,
+          [...NO_LFS_FILTER, "update-index", "--assume-unchanged", "-z", "--stdin"],
+          { stdin: assumed.join("\0") + "\0", index: input.index },
+        )
       // update-index takes literal paths, so large lists avoid add's quadratic pathspec matching.
       if (removed.length)
         yield* repositoryOperation("refresh", input.repository, ["update-index", "--force-remove", "-z", "--stdin"], {
@@ -530,7 +562,7 @@ const layer = Layer.effect(
       // update-index drops a tracked file replaced by an embedded repository; a second line for the same path,
       // in the same call, records its gitlink. For a path that already is a gitlink the repeat is a no-op.
       const embedded = (yield* Effect.forEach(
-        input.changes.tracked.filter((item) => !excluded.has(item)),
+        input.changes.tracked.filter((item) => !excluded.has(item) && !lfs.has(item)),
         (item) =>
           fs
             .existsSafe(path.join(input.repository.worktree, item, ".git"))
@@ -542,7 +574,7 @@ const layer = Layer.effect(
           repositoryOperation(
             "refresh",
             input.repository,
-            ["update-index", "--add", "--remove", "--replace", "-z", "--stdin"],
+            [...NO_LFS_FILTER, "update-index", "--add", "--remove", "--replace", "-z", "--stdin"],
             { stdin: [...added, ...embedded].join("\0") + "\0", index: input.index },
           ),
         )
@@ -593,6 +625,51 @@ const layer = Layer.effect(
           message: result.stderr.toString("utf8").trim() || "Failed to check ignored paths",
         })
       return new Set(nuls(result.stdout.toString("utf8")).map((file) => RelativePath.make(file)))
+    })
+
+    const lfsPaths = Effect.fn("Git.index.lfsPaths")(function* (input: {
+      repository: Repository
+      paths: readonly RelativePath[]
+    }) {
+      if (!input.paths.length) return new Set<RelativePath>()
+      const result = yield* proc
+        .run(
+          ChildProcess.make(
+            gitExecutable,
+            repositoryArgs(input.repository, ["check-attr", "filter", "-z", "--stdin"]),
+            {
+              cwd: input.repository.worktree,
+              extendEnv: true,
+            },
+          ),
+          { stdin: input.paths.join("\0") + "\0" },
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OperationError({
+                operation: "list_files",
+                directory: input.repository.worktree,
+                message: cause.message,
+                cause,
+              }),
+          ),
+        )
+      if (result.exitCode !== 0)
+        return yield* new OperationError({
+          operation: "list_files",
+          directory: input.repository.worktree,
+          message: result.stderr.toString("utf8").trim() || "Failed to check LFS paths",
+        })
+      // With -z every record is three NUL-terminated fields: path, attribute, value. A
+      // set-but-empty value (`filter=`) is a field of length zero, so the split must keep
+      // empty fields and pairs cannot be read with `nuls`.
+      const fields = result.stdout.toString("utf8").split("\0")
+      return new Set(
+        fields.flatMap((field, index) =>
+          index % 3 === 0 && field && fields[index + 2] === "lfs" ? [RelativePath.make(field)] : [],
+        ),
+      )
     })
 
     const writeTree = Effect.fn("Git.tree.write")(function* (repository: Repository, index?: string) {
@@ -712,8 +789,16 @@ const layer = Layer.effect(
                 ? yield* ignored({ repository: input.ignores, paths: untracked })
                 : new Set<RelativePath>()
               : undefined
-          if (last && excluded && untracked.every((file) => excluded.has(file))) return last.tree
-          yield* Effect.forEach(changes, (change) => updateIndex({ ...input, changes: change, index, excluded }), {
+          // LFS paths are left out the same way, so a new one must not defeat the clean-capture shortcut.
+          const lfs = excluded
+            ? yield* lfsPaths({
+                repository: input.ignores ?? input.repository,
+                paths: untracked.filter((file) => !excluded.has(file)),
+              })
+            : undefined
+          if (last && excluded && lfs && untracked.every((file) => excluded.has(file) || lfs.has(file)))
+            return last.tree
+          yield* Effect.forEach(changes, (change) => updateIndex({ ...input, changes: change, index, excluded, lfs }), {
             discard: true,
           })
           return yield* writeTree(input.repository, index)

@@ -214,7 +214,12 @@ test("the Commands window lists five short OpenCodePlus commands and nothing els
       ["Toggle cache warming", "<leader>k", "OpenCodePlus"],
       ["Toggle compact before cold", "<leader>j", "OpenCodePlus"],
     ])
-    expect(commands.filter((command) => !command.palette)).toEqual([])
+    // The only command outside the palette is the Monitor's Esc layer, which
+    // closes the Monitor panel even when the chat beside it has the focus
+    // (monitor/index.tsx); it is not a palette entry.
+    expect(commands.filter((command) => !command.palette).map((command) => [command.title, command.bind, command.group])).toEqual([
+      ["Close monitor", "escape", "Monitor"],
+    ])
     // The settings, agent and one-off compaction commands are gone, slash forms
     // included; the team runs and project checks live in the Monitor's Team tab.
     for (const name of ["compact-triggers", "compact-cold", "team", "checks"])

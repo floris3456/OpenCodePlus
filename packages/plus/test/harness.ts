@@ -13,6 +13,7 @@ import type { RpcDomain } from "@opencode/plugin/effect/rpc"
 import type { SessionDomain } from "@opencode/plugin/effect/session"
 import type { ShellDomain } from "@opencode/plugin/effect/shell"
 import type { SkillDomain } from "@opencode/plugin/effect/skill"
+import type { SnapshotDomain } from "@opencode/plugin/effect/snapshot"
 import type { StorageDomain } from "@opencode/plugin/effect/storage"
 import type { ToolDomain } from "@opencode/plugin/effect/tool"
 import type { InstructionDomain } from "@opencode/plugin/effect/instruction"
@@ -817,6 +818,12 @@ function websearchDomain(): WebSearchDomain {
   }
 }
 
+function snapshotDomain(): SnapshotDomain {
+  return {
+    transform: die("unused snapshot.transform"),
+  }
+}
+
 function worktreeDomain(): WorktreeDomain {
   return {
     list: die("unused worktree.list"),
@@ -893,6 +900,7 @@ export function context(overrides: Overrides = {}): Context {
     session: sessionDomain(overrides.session),
     shell: overrides.shell ?? shellDomain(),
     skill: overrides.skill ?? skillDomain(),
+    snapshot: overrides.snapshot ?? snapshotDomain(),
     storage: overrides.storage ?? storageDomain(),
     tool: overrides.tool ?? toolDomain(),
     vcs: overrides.vcs ?? vcsDomain(),

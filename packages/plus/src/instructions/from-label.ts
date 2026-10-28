@@ -64,6 +64,7 @@ export function badgeLabels(node: TreeNode): string[] {
   if (node.badges.slotNote !== undefined) labels.push(node.badges.slotNote)
   if (node.badges.pinned === true) labels.push("pinned")
   if (node.badges.unsupported === true) labels.push("unsupported")
+  if (node.badges.codeModeOff !== undefined) labels.push("unreachable (execute off)")
   if (node.owner?.linkMissing === true) labels.push("missing preset")
   const count = node.badges.reviewCount ?? 0
   if (count > 0) labels.push(`${count} to review`)

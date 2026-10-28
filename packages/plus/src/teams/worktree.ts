@@ -6,6 +6,7 @@ import { toolError } from "./schema.js"
 import { lock } from "./store.js"
 import { errCode, io } from "./io.js"
 import { directoryUse } from "./directory-use.js"
+import { removeSnapshotStores } from "./snapshots.js"
 
 // Team worktrees share one repository, so a task executor can write the
 // repository-local git config — hooks, `core.fsmonitor`, `commit.gpgSign` — and a
@@ -152,13 +153,23 @@ export async function remove(root: string, dir: string, opts: RemoveOptions): Pr
 // holds that lock while it decides and removes, so taking it again there would
 // deadlock; every other caller goes through `remove`.
 export async function removeLocked(dir: string, opts: RemoveOptions): Promise<void> {
-  if (await absent(dir)) return
+  // Core hashes the worktree's canonical path for its snapshot store, and a
+  // data root reached through a symlink must still name the same store.
+  const canonical = await real(dir)
+  if (await absent(dir)) return forgetSnapshots(canonical, dir)
   const use = await directoryUse(dir)
   if (use !== undefined) throw toolError(use.code, use.reason)
   const extra = opts.force === true ? ["--force"] : []
   const result = await gitRaw(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "remove", ...extra, dir])
-  if (await absent(dir)) return
+  if (await absent(dir)) return forgetSnapshots(canonical, dir)
   throw toolError("E_WT_REMOVE", `Worktree retained: ${result.err || result.out || "directory still exists after git worktree remove."}`)
+}
+
+// The worktree is gone, so nothing can be restored from its snapshot store:
+// deleting it now keeps the host from collecting stores of long-gone worktrees.
+async function forgetSnapshots(canonical: string, dir: string): Promise<void> {
+  const worktrees = canonical === dir ? [canonical] : [canonical, dir]
+  await Promise.all(worktrees.map((worktree) => removeSnapshotStores(worktree)))
 }
 
 async function absent(dir: string): Promise<boolean> {

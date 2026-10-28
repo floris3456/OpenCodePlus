@@ -40,6 +40,13 @@ export interface PermRow {
   readonly item: Item
   readonly on: boolean
   readonly text: string
+  /**
+   * The row and where its state comes from, as a refusal names it:
+   * `<row id the human can pass to instructions.set> "<title>": <state words>`
+   * (apply.ts rowSource). Absent when the table cannot say, such as a row built
+   * by hand in a test.
+   */
+  readonly source?: string
 }
 
 export interface PermissionTable {
@@ -76,7 +83,7 @@ export function permissionTable(input: {
   readonly items: readonly Item[]
   readonly item?: (item: Item, agent: string) => Item | undefined
   readonly teamMembers: readonly string[]
-  readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string }
+  readonly resolve: (item: Item, agent: string) => { readonly enabled: boolean; readonly text: string; readonly source?: string }
   readonly describe?: (agent: string) => string | undefined
   readonly cacheKey?: (agent: string) => string
 }): PermissionTable {
@@ -102,7 +109,7 @@ export function permissionTable(input: {
       .filter((item) => applies(item, agent))
       .map((item) => {
         const state = input.resolve(item, agent)
-        return { item, on: state.enabled, text: state.text }
+        return { item, on: state.enabled, text: state.text, ...(state.source === undefined ? {} : { source: state.source }) }
       })
     if (key !== undefined) {
       if (agentRowsCache.size >= agentRowsCacheLimit) {
@@ -137,7 +144,7 @@ export function permissionTable(input: {
         .filter((item) => (item.permTool === tool || (item.alsoUnder ?? []).includes(tool)) && applies(item, agent))
         .map((item) => {
           const state = input.resolve(item, agent)
-          return { item, on: state.enabled, text: state.text }
+          return { item, on: state.enabled, text: state.text, ...(state.source === undefined ? {} : { source: state.source }) }
         }),
     teamMembers: new Set(input.teamMembers),
     describe: input.describe ?? (() => undefined),
@@ -161,11 +168,14 @@ export function editRefusal(table: PermissionTable | undefined, agent: string, d
     teamMembers: table.teamMembers,
   })
   if (decision.refuse !== undefined) return decision.refuse
+  // One resource, as core's file access names it: the checkout-relative path
+  // inside the directory, the absolute one outside. Matching both let a
+  // checkout under .../teams/... hit `*/teams/*.md` on every Markdown file.
   const absolute = path.resolve(directory, file)
-  const relative = path.relative(directory, absolute)
+  const resource = isOutside(file, directory) ? absolute : path.relative(directory, absolute)
   for (const row of table.ruleRows(agent, "edit")) {
     if (row.on) continue
-    if ((row.item.patterns ?? []).some((pattern) => wildcardMatch(relative, pattern) || wildcardMatch(absolute, pattern)))
+    if ((row.item.patterns ?? []).some((pattern) => wildcardMatch(resource, pattern)))
       return messageOf(row, `${row.item.title} cannot be changed here`)
   }
   return undefined
@@ -265,7 +275,7 @@ export function decide(rows: readonly PermRow[], call: Call): Decision {
       for (const row of group) {
         if (row.item.permissionParameter !== undefined && valuesAt(input, row.item.permissionParameter).length === 0) continue
         if (row.item.ruleId === "when.delegated" || row.item.permissionSource?.endsWith(":when.delegated") === true) {
-          if (!row.on) headlessRefusal = denied(row.item.message ?? "this call is not allowed in a delegated run")
+          if (!row.on) headlessRefusal = deniedBy(row.item.message ?? "this call is not allowed in a delegated run", row)
           continue
         }
         if (row.on) approval = row.item.permAction ?? call.tool
@@ -297,13 +307,21 @@ function denied(message: string): string {
   return `Permission denied: ${message}`
 }
 
+// A refusal a permission row caused names that row and where its state comes
+// from, so the reader can find it with instructions.find and change it with
+// instructions.set (a row built by hand, with no source, keeps the plain text).
+function deniedBy(message: string, row: PermRow | undefined): string {
+  if (row?.source === undefined) return denied(message)
+  return denied(`${message} (denied by ${row.source})`)
+}
+
 /** A closed category's refusal, naming what its allow rows that are on still let through. */
 export function allowListMessage(message: string, open: readonly string[]): string {
   return open.length === 0 ? message : `${message}; still allowed: ${open.join(", ")}`
 }
 
 function messageOf(row: PermRow, fallback: string): string {
-  return denied(row.item.message ?? fallback)
+  return deniedBy(row.item.message ?? fallback, row)
 }
 
 // A string for every value a field holds: arrays of words (a check's argv)
@@ -332,7 +350,7 @@ function inputRefusal(category: string, group: readonly PermRow[], call: Call): 
       if (fallback !== undefined && !fallback.on && fallback.item.field === field && rowMatches(fallback, value, call)) {
         const opened = matches.some((row) => row.on && row.item.allow === true)
         const open = rows.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
-        if (!opened) return denied(allowListMessage(fallback.item.message ?? `${categoryLabel(call.tool, category)}: "${value}" is not allowed here`, open))
+        if (!opened) return deniedBy(allowListMessage(fallback.item.message ?? `${categoryLabel(call.tool, category)}: "${value}" is not allowed here`, open), fallback)
       }
     }
   }
@@ -366,7 +384,7 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
   if (call.tool === "shell" && category === "removals") {
     const row = group.find((entry) => entry.item.ruleId === "removals.others")
     if (row === undefined || row.on) return undefined
-    const refuse = (detail: string) => `${messageOf(row, "rm removes only files you may change here")}: ${detail}`
+    const refuse = (detail: string) => deniedBy(`${row.item.message ?? "rm removes only files you may change here"}: ${detail}`, row)
     const workdir = stringsAt(call.input, "workdir")[0]
     const base = workdir === undefined ? call.directory : path.resolve(call.directory, expandHome(workdir))
     const removed = rmTargets(stringsAt(call.input, "command")[0] ?? "")
@@ -432,7 +450,7 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
           row.item.allow === true &&
           (row.item.patterns ?? []).some((pattern) => wildcardMatch(file, pattern) || wildcardMatch(relative, pattern)),
       )
-      if (!opened) return denied(`${allowListMessage(fallback.item.message ?? "this file may not be changed here", open)}${handOver}`)
+      if (!opened) return deniedBy(`${allowListMessage(fallback.item.message ?? "this file may not be changed here", open)}${handOver}`, fallback)
     }
     return undefined
   }
@@ -449,7 +467,7 @@ function specialRefusal(category: string, group: readonly PermRow[], call: Call)
       const url = call.tabUrl?.(tab)
       if (url === undefined) {
         if (fallback !== undefined && !fallback.on)
-          return denied(`the page of tab ${tab} is not known yet; open it with browser.tabs.open or browser.navigate first`)
+          return deniedBy(`the page of tab ${tab} is not known yet; open it with browser.tabs.open or browser.navigate first`, fallback)
         continue
       }
       const refusal = inputRefusal("sites", group.map((row) => ({ ...row, item: { ...row.item, field: "url" } })), { ...call, input: { url } })
@@ -541,10 +559,10 @@ function valueRefusal(group: readonly PermRow[], input: unknown, category: strin
     if (row.on || row.item.field === undefined) continue
     const supplied = valuesAt(input, row.item.field)
     if (supplied.some((value) => value === row.item.value))
-      return denied(`${row.item.field} "${String(row.item.value)}" (${row.item.title}) is not allowed here`)
+      return deniedBy(`${row.item.field} "${String(row.item.value)}" (${row.item.title}) is not allowed here`, row)
     const fallback = catalogFor(row.item.permTool ?? "").find((entry) => entry.id === category)?.default
     if (supplied.length === 0 && !row.item.field.includes("[]") && fallback !== undefined && fallback === row.item.value)
-      return denied(`${row.item.field} defaults to "${String(fallback)}", which is not allowed here; pass another ${row.item.field} explicitly`)
+      return deniedBy(`${row.item.field} defaults to "${String(fallback)}", which is not allowed here; pass another ${row.item.field} explicitly`, row)
   }
   return undefined
 }
@@ -580,18 +598,18 @@ function applyLimits(group: readonly PermRow[], input: unknown, tool: string): {
         tool === "patch"
           ? (stringsAt(next, row.item.field)[0] ?? "").split("\n").filter((line) => /^\*\*\* (Add|Update|Delete) File:/.test(line)).length
           : valuesAt(next, row.item.field).reduce<number>((sum, value) => sum + (Array.isArray(value) ? value.length : 1), 0)
-      if (count > limit) return { refuse: denied(`${row.item.title} is ${limit}; this call has ${count}`), input: next }
+      if (count > limit) return { refuse: deniedBy(`${row.item.title} is ${limit}; this call has ${count}`, row), input: next }
       continue
     }
     if (measure === "length") {
       const longest = Math.max(0, ...stringsAt(next, row.item.field).map((value) => value.length))
-      if (longest > limit) return { refuse: denied(`${row.item.title} is ${limit}; this call has ${longest}`), input: next }
+      if (longest > limit) return { refuse: deniedBy(`${row.item.title} is ${limit}; this call has ${longest}`, row), input: next }
       continue
     }
     const numbers = valuesAt(next, row.item.field).filter((value): value is number => typeof value === "number")
     if (row.item.mode === "refuse") {
       const high = numbers.find((value) => value > limit)
-      if (high !== undefined) return { refuse: denied(`${row.item.title} is ${limit}; this call asks for ${high}`), input: next }
+      if (high !== undefined) return { refuse: deniedBy(`${row.item.title} is ${limit}; this call asks for ${high}`, row), input: next }
       continue
     }
     // Clamp one top-level field. An omitted field takes the cap when the
@@ -925,7 +943,7 @@ export function narrowTools(event: Pick<SessionContext, "agent" | "tools">, tabl
     if (targets !== undefined) {
       const role = schemaAt(schema, "role")
       if (role !== undefined && targets.length > 0) role.node.enum = targets
-      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target), ...noCommit(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
+      definition.description = `${definition.description}\n${targets.length > 0 ? [`Members you may delegate to: ${targets.join(", ")}.`, ...targets.flatMap((target) => [...described(table, target), ...accepts(table, target), ...checkFilesRule(table, target), ...noCommit(table, target), ...shellLine(table, target)])].join("\n") : "No member of your team is open to you for delegation."}`
     }
     if (name === "team_finish") definition.description += requirements(rows, "Requirements for done")
     if (name === "team_checkpoint") definition.description += requirements(rows, "Requirements for a commit")
@@ -965,6 +983,24 @@ function checkFilesRule(table: PermissionTable, target: string): string[] {
 // (E_ROLE): a user who asked the scout for a fix got that refusal first.
 function noCommit(table: PermissionTable, target: string): string[] {
   return table.toolEnabled(target, "team_checkpoint") ? [] : [`${target} cannot commit: never give it a commit deliverable.`]
+}
+
+// A member that cannot run commands, said before a Brief that needs them reaches it: theorysnap's runner,
+// its "Every other command" row off by default, refused every command for two attempts. Only allow-list
+// rows open a closed shell — the pilotty row, and a user rule whose id starts with `allow.` — so each one
+// that is on is named here.
+export function shellLine(table: PermissionTable, target: string): string[] {
+  if (!table.toolEnabled(target, "shell"))
+    return [`${target} has no shell: never give it a Brief that needs it to run commands (team_finish still runs the checks a Brief names).`]
+  const group = table.toolRows(target, "shell").filter((row) => row.item.category === "commands")
+  const fallback = group.find((row) => row.item.fallback === true)
+  if (fallback === undefined || fallback.on) return []
+  const open = group.filter((row) => row.on && row.item.allow === true).map((row) => row.item.title)
+  return [
+    open.length === 0
+      ? `${target}'s shell runs no command: its "Every other command" row is off and no allowed row is on, so never give it a Brief that needs commands.`
+      : `${target}'s shell runs only ${open.join(", ")}: its "Every other command" row is off.`,
+  ]
 }
 
 // The files an agent may change while its "Files it may change" category is
@@ -1312,7 +1348,7 @@ function codeModeLimit(table: PermissionTable, agent: string, state: Enforcement
   if (row === undefined || !row.on) return undefined
   const limit = limitOf(row.text)
   if (limit === undefined || count + 1 <= limit) return undefined
-  return denied(`Tool calls per run is ${limit}; this run made more`)
+  return deniedBy(`Tool calls per run is ${limit}; this run made more`, row)
 }
 
 // An interrupted call skips execute.after. What it can leave behind that

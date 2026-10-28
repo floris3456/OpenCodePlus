@@ -10,6 +10,7 @@ import { globalTeamsPath, projectTeamsPath, teamsDataDir } from "../src/instruct
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
 import { expandedTree, skillScopeOfNode, tree, type TreeInput, type TreeNode } from "../src/instructions/tree.js"
+import { badgeLabels } from "../src/instructions/from-label.js"
 import { activateModelRow, resetModelRow } from "../src/instructions/ops.js"
 import { createHandlers, createState } from "../src/index.js"
 import { saveRun } from "../src/teams/run.js"
@@ -1246,6 +1247,22 @@ test("Code Mode groups nest origin › Code Mode › namespace with exact ids", 
   expect(childrenOf(nodes, server).map((node) => node.label)).toEqual(["odd-name", "Code Mode"])
   expect(childrenOf(nodes, `${server}:codemode`).map((node) => node.label)).toEqual(["mcp-code"])
   expect(nodes.filter((node) => node.id.startsWith(`${server}:codemode:`))).toEqual([])
+})
+
+// Live: a setup agent switched web tools on for members without execute, and
+// none of them could call one. The rows stay editable but say so.
+test("an owner with execute off sees its Code Mode groups and everything in them as unreachable", () => {
+  const off = expandAll({ items: codemodeAll(), records: [makeRecord({ item: "tool:execute", state: "off" })], agents: agents() })
+  const code = "group:project:Implementer:tools:native:codemode"
+  expect(off.find((node) => node.id === code)?.badges.codeModeOff).toBe("group")
+  for (const id of [`${code}:fs`, "item:project:Implementer:tool:read", "item:project:Implementer:tool:lonely", "item:project:Implementer:tool:plus-code", "item:project:Implementer:tool:mcp-code"])
+    expect([id, off.find((node) => node.id === id)?.badges.codeModeOff]).toEqual([id, "row"])
+  expect(badgeLabels(off.find((node) => node.id === "item:project:Implementer:tool:read")!)).toContain("unreachable (execute off)")
+  // Rows outside Code Mode are untouched.
+  expect(off.find((node) => node.id === "item:project:Implementer:tool:bash")?.badges.codeModeOff).toBeUndefined()
+  // With execute on, nothing in its Code Mode is marked.
+  const on = expandAll({ items: codemodeAll(), records: [makeRecord({ item: "tool:execute", state: "on" })], agents: agents() })
+  expect(on.filter((node) => node.id.includes(":Implementer:") && node.badges.codeModeOff !== undefined).map((node) => node.id)).toEqual([])
 })
 
 test("Code Mode groups repeat under the global and defaults roots", () => {

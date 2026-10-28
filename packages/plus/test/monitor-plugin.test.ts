@@ -168,10 +168,11 @@ test("the monitor tools answer for the calling chat and record marks", async () 
     // Explicit synthetic provider presence, not inferred from Session accounting.
     ledgerAt().requestObserved(id, { version: 1, completeness: "final", inputTokens: 4100, cacheReadInputTokens: read, cacheWriteInputTokens: 0 })
   }
+  // The default view is cache: this chat's requests and verdicts from saved results; tool calls are in view tools.
   const own = (await call("monitor_query", {})) as MonitorReport
-  expect(own.totals.calls).toBe(1)
   expect(own.requests?.find((r) => r.id === "cache-b")).toMatchObject({ verdict: "miss", cause: "unknown", confidence: "unknown" })
-  expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("Provider cause unavailable")
+  expect(own.requests?.find((r) => r.id === "cache-b")?.evidence).toContain("shortfall 4000")
+  expect(((await call("monitor_query", { view: "tools" })) as MonitorReport).totals.calls).toBe(1)
   // Two just-ended requests are saved by the read itself; a large backlog stays with the backfill.
   const ready = await call("monitor_query", { view: "cache", id: "cache-b" }) as MonitorReport
   expect(ready.cachePending).toBe(0)
@@ -181,9 +182,9 @@ test("the monitor tools answer for the calling chat and record marks", async () 
   ledgerAt().contextFact({ sessionID: "ses_live", kind: "compaction", at: ledgerAt().getRequest("cache-b")!.started - 1 })
   expect((await call("monitor_query", { since: "compaction", view: "cache" }) as MonitorReport).requests?.map((r) => r.id)).toEqual(["cache-b"])
   // Another chat sees nothing of this one in its own (default) session scope.
-  const other = (await call("monitor_query", {}, "ses_other")) as { totals: { calls: number } }
+  const other = (await call("monitor_query", { view: "tools" }, "ses_other")) as { totals: { calls: number } }
   expect(other.totals.calls).toBe(0)
-  const windowed = (await call("monitor_query", { scope: "all", window: "1h", compare: { window: "1h" } })) as {
+  const windowed = (await call("monitor_query", { scope: "all", view: "tools", window: "1h", compare: { window: "1h" } })) as {
     compare?: unknown
   }
   expect(windowed.compare).toBeDefined()

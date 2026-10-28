@@ -5,8 +5,10 @@ import { Effect, Schema } from "effect"
 import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorRequestDetail, MonitorSessionRow } from "../rpc.js"
 import { foldSession, markedMessageBoundary } from "./cache.js"
 import { sha256 } from "./fingerprint.js"
-import { CACHE_COLUMNS, cacheColumnValues, type ContextFactRow, type Ledger } from "./ledger.js"
+import { CACHE_COLUMNS, cacheColumnValues, type Ledger, type RequestFingerprintData, type RequestRow } from "./ledger.js"
 import { scopeOf, type QueryContext } from "./query.js"
+import { settleUnreadWrites } from "./unread-saved.js"
+import { settleRequestChanges } from "./unstable-saved.js"
 import { comparableWire, hasWire, storeWire, wireBody } from "./wire.js"
 
 const decodeWire = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))
@@ -127,36 +129,97 @@ function compareTranscripts(ledger: Ledger, previous: string | undefined, id: st
   }
 }
 
-/** Once per completed invocation. Uses an indexed predecessor, never a history fold.
- * The existing pure detector/pricing implementation sees at most three requests.
- */
-export function projectCacheResult(ledger: Ledger, id: string) {
-  const current = ledger.getRequest(id)
-  if (!current || current.ended === undefined) return
+// The rows a whole-history fold reads for one request: its cache predecessor,
+// the latest earlier completed request, its last real request and its context
+// baseline (cache.ts contextBaseline). Folding the session from the earliest of
+// them, with its facts so far, gives the request exactly the whole fold's
+// analysis (checked equal for 8,468 requests of a live ledger copy).
+function anchorsOf(ledger: Ledger, current: RequestRow) {
   const epoch = current.observation?.historyEpoch ?? null
   const previousID = ledger.db.query<{ id: string }, [string, string | null, string | null, string | null, number, string, string]>(`
     select id from request where session_id = ? and provider is ? and model is ?
       and json_extract(observation, '$.historyEpoch') is ? and ended <= ? and status = 'completed'
       and is_title = 0 and (kind != 'generate' or ? = 'generate') and id != ?
     order by ended desc, started desc, id desc limit 1
-  `).get(current.sessionID, current.provider ?? null, current.model ?? null, epoch, current.started, current.kind, id)?.id
+  `).get(current.sessionID, current.provider ?? null, current.model ?? null, epoch, current.started, current.kind, current.id)?.id
   const previous = previousID ? ledger.getRequest(previousID) : undefined
   const latestID = ledger.db.query<{ id: string }, [string, number, string]>(`
     select id from request where session_id = ? and ended <= ? and status = 'completed' and is_title = 0 and id != ?
     order by ended desc, started desc, id desc limit 1
-  `).get(current.sessionID, current.started, id)?.id
+  `).get(current.sessionID, current.started, current.id)?.id
   const latest = latestID && latestID !== previousID ? ledger.getRequest(latestID) : undefined
-  const rows = [latest, previous, current].filter((r) => r !== undefined).sort((a, b) => a.started - b.started)
-  const facts = ledger.db.query<{ id: number; session_id: string; at: number; kind: string; detail: string }, [string, number, number, string, number, string | null, string | null]>(`
-    select * from context_fact where session_id = ? and at > ? and at <= ?
-    union select * from context_fact where id = (select id from context_fact where session_id = ? and kind = 'pricing' and at <= ?
-      and json_extract(detail, '$.provider') is ? and json_extract(detail, '$.model') is ? order by at desc limit 1)
-  `).all(current.sessionID, previous?.started ?? current.started, current.started, current.sessionID, current.started, current.provider ?? null, current.model ?? null)
-    .map((row): ContextFactRow => ({ id: row.id, sessionID: row.session_id, at: row.at, kind: row.kind, detail: JSON.parse(row.detail) }))
-  const fingerprints = new Map(rows.map((r) => [r.id, ledger.getFingerprint(r.id)]))
-  const analysis = foldSession(rows, facts, fingerprints).analysis
-  const detail = analysis.detail(id)
+  const lastReal = ledger.db.query<{ started: number }, [string, number]>(`
+    select started from request where session_id = ? and started < ? and kind != 'ping' and is_title = 0
+    order by started desc, rowid desc limit 1
+  `).get(current.sessionID, current.started)?.started
+  const baseline = ledger.db.query<{ started: number }, [string, number, number, string]>(`
+    select started from request where session_id = ? and status = 'completed' and ended <= ?
+      and (? = 0 or (kind != 'ping' and is_title = 0)) and id != ?
+    order by started desc, rowid desc limit 1
+  `).get(current.sessionID, current.started, current.kind !== "ping" && !current.isTitle ? 1 : 0, current.id)?.started
+  const from = Math.min(current.started, previous?.started ?? Infinity, latest?.started ?? Infinity, lastReal ?? Infinity, baseline ?? Infinity)
+  return { previous, latest, from }
+}
+
+/**
+ * The whole-history fold's analysis of these requests (summary and detail),
+ * from one fold per run of overlapping ranges they read: requests far apart in
+ * a session (a report's top misses) never fold the history between them.
+ */
+export function requestAnalysis(ledger: Ledger, ids: readonly string[]) {
+  const currents = ids.flatMap((id) => {
+    const row = ledger.getRequest(id)
+    return row ? [row] : []
+  })
+  const summaries = new Map<string, MonitorRequest>()
+  const details = new Map<string, () => MonitorRequestDetail | undefined>()
+  const fingerprints = new Map<string, RequestFingerprintData | undefined>()
+  Map.groupBy(currents, (row) => row.sessionID).forEach((rows, session) => {
+    const facts = ledger.getContextFacts(session)
+    const runs = rows
+      .map((row) => ({ row, from: anchorsOf(ledger, row).from }))
+      .toSorted((a, b) => a.from - b.from)
+      .reduce<{ from: number; to: number; rows: RequestRow[] }[]>((acc, span) => {
+        const last = acc.at(-1)
+        if (last === undefined || span.from > last.to) {
+          acc.push({ from: span.from, to: span.row.started, rows: [span.row] })
+          return acc
+        }
+        last.to = Math.max(last.to, span.row.started)
+        last.rows.push(span.row)
+        return acc
+      }, [])
+    runs.forEach((run) => {
+      const range = ledger.getRequestsBetween(session, run.from, run.to)
+      // As the whole fold reads them: a fingerprint recorded for another session is none.
+      range.forEach((row) => {
+        if (fingerprints.has(row.id)) return
+        const fp = ledger.getFingerprint(row.id)
+        fingerprints.set(row.id, fp?.sessionID === session ? fp : undefined)
+      })
+      const analysis = foldSession(range, facts.filter((fact) => fact.at <= run.to), fingerprints).analysis
+      const analyzed = new Map(analysis.summaries.map((entry) => [entry.request.id, entry.request]))
+      run.rows.forEach((row) => {
+        const summary = analyzed.get(row.id)
+        if (summary) summaries.set(row.id, summary)
+        details.set(row.id, () => analysis.detail(row.id))
+      })
+    })
+  })
+  return { summary: (id: string) => summaries.get(id), detail: (id: string) => details.get(id)?.(), fingerprints }
+}
+
+/** Once per completed invocation, from the rows the whole fold reads for it (requestAnalysis), never a history fold. */
+export function projectCacheResult(ledger: Ledger, id: string) {
+  const current = ledger.getRequest(id)
+  if (!current || current.ended === undefined) return
+  const analyzed = requestAnalysis(ledger, [id])
+  const detail = analyzed.detail(id)
   if (!detail) return
+  const anchors = anchorsOf(ledger, current)
+  const previous = anchors.previous
+  const latest = anchors.latest
+  const fingerprints = analyzed.fingerprints
   const wire = compareTranscripts(ledger, previous?.id, id)
   const diff = wire.diff
   const linked = previous && fingerprints.get(current.id)?.previousResponseId !== undefined &&
@@ -217,12 +280,23 @@ export function projectCacheResult(ledger: Ledger, id: string) {
   ]
   const saved: MonitorRequestDetail = { ...detail, request, lines, segments: detail.segments.slice(0, 16), firstDivergence: divergence ?? detail.firstDivergence }
   const columns = CACHE_COLUMNS.map(([name]) => name)
-  ledger.db.query(`insert into cache_result (request_id, session_id, started, verdict, summary, detail, ${columns.join(", ")})
-    values ($id, $session, $started, $verdict, $summary, $detail, ${cacheColumnValues("$summary").join(", ")})
+  ledger.db.query(`insert into cache_result (request_id, session_id, started, verdict, summary, detail, fold, ${columns.join(", ")})
+    values ($id, $session, $started, $verdict, $summary, $detail, $fold, ${cacheColumnValues("$summary").join(", ")})
     on conflict(request_id) do update set session_id = excluded.session_id, started = excluded.started, verdict = excluded.verdict,
-      summary = excluded.summary, detail = excluded.detail, ${columns.map((name) => `${name} = excluded.${name}`).join(", ")}`)
-    .run({ $id: id, $session: current.sessionID, $started: current.started, $verdict: request.verdict, $summary: JSON.stringify(request), $detail: JSON.stringify(saved) })
+      summary = excluded.summary, detail = excluded.detail, fold = excluded.fold, ${columns.map((name) => `${name} = excluded.${name}`).join(", ")}`)
+    .run({
+      $id: id,
+      $session: current.sessionID,
+      $started: current.started,
+      $verdict: request.verdict,
+      $summary: JSON.stringify(request),
+      $detail: JSON.stringify(saved),
+      $fold: JSON.stringify(Object.fromEntries(Object.entries(detail.request).filter(([key]) => FOLD_FIELDS.includes(key)))),
+    })
 }
+
+/** Where a saved summary's wording (the cache screen's) differs from the fold's own, saved as `fold`. */
+export const FOLD_FIELDS: readonly string[] = ["cause", "causeText", "confidence", "evidence"]
 
 const backfills = new WeakMap<Ledger, ReturnType<typeof setTimeout>>()
 
@@ -232,8 +306,16 @@ export function stopCacheBackfill(ledger: Ledger) {
 }
 
 export function backfillCacheBatch(ledger: Ledger, limit = 16) {
-  const rows = ledger.db.query<{ id: string }, [number]>(`select id from request where ended is not null
-    and not exists (select 1 from cache_result where request_id = request.id) order by started limit ?`).all(limit)
+  // Newest first: screens open on the latest requests, and every poll analyzes
+  // the rows it shows again until they are saved. No result reads another.
+  // Looking for missing results reads every request; counting them first does not.
+  const missing = unsavedResults(ledger) === 0 ? [] : ledger.db.query<{ id: string }, [number]>(`select id from request
+    where ended is not null and not exists (select 1 from cache_result where request_id = request.id) order by started desc limit ?`).all(limit)
+  // Then results saved before their fold wording was (ledger.ts migration).
+  const rows = missing.length < limit
+    ? [...missing, ...ledger.db.query<{ id: string }, [number]>(`select request_id id from cache_result indexed by cache_result_unfolded
+        where fold is null order by started desc limit ?`).all(limit - missing.length)]
+    : missing
   rows.forEach((row) => projectCacheResult(ledger, row.id))
   return rows.length
 }
@@ -246,9 +328,14 @@ const SETTLE_LIMIT = 16
  * with the background backfill and is reported as pending.
  */
 export function settleRecentResults(ledger: Ledger) {
-  const pending = ledger.db.query<{ n: number }, []>(`select
-    (select count(*) from request indexed by request_ended where ended is not null) - (select count(*) from cache_result) n`).get()!.n
+  const pending = unsavedResults(ledger)
   if (pending > 0 && pending <= SETTLE_LIMIT) backfillCacheBatch(ledger, SETTLE_LIMIT)
+}
+
+/** Ended requests without a saved result: a result is saved once a request ends and pruned with it. */
+function unsavedResults(ledger: Ledger) {
+  return ledger.db.query<{ n: number }, []>(`select
+    (select count(*) from request indexed by request_ended where ended is not null) - (select count(*) from cache_result) n`).get()!.n
 }
 
 /** Restart/backfill work is scheduled separately; screen reads never await it. */
@@ -258,7 +345,10 @@ export function scheduleCacheBackfill(ledger: Ledger) {
     Effect.runSync(Effect.sync(() => {
       // Yield between historical requests so backfill cannot monopolize the
       // server while an open screen or a model stream needs to make progress.
-      if (backfillCacheBatch(ledger, 1) > 0) backfills.set(ledger, setTimeout(batch, 25).unref())
+      // Saved results first, then each request's changed segments, then the
+      // unread tokens of writes whose lifetime has ended.
+      const more = backfillCacheBatch(ledger, 1) > 0 || settleRequestChanges(ledger, 16) > 0 || settleUnreadWrites(ledger, Date.now(), 8) > 0
+      if (more) backfills.set(ledger, setTimeout(batch, 25).unref())
       else backfills.delete(ledger)
     }).pipe(Effect.catchCause(() => {
       backfills.delete(ledger)
@@ -311,8 +401,13 @@ interface Sums {
   last: number
 }
 
+/** Every saved result a request report lists, transport-only exchange rows included. */
+export function savedRequestFilter(input: MonitorQueryInput, context: QueryContext, window: Window) {
+  return savedFilter(input, context, window, "cache_result", true)
+}
+
 /** The saved results a query reads, as a filter over `cache_result` under `alias`. */
-function savedFilter(input: MonitorQueryInput, context: QueryContext, window: Window, alias = "cache_result") {
+function savedFilter(input: MonitorQueryInput, context: QueryContext, window: Window, alias = "cache_result", exchange = false) {
   const scope = scopeOf(input, context)
   const list = (column: string, name: string, values: readonly string[] | undefined) =>
     values?.length
@@ -322,7 +417,7 @@ function savedFilter(input: MonitorQueryInput, context: QueryContext, window: Wi
   const models = list(`${alias}.model`, "model", input.models)
   return {
     cte: scope.cte,
-    where: `${alias}.started >= $since and ${alias}.started < $until and ${alias}.exchange = 0
+    where: `${alias}.started >= $since and ${alias}.started < $until ${exchange ? "" : `and ${alias}.exchange = 0`}
       ${scope.cte ? `and ${alias}.session_id in (select id from scope)` : ""}
       ${input.sinceCompaction ? `and ${alias}.started >= coalesce((select max(at) from context_fact where session_id = ${alias}.session_id and kind = 'compaction' and at < $until), 0)` : ""}
       ${agents.sql} ${models.sql} ${input.titles ? "" : `and ${alias}.kind != 'title'`}`,
@@ -375,13 +470,18 @@ export function savedTotals(ledger: Ledger, input: MonitorQueryInput, context: Q
       })) as unknown as Sums, { requests: 0, input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, missTokens: 0, misses: 0, coldRequests: 0, pricedMisses: 0, missCost: 0, coldTokens: 0, steps: 0, work: 0, errors: 0, useful: 0, measuredRequests: 0, measuredInput: 0, measuredRead: 0, last: 0 })
     : ledger.db.query<Sums, Bindings>(`${filter.cte} select ${TOTALS} from cache_result where ${filter.where}`).get(filter.bindings)!
   const ping = savedFilter(input, context, window, "p")
+  // A saved result carries its request's session and start, which never change:
+  // joined on all three, the ping, its next request and that one's verdict are
+  // read from indexes (request_follow, cache_result_session_totals) alone.
   const pingRows = ledger.db.query<{ verdict: string | null; cost: number }, Bindings>(`${ping.cte}
-    select (select coalesce(result.verdict, 'unknown') from request next left join cache_result result on result.request_id = next.id
+    select (select coalesce(result.verdict, 'unknown') from request next indexed by request_follow
+        left join cache_result result on result.session_id = next.session_id and result.started = next.started and result.request_id = next.id
       where next.session_id = p.session_id and next.started >= r.ended and next.started < $until
         and next.id != r.id and next.kind != 'ping' and next.is_title = 0
         and coalesce(json_extract(next.observation, '$.scope'), '') != 'exchange'
       order by next.started, next.id limit 1) verdict, p.cost cost
-    from cache_result p join request r on r.id = p.request_id where ${ping.where} and p.kind = 'ping'`).all(ping.bindings)
+    from cache_result p join request r indexed by request_follow on r.session_id = p.session_id and r.started = p.started and r.id = p.request_id
+    where ${ping.where} and p.kind = 'ping'`).all(ping.bindings)
   const pings = { sent: pingRows.length, cost: 0, followedByHit: 0, followedByMiss: 0, followedByCold: 0, unused: 0, unknown: 0, unknownReasons: {} as Record<string, number> }
   pingRows.forEach((row) => {
     pings.cost += row.cost

@@ -7,7 +7,7 @@ import { Provider } from "@opencode/core/provider"
 import { catalogueSync } from "@opencodeplus/cliproxyapi/server"
 import { Document, Info, type Entry } from "@opencode/schema/config"
 import { describe, expect } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Queue, Schema } from "effect"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
 
@@ -127,8 +127,15 @@ const entries = (origin: string): Entry[] => [
 const start = Effect.fn(function* (origin: string) {
   const plugin = yield* Plugin.Service
   const host = yield* PluginHost.make(plugin)
-  yield* catalogueSync(host, () => ({ cpa: origin }))
+  // The catalogue plugin's loop starts before ConfigProviderPlugin installs the
+  // route, so give it no route until the provider exists, then wake it: one
+  // refresh, in the same order a host sees.
+  const routes: Record<string, string> = {}
+  const wake = yield* Queue.unbounded<void>()
+  yield* catalogueSync(host, () => routes, undefined, undefined, wake)
   yield* ConfigProviderPlugin.Plugin.effect(host).pipe(Effect.provide(Config.testLayer(entries(origin))))
+  routes.cpa = origin
+  yield* Queue.offer(wake, undefined)
 })
 
 function eventually<A>(

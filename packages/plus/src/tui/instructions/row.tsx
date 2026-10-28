@@ -37,8 +37,12 @@ export function rowTags(node: TreeNode, sidebar: boolean): string[] {
     ...(node.badges.slotNote !== undefined ? [node.badges.slotNote] : []),
     ...(node.badges.pinned === true ? ["pinned"] : []),
     ...(node.badges.disabled !== undefined ? ["Remote"] : []),
+    ...(node.badges.codeModeOff === "group" ? [codeModeOffNote] : []),
   ]
 }
+
+/** Beside a Code Mode group whose owner has execute off. */
+export const codeModeOffNote = "disabled: execute is off"
 
 export type Attention = "review" | "modified" | undefined
 
@@ -96,7 +100,7 @@ export function RowLine(props: RowLineProps) {
   const labelColor = () => {
     if (props.cut) return theme().text.muted
     if (props.selected && props.focused) return theme().text.action.primary.focused
-    if (node().badges.disabled !== undefined) return theme().text.formfield.disabled
+    if (node().badges.disabled !== undefined || node().badges.codeModeOff !== undefined) return theme().text.formfield.disabled
     if (off() || props.row.context === true || (props.row.role === "group" && props.sidebar)) return theme().text.muted
     return theme().text.base
   }
@@ -150,7 +154,7 @@ export function RowLine(props: RowLineProps) {
       </text>
       <Show when={glyphOf(node())}>
         {(glyph) => (
-          <text flexShrink={0} fg={props.selected && props.focused ? labelColor() : off() ? theme().text.muted : theme().text.formfield.selected}>
+          <text flexShrink={0} fg={props.selected && props.focused ? labelColor() : off() || node().badges.codeModeOff !== undefined ? theme().text.muted : theme().text.formfield.selected}>
             {`${glyph()} `}
           </text>
         )}

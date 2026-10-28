@@ -250,11 +250,15 @@ test("scope display does not override preset denial messages", async () => {
   expect(permissions.filter((rule) => rule.action === "edit")).toEqual([])
   expect(evaluate("edit", "packages/plus/src/index.ts", permissions).message).toBeUndefined()
 
-  // A preset's secret rows deny with their own words.
+  // A preset's secret rows deny with their own words, naming the row that did it.
   const member = linked("implementer", "implementer")
   const preset = await applyFor(presetInput({ members: [member] }), member.id)
-  expect(evaluate("read", "secret.key", preset.permissions).message).toBe("Private keys cannot be read here")
-  expect(evaluate("external_directory", "/etc/hosts", preset.permissions).message).toBe("paths outside this checkout are not available here")
+  expect(evaluate("read", "secret.key", preset.permissions).message).toBe(
+    'Private keys cannot be read here (denied by item:project:opencodeplus-team/:implementer:perm:read:files.keys "Private keys": off, from preset basic › implementer)',
+  )
+  expect(evaluate("external_directory", "/etc/hosts", preset.permissions).message).toBe(
+    'paths outside this checkout are not available here; still allowed: Temporary directories (denied by item:project:opencodeplus-team/:implementer:perm:read:where.external "Outside this checkout, for every tool (external_directory)": off, from preset basic › implementer)',
+  )
 })
 
 // Agent-wide rows must neither union nor intersect independent run scopes.

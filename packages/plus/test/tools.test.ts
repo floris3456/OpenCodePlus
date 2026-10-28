@@ -38,6 +38,7 @@ import { plusTeamPresets } from "../src/instructions/presets.js"
 import { memoInputOf, presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import { agentHarness, agentInfo, modelHarness, context, fullContext, modelInfo, modelRef, skillHarness, skillInfo, toolHarness } from "./harness.js"
+import { toolsAndRulesSample } from "./fixtures/tools-and-rules.js"
 
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
@@ -458,6 +459,13 @@ async function freshFixture(overrides?: Partial<Parameters<typeof fullContext>[0
   return { ctx, api, tools: await readTools(ctx), project }
 }
 
+// Plus ships Tools and rules empty: tests of its sections add them, as a user
+// would, by default for every agent (an agent linked to a preset takes the
+// preset's empty text instead, so it needs them on its own row).
+async function addToolsAndRules(tools: Map<string, Tool.Info & { readonly id: string }>, id = "item:defaults::system:tools-and-rules") {
+  await runOk(need(tools, "instructions_set"), { id, text: toolsAndRulesSample })
+}
+
 test("section move tool dispatch persists effective order and refuses invalid and protected requests without writes", async () => {
   const { project } = await tempProject()
   await Bun.write(path.join(project, ".opencode", "agent", "alpha.md"), formatMarkdown({}, "# One\nFirst.\n\n# Two\nSecond.\n"))
@@ -651,6 +659,7 @@ test("split and add section match ops and persist boundaries and section records
 
 test("split with add on section adds child; on item adds top-level", async () => {
   const { api, tools } = await freshFixture()
+  await addToolsAndRules(tools)
   const snapshot = await snapshotOf(api)
   const memo = memoFromSnapshot(snapshot)
   const nodes = expandedTree(memo)
@@ -2267,6 +2276,48 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   expect(deleted).toMatchObject({ tool: "shell" })
   const curatedDelete = await runFail(need(tools, "instructions_delete"), { id: row.id, confirm: true })
   expect(curatedDelete.message).toContain("only user-created rules")
+})
+
+// T1: the read view of a perm row says when the row is an allow row of its
+// category, so a reader sees an `allow.` shell rule as the allow row it is.
+test("read shows an allow row as one, and a plain rule without the field", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const allow = (await runOk(need(tools, "instructions_create"), {
+    kind: "rule",
+    tool: "shell",
+    id: "allow.inspect",
+    label: "Looking around",
+    patterns: ["ls", "ls *"],
+    level: "project",
+  })) as { id: string }
+  const plain = (await runOk(need(tools, "instructions_create"), {
+    kind: "rule",
+    tool: "shell",
+    id: "mine",
+    label: "Mine",
+    patterns: ["mine *"],
+    level: "project",
+  })) as { id: string }
+  expect(await runOk(need(tools, "instructions_read"), { id: allow.id })).toMatchObject({
+    tool: "shell",
+    rule: "allow.inspect",
+    category: "commands",
+    kind: "input",
+    allow: true,
+    field: "command",
+  })
+  const plainRow = (await runOk(need(tools, "instructions_read"), { id: plain.id })) as Record<string, unknown>
+  expect(plainRow).toMatchObject({ tool: "shell", rule: "mine", category: "commands", kind: "rule" })
+  expect("allow" in plainRow).toBe(false)
 })
 
 test("a Teams-catalogue rule keeps its catalogue through a message set, and a curated Teams row materialises a Teams override", async () => {
@@ -3902,6 +3953,7 @@ test("show reports a section's requires line and a tool's Tools and rules sectio
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
+  await addToolsAndRules(tools)
   const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
   const section = nodes.find(
     (node) => node.kind === "section" && node.address?.item === "system:tools-and-rules" && node.address.agent === "alpha" && node.label === "Questions",
@@ -3924,6 +3976,7 @@ test("find is held-back lists what an agent's shown when keeps from it", async (
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
+  await addToolsAndRules(tools)
   const find = need(tools, "instructions_find")
   const heldBack = async () => ((await runOk(find, { agent: "alpha", is: "held-back", limit: 100 })) as { rows: string[] }).rows
   // The Tools and rules row is off by default for alpha: nothing in it is held back.
@@ -3948,6 +4001,7 @@ test("set requires changes when a section is sent; show reports it and its sourc
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
+  await addToolsAndRules(tools)
   const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
   // alpha's own row (alpha is a Defaults entry in this fixture).
   const section = nodes.find((node) => node.id.startsWith("section:defaults:alpha:system:tools-and-rules:") && node.label === "Questions")
@@ -4390,6 +4444,7 @@ test("instructions_link refuses a section as a gate's primary without writing", 
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
+  await addToolsAndRules(tools)
   const link = need(tools, "instructions_link")
   const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
   const section = nodes.find(
@@ -4417,6 +4472,7 @@ test("set requires stores rowlinks only, survives reload, and null inherits agai
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
+  await addToolsAndRules(tools)
   const show = need(tools, "instructions_read")
   const set = need(tools, "instructions_set")
   const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
@@ -4456,6 +4512,7 @@ test("instructions_link reports a shipped requires marker with text provenance",
       { id: "question", description: "Ask the user", options: { codemode: false } },
     ],
   })
+  await addToolsAndRules(tools)
   const link = need(tools, "instructions_link")
   const nodes = expandedTree(memoFromSnapshot(await snapshotOf(api)))
   // The shipped Tools and rules "Questions" section carries
@@ -4476,6 +4533,7 @@ test("durable section gates and inspection agree across pair replacements and ba
   await runOk(create, { kind: "agent", id: "gateprobe", scope: "project" })
   await linkToBuild(project, "global", ["gateprobe"])
   await linkToBuild(project, "project", ["gateprobe"])
+  await addToolsAndRules(tools, "item:project:gateprobe:system:tools-and-rules")
   const nodes = expandedTree(memoInputOf(await snapshotOf(api)))
   const section = nodes.find((node) => node.address?.level === "project" && node.address.agent === "gateprobe" && node.label === "Questions")
   if (section?.address === undefined) throw new Error("Missing project Questions section")
@@ -4515,6 +4573,7 @@ test("legacy requires durably replaces a same-scope switch pair without duplicat
   ] })
   await runOk(need(tools, "instructions_create"), { kind: "agent", id: "gateprobe", scope: "project" })
   await linkToBuild(project, "project", ["gateprobe"])
+  await addToolsAndRules(tools, "item:project:gateprobe:system:tools-and-rules")
   const reader = "item:project:gateprobe:tool:reader"
   const section = expandedTree(memoInputOf(await snapshotOf(api))).find((node) => node.id.startsWith("section:project:gateprobe:system:tools-and-rules:") && node.label === "Questions")
   if (section === undefined) throw new Error("Missing Questions section")

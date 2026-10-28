@@ -23,6 +23,8 @@ export function createThinkingToast(context: Plugin.Context) {
       pendingRetry.add(sessionID)
       return
     }
+    // A rewrite of the ledger file has no answer yet; the next poll asks again.
+    if (res.status === "compacting") return
     pendingRetry.delete(sessionID)
     // Dropped thinking stays dropped on every later step, so it alerts once per first dropped block.
     const dropped =

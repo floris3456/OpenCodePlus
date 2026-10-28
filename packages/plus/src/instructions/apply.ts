@@ -13,6 +13,7 @@ import { Effect, Exit, Scope } from "effect"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { agentBody } from "./discover.js"
+import { fromLabel } from "./from-label.js"
 import { builtinBody } from "./teams.js"
 import type { BuiltinTeam } from "./builtin-teams.js"
 import { parseTeamFields, runSpecialRegistration, runTeamRegistration, type TeamFields } from "./teams-apply.js"
@@ -30,6 +31,7 @@ import {
   runtimeScope,
   type AgentSource,
   type CustomizationRecord,
+  type From,
   type Item,
   type Level,
   type ModelRecord,
@@ -40,7 +42,7 @@ import {
   type TeamRef,
 } from "./model.js"
 import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
-import { describeProjectChecks, readProjectChecks } from "../teams/project-checks.js"
+import { checksNote, describeChecksNote, readProjectChecks } from "../teams/project-checks.js"
 import {
   allowListMessage,
   enforcementState,
@@ -637,10 +639,18 @@ export function permissionTableOf(input: ApplyInput): PermissionTable {
     teamMembers: input.teamAgents ?? [],
     resolve: (item, agentId) => {
       const agent = byId.get(agentId)
-      if (agent === undefined || (!touched(input).has(item.id) && plain(input.scopes, agentId)))
-        return { enabled: item.enabled, text: item.text }
+      if (agent === undefined) return { enabled: item.enabled, text: item.text }
+      if (!touched(input).has(item.id) && plain(input.scopes, agentId))
+        return {
+          enabled: item.enabled,
+          text: item.text,
+          source: rowSource(item, agent, input.scopes, {
+            enabled: item.enabled,
+            from: { kind: input.scopes.native === undefined ? "upstream" : "native" },
+          }),
+        }
       const resolved = resolvedFor(item, agent, input)
-      return { enabled: resolved.enabled, text: resolved.text }
+      return { enabled: resolved.enabled, text: resolved.text, source: rowSource(item, agent, input.scopes, resolved) }
     },
     // The description applyAgentControls installs on the agent: team_delegate
     // shows it beside each member a delegator may choose.
@@ -808,6 +818,34 @@ function runtimeRule(item: Item, agent: ApplyAgent, args: ChainArgs): Item | und
     level: runtime.level, agent: agent.id, item: item.id, section: null,
     ...(agent.team === undefined ? {} : { team: agent.team }),
   })
+}
+
+// The row and where its state comes from, in the words a refusal appends after
+// its reason: the id instructions.set takes for that agent's row, the row's
+// title, and its state. A team member's row is addressed under its team
+// (`item:<level>:<team>/:<member>:<item>`), an agent's under itself.
+export function rowSource(
+  item: Item,
+  agent: ApplyAgent,
+  scopes: Scopes,
+  resolved: { readonly enabled: boolean; readonly from: From },
+): string {
+  const id =
+    agent.team === undefined
+      ? `item:${runtimeScope(agent, scopes).level}:${agent.id}:${item.id}`
+      : `item:${agent.team.level}:${agent.team.team}/:${agent.id}:${item.id}`
+  const state =
+    resolved.from.kind === "off"
+      ? "off by default (nothing sets it)"
+      : `${resolved.enabled ? "on" : "off"}, ${originOf(resolved.from)}`
+  return `${id} "${item.title}": ${state}`
+}
+
+function originOf(from: From): string {
+  if (from.kind === "level") return `set at ${from.level} level`
+  if (from.kind === "native") return "as OpenCode ships it"
+  if (from.kind === "upstream") return "as shipped"
+  return fromLabel(from)
 }
 
 function isNoop(item: Item, resolved: { assembled: string; enabled: boolean }): boolean {
@@ -1050,20 +1088,24 @@ function permDenials(input: ApplyInput): Rule[] {
       // policyRules; installing their patterns here too would double them.
       if (item.policy !== undefined) return []
       if ((item.permKind ?? "rule") !== "rule") return []
+      // Installed as an allow-list instead (externalAllowList): its rank-8
+      // refusal would re-deny what the on allow rows open.
+      if (readWhereRule(item)) return []
       if (item.patterns === undefined || item.patterns.length === 0) return []
       if (!applies(item, agent.id)) return []
-      if (resolvedFor(item, agent, input).enabled) return []
+      const resolved = resolvedFor(item, agent, input)
+      if (resolved.enabled) return []
       const tool = item.permTool ?? item.id.slice("perm:".length).split(":")[0] ?? ""
       if (tool.length === 0) return []
       const action = item.permAction ?? actionForToolId(tool)
-      const message = item.custom === true ? item.message : curatedRuleMessage(tool, item.ruleId ?? "") ?? item.message
+      const base = item.custom === true ? item.message : curatedRuleMessage(tool, item.ruleId ?? "") ?? item.message
       return item.patterns.map((pattern) => ({
         agent: agent.id,
         action,
         resource: pattern,
         effect: "deny" as const,
         refusal: true,
-        ...(message === undefined ? {} : { message }),
+        message: `${base ?? `${item.title} is not allowed here`} (denied by ${rowSource(item, agent, input.scopes, resolved)})`,
       }))
     }),
   )
@@ -1081,14 +1123,68 @@ function shellAllowList(input: ApplyInput): Rule[] {
   if (closing === undefined) return []
   const action = closing.permAction ?? actionForToolId("shell")
   return input.agents.flatMap((agent): Rule[] => {
-    if (!applies(closing, agent.id) || resolvedFor(closing, agent, input).enabled) return []
-    const opened = rows.flatMap((row) => {
-      const item = runtimeRule(row, agent, input)
+    if (!applies(closing, agent.id)) return []
+    const resolved = resolvedFor(closing, agent, input)
+    if (resolved.enabled) return []
+    const row = runtimeRule(closing, agent, input) ?? closing
+    const opened = rows.flatMap((candidate) => {
+      const item = runtimeRule(candidate, agent, input)
       return item !== undefined && item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled ? [item] : []
     })
-    const message = allowListMessage(runtimeRule(closing, agent, input)?.message ?? "this command is not allowed here", opened.map((item) => item.title))
+    const message = allowListMessage(row.message ?? "this command is not allowed here", opened.map((item) => item.title))
     return [
-      { agent: agent.id, action, resource: "*", effect: "deny", allowList: "closing", message },
+      {
+        agent: agent.id,
+        action,
+        resource: "*",
+        effect: "deny",
+        allowList: "closing",
+        message: `${message} (denied by ${rowSource(row, agent, input.scopes, resolved)})`,
+      },
+      ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
+    ]
+  })
+}
+
+// Read's Where rule row ("Outside this checkout, for every tool
+// (external_directory)"). permDenials and externalAllowList both ask this so
+// they cannot disagree about which row they install.
+function readWhereRule(item: Item): boolean {
+  return item.kind === "perm" && item.permTool === "read" && item.category === "where" && (item.permKind ?? "rule") === "rule"
+}
+
+// Read's Where allow-list: core asks `external_directory` before any tool
+// (read, edit, the shell) touches a path outside the checkout, so while the
+// rule row is off only what read's Where allow rows that are on match may
+// leave it. Without the opening, a Temporary directories row that is on would
+// promise what core refuses; the rows that are off still refuse inside what
+// it opens, because they land after it (permDenials).
+function externalAllowList(input: ApplyInput): Rule[] {
+  const rows = input.items.filter((item) => item.kind === "perm" && item.permTool === "read" && item.category === "where")
+  const closing = rows.find(readWhereRule)
+  if (closing === undefined) return []
+  const action = closing.permAction ?? "external_directory"
+  return input.agents.flatMap((agent): Rule[] => {
+    if (!applies(closing, agent.id)) return []
+    const resolved = resolvedFor(closing, agent, input)
+    if (resolved.enabled) return []
+    const row = runtimeRule(closing, agent, input) ?? closing
+    if (row.patterns === undefined || row.patterns.length === 0) return []
+    const opened = rows.flatMap((candidate) => {
+      const item = runtimeRule(candidate, agent, input)
+      return item !== undefined && item.allow === true && applies(item, agent.id) && resolvedFor(item, agent, input).enabled ? [item] : []
+    })
+    const base = row.custom === true ? row.message : curatedRuleMessage("read", row.ruleId ?? "") ?? row.message
+    const message = allowListMessage(base ?? `${row.title} is not allowed here`, opened.map((item) => item.title))
+    return [
+      ...row.patterns.map((pattern): Rule => ({
+        agent: agent.id,
+        action,
+        resource: pattern,
+        effect: "deny",
+        allowList: "closing",
+        message: `${message} (denied by ${rowSource(row, agent, input.scopes, resolved)})`,
+      })),
       ...opened.flatMap((item) => (item.patterns ?? []).map((pattern): Rule => ({ agent: agent.id, action, resource: pattern, effect: "allow", allowList: "opening" }))),
     ]
   })
@@ -1102,7 +1198,7 @@ interface Rule {
   readonly message?: string
   /** A row's own refusal (a rule row that is off, the non-member namespace deny): always lands last. */
   readonly refusal?: boolean
-  /** An allow-list (shellAllowList): its closing deny, then what its allow rows open, both before the refusals. */
+  /** An allow-list (shellAllowList, externalAllowList): its closing deny, then what its allow rows open, both before the refusals. */
   readonly allowList?: "closing" | "opening"
 }
 
@@ -1198,6 +1294,9 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
     const keywords = input.items.flatMap((upstream) => {
       const item = runtimeRule(upstream, agent, input)
       if (item === undefined || item.kind !== "perm") return []
+      // An allow row that is off opens nothing; scrubbing its keywords would
+      // only delete prompt lines for a refusal it never makes.
+      if (item.allow === true) return []
       if (item.keywords === undefined || item.keywords.length === 0) return []
       if (!applies(item, agent.id)) return []
       const resolved = resolvedFor(item, agent, input)
@@ -1212,13 +1311,36 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
 // The project's named checks (main checkout .opencodeplus/checks.json) on the
 // checks field of team_delegate and the id field of team_check. Only when one
 // of them is in the request; a failed read leaves the tools as they are.
-function describeChecks(ctx: Context, event: { readonly tools: Record<string, { input: unknown }> }): Effect.Effect<void> {
+// A pinned chat keeps the note it was first sent, stored with the pin's other
+// answers: the tools come first in the cached prompt, so a note read anew
+// after checks.json changed made the next request miss the whole cache. The
+// chat gets the new list when it re-pins; team_delegate and team_check read
+// the file themselves, so a check added meanwhile already works.
+function describeChecks(
+  ctx: Context,
+  event: { readonly tools: Record<string, { input: unknown }> },
+  pinned?: { readonly pin: SessionPin; readonly agent: string },
+): Effect.Effect<void> {
   if (event.tools.team_delegate === undefined && event.tools.team_check === undefined) return Effect.void
   return Effect.promise(async () => {
-    const project = await readProjectChecks(ctx.location.directory).catch(() => undefined)
-    describeProjectChecks(event.tools, project)
+    const answers = pinned === undefined ? undefined : (pinned.pin.permissionAnswers.get(pinned.agent) ?? new Map<string, unknown>())
+    const kept = answers?.get(CHECKS_NOTE_KEY)
+    if (typeof kept === "string") return describeChecksNote(event.tools, kept)
+    const project = await readProjectChecks(ctx.location.directory).then(
+      (value) => ({ value }),
+      () => undefined,
+    )
+    if (project === undefined) return
+    const note = checksNote(project.value)
+    if (pinned !== undefined && answers !== undefined) {
+      answers.set(CHECKS_NOTE_KEY, note)
+      pinned.pin.permissionAnswers.set(pinned.agent, answers)
+    }
+    describeChecksNote(event.tools, note)
   })
 }
+
+const CHECKS_NOTE_KEY = JSON.stringify(["projectChecksNote"])
 
 // Scrub the session prompt: drop whole lines containing disabled keywords
 // from every tool description and every system part (base plus instructions).
@@ -1543,6 +1665,7 @@ export function sessionPlans(
   const permDenies = orderRules<Rule>([
     ...permDenials(input),
     ...shellAllowList(input),
+    ...externalAllowList(input),
     ...policyRules(input),
     ...teamNamespaceDenials(input),
     ...teamToolDenials(candidates, input.teamAgents),
@@ -1693,7 +1816,7 @@ export async function installSessionPlans(
             pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
             pin.lastRequestAt = Date.now()
             applySystemOrder(event, activePlanSet.orders.get(agent))
-            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
+            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event, { pin, agent })
             yield* pinManager.save(pin, agent)
           })
           const pin = yield* pinManager.load(sessionID, activePlanSet)
@@ -1813,7 +1936,7 @@ function applyPinnedPlans(
   applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
   if (pin.planSet.needsNarrowing) narrowTools(event, pinnedPermissions(pin, agent, pin.planSet.permissions))
   applySystemOrder(event, pin.planSet.orders.get(agent))
-  if (pin.planSet.needsNarrowing) return describeChecks(ctx, event)
+  if (pin.planSet.needsNarrowing) return describeChecks(ctx, event, { pin, agent })
   return Effect.void
 }
 

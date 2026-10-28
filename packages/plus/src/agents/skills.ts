@@ -77,10 +77,14 @@ export function skillFile(target: SkillTarget, id: string): string {
 export async function createSkill(input: SkillTarget & { name: string; body: string }): Promise<SkillResult> {
   const validated = validateSkillName(input.name)
   if (!validated.ok) return { ok: false, reason: "invalid", id: input.name, message: validated.reason }
+  // A body may carry a skill file's own frontmatter. It is merged into the one
+  // block the file needs, and a block we cannot merge refuses before any write.
+  const formatted = formatSkill(validated.id, input.body)
+  if (formatted.ok === false) return { ok: false, reason: "invalid", id: validated.id, message: formatted.message }
   const target = skillFile(input, validated.id)
   if (await Bun.file(target).exists()) return { ok: false, reason: "exists", id: validated.id, path: target }
   await fs.mkdir(path.dirname(target), { recursive: true })
-  await Bun.write(target, formatSkill(validated.id, input.body))
+  await Bun.write(target, formatted.text)
   return { ok: true, id: validated.id, path: target }
 }
 
@@ -110,10 +114,78 @@ export async function deleteSkill(input: SkillTarget & { id: string }): Promise<
   return { ok: true, id: validated.id, path: target }
 }
 
-function formatSkill(name: string, body: string): string {
-  const description = describeBody(body, name)
-  const normalized = body.endsWith("\n") || body.length === 0 ? body : `${body}\n`
-  return `---\nname: ${yamlString(name)}\ndescription: ${yamlString(description)}\n---\n${normalized}`
+const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
+// An opening `---` immediately followed by the closing one: a block with no
+// keys, which is not a mapping (and would otherwise be read as body text).
+const EMPTY_FRONTMATTER = /^---\r?\n---(?:\r?\n|$)/
+
+type FormattedSkill = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string }
+
+// A skill file carries exactly one frontmatter block. A body that already
+// begins with one keeps its own lines (extra keys such as `type` and any
+// description survive); only a missing `name` or description is added, since
+// core reads the id from the folder and the row's label from `name`.
+function formatSkill(id: string, body: string): FormattedSkill {
+  const match = body.match(FRONTMATTER) ?? body.match(EMPTY_FRONTMATTER)
+  if (match === null) {
+    const description = describeBody(body, id)
+    const normalized = body.endsWith("\n") || body.length === 0 ? body : `${body}\n`
+    return { ok: true, text: `---\nname: ${yamlString(id)}\ndescription: ${yamlString(description)}\n---\n${normalized}` }
+  }
+  const fields = frontmatterFields(match[1] ?? "")
+  if (fields === undefined)
+    return {
+      ok: false,
+      message: "The body begins with a frontmatter block that is not valid YAML; fix it or leave it out.",
+    }
+  if (fields.name !== undefined && fields.name !== id)
+    return {
+      ok: false,
+      message: `The body's frontmatter names "${String(fields.name)}" but the skill is "${id}"; make them equal or leave name out.`,
+    }
+  // Core decodes `description` as a string, so a non-string or empty one would
+  // make it skip the file: such a line is replaced rather than kept.
+  const described = typeof fields.description === "string" && fields.description.trim().length > 0
+  const rest = body.slice(match[0].length)
+  const normalized = rest.endsWith("\n") || rest.length === 0 ? rest : `${rest}\n`
+  // Blank lines at either end of the body's block carry nothing to keep.
+  const all = (described ? (match[1] ?? "") : withoutDescription(match[1] ?? "")).split(/\r?\n/)
+  const start = all.findIndex((line) => line.trim() !== "")
+  const lines = start === -1 ? [] : all.slice(start, all.findLastIndex((line) => line.trim() !== "") + 1)
+  const derived = `description: ${yamlString(describeBody(rest, id))}`
+  if (fields.name === undefined) {
+    lines.unshift(`name: ${yamlString(id)}`)
+    if (!described) lines.splice(1, 0, derived)
+  }
+  // Keep the body's own key order: the derived description follows its `name`.
+  if (fields.name !== undefined && !described) lines.splice(lines.findIndex((line) => /^name\s*:/.test(line)) + 1, 0, derived)
+  return { ok: true, text: `---\n${lines.join("\n")}\n---\n${normalized}` }
+}
+
+function withoutDescription(raw: string): string {
+  const kept: string[] = []
+  let dropping = false
+  for (const line of raw.split(/\r?\n/)) {
+    // A block scalar's indented lines belong to the key above them.
+    if (dropping && /^\s+\S/.test(line)) continue
+    if (/^description\s*:/.test(line)) {
+      dropping = true
+      continue
+    }
+    dropping = false
+    kept.push(line)
+  }
+  return kept.join("\n")
+}
+
+function frontmatterFields(raw: string): { name?: unknown; description?: unknown } | undefined {
+  try {
+    const data: unknown = Bun.YAML.parse(raw)
+    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
+    return data as { name?: unknown; description?: unknown }
+  } catch {
+    return undefined
+  }
 }
 
 function describeBody(body: string, fallback: string): string {
@@ -126,19 +198,13 @@ function describeBody(body: string, fallback: string): string {
 }
 
 function parseSkillFile(text: string): { name?: string; description?: string } | undefined {
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/)
+  const match = text.match(FRONTMATTER)
   if (!match) return undefined
-  const raw = match[1] ?? ""
-  try {
-    const data = Bun.YAML.parse(raw)
-    if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined
-    const fields = data as { name?: unknown; description?: unknown }
-    return {
-      ...(typeof fields.name === "string" ? { name: fields.name } : {}),
-      ...(typeof fields.description === "string" ? { description: fields.description } : {}),
-    }
-  } catch {
-    return undefined
+  const fields = frontmatterFields(match[1] ?? "")
+  if (fields === undefined) return undefined
+  return {
+    ...(typeof fields.name === "string" ? { name: fields.name } : {}),
+    ...(typeof fields.description === "string" ? { description: fields.description } : {}),
   }
 }
 

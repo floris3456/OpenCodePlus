@@ -220,6 +220,8 @@ export interface TreeNodeBadges {
   readonly mode?: string
   /** A temporarily unavailable control, with the reason shown in details. */
   readonly disabled?: string
+  /** The owner has execute off: its Code Mode tools cannot be called. "group" is the Code Mode row itself, "row" anything inside it. */
+  readonly codeModeOff?: "group" | "row"
   readonly modified?: boolean
   readonly review?: boolean
   readonly reviewCount?: number
@@ -3618,7 +3620,7 @@ function codemodeGroup(
   catalogue?: Catalogue,
   ownerPath?: string,
 ): Lazy {
-  return branch(memo, {
+  const group = branch(memo, {
     kind: "group",
     id,
     label: "Code Mode",
@@ -3633,6 +3635,23 @@ function codemodeGroup(
       return [...direct, ...namespaceGroups(ctx, memo, level, owner, agent, id, depth + 1, items, teamRef, catalogue, ownerPath)]
     },
   })
+  // Without execute nothing in Code Mode can be called: the rows stay
+  // editable, but say so (live: a setup agent switched web tools on for
+  // members without execute and none of them could search).
+  // Resolved only when a badge is asked for: the skeleton stays resolution-free.
+  const execute = memo.ctx.items.find((item) => item.execute === true)
+  if (execute === undefined) return group
+  let off: boolean | undefined
+  const unreachable = () => (off ??= !wholeOf(memo, level, owner, execute, catalogue, teamRef).enabled)
+  return codeModeOff(group, "group", unreachable)
+}
+
+function codeModeOff(row: Lazy, mark: "group" | "row", unreachable: () => boolean): Lazy {
+  return {
+    ...row,
+    partial: () => (unreachable() ? { ...row.partial(), codeModeOff: mark } : row.partial()),
+    children: () => row.children().map((child) => codeModeOff(child, "row", unreachable)),
+  }
 }
 
 // One Code Mode namespace group per first segment, sorted like the server

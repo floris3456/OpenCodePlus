@@ -16,11 +16,11 @@ import fsSync from "node:fs"
 import path from "node:path"
 import { agentBody, discover, hostModelsFrom, instructionCandidates, type BaseTemplate, type Discovered } from "./instructions/discover.js"
 import { validateRuleInput } from "./instructions/tool-permissions.js"
-import { create, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
+import { create, duplicate, formatMarkdown, remove, rename, validateAgentId, type AgentFields } from "./agents/files.js"
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
-import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
+import { createSkill, deleteSkill, importSkill, type SkillScope, type SkillTarget } from "./agents/skills.js"
 import { applyPublishParts, attentionRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { inPublishBatch } from "./instructions/publish-runtime.js"
@@ -30,7 +30,7 @@ import { listOps, runOp, toolRegistry, withCliActor } from "./instructions-cli.j
 import { registerReleaseTools } from "./release/tools.js"
 import { registerSearchTools, retireSearchMcp } from "./search/register.js"
 import { createTeamApi } from "./teams/api.js"
-import { buildRunTree, byDirectory, bySession, loadRun } from "./teams/run.js"
+import { byDirectory, bySession, loadRun } from "./teams/run.js"
 import { readJson } from "./teams/store.js"
 import { onSessionEvent, slowWarning, startSweep } from "./teams/lifecycle.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
@@ -84,8 +84,9 @@ import type { ModelBaseline, ModelRefLike, PromptBaseline } from "./instructions
 import { matchesTeamApplied, sameModelRef } from "./instructions/inventory.js"
 import { ensure, read } from "./project.js"
 import { mainCheckout, readProjectChecks, suggestChecks, writeProjectChecks } from "./teams/project-checks.js"
-import { listRunsForNamespace } from "./teams/api-query.js"
+import { listRunsForNamespace, listRunTree } from "./teams/api-query.js"
 import { stopRun } from "./teams/api-lifecycle.js"
+import { isTeamWorktree } from "./teams/snapshots.js"
 import { Definition, type Plus } from "./rpc.js"
 import { notifySharedStoreChanged, onSharedStoreChanged } from "./shared-store-bus.js"
 import { acquireSharedStoreWatch } from "./shared-store-file.js"
@@ -270,6 +271,7 @@ export default Plugin.define({
       // project store of its own and still needs them, so this stays out of
       // activate/installTooling.
       yield* ensureTeamTooling(ctx, state)
+      yield* disableTeamSnapshots(ctx)
       yield* activate(ctx, state).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus activation failed", { cause })),
       )
@@ -717,11 +719,12 @@ export interface PlusApi {
   readonly snapshot: () => Promise<SnapshotResult>
   readonly refresh: () => Promise<RefreshResult>
   readonly chatRefresh: (input: Schema.Schema.Type<typeof Plus.ChatRefreshInput>) => Promise<{ ok: true; value: Schema.Schema.Type<typeof Plus.ChatRefreshResult> }>
-  readonly mutate: (input: Plus.MutateInput) => Promise<MutateResult>
+  readonly mutate: (input: Plus.MutateInput, options?: { readonly publish?: boolean }) => Promise<MutateResult>
   readonly log: (input: Plus.LogInput) => Promise<LogResult>
   readonly assembled: (input: Plus.AssembledInput) => Promise<AssembledResult>
   readonly catalogModels: () => Promise<CatalogModelsResult>
-  readonly createAgent: (input: Plus.CreateAgentInput & { readonly actor?: Plus.Actor }) => Promise<CreateAgentResult>
+  /** `from` (Duplicate, not on the RPC): copy that agent's file at `scope` instead of writing the preset's fields. */
+  readonly createAgent: (input: Plus.CreateAgentInput & { readonly actor?: Plus.Actor; readonly from?: string }) => Promise<CreateAgentResult>
   readonly renameAgent: (input: Plus.RenameAgentInput & { readonly actor?: Plus.Actor }) => Promise<RenameAgentResult>
   readonly deleteAgent: (input: Plus.DeleteAgentInput & { readonly actor?: Plus.Actor }) => Promise<DeleteAgentResult>
   readonly createSkill: (input: Plus.CreateSkillInput & { readonly actor?: Plus.Actor }) => Promise<CreateSkillResult>
@@ -740,7 +743,8 @@ export interface PlusApi {
   readonly setTeamEnabled: (input: Plus.SetTeamEnabledInput & { readonly actor?: Plus.Actor }) => Promise<SetTeamEnabledResult>
   readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
   readonly layoutWrite: (input: Plus.LayoutWriteInput & { readonly actor?: Plus.Actor }) => Promise<LayoutWriteResult>
-  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor }) => Promise<AddTeamAgentResult>
+  /** `from` (Duplicate, not on the RPC): copy that member's file instead of writing the preset's fields. */
+  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor; readonly from?: string }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
   readonly renameTeam: (input: Plus.RenameTeamInput & { readonly actor?: Plus.Actor }) => Promise<RenameTeamResult>
@@ -910,7 +914,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     return { ok: true as const, value: { ok: true as const, revision: next.projectRevision, globalRevision: next.globalRevision, snapshot } }
   }
 
-  const mutateDelta = async (input: typeof Plus.MutateInputDelta.Type): Promise<MutateResult> => {
+  const mutateDelta = async (input: typeof Plus.MutateInputDelta.Type, publish: boolean): Promise<MutateResult> => {
     const directory = await activationDirectory(ctx.location.directory)
     const config = await read(directory)
     const upserts = input.changes.upsert.map(toRecord)
@@ -955,7 +959,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       globalChanged: saved.changed.global,
     })
     const next = { ...loadedFromSave(saved, decision.records), protectedAgents: config.protectedAgents }
-    const discovered = await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+    const discovered = publish ? await Effect.runPromise(publishFresh(ctx, state, next, builtins)) : undefined
     const snapshot = input.snapshot === true ? await snapshotOf(next, directory, discovered) : undefined
     return {
       ok: true as const,
@@ -1051,8 +1055,8 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         },
       }
     },
-    mutate: async (input) => {
-      if ("changes" in input) return mutateDelta(input)
+    mutate: async (input, options) => {
+      if ("changes" in input) return mutateDelta(input, options?.publish !== false)
       return mutateFull(input)
     },
     log: async (input) => {
@@ -1107,13 +1111,19 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // follow the preset. No preset: an empty file and no link (off).
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
-      const created = await create({
-        scope: input.scope,
-        projectDirectory: directory,
-        id: validated.id,
-        fields: presetFields(preset ?? {}),
-        prompt: "",
-      })
+      const created = input.from === undefined
+        ? await create({
+            scope: input.scope,
+            projectDirectory: directory,
+            id: validated.id,
+            fields: presetFields(preset ?? {}),
+            prompt: "",
+          })
+        : await duplicate({ scope: input.scope, projectDirectory: directory, from: input.from, to: validated.id })
+      if (!created.ok && created.reason === "missing-source") {
+        const reason = `Agent ${input.from} has no file at ${created.path} to copy`
+        return { ok: false as const, error: { code: "agent.invalid" as const, message: reason, data: { id: input.from ?? "", reason } } }
+      }
       if (!created.ok)
         return {
           ok: false as const,
@@ -1126,7 +1136,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // A link left behind by a deleted agent of the same id is replaced (or,
       // with no preset, dropped) so the new agent starts where it was asked to.
       await setOwnerLink(directory, { level: input.scope, agent: validated.id }, input.preset ?? null)
-      await Effect.runPromise(ctx.agent.reload())
+      await reloadAgentFiles(ctx, input.scope, (ids) => ids.has(validated.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
@@ -1134,7 +1144,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: input.scope,
         op: "agent.create",
         target: created.path,
-        summary: `agent.create ${validated.id} (${input.scope})${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
+        summary: `agent.create ${validated.id} (${input.scope})${input.from === undefined ? "" : ` as a copy of ${input.from}`}${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
       })
       return { ok: true as const, value: { id: validated.id, path: created.path } }
     },
@@ -1220,7 +1230,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const reason = "the store changed concurrently; retry"
         return { ok: false as const, error: { code: "agent.invalid" as const, message: `Could not rename ${from.id}: ${reason}`, data: { id: input.from, reason } } }
       }
-      await Effect.runPromise(ctx.agent.reload())
+      await reloadAgentFiles(ctx, input.scope, (ids) => ids.has(to.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
@@ -1256,7 +1266,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       await removeAgentRecords(directory, loaded, validated.id, input.scope)
-      await Effect.runPromise(ctx.agent.reload())
+      // A delete leaves no id to look for (another level may own the same one),
+      // so the project file being gone is what asks for the rescan.
+      await reloadAgentFiles(ctx, input.scope)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
@@ -1285,6 +1297,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
+      await reloadSkillFiles(ctx, scope, (ids) => ids.has(result.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.create", target: result.path, summary: `skill.create ${result.id} (${scope})` })
       return { ok: true as const, value: { id: result.id, path: result.path, scope } }
@@ -1306,6 +1319,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
+      await reloadSkillFiles(ctx, scope, (ids) => ids.has(result.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.import", target: result.path, summary: `skill.import ${result.id} (${scope})` })
       return { ok: true as const, value: { id: result.id, path: result.path, scope } }
@@ -1338,6 +1352,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const freshStored = await load(directory)
       const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
       await removeItemRecords(directory, freshLoaded, `skill:${result.id}`)
+      // A delete leaves no id to look for (another scope may own the same one),
+      // so the project file being gone is what asks for the rescan.
+      await reloadSkillFiles(ctx, scope)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id} (${scope})` })
       return { ok: true as const, value: { id: result.id, path: result.path, scope } }
@@ -2014,8 +2031,14 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // empty body; a team-scoped link makes the rest follow the preset.
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
+      const source = input.from === undefined ? undefined : found.agents.find((agent) => agent.id === input.from)?.path
+      if (input.from !== undefined && source === undefined) {
+        const reason = `Member ${input.from} of team ${validatedTeam.team} has no file to copy`
+        return { ok: false as const, error: { code: "agent.invalid" as const, message: reason, data: { id: input.from, reason } } }
+      }
       await fs.mkdir(path.dirname(target), { recursive: true })
-      await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      if (source === undefined) await fs.writeFile(target, formatMarkdown(presetFields(preset ?? {}), ""))
+      else await fs.copyFile(source, target)
       // The config lands only once the member file exists, so a failed write
       // above leaves nothing behind.
       if (input.level === "project") await ensure(directory)
@@ -2033,7 +2056,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         scope: input.level === "project" ? "project" : "global",
         op: "team.addAgent",
         target,
-        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
+        summary: `team.addAgent ${validated.id} to ${validatedTeam.team} (${input.level})${input.from === undefined ? "" : ` as a copy of ${input.from}`}${input.preset === undefined ? "" : ` from ${presetKey(input.preset)}`}`,
       })
       return { ok: true as const, value: { id: validated.id, path: target } }
     },
@@ -3805,8 +3828,8 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const root = teamsDataDir()
         if (input.tree !== false && input.sessionID) {
-          const allRuns = yield* Effect.promise(() => listRunsForNamespace(root, { all: true }))
-          const runs = buildRunTree(allRuns, input.sessionID, { all: input.all })
+          const sessionID = input.sessionID
+          const runs = yield* Effect.promise(() => listRunTree(root, sessionID, { all: input.all }))
           return { runs }
         }
         const runs = yield* Effect.promise(() => listRunsForNamespace(root, input))
@@ -3937,10 +3960,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const root = yield* Effect.promise(() => mainCheckout(ctx.location.directory))
         if (root === undefined) return yield* Effect.fail(context.error("checks.invalid", "not inside a git repository", { reason: "not inside a git repository" }))
-        const entry = (check: { readonly argv: readonly string[]; readonly cwd?: string; readonly description?: string }) => ({
+        const entry = (check: { readonly argv: readonly string[]; readonly cwd?: string; readonly description?: string; readonly scope?: "tree" | "change" }) => ({
           argv: [...check.argv],
           ...(check.cwd === undefined ? {} : { cwd: check.cwd }),
           ...(check.description === undefined ? {} : { description: check.description }),
+          ...(check.scope === undefined ? {} : { scope: check.scope }),
         })
         const written = yield* Effect.promise(() =>
           writeProjectChecks(root, {
@@ -4147,12 +4171,20 @@ export async function sessionCompactDefaults(
   const session = await Effect.runPromise(ctx.session.get({ sessionID: Session.ID.make(sessionID) })).catch(() => undefined)
   if (session?.agent === undefined || session.model === undefined) return undefined
   const model = session.model
-  return compactDefaultsOf(
+  const defaults = compactDefaultsOf(
     state,
     session.agent,
     { providerID: model.providerID, id: model.id, ...(model.variant === undefined ? {} : { variant: model.variant }) },
     (await plusSettings.read()).coldCompact,
   )
+  // A delegated worker chat is not read by a person: compacting it before its
+  // cache goes cold wakes a settled run about an hour later, and the wake was
+  // read as a new team turn (a scout ran its task again). Warming still keeps
+  // the cache warm; team_followup arms cold compaction explicitly on resume.
+  if ((await bySession(teamsDataDir(), sessionID))?.kind === "w") {
+    return { ...defaults, compactWarm: false, compactWarmFrom: "built-in" }
+  }
+  return defaults
 }
 
 // Plus's `compaction.decide`: the per-model settings for (agent, chat model),
@@ -5878,6 +5910,17 @@ function ensureTeamTooling(ctx: Context, state: PlusState): Effect.Effect<void, 
   })
 }
 
+// Team runs commit their work through team checkpoints, so a run's worktree
+// never needs undo snapshots: capturing one on every step is expensive on a big
+// repository. Only ever disables, so a user's global "snapshots": false still
+// applies everywhere, and a failure here never stops the plugin.
+function disableTeamSnapshots(ctx: Context): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    if (!(yield* Effect.promise(() => isTeamWorktree(ctx.location.directory, teamsDataDir())))) return
+    yield* ctx.snapshot.transform((editor) => editor.configure(false))
+  }).pipe(Effect.catchCause((cause) => Effect.logWarning("plus could not turn team-run snapshots off", { cause })))
+}
+
 // Team tools only. Team rules are instructions rows applied by apply.ts, so
 // there is no permission hook to install here.
 async function installTeamTooling(ctx: Context, state: PlusState): Promise<Registration[]> {
@@ -5923,6 +5966,111 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.teamOutputIds = new Map()
       state.hostModels = undefined
       state.hostCatalog = undefined
+    }),
+  )
+}
+
+// Core reads agent markdown in its config agent plugin, and `Agent.reload` only
+// re-runs the installed transforms over the documents that plugin read last
+// (core/src/agent.ts, core/src/config/plugin/agent.ts). A project's agent files
+// are not watched (ConfigWatch.plan: only the service-wide config roots are),
+// so a create, duplicate, rename or delete under the project reaches the host
+// registry only on that plugin's next scan — which a forced config reload asks
+// for, and which the plugin then announces with agent.updated. Waiting for
+// that announcement is what keeps a written agent out of a restart. A global
+// agent needs neither: its directory is watched, so core rescans it itself.
+// `settled` names what the registry must show, so a write it already reflects
+// costs no rescan; a delete leaves no id to check (another level may hold the
+// same id), so it passes none and the write itself decides.
+const AGENT_RESCAN_LIMIT = Duration.seconds(2)
+async function reloadAgentFiles(
+  ctx: Context,
+  scope: "project" | "global",
+  settled?: (ids: ReadonlySet<string>) => boolean,
+): Promise<void> {
+  const registered = () =>
+    Effect.runPromise(Effect.map(ctx.agent.list(), (result) => new Set(result.data.map((agent) => String(agent.id)))))
+  await Effect.runPromise(ctx.agent.reload())
+  if (scope === "global" || (settled !== undefined && settled(await registered()))) return
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const rescans = yield* Queue.unbounded<void>()
+      const watch = yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === Agent.Event.Updated.type),
+        Stream.runForEach(() => Queue.offer(rescans, undefined).pipe(Effect.asVoid)),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const deadline = Date.now() + Duration.toMillis(AGENT_RESCAN_LIMIT)
+          yield* ctx.config.reload({ force: true })
+          while (settled === undefined || !settled(yield* Effect.promise(registered))) {
+            // One deadline for the whole wait: an unrelated agent.updated must
+            // not extend it, and a host that never rescans gives up instead of
+            // holding the write open. Its next config reload picks the file up.
+            const next = yield* Queue.take(rescans).pipe(Effect.timeoutOption(Math.max(0, deadline - Date.now())))
+            if (Option.isNone(next)) return
+            // No predicate (a delete): the first rescan announces the new list,
+            // so the read after the write sees it.
+            if (settled === undefined) return
+          }
+        }),
+        Fiber.interrupt(watch),
+      )
+    }),
+  )
+}
+
+// Core reads skill files in its config skill plugin, and `Skill.reload` only
+// re-runs that plugin's installed transform over the skills it read last
+// (core/src/skill.ts, core/src/config/plugin/skill.ts). A project's skill
+// folder is not watched (ConfigWatch.plan: only the service-wide config roots
+// are), so a create, import or delete under the project reaches the host
+// registry only on that plugin's next scan — which a forced config reload asks
+// for, and which the plugin then announces with skill.updated. Waiting for
+// that announcement is what keeps a written skill out of a restart. A global,
+// defaults or preset skill needs neither: its directory is watched, so core
+// rescans it itself. `settled` names what the registry must show, so a write it
+// already reflects costs no rescan; a delete leaves no id to check (another
+// scope may hold the same id), so it passes none and the write itself decides.
+const SKILL_RESCAN_LIMIT = Duration.seconds(2)
+async function reloadSkillFiles(
+  ctx: Context,
+  scope: SkillScope,
+  settled?: (ids: ReadonlySet<string>) => boolean,
+): Promise<void> {
+  if (scope !== "project") return
+  const registered = () =>
+    Effect.runPromise(Effect.map(ctx.skill.list(), (result) => new Set(result.data.map((skill) => String(skill.id)))))
+  if (settled !== undefined && settled(await registered())) return
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const rescans = yield* Queue.unbounded<"update" | "ended">()
+      const watch = yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === Skill.Event.Updated.type),
+        Stream.runForEach(() => Queue.offer(rescans, "update").pipe(Effect.asVoid)),
+        // A host whose event stream has ended can never announce the rescan, so
+        // the wait ends with it instead of holding the write for the deadline.
+        Effect.ensuring(Queue.offer(rescans, "ended").pipe(Effect.asVoid)),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const deadline = Date.now() + Duration.toMillis(SKILL_RESCAN_LIMIT)
+          yield* ctx.config.reload({ force: true })
+          while (settled === undefined || !settled(yield* Effect.promise(registered))) {
+            // One deadline for the whole wait: an unrelated skill.updated must
+            // not extend it, and a host that never rescans gives up instead of
+            // holding the write open. Its next config reload picks the file up.
+            const next = yield* Queue.take(rescans).pipe(Effect.timeoutOption(Math.max(0, deadline - Date.now())))
+            if (Option.isNone(next) || next.value === "ended") return
+            // No predicate (a delete): the first rescan announces the new list,
+            // so the read after the write sees it.
+            if (settled === undefined) return
+          }
+        }),
+        Fiber.interrupt(watch),
+      )
     }),
   )
 }

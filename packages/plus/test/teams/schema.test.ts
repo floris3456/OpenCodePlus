@@ -35,8 +35,10 @@ import {
   ToolError,
   WorktreeState,
   WorktreeStates,
+  budgetDimensions,
   budgetExhaustion,
   parseDuration,
+  pathList,
   toolError,
   validateChecks,
   validateSummary,
@@ -179,6 +181,26 @@ test("StopInput parses run, optional force and an optional reason of at most 300
 
 const ACCEPTED = { id: "plus-tests", argv: ["bun", "test", "test/model.test.ts"] }
 
+describe("pathList", () => {
+  test("names every path up to the limit, unchanged", () => {
+    expect(pathList([])).toBe("")
+    expect(pathList(["a.ts"])).toBe("a.ts")
+    expect(pathList(["a.ts", "b.ts", "c.ts"])).toBe("a.ts, b.ts, c.ts")
+    expect(pathList(Array.from({ length: 50 }, (_, i) => `f${i}.ts`))).toBe(Array.from({ length: 50 }, (_, i) => `f${i}.ts`).join(", "))
+  })
+
+  test("names the first 50 and counts the rest", () => {
+    const paths = Array.from({ length: 51 }, (_, i) => `f${i}.ts`)
+    expect(pathList(paths)).toBe(`${paths.slice(0, 50).join(", ")} and 1 more`)
+    expect(pathList(Array.from({ length: 60 }, (_, i) => `f${i}.ts`))).toBe(`${Array.from({ length: 50 }, (_, i) => `f${i}.ts`).join(", ")} and 10 more`)
+  })
+
+  test("honours a custom limit", () => {
+    expect(pathList(["a.ts", "b.ts", "c.ts"], 2)).toBe("a.ts, b.ts and 1 more")
+    expect(pathList(["a.ts", "b.ts"], 2)).toBe("a.ts, b.ts")
+  })
+})
+
 describe("validateChecks", () => {
   test("rejects bare bun test with E_CHECKS and accepted", async () => {
     const thrown = await caught(() => validateChecks([{ id: "x", argv: ["bun", "test"] }]))
@@ -297,6 +319,28 @@ test("F1.2 status.budget overBy/exhausted math", () => {
   )
   expect(under.overBy).toEqual({ turns: 0, tokens: 0, wallMs: 0 })
   expect(under.exhausted).toBe(false)
+})
+
+test("the wall budget counts attempt time, not run age while a settled run waits", () => {
+  const settledAt = Date.parse("2026-10-27T14:08:00Z")
+  const attempt = { startedAt: "2026-10-27T14:05:00Z", endedAt: "2026-10-27T14:08:00Z" }
+  const settled = {
+    attempts: [attempt],
+    budget: { wallMs: 1_200_000 },
+    createdAt: "2026-10-27T14:05:00Z",
+  }
+  expect(budgetDimensions(settled, { now: settledAt }).find((d) => d.name === "wall")?.used).toBe(180_000)
+  // 47 minutes later the settled run has not spent another millisecond.
+  expect(budgetDimensions(settled, { now: settledAt + 47 * 60_000 }).find((d) => d.name === "wall")?.used).toBe(180_000)
+  expect(budgetExhaustion(settled, { now: settledAt + 47 * 60_000 }).exhausted).toBe(false)
+
+  // An open attempt counts to now; earlier attempts keep their measured time.
+  const running = {
+    attempts: [attempt, { startedAt: "2026-10-27T14:54:00Z" }],
+    budget: { wallMs: 1_200_000 },
+    createdAt: "2026-10-27T14:05:00Z",
+  }
+  expect(budgetDimensions(running, { now: settledAt + 47 * 60_000 }).find((d) => d.name === "wall")?.used).toBe(240_000)
 })
 
 describe("parseDuration", () => {

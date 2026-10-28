@@ -2,13 +2,14 @@ import { copyFile, mkdir, readdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { Effect } from "effect"
 import { atomicJson, lock, readJson, ulid } from "./store.js"
-import { git, gitRaw } from "./git.js"
+import { git, gitPlain, gitRaw } from "./git.js"
 import { computePolicyDigest, execute, passingReceipt, reuseReceipt, type Receipt } from "./checks.js"
 import { reworkTask } from "./tasks.js"
 import { loadRun } from "./run.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
-import { isExpectedHead, toolError } from "./schema.js"
+import { isExpectedHead, PATH_LIST_LIMIT, pathList, toolError } from "./schema.js"
 import type { Check, MergeState } from "./schema.js"
+import { isChangeScoped, readProjectChecks } from "./project-checks.js"
 import { errCode, io } from "./io.js"
 
 export interface MergeEntry {
@@ -26,6 +27,12 @@ export interface MergeEntry {
   /** Other assigned checks that already fail without this landing. */
   stillRed?: string[]
   reusedChecks?: { id: string; reused: true; at: number }[]
+  /**
+   * Checks of the parent or of an earlier landed child that this landing did
+   * not run because they judge their own run's change (a size, budget or
+   * anti-mess gate), not the code.
+   */
+  skippedChecks?: { id: string; runID: string }[]
   landedHead?: string
   reworkTask?: string
   at: string
@@ -97,25 +104,53 @@ function getHead(dir: string): Promise<string> {
   return git(dir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
 }
 
-/** Tracked modifications only: ignore untracked (`??`) entries. */
+/**
+ * Tracked modifications only: ignore untracked (`??`) entries. Read with -z
+ * so paths arrive unquoted, matching changedPaths; a rename or copy record is
+ * `XY new\0old\0` and names both sides.
+ */
 async function trackedDirtyFiles(worktree: string): Promise<string[]> {
-  const out = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain"])
-  if (out === "") return []
-  const files: string[] = []
-  for (const line of out.split("\n")) {
-    if (line === "") continue
-    // NOTE: git() trims the whole output, so the first line loses a leading
-    // status space (" M f" -> "M f"). Accept both the 3-char ("XY path")
-    // and the trimmed 2-char ("X path") prefix.
-    if (line.trimStart().startsWith("??")) continue
-    let rest: string
-    if (line.length >= 3 && line[2] === " ") rest = line.slice(3)
-    else if (line.length >= 2 && line[1] === " ") rest = line.slice(2)
-    else rest = line.split(" ").pop() ?? ""
-    const file = rest.split(" -> ").pop()?.trim()
-    if (file !== undefined && file !== "") files.push(file)
+  const out = await gitPlain(worktree, [...NO_REPOSITORY_PROGRAMS, "status", "--porcelain", "-z"])
+  const records = out.split("\0")
+  const files = new Set<string>()
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i] ?? ""
+    if (record.length < 4) continue
+    const status = record.slice(0, 2)
+    if (status.trim() === "??") continue
+    const path = record.slice(3)
+    // A rename or copy carries the source path in the next record.
+    const sides = status.includes("R") || status.includes("C") ? [path, records[++i] ?? ""] : [path]
+    for (const file of sides) if (file !== "") files.add(file)
   }
-  return files
+  return [...files]
+}
+
+/** Paths a landing from `from` to `to` would change; with --no-renames a rename is both paths. */
+async function changedPaths(worktree: string, from: string, to: string): Promise<string[]> {
+  const out = await gitPlain(worktree, [...NO_REPOSITORY_PROGRAMS, "diff", "--name-only", "--no-renames", "-z", from, to])
+  return out.split("\0").filter(Boolean)
+}
+
+/** The parent's uncommitted files that a landing of `from`..`to` would touch. */
+function overlap(dirty: readonly string[], changed: readonly string[]): string[] {
+  const landing = new Set(changed)
+  return dirty.filter((file) => landing.has(file))
+}
+
+/**
+ * Uncommitted files in the parent's checkout that landing `childHead` onto
+ * `parentHead` would touch: exactly the ones git refuses to fast-forward over.
+ */
+async function landingOverlap(
+  worktree: string,
+  parentHead: string,
+  childHead: string,
+  dirty: readonly string[],
+): Promise<string[]> {
+  if (dirty.length === 0) return []
+  const base = await git(worktree, [...NO_REPOSITORY_PROGRAMS, "merge-base", parentHead, childHead])
+  return overlap(dirty, await changedPaths(worktree, base, childHead))
 }
 
 /**
@@ -229,18 +264,21 @@ export async function enqueue(root: string, input: EnqueueInput): Promise<MergeE
         parentHead,
       )
     const dirty = await trackedDirtyFiles(input.parentWorktree)
-    if (dirty.length > 0)
+    // Only uncommitted files the child's own commits change would make git
+    // refuse the fast-forward; the rest of the parent's work stays as it is.
+    const touched = await landingOverlap(input.parentWorktree, parentHead, input.childHead, dirty)
+    if (touched.length > 0)
       throw toolError(
         "E_DIRTY",
-        `Your worktree has tracked modifications [${dirty.join(", ")}]; commit or discard them; the merge queue is paused until clean.`,
-        dirty,
+        `Your worktree has uncommitted changes to [${pathList(touched)}], which ${input.childRun}'s commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.`,
+        touched.slice(0, PATH_LIST_LIMIT),
       )
     const collisions = await untrackedCollisions(input.parentWorktree, parentHead, input.childHead)
     if (collisions.unsafe.length > 0)
       throw toolError(
         "E_DIRTY",
-        `Untracked [${collisions.unsafe.join(", ")}] in your worktree would be overwritten: ${input.childRun}'s commits add another version. Remove yours if the child's replaces it, or commit it with team_checkpoint to keep it (the child's version then conflicts), then integrate again.`,
-        collisions.unsafe,
+        `Untracked [${pathList(collisions.unsafe)}] in your worktree would be overwritten: ${input.childRun}'s commits add another version. Remove yours if the child's replaces it, or commit it with team_checkpoint to keep it (the child's version then conflicts), then integrate again.`,
+        collisions.unsafe.slice(0, PATH_LIST_LIMIT),
       )
     const existing = await queue(root, input.parentRun)
     const landed = existing.find((e) => e.childRun === input.childRun && e.childBranch === input.childBranch && e.state === "landed")
@@ -313,6 +351,9 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
       // The queue already records which children landed; checks need no second
       // registry. Group by command AND directory, retaining child ownership.
       const landed = yield* io(() => queue(root, entry.parentRun))
+      // Whether a check judges its own run's change comes from the project's
+      // CURRENT checks.json: a run stores only its resolved commands.
+      const project = yield* io(() => readProjectChecks(ctx.parentWorktree).catch(() => undefined))
       const sources = yield* io(() =>
         Promise.all(
           [...new Set([entry.childRun, ...landed.filter((item) => item.state === "landed").map((item) => item.childRun)])].map(async (runID) => ({
@@ -322,8 +363,17 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         ),
       )
       const groups = new Map<string, { check: Check; runID: string; own: boolean; bindings: { check: Check; runID: string }[] }>()
+      const skipped: Array<{ check: Check; runID: string }> = []
       for (const source of [{ runID: entry.parentRun, checks: ctx.checks }, ...sources]) {
         for (const check of source.checks) {
+          // A size, budget or anti-mess gate judges the change the run it is
+          // assigned to made. Every source but the landing child made a
+          // different change, so running it here would judge the wrong one
+          // (and go red for a change this child never made).
+          if (source.runID !== entry.childRun && isChangeScoped(check, project)) {
+            skipped.push({ check, runID: source.runID })
+            continue
+          }
           const key = commandKey(check)
           const previous = groups.get(key)
           groups.set(key, {
@@ -334,7 +384,10 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           })
         }
       }
-      let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso() }
+      // The same command may still run as the landing child's own check (it is
+      // then in groups): it is not "not run", so it is no longer reported.
+      const skippedChecks = skipped.filter((item) => !groups.has(commandKey(item.check))).map((item) => ({ id: item.check.id, runID: item.runID }))
+      let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso(), ...(skippedChecks.length === 0 ? {} : { skippedChecks }) }
       yield* io(() => saveEntry(root, cur))
       const tempDir = tempDirFor(ctx, entry.parentRun, entry.id)
       yield* io(() => withRepoLock(root, ctx, () => git(ctx.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "add", "--detach", tempDir, entry.childHead])))
@@ -410,12 +463,22 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         cur = { ...cur, state: "landing", updatedAt: nowIso() }
         yield* io(() => saveEntry(root, cur))
         let staleHead: string | undefined
+        let dirtyOverlap: string[] | undefined
         let landedHead = ""
         yield* io(() =>
           withRepoLock(root, ctx, async () => {
             const current = await getHead(ctx.parentWorktree)
             if (current !== rebaseBase) {
               staleHead = current
+              return
+            }
+            // The parent may have changed a file since enqueue: git would refuse
+            // this fast-forward, so leave the entry pending instead of failing
+            // later with git's own words.
+            const dirty = await trackedDirtyFiles(ctx.parentWorktree)
+            const touched = overlap(dirty, await changedPaths(ctx.parentWorktree, rebaseBase, rebasedTip))
+            if (touched.length > 0) {
+              dirtyOverlap = touched
               return
             }
             const collisions = await untrackedCollisions(ctx.parentWorktree, rebaseBase, rebasedTip)
@@ -425,6 +488,18 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
             landedHead = await getHead(ctx.parentWorktree)
           }),
         )
+        if (dirtyOverlap !== undefined) {
+          const touched = dirtyOverlap as string[]
+          cur = { ...cur, state: "pending", updatedAt: nowIso() }
+          yield* io(() => saveEntry(root, cur))
+          return yield* Effect.fail(
+            toolError(
+              "E_DIRTY",
+              `Your worktree has uncommitted changes to [${pathList(touched)}], which ${entry.childRun}'s commits also change; commit or discard them, then integrate again. Your other uncommitted files stay as they are.`,
+              touched.slice(0, PATH_LIST_LIMIT),
+            ),
+          )
+        }
         if (staleHead !== undefined) {
           const current = staleHead as string
           cur = { ...cur, state: "stale_parent", updatedAt: nowIso() }
@@ -459,20 +534,16 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
 /**
  * Drain every pending (or paused-now-clean) entry strictly one at a time.
  * Holds `lock("state", "merge:" + parentRun)` for the whole sweep so two
- * callers can never interleave entries. A dirty parent pauses the queue
- * without error; entries stay pending.
+ * callers can never interleave entries. Entries land past the parent's
+ * uncommitted files unless one of them is a path the entry's commits change;
+ * at the first such entry the queue pauses there, leaving it and later entries
+ * pending. That is not an error.
  */
 export async function drain(root: string, parentRun: string, ctx: MergeContext): Promise<DrainResult> {
   return lock(root, "state", `merge:${parentRun}`, async () => {
     const all = await queue(root, parentRun)
     const todo = all.filter((e) => e.state === "pending" || e.state === "paused")
     if (todo.length === 0) return { processed: [], paused: false }
-    const dirty = await trackedDirtyFiles(ctx.parentWorktree)
-    if (dirty.length > 0) {
-      await writeQueueMeta(root, parentRun, true)
-      return { processed: [], paused: true }
-    }
-    await writeQueueMeta(root, parentRun, false)
     const processed: MergeEntry[] = []
     for (const item of todo) {
       const fresh = await readJson<MergeEntry>(entryPath(root, parentRun, item.id))
@@ -481,8 +552,13 @@ export async function drain(root: string, parentRun: string, ctx: MergeContext):
         processed.push(target)
         continue
       }
-      const result = await process(root, target, ctx)
-      processed.push(result)
+      const dirty = await trackedDirtyFiles(ctx.parentWorktree)
+      if ((await landingOverlap(ctx.parentWorktree, await getHead(ctx.parentWorktree), target.childHead, dirty)).length > 0) {
+        await writeQueueMeta(root, parentRun, true)
+        return { processed, paused: true }
+      }
+      await writeQueueMeta(root, parentRun, false)
+      processed.push(await process(root, target, ctx))
     }
     return { processed, paused: false }
   })

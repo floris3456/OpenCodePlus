@@ -49,6 +49,7 @@ async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promi
 
 function recordSession() {
   const prompted: Array<{ sessionID: string; text: string }> = []
+  const interrupted: string[] = []
   const domain = {
     get: () => Effect.succeed({ id: "ses_child_010" }),
     prompt: (input: { sessionID: unknown; text: unknown }) => {
@@ -56,8 +57,12 @@ function recordSession() {
       return Effect.succeed(undefined as never)
     },
     wait: () => Effect.succeed(undefined),
+    interrupt: (input: { sessionID: unknown }) => {
+      interrupted.push(String(input.sessionID))
+      return Effect.succeed({ interrupted: true })
+    },
   } as unknown as SessionDomain
-  return { prompted, domain }
+  return { prompted, interrupted, domain }
 }
 
 function baseRun(overrides: Partial<RunRecord> & { id: string }): RunRecord {
@@ -869,6 +874,39 @@ test("session.execution.started resumes a stopped run to working", async () => {
   })
 })
 
+test("a start event from before the stop does not resume the stopped run", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const stoppedAt = Date.parse("2026-10-27T13:55:00Z")
+    const run = baseRun({
+      id: "w-stopped-stale-start",
+      state: "stopped",
+      lastUsed: new Date(stoppedAt).toISOString(),
+      attempts: [
+        {
+          n: 1,
+          state: "succeeded",
+          startedAt: new Date(stoppedAt - 3 * 60_000).toISOString(),
+          endedAt: new Date(stoppedAt - 47 * 60_000).toISOString(),
+          trigger: "delegate",
+        },
+      ],
+      sessionID: "ses_stopped_stale_start",
+    })
+    await saveRun(root, run)
+    const sessions = recordSession()
+    const moved = await onSessionEvent(context({ session: sessions.domain }), root, {
+      type: SessionEvent.Execution.Started.type,
+      data: { sessionID: "ses_stopped_stale_start" },
+      created: stoppedAt - 1_000,
+    })
+    expect(moved).toBeUndefined()
+    const stored = await loadRun(root, run.id)
+    expect(stored?.state).toBe("stopped")
+    expect(stored?.attempts).toHaveLength(1)
+    expect(sessions.interrupted).toEqual(["ses_stopped_stale_start"])
+  })
+})
+
 test("session.execution.started resumes a dead run to working", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const run = baseRun({
@@ -1657,3 +1695,40 @@ test("a root run with an open child stays put and remembers where the chat went"
     expect((await loadRun(root, parent.id))?.movedTo).toBeUndefined()
   })
 }, 30000)
+
+// ── Provider retries on the attempt and in the settlement ─────────────────
+
+test("two provider retries then a failed execution count on the attempt and the settlement says so", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const parent = baseRun({
+      id: "main-parent0000008",
+      role: "opus-orchestrator",
+      state: "working",
+      sessionID: "ses_parent_008",
+    })
+    const child = workingChild("w-child0000000008", parent.id, "ses_child_008")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+
+    const sessions = recordSession()
+    const ctx = context({ session: sessions.domain })
+    const err = { type: "provider.internal", message: "An unexpected error occurred.", status: 500 }
+
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_008", { attempt: 1, at: Date.now() + 15_000, error: err }))
+    const first = (await loadRun(root, child.id))?.attempts.at(-1)?.retries
+    expect(first?.count).toBe(1)
+    await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_008", { attempt: 2, at: Date.now() + 30_000, error: err }))
+    await onSessionEvent(ctx, root, {
+      type: SessionEvent.Execution.Failed.type,
+      data: { sessionID: "ses_child_008", error: err },
+    })
+
+    const settled = await loadRun(root, child.id)
+    const attempt = settled?.attempts.at(-1)
+    expect(attempt?.state).toBe("failed")
+    expect(attempt?.retries).toEqual({ firstAt: first!.firstAt, count: 2, error: err })
+    const text = (await peek(root, parent.id))[0]?.text ?? ""
+    expect(text).toContain("The host retried it 2 times")
+    expect(text).toContain("before the step failed.")
+  })
+})

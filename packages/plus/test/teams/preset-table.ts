@@ -6,7 +6,8 @@
 // `orchestrator` member preset here; nothing reads a member's id.
 import { createState } from "../../src/index.js"
 import { permissionTableOf, type ApplyInput } from "../../src/instructions/apply.js"
-import { fingerprint, permItemId, resolve, type CustomizationRecord, type Item, type LinkRecord, type PresetRef } from "../../src/instructions/model.js"
+import { userRuleItem } from "../../src/instructions/discover.js"
+import { fingerprint, permItemId, resolve, type CustomizationRecord, type Item, type LinkRecord, type PresetRef, type RuleRecord } from "../../src/instructions/model.js"
 import type { PermissionTable } from "../../src/instructions/permission-enforce.js"
 import { catalogItems, categoryOfRow } from "../../src/instructions/permission-catalog.js"
 import { actionForToolId, curatedRules } from "../../src/instructions/tool-permissions.js"
@@ -120,10 +121,17 @@ export function presetInput(
     readonly members?: readonly TeamMember[]
     readonly records?: readonly CustomizationRecord[]
     readonly runs?: readonly PolicyRun[]
+    readonly rules?: readonly RuleRecord[]
   } = {},
 ): ApplyInput {
   const members = options.members ?? shippedMembers()
-  const items = [...inventory, ...catalog, ...curated, ...teamPolicyItems(policyMembersOf(members), options.runs ?? [])]
+  const items = [
+    ...inventory,
+    ...catalog,
+    ...curated,
+    ...teamPolicyItems(policyMembersOf(members), options.runs ?? []),
+    ...(options.rules ?? []).map((record) => userRuleItem(record, actionForToolId(record.tool))),
+  ]
   const links = members.flatMap((member): LinkRecord[] =>
     member.preset === undefined
       ? []
@@ -150,6 +158,7 @@ export function presetInput(
       ...(member.team === undefined ? {} : { team: { level: "project", team: member.team } }),
     })),
     records: options.records ?? [],
+    rules: options.rules ?? [],
     splits: [],
     scopes: chainContext({
       agents: members.map((member) => ({ id: member.id, scope: "project", origin: "user", ...(member.team === undefined ? {} : { team: member.team }) })),

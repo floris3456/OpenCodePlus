@@ -22,7 +22,8 @@ const options = { namespace, codemode: true, permission: "monitor" } as const
 export const QueryDescription =
   "For a combined session or tree report, pass sessionIDs:[...]; it overrides sessionID, and an empty list selects nothing. " +
   "Request arrays are bounded (default 100, maximum 500), chronological within each page. requestPage:{limit,cursor,direction:'older'|'newer'} uses requestPage.older/newer cursors; omitted cursor returns latest. Other collections use pages:{section:{limit,cursor}} and report.pages[section].next/previous (facets use report.facets.pages). Sessions/context/agents/teams/unstable default to 100 rows; detail.* defaults to 50. Changed content visibly resets stale revision cursors. Counts/coverage stay full-population. Text search is page-local. Presentation text is previewed at 512 characters with truncation metadata; fullText:true requests unabridged selected-page text. Request tool-name previews have toolsTotal/toolsComplete; all attributed calls remain reachable through detail.calls pages. " +
-  "One call returns the calling session's cache misses with cause, confidence and one-line evidence, plus token/cost totals and tool groups. query({view:'cache', id}) returns full evidence: named segment diff, timings, ping history, account switches, expected versus actual tokens, session/message ids and attributed calls. Verdicts: hit, partial miss, miss, cold start, no cache reported, failed request.\n" +
+  "One call (view cache, the default) returns the calling session's requests with their cache verdicts (cause, confidence and one-line evidence for misses) plus token/cost totals and pings, from saved results. view tools adds tool groups; view sessions lists sessions; view overview adds agents, context, top misses, unread cache writes and unstable prefixes (analysisPending counts saved analysis not computed yet); view steps lists requests with their tools. " +
+  "query({view:'cache', id}) returns full evidence: named segment diff, timings, ping history, account switches, expected versus actual tokens, session/message ids and attributed calls. Verdicts: hit, partial miss, miss, cold start, no cache reported, failed request.\n" +
   "Tokens per call are attributed: call = share of the step's output spent writing the call, result = tokens the result added to the next prompt (measured from the next step; estimated when it cannot be), carried = result × later steps until compaction.\n" +
   "scope: session (only this chat; default), tree (topmost delegation root and all descendants), team (requires team name), project or all. since:'compaction' starts at each session's latest compaction. view: overview, cache, tools, sessions or steps; existing groupings stay available. window: 15m, 1h, 24h, 7d … or since/until epoch ms. compare: {window} reads the previous period, or use explicit {since, until}. monitor.mark records a named comparison timestamp."
 
@@ -92,7 +93,8 @@ export async function registerMonitorTools(ctx: Context): Promise<Registration> 
                 : { sessionID: input.sessionID ?? String(context.sessionID) }
               : {}),
             ...(input.team === undefined ? {} : { team: input.team }),
-            ...(input.view === undefined ? {} : { view: input.view }),
+            // cache reads saved per-request results; overview and steps fold whole histories.
+            view: input.view ?? "cache",
             ...(input.id === undefined ? {} : { id: input.id }),
             ...(input.missesOnly === undefined ? {} : { missesOnly: input.missesOnly }),
             ...(input.requestPage === undefined ? {} : { requestPage: input.requestPage }),

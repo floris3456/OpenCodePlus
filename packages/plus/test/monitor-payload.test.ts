@@ -4,7 +4,7 @@ import { queryMonitor } from "../src/monitor/query.js"
 import { requestReport, sessionFold } from "../src/monitor/report.js"
 import { reportPage } from "../src/monitor/report-page.js"
 import type { MonitorQueryInput, MonitorPageSection } from "../src/rpc.js"
-import { cleanupLedgers, ledger } from "./monitor-fixture.js"
+import { cleanupLedgers, ledger, saveAll } from "./monitor-fixture.js"
 
 afterEach(cleanupLedgers)
 
@@ -73,6 +73,8 @@ async function populated() {
     })
     db.contextFact({ sessionID: "s0000", at: 2000 + i, kind: "revert" })
   }
+  // 250 results: more than one query saves; the background backfill saves them all.
+  saveAll(db)
   return db
 }
 

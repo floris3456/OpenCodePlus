@@ -70,8 +70,16 @@ export function tabOfItem(item: string): string {
 export function tabOfGroupId(id: string): string | undefined {
   if (id.endsWith(":system:instructions")) return "system"
   const match = /:(settings|models|compaction|tools|base|system|mcp)$/.exec(id)
-  return match?.[1]
+  if (match?.[1] === undefined) return undefined
+  // A tab group is `group:<level>:<owner>:<tab>`; an origin subgroup inside a
+  // tab ends in a tab key too (Tools › MCP is `…:tools:mcp`), so a tab key
+  // right before this one means a subgroup, not a tab.
+  return subgroupPrefix.test(id.slice(0, id.length - match[1].length - 1)) ? undefined : match[1]
 }
+
+// A tab key as the last segment of a group id prefix, i.e. before the tab key
+// that `tabOfGroupId` is looking at.
+const subgroupPrefix = new RegExp(`:(?:${tabKeys.join("|")})$`)
 
 export function folderSlug(name: string): string {
   const slug = name

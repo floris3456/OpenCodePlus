@@ -622,6 +622,35 @@ test("an unlinked agent's own user rule falls back to upstream; another agent's 
   expect(row?.badges?.review ?? false).toBe(false)
 })
 
+// T1: the same listability, but the rule opens a closed shell end to end: an
+// unlinked agent's own `allow.` shell rule is an allow row of Commands, so
+// core lets its patterns through while Every other command stays off.
+test("an unlinked agent's own allow. shell rule opens what it names through a closed shell", async () => {
+  const { project } = await setup()
+  const agents = [agentInfo("build", "Build the thing."), agentInfo("alice", "")]
+  const ctx = fullContext({
+    directory: project,
+    agents,
+    tools: [{ id: "shell", description: "Run shell commands." }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const handlers = createHandlers(ctx, createState(), { builtins: [] })
+  await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alice" }, throwingContext()))
+  await Effect.runPromise(
+    handlers["rule.add"]({ level: "project", agent: "alice", tool: "shell", id: "allow.mine", label: "Mine", patterns: ["mine *"] }, throwingContext()),
+  )
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext()))
+  const row = expandedTree(memoInputOf(snapshot)).find((node) => node.id === "item:project:alice:perm:shell:allow.mine")
+  expect(row?.badges).toMatchObject({ state: "on" })
+
+  const { evaluate } = await import("../../core/src/permission.js")
+  const listed = await Effect.runPromise(ctx.agent.list())
+  const permissions = listed.data.find((agent) => String(agent.id) === "alice")?.permissions ?? []
+  // An unlinked agent's rows fall back to off, so this is a closed shell.
+  expect(evaluate("shell", "other x", permissions)).toMatchObject({ effect: "deny" })
+  expect(evaluate("shell", "mine x", permissions).effect).not.toBe("deny")
+})
+
 test("a tool actor may not relink a protected agent; presets and entries are not agents", async () => {
   const { project, handlers } = await setup({ protectedAgents: ["alice", "mine"] })
   await Effect.runPromise(handlers["agent.create"]({ scope: "project", id: "alice" }, throwingContext()))

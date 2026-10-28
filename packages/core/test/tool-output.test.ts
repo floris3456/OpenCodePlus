@@ -100,6 +100,55 @@ describe("ToolOutput", () => {
     ),
   )
 
+  it.live("returns small text unchanged without saving it", () =>
+    withStore(
+      (output, fs, root) =>
+        Effect.gen(function* () {
+          expect(yield* output.truncateText("one\ntwo")).toBe("one\ntwo")
+          expect(yield* fs.exists(path.join(root, ToolOutput.DIRECTORY))).toBe(false)
+        }),
+      { maxLines: 2, maxBytes: 1_000 },
+    ),
+  )
+
+  it.live("cuts long text and saves all of it", () =>
+    withStore(
+      (output, fs) =>
+        Effect.gen(function* () {
+          const text = yield* output.truncateText("one\ntwo\nthree")
+          expect(text).toMatch(/^one\ntwo\n\[showing lines 1-2 of 3; full output saved to (.+)\]$/)
+          const saved = /full output saved to (.+)\]$/.exec(text)?.[1]
+          expect(typeof saved).toBe("string")
+          if (saved === undefined) return
+          expect(yield* fs.readFileString(saved)).toBe("one\ntwo\nthree")
+        }),
+      { maxLines: 2, maxBytes: 1_000 },
+    ),
+  )
+
+  it.live("cuts a self-bounded result above the ceiling", () =>
+    withStore(
+      (output, fs) =>
+        Effect.gen(function* () {
+          const text = "x".repeat(ToolOutput.SELF_BOUNDED_MAX_BYTES + 1)
+          const result = yield* output.truncate({
+            content: [{ type: "text", text }],
+            metadata: { truncated: false },
+          })
+          expect(result.metadata?.truncated).toBe(true)
+          const outputPath = result.metadata?.outputPath
+          expect(typeof outputPath).toBe("string")
+          if (typeof outputPath !== "string") return
+          expect(yield* fs.readFileString(outputPath)).toBe(text)
+          expect(result.content).toEqual([
+            { type: "text", text: "x".repeat(1_000) },
+            { type: "text", text: `[showing the first 1000 bytes of line 1 of 1; full output saved to ${outputPath}]` },
+          ])
+        }),
+      { maxLines: 100, maxBytes: 1_000 },
+    ),
+  )
+
   it.live("marks results that fit without changing their content", () =>
     withStore((output) =>
       Effect.gen(function* () {

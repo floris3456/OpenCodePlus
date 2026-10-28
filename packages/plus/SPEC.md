@@ -1699,7 +1699,7 @@ In a chat, `/team` opens the upstream `session.panel` contribution named `plus.t
 - Arrow navigation scrolls to keep the selected row visible, including wrapping and layout changes. Selection is retained per session while the panel is closed; its active/inactive and tree/all filters also survive closure.
 - The footer names navigation and filters, `f` for the host's full-screen toggle, `M` for Monitor, and `Esc` to close. Keyboard actions are scoped to panel focus. Existing `composer.team.*` command IDs remain for keybinding compatibility.
 - The list automatically refreshes on `teams.changed`, host session lifecycle events, and on a 2 s periodic interval while the panel is focused.
-- Monitor uses `plus.monitor` in the same upstream slot. `/monitor` and `/tools` open it in a session; `M` toggles full screen in place without remounting its contents. Home retains the standalone Monitor route. Plus's custom `ui.composer.tab` registration API is retired.
+- Monitor uses `plus.monitor` in the same upstream slot. `/monitor` and `/tools` open it in a session; `M` toggles full screen in place without remounting its contents. `Esc` closes it from the session pane too, before the prompt's interrupt of a running reply; dialogs, autocomplete, the composer and forms keep their own Esc, and the prompt's shell mode exits first. A chat opened from a Sessions row or a Team run opens with the Monitor panel, keeping its drill-downs and that tab's row (Sessions: open trees, inactive filter and page; Team: the run list's filters and scroll). Home retains the standalone Monitor route. Plus's custom `ui.composer.tab` registration API is retired.
 
 ## Team tools (`teams/schema.ts`, `teams/tools.ts`)
 
@@ -1710,8 +1710,11 @@ and `stop` (native, `codemode: false`), and
 one has a real handler in `teams/api.ts`; no registered team tool returns
 `E_NOT_IMPLEMENTED`.
 
-Delegate returns `{ run, requestID, task, state, branch, base, model?, next }`,
+Delegate returns `{ run, requestID, task, state, branch, base, model?, warning?, next }`,
 with the resolved model as `provider/model[@variant]` when known and
+`warning` the member's shell line (`shellLine`) when it cannot run commands
+(no shell, or `Every other command` off with no allow row on): the Brief is
+still admitted, and the line lets the delegator redirect the work.
 `next: "Delegate any other runs in this same step, then end your turn: each settlement wakes you with its report."`.
 Followup returns `{ attempt, state, next }`, with
 `next: "End your turn: its settlement wakes you."` for admitted, queued and
@@ -1731,6 +1734,25 @@ own failure at the rebased tip refuses the landing. Other red checks run at
 the parent's HEAD too: only a new failure refuses; pre-existing failures
 appear in `stillRed` with a note on the landed result. Passing parent checks,
 including aliases of a deduplicated command, keep receipts at the landed HEAD.
+
+A project check may declare `"scope": "change"` in `.opencodeplus/checks.json`
+(`teams/project-checks.ts`): it judges the change the run it is assigned to
+made — a size, budget or anti-mess gate — where the default (absent or
+`"tree"`) judges the code. A run stores only its resolved commands, so scope
+is decided at landing time by `isChangeScoped(check, project)`, which matches
+the project's current file by cwd and argv (a `{path}` element matches any
+value); runs delegated before the field existed are therefore covered too.
+`process()` skips a change-scoped check for every source but the landing
+child — the parent's and earlier landed children's gates judged a different
+change, and a gate can pass there while failing here for no reason of this
+landing. The landing child's own change-scoped checks still run on the
+rebased commits, where the gate measures the child's own change. Skipped
+checks are recorded as `skippedChecks` (`{id, runID}`) on the merge entry
+only when non-empty, and named in the landed or red answer's `note`; a
+skipped parent check simply keeps no receipt (the parent's own finish runs
+it), so `copyReceipts` is unchanged. Behaviour checks of earlier children
+still run and still compare against the parent's HEAD.
+
 Receipts record `measuredTree` from tracked and untracked, non-ignored files without
 changing the real index; finish on a clean worktree and landing reuse passing
 same-definition, same-tree proof, labelled `reused` with its original `at` time.
@@ -1745,6 +1767,12 @@ Scheduled provider retries notify a team run's parent only for waits of at
 least 10 minutes, once per error type per attempt. Plain subagents follow the
 same threshold, once per error type per busy period. Short waits never notify
 merely because the retry count reached three; team retry status still updates.
+The attempt also records the retries (`retries`: `firstAt`, `count`, and the
+last `error`), and its settlement names them: `The host retried it <count>
+times over <duration> (from <HH:MM> UTC) before the step failed.` after the
+`Error:` line of a failed attempt, or `Provider errors: the host retried
+<count> times over <duration> (last: <type> (<status>)); the run then
+continued.` before `next:` when the run recovered.
 
 On a landing conflict, `next` sends the same child `team_followup` with
 `rebase: true`. A clean, idle child first attempts an ordinary rebase. If it
@@ -1866,7 +1894,7 @@ refused, a requirement demands nothing, a bound is absent.
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
 | read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `databases`, and the curated `perm:read:env` | core rules |
 | subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
-| external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots | core rule / tool hook |
+| external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots; the on allow rows of read's Where (Temporary directories) stay open for it (`apply.ts` `externalAllowList`, the shell allow-list's shape) | core rule / tool hook |
 | planner edits plan files only | edit → Files it may change: `allowed.*` "Every other file" (fallback) and `allowed.plans` (allow-list) for edit, write and patch | tool hook |
 | planner asks before delegating | `perm:team_delegate:approval.every` | tool hook |
 | orchestrator shell changes | shell curated rows `git-push`, `git-commit`, `git-rewrite`, `rm` and catalog Commands `git-changes`, `git-refs`, `file-writes` | core rules |
@@ -1936,13 +1964,19 @@ One home per kind of guidance, so no line repeats or contradicts another:
 - **What a row decides** (`permission-enforce.ts` `narrowTools`, per request):
   `team_delegate`'s description adds, after the members you may delegate to,
   each target's binding "Briefs it accepts" rows in the words of their
-  refusals (a requirement while on, Corrections by followup while off);
-  `team_finish`'s adds the caller's Requirements for done that are on. No body,
-  Brief or schema text restates them, so a changed row needs no text edit.
+  refusals (a requirement while on, Corrections by followup while off), its
+  Description, whether it can commit (`noCommit`), and whether it can run
+  commands (`shellLine`): no shell at all, or a shell whose `Every other
+  command` row is off, saying which allow rows it still runs (none, or their
+  titles). `team_finish`'s adds the caller's Requirements for done that are
+  on. No body, Brief or schema text restates them, so a changed row needs no
+  text edit. A Brief that reaches a member without commands is not refused —
+  Plus cannot know whether it needs them — so `team_delegate`'s success output
+  carries the same shell line as `warning` when there is one.
 - **Tools and rules** (`instructions/guidance.ts`, row
   `system:tools-and-rules`): instructions that belong to a tool, skill or
   rule, one gated section each, reaching an agent only while that row is on
-  (or, for `!`, off) for it.
+  (or, for `!`, off) for it. Shipped empty; a level adds its own sections.
 - **Tool descriptions** (`teams/tools.ts`): what the tool does and when to call
   it; each first line stands alone, since a Code Mode catalog shows only it.
   `toolGuidance` (namespace and `get_context`) only says which tools are direct
@@ -2036,7 +2070,32 @@ Tool permission rules carry the same field:
   A rule row's denies carry it, and the tool hook refuses with `Permission
   denied: <message>`; a row without one gets a generated text (`<label> is not
   allowed here`, `<field> "<value>" (<label>) is not allowed here`, `<label>
-  is <n>; this call has <m>`).
+  is <n>; this call has <m>`). A rule row the table can place and that carries
+  no message now refuses with `<title> is not allowed here` plus the row note
+  below; before, its deny went out without a message and core answered with
+  its generic text.
+- Every refusal a permission row causes ends with the row that caused it and
+  where that row's state comes from:
+  `<message> (denied by <row id> "<row title>": <state words>)`, where the id
+  is the one `instructions.set` takes for that agent's row
+  (`item:<level>:<agent>:<item>`, or `item:<level>:<team>/:<member>:<item>` for
+  a team member) and the state reads `off by default (nothing sets it)`, or
+  `on`/`off` with `set at <level> level`, `as OpenCode ships it`, `as shipped`
+  or the `fromLabel` words (`from preset basic › orchestrator`). `apply.ts`
+  `rowSource` builds it; `permission-enforce.ts` `deniedBy` appends it, and
+  `permDenials`/`shellAllowList` put it on the core rule's own message. A row
+  the table cannot place (one built by hand) keeps the plain refusal.
+- A deny rule read from a config document (core `config/plugin/agent.ts`
+  `nameDenials`: the document's `permissions`, and an agent entry's
+  `permissions`, which is where Markdown frontmatter `permissions:` and the
+  migrated legacy `permission:`/`tools:` end up) gets a message when it is
+  loaded: `<its message, else Permission denied: <action>> (denied by
+  <agent <id>'s |the >rule <action> "<resource as written>": deny in
+  <document path, else the configuration>; that file allows <action> for
+  <r1>, <r2>, …)` (`that configuration` without a path). The allows are the later `allow` rules of the same list with
+  the same action (at most 8, then `, …`); the clause is left out when there
+  are none. Allow and ask rules stay without a message. Built-in agent rules
+  (core `plugin/agent.ts`, `plugin/plan.ts`) keep the generic refusal.
 - `apply.ts` prefers the user record's message for a custom row and falls back
   to the curated message, then the catalog row's own, for a shipped row
   (`curatedRuleMessage(tool, rule) ?? item.message`); a subagent row has none
@@ -2236,9 +2295,13 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    status) and the settlement shows it as `Error: <type> (<status>):
    <message>`, with a `next:` line that tells an unavailable model (quota,
    rate limit, provider down) — hand the same Brief to another member — from
-   a broken run. An idle parent is prompted with it immediately; a working
-   parent receives it through its own idle handoff. An attempt kept open is
-   not settled, so nothing is told;
+   a broken run. An attempt the host retried carries `retries` (`firstAt`,
+   `count`, last `error`) and its settlement adds `The host retried it <count>
+   times over <duration> (from <HH:MM> UTC) before the step failed.`; one that
+   recovered adds `Provider errors: the host retried … (last: <type>
+   (<status>))` before its `next:`. An idle parent is prompted with it
+   immediately; a working parent receives it through its own idle handoff. An
+   attempt kept open is not settled, so nothing is told;
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run
    `idle → working`: a new attempt (trigger `followup`) when the last attempt
    has ended, the same attempt when it is still open. Items already recorded
@@ -2566,7 +2629,12 @@ export interface DeleteInput extends Rows { readonly confirm: true }
   requested level. A create whose row
   cannot be found fails with `create.failed` and does not invent an id; file-
   derived rows (skills, MCP servers) are given a short window for the host's
-  watcher to publish them before that failure. `create` takes an optional
+  watcher to publish them before that failure. A project skill's window is a
+  forced config reload, so the host rescans `<project>/.opencode/skill` and the
+  row is there when the call returns. A skill `body` may itself begin with a
+  frontmatter block: it is merged into the one block the file needs (its keys
+  kept, a missing `name` or `description` added, and a `name` that differs from
+  the skill's refused as `skill.invalid` before anything is written). `create` takes an optional
   `catalogue` (`agents|teams`, default `agents`) that picks which catalogue a
   shared (`agent: null`) `model` or `rule` lands in; `base`, `instruction` and
   `mcp` create one file both catalogues list, so `catalogue` does not change
@@ -2765,19 +2833,29 @@ Row semantics, the same in every category:
   ships on (nothing refused) unless what it guards is never wanted.
 - An allow-list row (`allow: true`: Temporary directories, `/tmp/*` and
   `*/run/plus/tmp/*`, in read's and edit's Where; `pilotty (driving terminal
-  apps)` in shell's Commands, shipped off) lets its patterns through while it
-  is on, and only matters once the fallback is off. A closed fallback's
-  refusal ends in `; still allowed: <titles of the allow rows that are on>`.
+  apps)` in shell's Commands, shipped off; and every user shell rule whose id
+  starts with `allow.`, `perm:shell:allow.<name>`, `discover.ts`
+  `userRuleItem`) lets its patterns through while it is on, and only matters
+  once the fallback is off. Off, it opens nothing and refuses nothing (and
+  scrubs no prompt lines). A closed fallback's refusal ends in
+  `; still allowed: <titles of the allow rows that are on>`.
 - Shell's Commands is the one allow-list core enforces as well
   (`apply.ts` `shellAllowList`): while Every other command is off, the agent
-  gets a deny `*` and an allow per pattern of each allow row that is on. The
-  call as written is checked by Plus, and core checks every command it parses
-  out of it (each part of a pipeline, a list or a substitution), so
-  `pilotty … && git push` is refused. The pilotty row covers its terminal
-  commands (spawn, snapshot, output, key, type, click, scroll, resize,
-  wait-for, kill, list-sessions) but not `stop` or `daemon`, which end every
-  chat's terminals. pilotty runs whatever program it is told to spawn: the row
-  limits the shell to driving terminals, it is not a sandbox.
+  gets a deny `*` and an allow per pattern of each allow row that is on — a
+  user's `allow.` shell rule included. The call as written is checked by Plus,
+  and core checks every command it parses out of it (each part of a pipeline, a
+  list or a substitution), so `pilotty … && git push` is refused. The pilotty
+  row covers its terminal commands (spawn, snapshot, output, key, type, click,
+  scroll, resize, wait-for, kill, list-sessions) but not `stop` or `daemon`,
+  which end every chat's terminals. pilotty runs whatever program it is told to
+  spawn: the row limits the shell to driving terminals, it is not a sandbox.
+- Read's Where is enforced by core the same way for `external_directory`
+  (`apply.ts` `externalAllowList`): while its rule row "Outside this checkout,
+  for every tool (external_directory)" is off, the agent gets a deny per
+  pattern of that row and an allow per pattern of each on allow row of read's
+  Where (Temporary directories), so `/tmp` and `run/plus/tmp` stay open for
+  every tool that asks it. The refusal ends in `; still allowed: …` like the
+  shell's.
 - A limit or bound row carries its number as its text; on applies it, off
   removes the cap.
 

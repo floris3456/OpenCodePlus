@@ -118,9 +118,9 @@ Every tool row in `/instructions` — OpenCode, OpenCodePlus, MCP and Code Mode 
 
 The kinds of row:
 
-- **On/off rows.** On means permitted. Off refuses what the row names, and the model reads the row's message instead of a bare denial (`Permission denied: reading PDFs is not allowed here`). Nearly every row ships on; the ones that ship off are the tool limits, the approvals, `question` → When → In delegated team runs, `subagent` → Team members (without a team run), `team_finish` → A commit deliverable has at least one commit, and `team_followup` → Followups per child.
+- **On/off rows.** On means permitted. Off refuses what the row names, and the model reads the row's message instead of a bare denial (`Permission denied: reading PDFs is not allowed here`). Nearly every row ships on; the ones that ship off are the tool limits, the approvals, `question` → When → In delegated team runs, `subagent` → Team members (without a team run), `team_finish` → A commit deliverable has at least one commit, and `team_followup` → Followups per child. A row nothing sets is off for an agent without a preset, so that member's deny-list rows refuse and its shell runs nothing until "Every other command" is on; the refusal note under **Reporting** names the row that refused.
 - **Everything else.** The first row of some categories stands for everything the other rows do not name: `Every other command` (shell), `Every other file` (read, grep), `Every other site`, and `Outside this checkout` under read's and edit's `Where`. On leaves the agent's normal answer; off refuses everything an allow row does not let through (`Outside this checkout` only concerns paths outside the checkout). These rows are checked on each call, so switching one off can never be undone by another row or a team role. `Every other command` off is also enforced on every command the shell parses out of a call, so with only the `pilotty (driving terminal apps)` allow row on, a member may drive terminals and nothing else: `pilotty … && git push` is refused. pilotty runs whatever it is told to spawn, so this narrows the shell to driving terminals; it is not a sandbox.
-- **Allow rows.** `Temporary directories` (`/tmp`, `run/plus/tmp`) under read's and edit's `Where` matters only once `Outside this checkout` is off: while on, it keeps those directories open for that check. It opens nothing any other row or a team role keeps closed.
+- **Allow rows.** `Temporary directories` (`/tmp`, `run/plus/tmp`) under read's and edit's `Where` matters only once `Outside this checkout` is off: while on, it keeps those directories open for that check. Read's row also keeps them open while `Outside this checkout, for every tool (external_directory)` is off, the permission core asks before any tool (read, edit, the shell) touches a path outside the checkout; that refusal ends in `; still allowed: Temporary directories`. Edit's `Where` and glob's and grep's `Search roots` stay rows of their own. It opens nothing any other row or a team role keeps closed. A user rule for the shell whose id starts with `allow.` (`perm:shell:allow.<name>`) is an allow row of Commands too: while `Every other command` is off it lets its own patterns through, and the rows that are off still refuse inside it.
 - **Switches.** A row with no patterns — a parameter (`Background (background: true)`), a value (a `Formats` or `Effort` row), an approval, a team setting — flips with space; enter only tells you it is a switch. An off parameter or value also leaves the schema the model is offered (direct tools; a Code Mode tool refuses it when called). An off value is refused even when the call leaves the field to the tool's default (webfetch's `Markdown`, `Medium` effort, `queue` delivery, …).
 - **Limits.** A number, such as `Lines per read` 2000, `Longest timeout (ms)` 600000 or `Tool calls per run` 50. Enter asks for the number; space switches the cap on and off and keeps the number while it is off. Tool limits ship off (no cap). While on, a larger value is lowered to the cap or the call is refused, as the row's `enforced by` line says; a call that leaves a capped field to the tool's own (higher) default is capped too. The team bounds on `team_delegate` ship on (below).
 - **Approvals.** `Ask me before each call` (under `Approval`, off) makes the TUI ask you before every call of that tool, and the call waits until you answer it — even when you answer another question "always" meanwhile. Answering "always" stops asking for that agent and that tool (not for other tools) until the server restarts. A delegated team run has nobody to ask, so there the call is refused instead. Browser tools and OpenCode's session tools (`session_move`, `session_rename`) have no `Approval`: no permission check reaches them.
@@ -165,7 +165,7 @@ While a team is the active agent group (picked in `ctrl+x a`), the Monitor (`ctr
 - Default view shows active runs in the current team tree.
 - `ctrl+t` toggles between the current chat's team tree and all runs in the namespace.
 - `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`).
-- `Enter` closes the Monitor and opens that run's session (`sessionID`).
+- `Enter` opens that run's session (`sessionID`). The Monitor stays open in it, on the same tab, scope, row and scroll position.
 - `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. `ctrl+a`, `Enter` and `ctrl+d` work in both views.
 - A chat in no team tree shows `No team runs from this chat · ctrl+t shows all`.
 - Arrow keys keep the selected run visible, including beyond the last visible row and when wrapping back to the top. `Esc`, the tab keys and `M` (fullscreen in a chat) stay the Monitor's.
@@ -184,7 +184,7 @@ Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` 
 | `edit` | `{ id, oldString, newString, replaceAll? }` → `{ id, status, replacements }`: replaces part of the row's current text like the file edit tool (`oldString` must match once unless `replaceAll`), then saves like `set({ id, text })` under `set`'s permission rows |
 | `reset` | `{ id }` (deletes the override at that row; on a model row clears only that level's active flag; on a model field row clears that field at that level — resetting Model restores the candidate this row replaced with compatible local effort and keep-alive fields preserved, resetting Effort restores the original inherited effort variant, and repeated reset of an un-overridden field refuses without writes) |
 | `split` | `{ id, boundaries?, add? }` (`boundaries` is `[{ id, name, start }]` with character offsets; `add: { name, text }` appends a trailing section; perm and model rows cannot be split) |
-| `create` | `{ kind, ...fields }`, one row per call, returns `{ id, item, ...fields }` where `id` is the row id `read`/`set`/`edit`/`delete` accept and `item` is the created thing's own id (`skill:…`, `model:…`, `perm:…`, or the agent/team/member id). Agent needs `id` + `prompt` (optional `scope`, `template`, `fields`); skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction is refused pending the Context catalogue (`instruction.disabled`); mcp needs `name` + `config`; team needs `team` + `level` (optional `template` seeds members from a Defaults team); member needs `team` + `level` + `id` + `prompt` (optional `template`, `fields` — the agent fields `kind:"agent"` takes; the team name is trimmed like `team.addAgent`; `level: "defaults"` writes the Defaults overlay the TUI writes); model needs `providerID` + `modelID` (optional `variant`, `level`/`agent`; `level` defaults to `project` and project/global need an `agent`, while `level: "defaults"` with no agent is the shared Defaults row); rule needs `tool` + `id` + `label` + `patterns` (optional `keywords`, `message` — the refusal text the model reads — `level`/`agent`; `level` defaults to `project` and a rule with no `agent` is stored at that requested level but resolves through its canonical shared Defaults row). Optional `catalogue` (`agents|teams`, default `agents`) picks which catalogue a shared `model`/`rule` lands in; `base`/`mcp`/`skill` write one file both catalogues list. A project/global create returns that level's own row, never the identical Defaults row. A create whose written row cannot be found in the tree fails with `create.failed` instead of inventing an id |
+| `create` | `{ kind, ...fields }`, one row per call, returns `{ id, item, ...fields }` where `id` is the row id `read`/`set`/`edit`/`delete` accept and `item` is the created thing's own id (`skill:…`, `model:…`, `perm:…`, or the agent/team/member id). Agent needs `id` + `prompt` (optional `scope`, `template`, `fields`); skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction is refused pending the Context catalogue (`instruction.disabled`); mcp needs `name` + `config`; team needs `team` + `level` (optional `template` seeds members from a Defaults team); member needs `team` + `level` + `id` + `prompt` (optional `template`, `fields` — the agent fields `kind:"agent"` takes; the team name is trimmed like `team.addAgent`; `level: "defaults"` writes the Defaults overlay the TUI writes); model needs `providerID` + `modelID` (optional `variant`, `level`/`agent`; `level` defaults to `project` and project/global need an `agent`, while `level: "defaults"` with no agent is the shared Defaults row); rule needs `tool` + `id` + `label` + `patterns` (optional `keywords`, `message` — the refusal text the model reads — `level`/`agent`; `level` defaults to `project` and a rule with no `agent` is stored at that requested level but resolves through its canonical shared Defaults row). Optional `catalogue` (`agents|teams`, default `agents`) picks which catalogue a shared `model`/`rule` lands in; `base`/`mcp`/`skill` write one file both catalogues list. A project/global create returns that level's own row, never the identical Defaults row. A create whose written row cannot be found in the tree fails with `create.failed` instead of inventing an id. A skill body may begin with its own frontmatter (merged into the one block, its `name` must equal the skill's), and a project skill's row is in the tree as soon as the create returns |
 | `delete` | `{ id, confirm: true }` (refused without `confirm: true`; on a model row deletes the candidate at that level — a local record is removed, an inherited or upstream row is hidden with a tombstone, and the effective model refuses with `activate another model first`; only user-created rules can be deleted) |
 | `log` | `{ where?, limit?, offset? }` → `{ entries, total }`, both log files merged newest-first |
 
@@ -293,10 +293,10 @@ section is shown.
 
 Instructions that belong to a tool, skill or rule rather than a role live in
 the System row **Tools and rules** (`system:tools-and-rules`,
-`instructions/guidance.ts`), one section per row: code search, documentation
-search, pilotty, questions, subagents, and two restrictions (no shell
-commits, no push). Turning such a row on for an agent adds its section;
-off removes it; the row is planned for an agent only when a section applies.
+`instructions/guidance.ts`), one section per row. Plus ships it empty: a
+level adds the sections it wants. Turning such a row on for an agent adds
+its section; off removes it; the row is planned for an agent only when a
+section applies, so an empty row sends nothing.
 A tool or skill row's inspector (and `read`) lists its sections. The Basic
 role texts carry markers on sections that depend on one tool (Delegating on
 `team_delegate`, Reporting on `team_finish`, the implementer's Checks and
@@ -315,8 +315,14 @@ protected state no run may checkpoint):
   "setup": { "argv": ["uv", "sync", "--frozen"] },
   "checks": {
     "unit": { "argv": ["uv", "run", "pytest"], "description": "all tests" },
-    "test-file": { "argv": ["uv", "run", "pytest", "{path}"], "description": "one file" } } }
+    "test-file": { "argv": ["uv", "run", "pytest", "{path}"], "description": "one file" },
+    "gate-small": { "argv": ["python3", "tools/teamgate/gate.py", "--budget", "small"], "scope": "change" } } }
 ```
+
+`scope` says what a check judges. `"change"` is a size, budget or anti-mess
+gate: it judges the change the run it is assigned to made, so a landing never
+runs it for another run (see [Integration checks](#integration-checks)). Absent
+or `"tree"` (the default) is a check of the code — tests, lint, repo checks.
 
 A delegator gives a check by name (`{id:"unit"}`), with `path` when the
 check takes `{path}` (`{id:"auth", use:"test-file", path:"tests/test_auth.py"}`;
@@ -326,7 +332,11 @@ keep working for Bun projects. Anything else is refused with `E_CHECKS`
 naming the project's checks. Every request a team member makes lists the
 project's checks on the `checks` field of `team_delegate` and the `id` field
 of `team_check` (and `team_get_context` reports them as `projectChecks`), so
-the first call names a real check. `setup` prepares each fresh worktree once,
+the first call names a real check. A chat keeps the list it was first sent
+until its prompt is rebuilt: the tools head the cached prompt, so editing
+`checks.json` mid-chat must not rewrite them (that missed the whole cache). A
+check added meanwhile still works at once; the delegate and check tools read
+the file themselves. `setup` prepares each fresh worktree once,
 before its first check, in place of the built-in Bun install.
 
 The Monitor's Team tab lists them; `e` there suggests entries from what the
@@ -359,8 +369,10 @@ home, so nothing is said twice or contradicts itself:
 - *Tool descriptions*: what a tool does and when to call it; the first line
   stands alone, because a Code Mode catalog shows only that line. What a row
   decides is added per request from the rows themselves: `team_delegate`
-  lists the members you may delegate to and what each one's "Briefs it
-  accepts" rows require (in the words of their refusals), `team_finish` the
+  lists the members you may delegate to, what each one's "Briefs it accepts"
+  rows require (in the words of their refusals), whether it can commit, and
+  whether it can run commands at all (a member with no shell, or a shell that
+  `Every other command` off keeps to its allow rows), `team_finish` the
   caller's Requirements for done. Change a row and the description follows;
   no text has to.
 - *Input schema field descriptions* (`teams/schema.ts`): how each value must
@@ -400,12 +412,23 @@ Status uses these totals for advisory budgets; no hard interrupt is
 implied. Replaying an identical `requestID` returns the stored admission result
 unchanged without submitting the work again.
 
-`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, next }`;
-`model` is the resolved `provider/model[@variant]` when known. Its `next` says
+`team_delegate` returns `{ run, requestID, task, state, branch, base, model?, warning?, next }`;
+`model` is the resolved `provider/model[@variant]` when known. `warning`, when
+present, is the member's shell line from its description (no shell, or a shell
+that runs no command of its own): it says so up front rather than refusing,
+because Plus cannot know whether this Brief needs commands. Its `next` says
 to delegate other runs in the same step, then end the turn: each settlement
 wakes the caller with its report. `team_followup` returns `{ attempt, state, next }`,
 with `next: "End your turn: its settlement wakes you."`. Session, worktree,
 Brief, budget and model provenance remain in the saved run data.
+
+`team_status` or `team_list` while children still work and no settlement
+waits is a wait: it ends the turn, unbounded or naming only working runs with
+a short answer. It is a plain look instead in the first step after a
+compaction and in a step that answers a person's message rather than a
+settlement (Plus marks settlement prompts with `metadata["plus.team"]:
+"inbox"`). A wait ends the turn only when every call of its step asks to
+(`endTurn: "alone"`), so the model still reads its other calls' results.
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
@@ -439,6 +462,21 @@ pattern rather than for one call, so the quoted subject is the rule's own
 resource. An `ask` rule's message arrives as `metadata.message` on the
 permission request, which is what the TUI shows when it asks.
 
+Every refusal a row causes also ends with that row and where its state comes
+from, in the id `instructions.set` takes: `Permission denied: shell commands are
+not allowed here (denied by item:project:theorysnap/:runner:perm:shell:commands.*
+"Every other command": off by default (nothing sets it))`. A member with no
+preset has every shared row off that way, so the reader sees which row closed
+the shell instead of guessing from the state alone.
+
+A deny rule written in a config file — `permissions:` in an agent's Markdown
+frontmatter, or in `opencode.json` — names itself and its file the same way,
+with the allows that follow it for the same action: `Permission denied: edit
+(denied by agent pipeline-engineer's rule edit "*": deny in
+/root/.config/opencodeplus/agents/pipeline-engineer.md; that file allows edit
+for tools/*, packages/*, /tmp/opencodeplus/*)`. The last matching rule wins,
+so a later allow reopens what the deny closed; change such a rule in its file.
+
 Team tools appear only under the Teams catalogue. An agent that is not a
 member of an enabled team gets a `team.*` wildcard deny, so it sees no
 `team_*` tool and no `tools.team.*` catalog entry in any chat — the answer to
@@ -454,8 +492,18 @@ own Brief checks (a user chat has none). Identical commands with the same
 working directory run once. Landed children come from the merge queue;
 there is no check list for the lead to maintain.
 
-The landing child's checks must pass on the rebased tip. Other failing checks
-run again at the parent's HEAD: new failures block; failures there too are
+A check a project declares with `"scope": "change"` (see **Project checks**)
+judges the change the run it is assigned to made — a size, budget or anti-mess
+gate — not the code. A landing does not run such a check for the parent or for
+an earlier landed child: their change is a different one, so it says nothing
+about this landing (and used to turn it red). The landing child's own
+change-scoped checks still run on the rebased commits, where the gate measures
+the child's own change. The checks not run are named in `skippedChecks` and in
+the answer's `note`.
+
+Among the checks that do run, the landing child's checks must pass on the
+rebased tip. Other failing checks run again at the parent's HEAD: new
+failures block; failures there too are
 reported as `stillRed` and do not block. Passing receipts remain available at
 the new HEAD for the parent's finish.
 Finish and landing reuse a passing receipt with the same check definition and
@@ -513,7 +561,11 @@ has not stopped yet is still honoured at settlement. A `working` run is a no-op;
 A scheduled provider retry notifies the parent only when its wait is at least
 10 minutes, once per error type per attempt (per busy period for plain
 subagents). Short retries keep their status but do not wake the parent, even
-on the third attempt.
+on the third attempt. The attempt records every such retry (`retries`: when the
+first one was scheduled, how many, and the last error), and its settlement
+says so: `The host retried it 5 times over 5 min 40 s (from 10:00 UTC) before
+the step failed.` after the `Error:` line, or `Provider errors: the host
+retried … (last: …)` before `next:` when the run recovered.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`. Without a report, its attempt is `no_report` — unless the run
@@ -807,6 +859,10 @@ or polling it never replays or diffs session history.
   session); `S` adds a session to a combined report; `T` team; `t` window;
   `a`/`f`/`F` agent/tool/model; `/` text; `x` the tab's own filter. Selections
   are temporary drill steps; `?` lists every key.
+- **Esc** closes the Monitor, also while the chat beside its panel has the focus
+  (after typing in the prompt or clicking outside the panel). What Esc does in
+  the chat comes first: interrupting a running reply, leaving shell mode,
+  hiding autocomplete, closing a dialog.
 - **Cache**: each row shows time, request kind, **hit / cold / partial / miss**,
   reported reads, lost reuse, and the actual changed field or an explicit unknown
   cause. Compaction is a request-kind annotation, never a replacement for its
@@ -847,8 +903,10 @@ or polling it never replays or diffs session history.
   labelled as such.
 - RPCs: `monitor.cache` (cache results), `monitor.prompt` (a request's rows; a
   poll naming the request already shown answers `unchanged` without rows) and
-  `monitor.query` (Tools/Sessions; the agent tool's overview/steps views still
-  use the history analysis). Totals are index-only reads of numeric columns on
+  `monitor.query` (every view reads saved results: each request's result, each
+  cache write's unread tokens once its lifetime ends, and each request's changed
+  prompt segments; no query folds a session's history, and `analysisPending`
+  counts what the background backfill has not saved yet). Totals are index-only reads of numeric columns on
   `cache_result`; an unchanged ledger answers a repeated read from memory. A
   read first saves the few results of just-ended requests; a larger historical
   backlog is filled in the background with a visible pending count. Old sent
@@ -878,7 +936,7 @@ One page for chat metrics: reasoning, cache reads and writes, uncached input, ou
   - **Overview**: token mix, agents in scope (agent, model, steps, hit rate, misses, tokens, cost, last active), top 3 misses, top 3 tools by carried tokens, unstable-prefix warnings, context size now vs at compaction.
   - **Cache**: every request in time order with verdict (`[HIT]`, `[PARTIAL]`, `[MISS]`, `[COLD]`, `[NONE]`). Misses use feedback tokens, cold starts are dim, pings visible. `x` toggles misses only. `Enter` opens detail with cause, confidence, evidence lines, segment diff, timing (gap, lifetime, pings, warming), expected vs actual tokens, session/message ids.
   - **Tools**: keeps every tool capability: group by tool, agent, model, target, session, or config (`g`), sort (`o`), filters for agent (`a`), tool (`f`), model (`F`), failed-only (`x`), compare (`c`), mark (`m`), drill-down (`Enter`) and feed.
-  - **Sessions**: delegation tree with per-session totals, state, and activity. `Enter` scopes page to that session; `space` scopes to its tree (both are temporary drills; Esc restores the previous scope and filters). `state` is real: `running` while the session has an open request or the host reports it active, otherwise the last execution outcome (`completed`, `error`, `interrupted`); a session with no recorded execution shows no state rather than a guess.
+  - **Sessions**: delegation tree with per-session totals, state, and activity. `Enter` opens that session's chat, and the Monitor stays open there on the same tab, scope and row. `space` checks or unchecks that session and `ctrl+space` its whole tree; the other tabs report on the checked sessions (a temporary drill; Backspace restores the previous scope and filters). `state` is real: `running` while the session has an open request or the host reports it active, otherwise the last execution outcome (`completed`, `error`, `interrupted`); a session with no recorded execution shows no state rather than a guess.
   - **Steps**: every request with all token fields, duration, finish reason, and tools called. `Enter` opens step detail showing calls with attributed tokens and fingerprint change vs previous request.
 - **Keys**: `g` group, `s` scope, `S` session picker, `T` team picker, `t` window, `o` order, `a`/`f`/`F` filters, `/` text filter, `x` toggle filter, `c` compare, `m` mark, `Enter` drill/detail, `⌫`/`esc` back, `?` help popup. Settings persist; drill-downs do not. `/` narrows the rendered rows on every tab (groups, feed, requests, sessions and agents) while the totals keep describing the real query.
 - **Tokens per call** are attributed, because providers bill per step (one LLM call), never per tool:
@@ -886,7 +944,7 @@ One page for chat metrics: reasoning, cache reads and writes, uncached input, ou
   - `result` — what the result added to the next prompt: the next step's prompt growth minus this step's own output, split across its results by size. When no clean next step exists (a user message, compaction or instruction update in between, or the last step) it is estimated at 2.5 characters per token and marked `~`; on real sessions 96 % of results are measured.
   - `carried` — the result re-read by every later step until the next compaction. This is where most tokens go: a large `read` result is paid for again on every step after it.
   - `+n` counts Code Mode calls made inside an `execute` call (their tokens belong to the execute call); `*` marks a call still running.
-- **Code Mode**: `monitor.query({})` returns the calling session's requests and misses with cause, confidence and one-line evidence. `monitor.query({view: "cache", id})` returns the named segment diff, timing and lifetime, ping history, account switches, instruction updates/reverts, expected versus actual cache tokens, session/message ids and attributed calls. `monitor.mark({label})` stays available.
+- **Code Mode**: `monitor.query({})` (view `cache`, the default) returns the calling session's requests and misses with cause, confidence and one-line evidence, from saved results; `view: "tools"` adds tool groups, `view: "overview"` the full history analysis. `monitor.query({view: "cache", id})` returns the named segment diff, timing and lifetime, ping history, account switches, instruction updates/reverts, expected versus actual cache tokens, session/message ids and attributed calls. `monitor.mark({label})` stays available.
 - **Scope and time**: `session` means only the calling chat; `tree` includes the topmost delegation root and every descendant (host children and Plus runs); `team` requires a team name and crosses trees; `project` and `all` broaden further. New team runs retain their team; old runs are inferred only when role membership is unambiguous. `since: "compaction"` starts at each session's own latest compaction. `window: "24h"`, numeric `since`/`until`, filters, groupings and `compare: {window}` (the previous period) remain available. Views are `overview`, `cache`, `tools`, `sessions`, `steps`; `missesOnly` filters the request list without changing totals.
 - **Cache analysis**: verdicts are hit, partial miss, miss, cold start and no cache reported. Expected reusable tokens use the earlier same-session/provider/model request's real prompt usage for a pure append, otherwise common segment-size estimates. At least 1024 expected tokens and less than 50% read is a miss; 50–90% is partial. Compaction, model/variant and agent switches are expected cold starts, not misses. Causes are checked in order: compaction, model/variant, agent, named prefix change, likely expiry, likely account change, then unknown (provider-side eviction or routing). A warming ping appends a private prompt after the history's last cache breakpoint; the next real step replaces that uncached tail with its own user input, so when only the tail past the marked boundary differs the reusable prefix is unchanged and the request is not called a certain prefix change — inside the lifetime it stays unknown (provider-side), over the lifetime it is a likely expiry. A change to a marker that sits at or before the boundary (a `cache_control` type/ttl or the prompt-cache key) is still a named prefix change, so a real marker change is never masked by a replaced tail. Only a healthy, completed, same provider/model/variant/agent request that reused the marked prefix refreshes the lifetime; failed, unfinished or differently identified pings do not. Expiry uses the conservative idle lifetimes above; unknown lifetimes remain unknown.
 - **Signals**: overview includes top misses, agents by last activity (their token total counts input, cache read, cache write, output and reasoning), named segments changing on three consecutive requests, ping cost and the next real request's outcome, writes never read before expiry, and current context versus the first request after compaction. Every signal honors the selected scope, window, agent and model filters, and the as-of cutoff: a ping's next-request outcome only counts a next request inside the window and under the same selection, unread writes enter only once their cache lifetime has passed by the cutoff, and a later request at or past the cutoff never changes a historical report. The expensive analysis fold is window-independent and cached on the ledger revision (including writes from another handle), so advancing-now polling reuses it while expiry and window signals are applied at report time. Miss cost is processing cost for re-written/uncached tokens using recorded model pricing, not net savings; absent pricing stays omitted everywhere, never a free zero. Historical normalized zero cache counters cannot distinguish unreported fields from reported zeroes: a prior positive counter establishes cache support, otherwise the analyzer reports no cache reported instead of inventing misses.
@@ -939,7 +997,7 @@ Stored rows, rules, `requires` lists and markers that name a tool by its old id 
 - **Keys & authentication**: Keys are read at call time from key files under the Plus data directory (`<XDG_DATA_HOME>/opencode/opencodeplus/search/{exa,tavily}.key`, or `OPENCODEPLUS_SEARCH_KEYS_DIR`; file mode `0600` strictly enforced, value trimmed), falling back to `EXA_API_KEY` and `TAVILY_API_KEY` in the process environment. No key is ever written to a config file, a row, a log, a report, or a commit. A key file with another mode, or a missing key (`<KEY> is not set in the host environment`), makes the call fail with that message.
   For `bin/opencodeplus`, place the key files in `<XDG_DATA_HOME>/opencode/opencodeplus/search/` (e.g. `$HOME/.local/share/opencode/opencodeplus/search/exa.key` and `tavily.key`, or `run/plus/data/opencode/opencodeplus/search/{exa,tavily}.key` if `XDG_DATA_HOME` is set to `run/plus/data`) and ensure permissions are restricted (`chmod 600 <file>`).
 - **Query & filtering**: `instructions.find where:"server:<name>"` (and TUI filter `server:<name>`) matches both the `mcp:<name>` server configuration row and all tool rows exposed by that server.
-- **Team prompts & policy**: The Tools and rules row names `web.exa_code_search`, `web.tavily_search` and `web.tavily_fetch`, each in a section that depends on that tool, so an agent reads the line exactly while it has the tool. The Basic team's member presets turn Tavily off for implementer, reviewer and scout while keeping code search on; each tool lists its own Permissions rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
+- **Team prompts & policy**: No shipped prompt names the search tools; their descriptions say when to use them. The Basic team's member presets turn Tavily off for implementer, reviewer and scout while keeping code search on; each tool lists its own Permissions rows (queries that carry keys or local paths, depths, topics, result limits, Approval).
 
 ### Through CLIProxyAPI
 

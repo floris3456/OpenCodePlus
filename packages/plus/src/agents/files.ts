@@ -178,6 +178,18 @@ export async function rename(input: RenameInput): Promise<RenameResult> {
   return { ok: true, fromPath, toPath }
 }
 
+// Duplicate: the new agent's file is a byte copy of the source file, so every
+// field and the prompt body carry over, including keys the editor does not parse.
+export async function duplicate(input: RenameInput): Promise<CreateResult | RenameMissingSource> {
+  const fromPath = await existingAgentPath(input.scope, input.projectDirectory, input.from)
+  if (!(await Bun.file(fromPath).exists())) return { ok: false, reason: "missing-source", path: fromPath }
+  const toPath = await agentPath(input.scope, input.projectDirectory, input.to)
+  if (await Bun.file(toPath).exists()) return { ok: false, reason: "already-exists", path: toPath }
+  await fs.mkdir(path.dirname(toPath), { recursive: true })
+  await fs.copyFile(fromPath, toPath)
+  return { ok: true, path: toPath }
+}
+
 export async function remove(input: RemoveInput): Promise<RemoveResult> {
   const target = await existingAgentPath(input.scope, input.projectDirectory, input.id)
   const file = Bun.file(target)

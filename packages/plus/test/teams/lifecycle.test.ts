@@ -8,7 +8,7 @@ import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek, put } from "../../src/teams/inbox.js"
-import { gc, onSessionIdle, reconcile } from "../../src/teams/lifecycle.js"
+import { gc, onSessionIdle, reconcile, childSettledText } from "../../src/teams/lifecycle.js"
 import { Policy } from "../../src/teams/schema.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 
@@ -282,6 +282,56 @@ test("the parent inbox got exactly one settled failed notify line", async () => 
     expect(items[0]?.text).toContain("settled: failed")
     expect(items[0]?.text).toContain("next: team_stop + delegate fresh")
   })
+})
+
+test("a settlement names at most 50 uncommitted files and counts the rest", () => {
+  const child = workingChild("w-3333333333333333", "main-0123456789abcdef", "ses_settle_dirty")
+  const attempt = child.attempts[0]!
+  const files = Array.from({ length: 60 }, (_, i) => `src/file-${String(i).padStart(2, "0")}.ts`)
+  const lines = childSettledText(child, attempt, { status: "done_with_concerns", summary: "Bulk import adds files.", dirtyFiles: files }).split("\n")
+  const uncommitted = lines.filter((line) => line.startsWith("Uncommitted:"))
+  expect(uncommitted).toHaveLength(1)
+  expect(uncommitted[0]?.startsWith(`Uncommitted: ${files.slice(0, 50).join(", ")} and 10 more`)).toBe(true)
+  expect(uncommitted[0]).not.toContain("src/file-50.ts")
+})
+
+test("a failed attempt that was retried says how many times, for how long, and from when", () => {
+  const child = workingChild("w-3333333333333334", "main-0123456789abcdef", "ses_settle_retried")
+  const attempt = {
+    ...child.attempts[0]!,
+    state: "failed" as const,
+    endedAt: "2026-10-28T10:05:40.000Z",
+    error: { type: "provider.internal", message: "An unexpected error occurred.", status: 500 },
+    retries: {
+      firstAt: "2026-10-28T10:00:00.000Z",
+      count: 5,
+      error: { type: "provider.internal", message: "An unexpected error occurred.", status: 500 },
+    },
+  }
+  const lines = childSettledText({ ...child, attempts: [attempt] }, attempt, undefined).split("\n")
+  expect(lines).toContain("Error: provider.internal (500): An unexpected error occurred.")
+  expect(lines).toContain("The host retried it 5 times over 5 min 40 s (from 10:00 UTC) before the step failed.")
+  expect(lines.at(-1)).toStartWith("next:")
+})
+
+test("a recovered attempt that was retried says so once, before next:", () => {
+  const child = workingChild("w-3333333333333335", "main-0123456789abcdef", "ses_settle_recovered")
+  const attempt = {
+    ...child.attempts[0]!,
+    state: "reported" as const,
+    endedAt: "2026-10-28T10:00:48.000Z",
+    retries: {
+      firstAt: "2026-10-28T10:00:00.000Z",
+      count: 3,
+      error: { type: "provider.internal", message: "Service overloaded", status: 529 },
+    },
+  }
+  const lines = childSettledText({ ...child, attempts: [attempt] }, attempt, { status: "done", summary: "Landed." }).split("\n")
+  const retried = lines.filter((line) => line.startsWith("Provider errors:"))
+  expect(retried).toEqual([
+    "Provider errors: the host retried 3 times over 48 s (last: provider.internal (529)); the run then continued.",
+  ])
+  expect(lines.indexOf(retried[0]!)).toBe(lines.findIndex((line) => line.startsWith("next:")) - 1)
 })
 
 test("reconcile skips valid-JSON malformed runs and still settles later healthy runs", async () => {

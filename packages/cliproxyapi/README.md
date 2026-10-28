@@ -60,6 +60,11 @@ The bundled code stays in the executable when removed from the enabled plugins.
   compaction decision first, marked `cpa.outage`: with Compact cold chats first on,
   Plus then counts a cache that goes cold within a minute as cold and summarizes
   with the cold-cache models before the step continues.
+- **Provider errors** (same `src/outage.ts`): a plain HTTP 500 or 529 from a model
+  backend (`provider.internal`, no `quota_*` code — those keep the quota hook's
+  handling) keeps retrying too once Core's own retries are used up, for up to
+  6 minutes from the first failure, at 15 s, 30 s, then 60 s between tries, so a
+  backend having a bad few minutes does not fail a team run after 84 s.
 - One prompt cache key per chat: requests to the `cliproxyapi` provider carry
   `prompt_cache_key` set to the chat's own session ID (a fork: the session it was
   forked from, whose history it starts with), on Chat Completions as well as

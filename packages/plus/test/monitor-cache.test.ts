@@ -6,6 +6,9 @@ import { MonitorReport } from "../src/rpc.js"
 import { FINGERPRINT_POLICY_VERSION, FINGERPRINT_VERSION, fingerprintWireBody, sha256 } from "../src/monitor/fingerprint.js"
 import { prefixDiff } from "../src/monitor/cache.js"
 import { queryMonitor } from "../src/monitor/query.js"
+import { backfillCacheBatch } from "../src/monitor/snapshot.js"
+import { settleUnreadWrites } from "../src/monitor/unread-saved.js"
+import { settleRequestChanges } from "../src/monitor/unstable-saved.js"
 import type { Ledger } from "../src/monitor/ledger.js"
 import { createLedger } from "../src/monitor/ledger.js"
 import { cleanupLedgers, collect, ledger } from "./monitor-fixture.js"
@@ -749,6 +752,14 @@ test("synthetic ledger benchmark: 200 sessions × 200 requests × 200 message pr
     { name: "all overview", input: { scope: "all" as const, view: "overview" as const } },
     { name: "all cache", input: { scope: "all" as const, view: "cache" as const } },
   ]
+
+  // Reports read saved results and saved analysis; a query saves only about
+  // 100 ms of a backlog, so save all 40,000 first, as the background backfill does.
+  const saving = performance.now()
+  while (backfillCacheBatch(db, 1_000) > 0) continue
+  while (settleRequestChanges(db, 1_000) > 0) continue
+  while (settleUnreadWrites(db, Date.now(), 1_000) > 0) continue
+  console.log(`Saving results and analysis took: ${performance.now() - saving}ms`)
 
   // Warmup / First call
   const firstTimes: Record<string, number> = {}
