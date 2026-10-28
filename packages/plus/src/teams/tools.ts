@@ -2,7 +2,6 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import { Permission } from "@opencode/schema/permission"
-import { Session } from "@opencode/schema/session"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Exit, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
@@ -14,8 +13,7 @@ import { gitRaw } from "./git.js"
 import { rowState, unattendedMessage, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
-import { attemptTransition, bySession, loadRun, newRunID, openChildren, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
-import { peek, teamInboxKey } from "./inbox.js"
+import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
 import { lock } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import {
@@ -705,57 +703,11 @@ function runGatedInner<A>(
         new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
       )
     }
-    const open = name === "status" || name === "list" ? yield* Effect.promise(() => waitingOn(teamsDataDir(), owned.id)) : []
-    const waiting = open.length > 0 && !(yield* answersNews(pluginCtx, sessionID, String(toolCtx.messageID))) ? open : []
-    if (waiting.length > 0 && onlyAsksAbout(name, input as object, waiting)) return { output: { waiting, next: WAITING }, endTurn: "alone" }
+    // team_status and team_list are looks: they never end the caller's turn
+    // (owner, 2026-10-28: whether to wait is the agent's own decision).
     if (name === "finish" && owned.parent != null) return { output: result.value, endTurn: true }
-    return { output: result.value, ...(waiting.length > 0 ? { endTurn: "alone" as const } : {}) }
+    return { output: result.value }
   })
-}
-
-const WAITING = "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report."
-
-// A status or list call is a look, not a wait, in the first step after a
-// compaction (the summary is all the model knows of its runs) and in a step
-// that answers a person's message rather than a settlement. Live theorysnap
-// lead: after compaction its first call was team_status, the wait ended the
-// turn, and the owner's message went unanswered until a child settled.
-// Unreadable history keeps the wait.
-function answersNews(ctx: Context, sessionID: string, messageID: string): Effect.Effect<boolean> {
-  return Effect.suspend(() => ctx.session.context({ sessionID: Session.ID.make(sessionID) })).pipe(
-    Effect.map((messages) => {
-      const at = messages.findIndex((message) => message.id === messageID)
-      const before = at === -1 ? messages : messages.slice(0, at)
-      const previous = before.findLastIndex((message) => message.type === "assistant")
-      if (previous === -1) return true
-      return before.slice(previous + 1).some((message) => message.type === "user" && message.metadata?.[teamInboxKey] !== "inbox")
-    }),
-    Effect.catchCause(() => Effect.succeed(false)),
-  )
-}
-
-// A status or list call while a child is still working and no news waits in
-// the caller's inbox is a wait: it ends the turn, and the next settlement
-// wakes the caller. Leads said "I'm waiting" and called team_status or
-// team_list anyway: a step for nothing (b8, b9-s12). Asked with no filter it
-// gets this short answer instead of every run's status, which the context
-// would carry for nothing (b13-s13), and so does a status that names only
-// runs still working (b15-s12); a call that names another run or filters
-// gets what it asked for.
-function onlyAsksAbout(name: string, input: object, waiting: readonly string[]): boolean {
-  const keys = Object.keys(input)
-  if (keys.length === 0) return true
-  const runs = (input as { runs?: readonly string[] }).runs
-  return name === "status" && keys.length === 1 && runs !== undefined && runs.every((id) => waiting.includes(id))
-}
-
-async function waitingOn(root: string, runID: string): Promise<string[]> {
-  const run = await loadRun(root, runID)
-  if (run === undefined) return []
-  const open = await openChildren(root, run.id)
-  if (open.length === 0) return []
-  const delivered = new Set(run.attempts.flatMap((attempt) => attempt.inbox ?? []))
-  return (await peek(root, run.id)).every((item) => delivered.has(item.id)) ? open : []
 }
 
 function requireActor(
