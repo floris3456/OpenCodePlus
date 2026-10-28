@@ -189,7 +189,8 @@ test("a folder's copy holds a copy of every subfolder and row inside it that can
   const inner = (await rows(api)).find((row) => row.label === "Inner" && row.id.includes(":folder:"))!.id
   await ok(tools, "move", { id: "item:project:alpha:tool:skill", into: inner })
   const copy = await ok(tools, "clipboard", { action: "duplicate", ids: [family] })
-  expect(copy.status).toMatch(/^Duplicated folder "Files" as "Files copy": .*skipped \(they exist once per agent\)/)
+  // The subfolder counts as a copied row, and the two tools are named as skipped.
+  expect(copy.status).toBe('Duplicated folder "Files" as "Files copy": 1 row copied, 2 tool rows skipped (they exist once per agent)')
   const after = await rows(api)
   const folders = after.filter((row) => row.id.startsWith("group:project:alpha:tools:folder:")).map((row) => row.label)
   expect(folders).toEqual(["Files", "Inner", "Files copy", "Inner", "Other"])
