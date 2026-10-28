@@ -61,7 +61,7 @@ import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
 import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
-import { toolOutputCap } from "./tool-output-cap.js"
+import { installToolOutputCap, toolOutputCap } from "./tool-output-cap.js"
 import { isAttentionRow, type AttentionRow } from "../attention-settings.js"
 import { runPublish } from "./publish-runtime.js"
 import type { OrderRecord } from "./folders.js"
@@ -275,6 +275,11 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
       if (reg !== undefined) installed.push(reg)
     }
 
+    const toolCaps = toolOutputCapsOf(input)
+    if (toolCaps.size > 0) {
+      const reg = await installToolOutputCap(ctx, toolCaps)
+      if (reg !== undefined) installed.push(reg)
+    }
 
     const ctlPlans = input.deferAgentControls ? [] : controlPlans(input)
     if (ctlPlans.length > 0) {
@@ -455,6 +460,15 @@ export async function applyPublishParts(
     const installed = reg !== undefined ? [reg] : []
     state.appliedParts.set("controls", { fingerprint: controlsFp, registrations: installed })
     agentReload = true
+  }
+
+  // 8. tool-result cap
+  const toolCaps = toolOutputCapsOf(input.applyInput)
+  const toolCapsFp = JSON.stringify([...toolCaps].sort((left, right) => (left[0] < right[0] ? -1 : 1)))
+  if (toolCapsFp !== state.appliedParts.get("toolOutput")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("toolOutput")?.registrations ?? []))
+    const reg = toolCaps.size === 0 ? undefined : await installToolOutputCap(ctx, toolCaps)
+    state.appliedParts.set("toolOutput", { fingerprint: toolCapsFp, registrations: reg === undefined ? [] : [reg] })
   }
 
   // 9. teamFiles
