@@ -405,6 +405,9 @@ export const Brief = Schema.Struct({
     }),
     () => "medium" as const,
   ),
+  wall: Schema.optionalKey(Schema.String).annotate({
+    description: "Time budget of the run (wall clock inside attempts), e.g. 2.5h; default from effort.",
+  }),
   repo: Schema.optionalKey(Schema.String).annotate({ description: "Another configured repository; omit for yours." }),
   base: Schema.optionalKey(Schema.String).annotate({ description: "Commit or branch the child starts from; omit for your HEAD." }),
   prompt: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4000))).annotate({

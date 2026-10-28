@@ -69,6 +69,7 @@ import {
   budgetExhaustion,
   isExpectedHead,
   pathList,
+  parseDuration,
   toolError,
   validateSummary,
   type Check,
@@ -411,6 +412,17 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       "a shorter brief",
     )
 
+  // A wall given by hand replaces the effort's. Parsed and capped before the
+  // adhoc task is written, so a refusal leaves nothing claiming the task.
+  const wallMs = brief.wall === undefined ? undefined : parseDuration(brief.wall)
+  const wallLimit = bound(table, agent, "delegate", "limits.wall")
+  if (wallMs !== undefined && wallLimit !== undefined && wallMs > wallLimit * 60_000)
+    return fail(
+      "E_TOO_LONG",
+      `wall ${brief.wall} is ${Math.round(wallMs / 60_000)} minutes (max ${wallLimit} minutes, team_delegate limits.wall). Shorten it or raise the row (Permissions → Limits → Longest wall at delegation).`,
+      "a shorter wall",
+    )
+
   // A missing check file is writable only when the Brief includes it in scope.
   // This is also the checkpoint check-files row's explicit scope exception.
   const missingChecks = (await missingCheckFiles(repo.root, baseSha, checks)).filter(
@@ -438,7 +450,8 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   }
 
   const briefModule = await import("./brief.js")
-  const budget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
+  const effortBudget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
+  const budget = wallMs === undefined ? effortBudget : { ...effortBudget, wallMs }
   const newPaths = await pathsNotAt(repo.root, baseSha, resolved.scope.paths)
 
   // A review starts where the delegating run started and ends at the commit

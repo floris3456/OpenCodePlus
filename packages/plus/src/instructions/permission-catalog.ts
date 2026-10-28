@@ -816,6 +816,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "brief", label: "Brief size (characters)", on: true, limit: 6000 },
         { id: "attachment", label: "Attached brief file (characters)", on: true, limit: 8000 },
         { id: "members", label: "Live team runs in total", on: true, limit: 12 },
+        { id: "wall", label: "Longest wall at delegation (minutes)", on: true, limit: 480 },
       ],
     },
     approval(),
