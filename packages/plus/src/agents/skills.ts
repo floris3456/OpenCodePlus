@@ -148,8 +148,10 @@ function formatSkill(id: string, body: string): FormattedSkill {
   const described = typeof fields.description === "string" && fields.description.trim().length > 0
   const rest = body.slice(match[0].length)
   const normalized = rest.endsWith("\n") || rest.length === 0 ? rest : `${rest}\n`
-  const kept = (described ? (match[1] ?? "") : withoutDescription(match[1] ?? "")).split("\n")
-  const lines = kept.length === 1 && kept[0]?.trim() === "" ? [] : kept
+  // Blank lines at either end of the body's block carry nothing to keep.
+  const all = (described ? (match[1] ?? "") : withoutDescription(match[1] ?? "")).split(/\r?\n/)
+  const start = all.findIndex((line) => line.trim() !== "")
+  const lines = start === -1 ? [] : all.slice(start, all.findLastIndex((line) => line.trim() !== "") + 1)
   const derived = `description: ${yamlString(describeBody(rest, id))}`
   if (fields.name === undefined) {
     lines.unshift(`name: ${yamlString(id)}`)
