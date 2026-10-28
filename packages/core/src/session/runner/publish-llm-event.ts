@@ -72,6 +72,8 @@ export interface StepRecord {
   readonly needsContinuation: boolean
   /** A successful local tool ended the turn, and all calls have settled. */
   readonly endTurn: boolean
+  /** The model answered: non-blank text or a tool call. Reasoning alone is not an answer. */
+  readonly replied: boolean
 }
 
 /** Derives canonical model content from a provider-hosted tool result. */
@@ -127,6 +129,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
   let startSnapshotRecorded = false
   let providerFailed = false
   let outputStarted = false
+  let replied = false
   let stepFailure: SessionError.Error | undefined
   let stepSettlement: StepRecord["finish"]
 
@@ -475,9 +478,11 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         })
         return
       case "text-delta":
+        if (event.text.trim() !== "") replied = true
         yield* text.append(event.id, event.text, providerState(event.providerMetadata))
         return
       case "text-end":
+        if (event.text !== undefined && event.text.trim() !== "") replied = true
         yield* text.end(event.id, providerState(event.providerMetadata), event.text)
         return
       case "reasoning-start":
@@ -683,6 +688,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         failure: stepFailure,
         finish: stepSettlement,
         endTurn,
+        replied: replied || tools.size > 0,
         needsContinuation:
           !endTurn && Iterable.some(tools.values(), (tool) => !tool.providerExecuted && (tool.called || tool.settled)),
       }

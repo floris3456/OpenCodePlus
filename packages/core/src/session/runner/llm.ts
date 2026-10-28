@@ -42,6 +42,12 @@ const CONTINUE_AFTER_INCOMPLETE_STREAM =
 const CONTINUE_AFTER_OUTPUT_LIMIT =
   "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
 
+const CONTINUE_AFTER_EMPTY_REPLY =
+  "Your last response ended without any answer or tool call. Continue the task: answer, or call the tool you need."
+
+/** Two continuations after an empty answer; a third empty answer fails the step. */
+const EMPTY_REPLY_LIMIT = 3
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -383,6 +389,32 @@ const layer = Layer.effect(
             yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: CONTINUE_AFTER_OUTPUT_LIMIT })
             assistantMessageID = SessionMessage.ID.create()
           }),
+          EmptyReply: Effect.fn("SessionRunner.continueEmptyReply")(function* () {
+            // The current response is included. User input or an answer breaks the streak.
+            const rows = yield* db
+              .select()
+              .from(SessionMessageTable)
+              .where(
+                and(
+                  eq(SessionMessageTable.session_id, sessionID),
+                  inArray(SessionMessageTable.type, ["user", "assistant"]),
+                ),
+              )
+              .orderBy(desc(SessionMessageTable.seq))
+              .limit(EMPTY_REPLY_LIMIT)
+              .all()
+              .pipe(Effect.orDie)
+            const recent = yield* Effect.forEach(rows, SessionHistory.decodeMessageRow)
+            if (recent.length === EMPTY_REPLY_LIMIT && recent.every(isEmptyReply))
+              return yield* new StepFailedError({
+                error: {
+                  type: "empty-response",
+                  message: `The model returned an empty answer ${EMPTY_REPLY_LIMIT} times in a row`,
+                },
+              })
+            yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: CONTINUE_AFTER_EMPTY_REPLY })
+            assistantMessageID = SessionMessage.ID.create()
+          }),
           Compacted: Effect.fnUntraced(function* () {
             recoverOverflow = false
             assistantMessageID = SessionMessage.ID.create()
@@ -474,3 +506,13 @@ export const node = makeLocationNode({
     Database.node,
   ],
 })
+
+// A finished assistant message that reasoned and answered nothing: no text, no tool call.
+function isEmptyReply(message: SessionMessage.Info): boolean {
+  return (
+    message.type === "assistant" &&
+    message.finish === "stop" &&
+    message.content.some((part) => part.type === "reasoning") &&
+    !message.content.some((part) => part.type === "tool" || (part.type === "text" && part.text.trim() !== ""))
+  )
+}
