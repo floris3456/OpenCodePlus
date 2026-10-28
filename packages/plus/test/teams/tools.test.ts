@@ -1075,6 +1075,9 @@ function makeTestPermissionService(
   const service: Permission.Interface = {
     ask: () => Effect.die("unused ask"),
     close: Effect.void,
+    // The rules an agent's calls are evaluated against: this fixture's one
+    // ruleset, which is what a Session's merged agent rules amount to here.
+    rules: () => Effect.succeed(rules),
     assert: (input) =>
       Effect.gen(function* () {
         const winningRule = rules
