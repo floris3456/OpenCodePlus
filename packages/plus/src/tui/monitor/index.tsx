@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { createSignal, Show } from "solid-js"
+import type { PanelInput } from "@opencode/plugin/tui/context"
+import { createSignal, onCleanup, Show } from "solid-js"
 import type { ActiveTeamInfo } from "../active-team.js"
 import { MonitorView, type MonitorPlace, type MonitorTarget } from "./view.js"
 
@@ -53,12 +54,15 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
   }
 
   // The panel's own keys stop once the chat beside it has the focus (typing in
-  // the prompt, a click outside the panel); Esc still closes it then. The layer
-  // sits below every other: a dialog, and the prompt's interrupt of a running
-  // reply, its shell mode or its autocomplete, keep Esc first.
+  // the prompt, a click outside the panel); Esc still closes it then, before
+  // the prompt's interrupt of a running reply (priority 0) can take it. A
+  // dialog, autocomplete, the composer and forms push their own keymap mode,
+  // which turns this layer off, so they keep Esc. While the panel has the
+  // focus its view's own Esc runs instead (the Prompt tab steps back first).
+  const [panelInput, setPanelInput] = createSignal<PanelInput>()
   context.keymap.layer(() => ({
-    enabled: () => context.ui.panel.current()?.name === "plus.monitor",
-    priority: -1,
+    enabled: () => context.ui.panel.current()?.name === "plus.monitor" && panelInput()?.focused !== true,
+    priority: 1,
     commands: [{ bind: "escape", title: "Close monitor", group: "Monitor", run: () => context.ui.panel.close() }],
   }))
 
@@ -85,7 +89,10 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
 
   const disposePanel = context.ui.slot({
     append: "session.panel",
-    render: (panel) => (
+    render: (panel) => {
+      setPanelInput(panel)
+      onCleanup(() => setPanelInput((current) => (current === panel ? undefined : current)))
+      return (
       <Show when={panel.name === "plus.monitor"}>
         <MonitorView
           context={context}
@@ -104,7 +111,8 @@ export function createMonitor(context: Plugin.Context, options: { readonly team?
           {...(options.team === undefined ? {} : { team: options.team })}
         />
       </Show>
-    ),
+      )
+    },
   })
 
   return {

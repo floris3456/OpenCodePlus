@@ -34,7 +34,7 @@ afterEach(cleanupLedgers)
 
 const NOW = 1_800_000_000_000
 
-test("the Sessions checklist opens with this chat's tree open and only the chat checked; Enter and space check sessions and trees", async () => {
+test("the Sessions checklist opens with this chat's tree open and only the chat checked; space and ctrl+space check sessions and trees", async () => {
   const db = await seeded()
   const { fixture, queries, lists, closed } = await render(db, {
     initialSession: true,
@@ -49,19 +49,19 @@ test("the Sessions checklist opens with this chat's tree open and only the chat 
     expect(first).toMatch(/\[ \] {3}└─ ses_child/)
     expect(first).toContain("Active sessions · 1 tree")
 
-    // Enter checks the subagent too; the filter stays one Back step.
+    // space checks the subagent too; the filter stays one Back step.
     await dispatch(fixture, "down")
-    await dispatch(fixture, "return")
+    await dispatch(fixture, "space")
     await fixture.waitForFrame((text) => text.includes("2 sessions") && text.includes("filters 1"))
     expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat", "ses_child"])
-    await dispatch(fixture, "return")
+    await dispatch(fixture, "space")
     await fixture.waitForFrame((text) => !text.includes("2 sessions"))
     expect(queries.at(-1)?.sessionIDs).toEqual(["ses_chat"])
 
-    // space checks the whole tree, and unchecks it when all of it is checked.
-    await dispatch(fixture, "space")
+    // ctrl+space checks the whole tree, and unchecks it when all of it is checked.
+    await dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame(() => queries.at(-1)?.sessionIDs?.length === 2)
-    await dispatch(fixture, "space")
+    await dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame((text) => text.includes("No session checked"))
     expect(queries.at(-1)?.sessionIDs).toEqual([])
 
@@ -351,8 +351,8 @@ test("Sessions and session/facet pickers request further pages only on explicit 
     await dispatch(fixture, "]")
     await fixture.waitForFrame((text) => text.includes("trees 101-125/125"))
     expect(lists.at(-1)?.page).toEqual({ offset: 100 })
-    // Enter checks a session of the second page.
-    await dispatch(fixture, "return")
+    // space checks a session of the second page.
+    await dispatch(fixture, "space")
     await fixture.waitForFrame(() => queries.some((q) => q.scope === "session" && q.sessionIDs?.length === 1))
     await dispatch(fixture, "l")
     await fixture.waitForFrame((text) => text.includes("trees 1-100/125"))
@@ -814,14 +814,14 @@ test("checking sessions is a temporary filter: Backspace restores the stored sco
     expect(first).not.toContain("[x]")
     expect(queries[0]).toMatchObject({ scope: "project", view: "cache" })
 
-    // Enter starts a selection of the session, as a temporary drill.
-    dispatch(fixture, "return")
+    // space starts a selection of the session, as a temporary drill.
+    dispatch(fixture, "space")
     await fixture.waitForFrame((text) => text.includes("filters 1") && text.includes("[x] ▼ Fix the thing"))
     expect(queries.at(-1)).toMatchObject({ scope: "session", sessionIDs: ["ses_chat"], agents: ["build"] })
     expect((fixture.storeValue("monitor") as { settings: MonitorSettings }).settings).toMatchObject({ scope: "project", agent: "build" })
 
-    // space adds the rest of the tree to the same drill.
-    dispatch(fixture, "space")
+    // ctrl+space adds the rest of the tree to the same drill.
+    dispatch(fixture, "ctrl+space")
     await fixture.waitForFrame(() => queries.at(-1)?.sessionIDs?.length === 2)
     expect(await fixture.waitForFrame((text) => text.includes("filters 1"))).not.toContain("filters 2")
 

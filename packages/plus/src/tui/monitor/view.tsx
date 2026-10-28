@@ -82,16 +82,25 @@ export interface MonitorViewProps {
   readonly target?: () => MonitorTarget | undefined
   /** The view took the target; the caller clears it so it is applied once. */
   readonly onTarget?: () => void
-  /** Opens a chat from the Monitor (a Team run's), with the place to start from there. */
+  /** Opens a chat from the Monitor (a Sessions row's or a Team run's), with the place to start from there. */
   readonly onOpenSession?: (sessionID: string, place: MonitorPlace) => void
   /** Takes the place a Monitor had when it opened this chat; called once, at mount. */
   readonly place?: () => MonitorPlace | undefined
 }
 
-/** Where a Monitor was: its drill-downs (scope, tab) and the Team tab's row and scroll. */
+/** Where a Monitor was: its drill-downs (scope, tab) and the row of the tab that opened the chat. */
 export interface MonitorPlace {
   readonly drills: readonly Drill[]
-  readonly team: TeamPlace
+  readonly team?: TeamPlace
+  readonly sessions?: SessionsPlace
+}
+
+/** The Sessions checklist's selected session, open trees, inactive filter and page of trees. */
+export interface SessionsPlace {
+  readonly selected: string
+  readonly expanded: readonly string[]
+  readonly all: boolean
+  readonly offset: number
 }
 
 export interface MonitorTarget {
@@ -449,11 +458,13 @@ export function MonitorView(props: MonitorViewProps) {
   // shows the rest, this chat's tree first and open. The checked sessions are
   // what every other tab reports on; checking changes only this monitor's
   // temporary filter, never the stored settings.
-  const [allSessions, setAllSessions] = createSignal(false)
+  const [allSessions, setAllSessions] = createSignal(place?.sessions?.all ?? false)
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(
-    new Set(props.sessionID() === undefined ? [] : [props.sessionID()!]),
+    new Set([...(place?.sessions?.expanded ?? []), ...(props.sessionID() === undefined ? [] : [props.sessionID()!])]),
   )
-  const [treeOffset, setTreeOffset] = createSignal(0)
+  const [treeOffset, setTreeOffset] = createSignal(place?.sessions?.offset ?? 0)
+  // A chat opened from a Sessions row starts on that row once its list loads.
+  let selectOnLoad = place?.sessions?.selected
   const [checklist, setChecklist] = createSignal<Plus.MonitorSessionList>()
   const rowsOf = (list: Plus.MonitorSessionList | undefined): readonly Plus.MonitorSessionRow[] => {
     if (list === undefined) return []
@@ -526,7 +537,8 @@ export function MonitorView(props: MonitorViewProps) {
       (list) => {
         if (generation !== checklistFlight.generation) return undefined
         // The selection stays on its session when rows above it come or go.
-        const keep = sessionRows()[selected()]?.sessionID
+        const keep = selectOnLoad ?? sessionRows()[selected()]?.sessionID
+        selectOnLoad = undefined
         const at = keep === undefined ? -1 : rowsOf(list).findIndex((row) => row.sessionID === keep)
         batch(() => {
           setChecklist(list)
@@ -559,7 +571,7 @@ export function MonitorView(props: MonitorViewProps) {
     const timer = setInterval(pollChecklist, pace())
     onCleanup(() => clearInterval(timer))
   })
-  /** Space: check or uncheck a whole tree, opening it first so every session in it is known. */
+  /** ctrl+space: check or uncheck a whole tree, opening it first so every session in it is known. */
   const checkTree = async (row: Plus.MonitorSessionRow) => {
     const root = row.rootID
     const known = sessionRows().filter((entry) => entry.rootID === root)
@@ -932,9 +944,17 @@ export function MonitorView(props: MonitorViewProps) {
     }
     if (current === "sessions") {
       const row = sessionRows()[selected()]
-      if (row !== undefined) check([row.sessionID], !isChecked(row))
+      if (row === undefined) return
+      openSession(row.sessionID, {
+        sessions: { selected: row.sessionID, expanded: [...expanded()], all: allSessions(), offset: treeOffset() },
+      })
       return
     }
+  }
+
+  const openSession = (id: string, from: Omit<MonitorPlace, "drills">) => {
+    if (props.onOpenSession === undefined) return props.context.ui.router.navigate({ type: "session", sessionID: id })
+    props.onOpenSession(id, { drills: drills(), ...from })
   }
 
   const back = () => {
@@ -1205,6 +1225,15 @@ export function MonitorView(props: MonitorViewProps) {
       },
       {
         bind: "space",
+        title: "Check session",
+        group: "Monitor",
+        run: () => {
+          const row = tab() === "sessions" ? sessionRows()[selected()] : undefined
+          if (row !== undefined) check([row.sessionID], !isChecked(row))
+        },
+      },
+      {
+        bind: "ctrl+space",
         title: "Check session tree",
         group: "Monitor",
         run: () => {
@@ -1290,8 +1319,8 @@ export function MonitorView(props: MonitorViewProps) {
           : "[↑↓] select · [⏎] filter · [g] group · [o] sort · [a/f/F] filter · [x] fail · [c] compare · [m] mark · [?] help"
       case "sessions":
         return narrow
-          ? "[↑↓] · [⏎] check · [space] tree · [→←] open · [S] inactive · [?] · [esc]"
-          : "[↑↓] select · [⏎] check session · [space] check tree · [→/←] open/close tree · [S] show inactive · [?] help · [esc] close"
+          ? "[↑↓] · [⏎] open · [space] check · [ctrl+space] tree · [→←] · [S] · [?]"
+          : "[↑↓] select · [⏎] open chat · [space] check · [ctrl+space] check tree · [→/←] open/close tree · [S] show inactive · [?] help"
       case "team":
         return narrow
           ? "[↑↓] · [⏎] open · [ctrl+a/t] inactive/tree · [ctrl+d] stop · [e] checks"
@@ -1564,11 +1593,7 @@ export function MonitorView(props: MonitorViewProps) {
                   context={props.context}
                   sessionID={sessionID}
                   active={() => props.active() && tab() === "team" && !helpOpen()}
-                  open={(id, team) =>
-                    props.onOpenSession === undefined
-                      ? props.context.ui.router.navigate({ type: "session", sessionID: id })
-                      : props.onOpenSession(id, { drills: drills(), team })
-                  }
+                  open={(id, team) => openSession(id, { team })}
                   place={takeTeamPlace}
                   location={location}
                 />

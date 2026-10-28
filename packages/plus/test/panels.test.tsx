@@ -47,6 +47,18 @@ async function fixture() {
         })),
       }),
       "monitor.cache": async () => report,
+      // Forty trees of one session each; the chat's tree heads the list.
+      "monitor.sessions": async (input: { first?: string }) => {
+        const ids = Array.from({ length: 40 }, (_, index) => `ses_${index}`)
+        const ordered = input.first === undefined ? ids : [input.first, ...ids.filter((id) => id !== input.first)]
+        return {
+          sessions: ordered.map((id) => ({
+            sessionID: id, rootID: id, depth: 0, title: `title-${id}`, lastActive: 0, requests: 0, steps: 0,
+            input: 0, cacheRead: 0, cacheWrite: 0, output: 0, reasoning: 0, cost: 0, misses: 0, active: true, descendants: 0,
+          })),
+          roots: ordered.length, offset: 0, limit: 100, inactive: 0,
+        }
+      },
     },
     render: (base) => {
       const context: Plugin.Context = {
@@ -256,24 +268,63 @@ test("a run's chat opened from the Team tab keeps the Monitor open there, on the
   } finally { test.output.destroy() }
 })
 
-test("Esc closes the Monitor panel while the chat beside it has the focus, below the chat's own Esc", async () => {
+test("Esc closes the Monitor panel while the chat beside it has the focus, before the chat's interrupt", async () => {
   const test = await fixture()
   try {
     test.monitor().open()
     await test.output.waitForFrame((frame) => frame.includes("Monitor") && frame.includes("Scope:"))
+    const escape = () => test.layers
+      .map((factory) => factory())
+      .find((layer) => layer.commands?.some((command) => command.bind === "escape" && command.title === "Close monitor") && layer.mode === undefined && layer.priority === 1)
+    // Above the prompt's interrupt (priority 0), so a running reply's first Esc
+    // closes the Monitor and never arms the interrupt. In the base mode only:
+    // dialogs, autocomplete, the composer and forms push their own mode and
+    // keep Esc (packages/tui/test/escape-fallthrough.test.tsx).
+    expect(escape()).toBeDefined()
+    // While the panel has the focus its view's Esc runs, not this one.
+    expect((escape()?.enabled as () => boolean)()).toBe(false)
     test.setFocused(false)
     await test.output.flush()
+    expect((escape()?.enabled as () => boolean)()).toBe(true)
     // The panel's own keys are off: no Monitor key but its Esc is reachable.
     expect(dispatch(test.output, "t")).toBe(false)
-    const escape = test.layers
-      .map((factory) => factory())
-      .find((layer) => layer.commands?.some((command) => command.bind === "escape" && command.title === "Close monitor") && layer.priority === -1)
-    // Lower than the prompt's layers, so a running reply's interrupt,
-    // shell mode and autocomplete keep Esc (packages/tui/test/escape-fallthrough.test.tsx).
-    expect(escape?.mode).toBeUndefined()
     expect(dispatch(test.output, "escape")).toBe(true)
     expect(test.panels.current()).toBeUndefined()
     // With no Monitor open the layer is off and Esc is left alone.
     expect(dispatch(test.output, "escape")).toBe(false)
+  } finally { test.output.destroy() }
+})
+
+const sessionLines = (frame: string) => frame.split("\n").filter((line) => /title-ses_\d+/.test(line)).map((line) => line.trim())
+
+test("Enter on a Sessions row opens its chat and keeps the Monitor open there, on the same row", async () => {
+  const test = await fixture()
+  try {
+    test.monitor().open()
+    await test.output.waitForFrame((frame) => frame.includes("[4 Sessions]"))
+    dispatch(test.output, "4")
+    await test.output.waitForFrame((frame) => frame.includes("title-ses_0"))
+    expect(test.output.captureCharFrame()).toContain("[⏎] open")
+    // ses_chat heads the list; the fourth row down is ses_3.
+    Array.from({ length: 4 }).forEach(() => dispatch(test.output, "down"))
+    await test.output.waitForFrame((frame) => frame.includes("row 5 of"))
+    const mounts = test.mounts()
+
+    dispatch(test.output, "return")
+    expect(test.navigations.at(-1)).toEqual({ type: "session", sessionID: "ses_3" })
+    expect(test.panels.current()).toEqual({ name: "plus.monitor", plugin: "plus", sessionID: "ses_3" })
+    expect(test.mounts()).toBe(mounts + 1)
+    // The new chat's Monitor is on Sessions, with ses_3 (now the head of the list) selected.
+    await test.output.waitForFrame((frame) => frame.includes("row 1 of") && sessionLines(frame)[0]?.includes("title-ses_3") === true)
+    dispatch(test.output, "down")
+    dispatch(test.output, "return")
+    expect(test.navigations.at(-1)).toEqual({ type: "session", sessionID: "ses_0" })
+
+    // The chat already open stays put with the Monitor as it is.
+    await test.output.waitForFrame((frame) => frame.includes("[4 Sessions]") && sessionLines(frame)[0]?.includes("title-ses_0") === true)
+    const navigations = test.navigations.length
+    dispatch(test.output, "return")
+    await test.output.flush()
+    expect(test.navigations.length).toBe(navigations)
   } finally { test.output.destroy() }
 })
