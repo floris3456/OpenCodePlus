@@ -1715,6 +1715,8 @@ test("two provider retries then a failed execution count on the attempt and the 
     const err = { type: "provider.internal", message: "An unexpected error occurred.", status: 500 }
 
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_008", { attempt: 1, at: Date.now() + 15_000, error: err }))
+    const first = (await loadRun(root, child.id))?.attempts.at(-1)?.retries
+    expect(first?.count).toBe(1)
     await onSessionEvent(ctx, root, retryScheduledEvent("ses_child_008", { attempt: 2, at: Date.now() + 30_000, error: err }))
     await onSessionEvent(ctx, root, {
       type: SessionEvent.Execution.Failed.type,
@@ -1724,11 +1726,7 @@ test("two provider retries then a failed execution count on the attempt and the 
     const settled = await loadRun(root, child.id)
     const attempt = settled?.attempts.at(-1)
     expect(attempt?.state).toBe("failed")
-    expect(attempt?.retries).toEqual({
-      firstAt: attempt?.retries?.firstAt,
-      count: 2,
-      error: err,
-    })
+    expect(attempt?.retries).toEqual({ firstAt: first!.firstAt, count: 2, error: err })
     const text = (await peek(root, parent.id))[0]?.text ?? ""
     expect(text).toContain("The host retried it 2 times")
     expect(text).toContain("before the step failed.")
