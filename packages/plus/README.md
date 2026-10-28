@@ -847,6 +847,10 @@ These model rows are the only place thresholds are set; there is no per-chat ove
 - After a completed text or native checkpoint, early triggers wait for new primary assistant history before firing again. A low input threshold cannot repeatedly compact the fresh checkpoint before the model resumes; new user input alone does not rearm it.
 - Setting or clearing a threshold sends no agent message and resets no output counter. Only actual completed compaction changes the checkpoint/history epoch. Strategy, model routing, maximum output, quota handling and warming defaults are unchanged.
 
+A team member — the lead included — condenses at **400 000** tokens of context when none of its rows sets an Input threshold (`TEAM_CONTEXT_TOKENS`). An explicit row at any level still wins, and `off` still means no early trigger; non-team agents are unchanged. The footer's context % measures a member against it too.
+
+After a compaction completes in a delegated run's chat, Plus sends that run's Brief again whole, as one steer (`teams/brief-resend.ts`): the summary would otherwise be its only memory of the task. It happens once per compaction, only while the run is working (or idle with its attempt still open), never for the lead's own run, and the steer's message id is derived from the run and the compaction, so a replay sends nothing twice. `team_followup` refuses a prompt, `paths` or `rebase` to a child above the member's **Child context limit (tokens)** row (Limits, default 400 000) with `E_CONTEXT`, naming the run, its size, the limit and `team_delegate` of a fresh run with the report and branch; a budget-only call still applies.
+
 ## Monitor
 
 `/monitor` (`ctrl+x o`) opens four tabs — **Cache · Prompt · Tools · Sessions**, plus **Team** while a team is active ([Team tab](#team-tab)) — filtered to

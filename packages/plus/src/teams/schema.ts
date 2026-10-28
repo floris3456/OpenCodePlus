@@ -698,7 +698,9 @@ export type BudgetOverBy = typeof BudgetOverBy.Type
 
 // A child session's context size in the status output is the prompt size of
 // its latest completed step (input + cache read + cache write), or null when
-// it has no completed step. Its compaction is its own model's (compactionInput).
+// it has no completed step. A team member (the lead included) condenses at
+// TEAM_CONTEXT_TOKENS of context unless a Compaction › Input row sets its own
+// threshold.
 
 export interface BudgetDimension {
   name: "turns" | "tokens" | "wall"
