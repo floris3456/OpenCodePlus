@@ -166,6 +166,7 @@ export async function integrateHandler(ctx: Context, args: IntegrateInput, calle
 function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
   const task = entry.reworkTask
   const red = (entry.redChecks ?? []).join(", ")
+  const note = skippedNote(entry)
   const fresh = `a fresh implementer${task === undefined ? "" : ` with task "${task}"`} to redo the change on your current HEAD (attach this child's team_diff as a briefFile), then team_stop this child`
   const next =
     entry.state === "conflict"
@@ -179,6 +180,8 @@ function reworkValue(entry: MergeEntry, cleanup: Cleanup[]) {
     ...(entry.redChecks === undefined ? {} : { redChecks: entry.redChecks }),
     ...(entry.redAtParent === true ? { redAtParent: true } : {}),
     ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed }),
+    ...skippedChecks(entry),
+    ...(note === undefined ? {} : { note }),
     ...verifiedChecks(entry),
     ...(task === undefined ? {} : { reworkTask: task }),
     next,
@@ -215,16 +218,40 @@ interface Cleanup {
 
 function landedValue(entry: MergeEntry, cleanup: Cleanup[]) {
   const removal = cleanup.find((item) => item.run === entry.childRun)
+  const note = [stillRedNote(entry), skippedNote(entry)].filter((line) => line !== undefined).join(" ")
   return {
     entry: entry.id,
     state: "landed",
     head: entry.landedHead ?? entry.childHead,
     worktree: removal?.worktree,
     reason: removal?.reason,
-    ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed, note: `Checks [${entry.stillRed.join(", ")}] already fail at the parent's HEAD; they did not block this landing.` }),
+    ...(entry.stillRed === undefined ? {} : { stillRed: entry.stillRed }),
+    ...skippedChecks(entry),
+    ...(note === "" ? {} : { note }),
     ...verifiedChecks(entry),
     cleanup,
   }
+}
+
+/** The checks this landing did not run, named on the answer; absent when none. */
+function skippedChecks(entry: MergeEntry) {
+  if (entry.skippedChecks === undefined || entry.skippedChecks.length === 0) return {}
+  return { skippedChecks: entry.skippedChecks }
+}
+
+function stillRedNote(entry: MergeEntry): string | undefined {
+  if (entry.stillRed === undefined) return undefined
+  return `Checks [${entry.stillRed.join(", ")}] already fail at the parent's HEAD; they did not block this landing.`
+}
+
+/**
+ * The checks this landing did not run because they judge their own run's
+ * change: a size, budget or anti-mess gate says nothing about another run.
+ */
+function skippedNote(entry: MergeEntry): string | undefined {
+  if (entry.skippedChecks === undefined || entry.skippedChecks.length === 0) return undefined
+  const list = entry.skippedChecks.map((check) => `${check.id} (${check.runID})`).join(", ")
+  return `Not run at this landing: ${list}: they judge their own run's change.`
 }
 
 function verifiedChecks(entry: MergeEntry) {

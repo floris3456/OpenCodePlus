@@ -1362,3 +1362,79 @@ test("new failures refuse with a rebase followup; pre-existing failures land wit
     }
   })
 }, 60000)
+
+// A size, budget or anti-mess gate judges the change its own run made, so a
+// later landing does not run it (and does not go red on it).
+test("a landing does not run an earlier child's change-scoped check, and its answer says so", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo()
+    try {
+      const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const changed = out("diff", "--name-only", "--no-renames", out("merge-base", "HEAD", "main"), "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) process.exit(1)
+`
+      await fs.mkdir(path.join(repo.dir, "tools"), { recursive: true })
+      await fs.writeFile(path.join(repo.dir, "tools", "gate.ts"), gate)
+      await git(repo.dir, ["add", "tools/gate.ts"])
+      await git(repo.dir, ["commit", "-m", "test: change gate"])
+      const base = await git(repo.dir, ["rev-parse", "HEAD"])
+      await fs.mkdir(path.join(repo.dir, ".opencodeplus"), { recursive: true })
+      await fs.writeFile(
+        path.join(repo.dir, ".opencodeplus", "checks.json"),
+        JSON.stringify({ version: 1, checks: { size: { argv: ["bun", "tools/gate.ts"], scope: "change" } } }),
+      )
+      const now = new Date().toISOString()
+      const parent = baseRun({
+        id: "main-abcdefabcdefabcd",
+        role: "opus-orchestrator",
+        kind: "main",
+        directory: repo.dir,
+        branch: "main",
+        base,
+        head: base,
+        state: "working",
+        attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+        sessionID: "ses_parent_scope",
+        children: ["w-8888888888888888", "w-9999999999999999"],
+      })
+      await saveRun(root, parent)
+      const childOf = (id: string, work: { dir: string; branch: string; head: string }) =>
+        baseRun({
+          id,
+          role: "implementer",
+          directory: work.dir,
+          branch: work.branch,
+          base,
+          head: work.head,
+          state: "idle",
+          attempts: [{ n: 1, state: "succeeded", startedAt: now, trigger: "delegate", endedAt: now }],
+          parent: parent.id,
+          sessionID: `ses_${id}`,
+          task: null,
+        })
+      // The first child is given the gate; the second has no checks of its own.
+      const first = childOf("w-8888888888888888", await makeChild(repo.scratch, repo.dir, "first-scope", base, { "first.txt": "first\n" }, "feat: first"))
+      await atomicJson(path.join(root, "runs", first.id, "checks.json"), [{ id: "size", argv: ["bun", "tools/gate.ts"] }])
+      await saveRun(root, first)
+      await writeReport(root, first.id, 1, "done")
+      const landed = required(await integrateHandler(ctxFor(), { run: first.id }, callerFor(parent), shippedTable())) as { state: string }
+      expect(landed.state).toBe("landed")
+      const second = childOf("w-9999999999999999", await makeChild(repo.scratch, repo.dir, "second-scope", base, { "second.txt": "second\n" }, "feat: second"))
+      await atomicJson(path.join(root, "runs", second.id, "checks.json"), [])
+      await saveRun(root, second)
+      await writeReport(root, second.id, 1, "done")
+      const value = required(await integrateHandler(ctxFor(), { run: second.id }, callerFor(parent), shippedTable())) as {
+        state: string
+        note: string
+        skippedChecks: Array<{ id: string; runID: string }>
+      }
+      expect(value.state).toBe("landed")
+      expect(value.skippedChecks).toEqual([{ id: "size", runID: first.id }])
+      expect(value.note).toBe(`Not run at this landing: size (${first.id}): they judge their own run's change.`)
+      expect(await lastReceipt(root, second.id, "size")).toBeUndefined()
+    } finally {
+      await fs.rm(repo.scratch, { recursive: true, force: true })
+    }
+  })
+}, 60000)
