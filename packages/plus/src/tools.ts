@@ -28,6 +28,7 @@ import {
   planFolderCreate,
   planFolderDelete,
   planFolderRename,
+  planGroupMove,
   planLayoutReview,
   planRowMove,
   planSectionMove,
@@ -3159,15 +3160,19 @@ function folderSkipKind(node: Lazy): string {
 
 // The copy goes right after the original in their list; a list that does not
 // take that order (a built-in agent's copy lands among the user agents) keeps
-// its own.
+// its own. An item row moves with the tab's folders (planRowMove); an owner
+// row — an agent, a team, a member — reorders inside its group list instead
+// (planGroupMove), which planRowMove refuses as built-in structure.
 function placeAfter(memo: MemoInput, layout: LayoutRecords, row: string, source: DuplicateSource): LayoutRecords {
   const tree = buildTreeMemo(memo)
   // A folder whose tab took its own copy of an inherited layout has a new id.
   const original = findLazy(tree, source.row)?.id
     ?? (source.kind === "folder" ? findLazy(tree, source.parent)?.children().find((entry) => entry.id.includes(":folder:") && entry.label === source.name && entry.id !== row)?.id : undefined)
   if (original === undefined) return layout
-  const moved = planRowMove(memo, layout, row, { after: original }, new Date().toISOString(), tree)
-  return "refusal" in moved ? layout : moved.layout
+  const updated = new Date().toISOString()
+  const moved = planRowMove(memo, layout, row, { after: original }, updated, tree)
+  const placed = "refusal" in moved ? planGroupMove(memo, layout, row, { after: original }, updated, tree) : moved
+  return "refusal" in placed ? layout : placed.layout
 }
 
 // A row made inside a folder goes into it; a row whose list cannot hold it

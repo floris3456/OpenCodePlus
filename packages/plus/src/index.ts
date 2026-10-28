@@ -1136,7 +1136,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // A link left behind by a deleted agent of the same id is replaced (or,
       // with no preset, dropped) so the new agent starts where it was asked to.
       await setOwnerLink(directory, { level: input.scope, agent: validated.id }, input.preset ?? null)
-      await Effect.runPromise(ctx.agent.reload())
+      await reloadAgentFiles(ctx, input.scope, (ids) => ids.has(validated.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
@@ -1230,7 +1230,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         const reason = "the store changed concurrently; retry"
         return { ok: false as const, error: { code: "agent.invalid" as const, message: `Could not rename ${from.id}: ${reason}`, data: { id: input.from, reason } } }
       }
-      await Effect.runPromise(ctx.agent.reload())
+      await reloadAgentFiles(ctx, input.scope, (ids) => ids.has(to.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
@@ -1266,7 +1266,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
       await removeAgentRecords(directory, loaded, validated.id, input.scope)
-      await Effect.runPromise(ctx.agent.reload())
+      // A delete leaves no id to look for (another level may own the same one),
+      // so the project file being gone is what asks for the rescan.
+      await reloadAgentFiles(ctx, input.scope)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins, true))
       await logFileOp({
         directory,
@@ -5958,6 +5960,57 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.teamOutputIds = new Map()
       state.hostModels = undefined
       state.hostCatalog = undefined
+    }),
+  )
+}
+
+// Core reads agent markdown in its config agent plugin, and `Agent.reload` only
+// re-runs the installed transforms over the documents that plugin read last
+// (core/src/agent.ts, core/src/config/plugin/agent.ts). A project's agent files
+// are not watched (ConfigWatch.plan: only the service-wide config roots are),
+// so a create, duplicate, rename or delete under the project reaches the host
+// registry only on that plugin's next scan — which a forced config reload asks
+// for, and which the plugin then announces with agent.updated. Waiting for
+// that announcement is what keeps a written agent out of a restart. A global
+// agent needs neither: its directory is watched, so core rescans it itself.
+// `settled` names what the registry must show, so a write it already reflects
+// costs no rescan; a delete leaves no id to check (another level may hold the
+// same id), so it passes none and the write itself decides.
+const AGENT_RESCAN_LIMIT = Duration.seconds(2)
+async function reloadAgentFiles(
+  ctx: Context,
+  scope: "project" | "global",
+  settled?: (ids: ReadonlySet<string>) => boolean,
+): Promise<void> {
+  const registered = () =>
+    Effect.runPromise(Effect.map(ctx.agent.list(), (result) => new Set(result.data.map((agent) => String(agent.id)))))
+  await Effect.runPromise(ctx.agent.reload())
+  if (scope === "global" || (settled !== undefined && settled(await registered()))) return
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const rescans = yield* Queue.unbounded<void>()
+      const watch = yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === Agent.Event.Updated.type),
+        Stream.runForEach(() => Queue.offer(rescans, undefined).pipe(Effect.asVoid)),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const deadline = Date.now() + Duration.toMillis(AGENT_RESCAN_LIMIT)
+          yield* ctx.config.reload({ force: true })
+          while (settled === undefined || !settled(yield* Effect.promise(registered))) {
+            // One deadline for the whole wait: an unrelated agent.updated must
+            // not extend it, and a host that never rescans gives up instead of
+            // holding the write open. Its next config reload picks the file up.
+            const next = yield* Queue.take(rescans).pipe(Effect.timeoutOption(Math.max(0, deadline - Date.now())))
+            if (Option.isNone(next)) return
+            // No predicate (a delete): the first rescan announces the new list,
+            // so the read after the write sees it.
+            if (settled === undefined) return
+          }
+        }),
+        Fiber.interrupt(watch),
+      )
     }),
   )
 }

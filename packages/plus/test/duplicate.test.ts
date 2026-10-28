@@ -145,6 +145,26 @@ test("a user agent's copy is its file, its rows and its folders, placed right af
   expect(JSON.stringify(await ok(tools, "read", { id: "item:project:alpha:tool:reader" }))).toContain("Alpha reads carefully.")
 })
 
+test("an agent's copy goes right after its original in its catalogue list", async () => {
+  // Two agents whose names sort either side of the copy's, so an unsaved
+  // order (the file order) cannot accidentally place it right.
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-duplicate-order-"))
+  roots.push(root)
+  process.env.OPENCODE_CONFIG_DIR = path.join(root, "config")
+  const project = path.join(root, "project")
+  await Bun.write(path.join(project, ".opencode", "agent", "alpha.md"), formatMarkdown({ mode: "primary" }, "a\n"))
+  await Bun.write(path.join(project, ".opencode", "agent", "zulu.md"), formatMarkdown({ mode: "primary" }, "z\n"))
+  const ctx = fullContext({ directory: project, agents: [agentInfo("alpha"), agentInfo("zulu")] })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+
+  await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:project:alpha"], name: "yyy" })
+  const listed = await rows(api)
+  const agents = listed.filter((row) => row.kind === "agent" && row.id.startsWith("agent:project:")).map((row) => row.id)
+  expect(agents).toEqual(["agent:project:alpha", "agent:project:yyy", "agent:project:zulu"])
+})
+
 test("a built-in agent's copy is a user agent with the built-in's effective configuration, and no link", async () => {
   const { tools, project, api } = await fixture()
   await ok(tools, "set", { id: "item:project:build:tool:reader", state: "off" })
