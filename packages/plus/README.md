@@ -582,6 +582,27 @@ says so: `The host retried it 5 times over 5 min 40 s (from 10:00 UTC) before
 the step failed.` after the `Error:` line, or `Provider errors: the host
 retried … (last: …)` before `next:` when the run recovered.
 
+A quota answer is not a broken run. When a step fails on one and the answer
+names a reset (`packages/cliproxyapi/src/quota-reset.ts` — `resets in 3h12m`,
+`resets at <ISO>`, `"resets_at"`, `retry after <s>`, else 15 minutes with
+"reset time unknown"), `settleAttempt` records `blockedUntil` on the attempt,
+writes the provider's cooldown to `<teams root>/cooldowns.json`
+(`{ [key]: { untilMs, text, error, at, run } }`, expired entries dropped on the
+next write) and the settlement reads `settled: blocked — <key> quota; resets at
+<HH:MM> UTC (in <h> h <m> min). Not retried.` with the usual `Error:` line and
+`next: delegate the Brief to a member on another provider, or follow up after
+the reset.` The provider key is the run's `loadedModel ?? requestedModel` as
+`provider/model`, or `provider/vendor` when the model id names a vendor first
+(`cliproxyapi/commandcode/deepseek/deepseek-v4.1-flash` →
+`cliproxyapi/commandcode`): a CPA account's quota is not one model's.
+`team_delegate` refuses a member whose active model is on a cooling provider
+with `E_COOLDOWN`: `<role> runs on <key>, which is out of quota until <text>
+(cooldown from run <run>). Delegate to a member on another provider, or wait.`,
+as does `team_followup` when the call would prompt that child (a budget or
+paths change alone is not refused). `team_status` shows the run's active
+`cooldown` and its `blockedUntil`. Outside teams, a quota that resets hours out
+ends the step at once (the cliproxyapi retry hook) instead of retrying.
+
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`. Without a report, its attempt is `no_report` — unless the run
   still has an open child (one that holds a slot: `starting`, `working`,

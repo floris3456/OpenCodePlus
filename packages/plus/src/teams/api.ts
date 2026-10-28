@@ -78,6 +78,7 @@ import {
 } from "./schema.js"
 import { checksNote, readProjectChecks, resolveChecks } from "./project-checks.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
+import { activeCooldown, cooldownRefusal, cooldownText, providerKey, providerKeyOfRun } from "./cooldown.js"
 import { addAdhoc, claim } from "./tasks.js"
 import { queue } from "./merge.js"
 import { provision, slug, NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -436,6 +437,17 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       "an existing test file or a writable file in scope.paths",
     )
   }
+
+  // The member's provider may be cooling after a quota answer (a settlement
+  // wrote cooldowns.json): starting the run would spend a worktree and a step
+  // into a quota that resets in hours. The active model is what the child is
+  // switched to; with none known, the check is skipped rather than guessed.
+  const cooling = providerKey(state.activeModels.get(brief.role))
+  const cooldown = cooling === undefined ? undefined : await activeCooldown(root, cooling, Date.now())
+  if (cooling !== undefined && cooldown !== undefined)
+    return fail("E_COOLDOWN", cooldownRefusal(brief.role, cooling, cooldown, Date.now()), {
+      cooldown: { key: cooling, untilMs: cooldown.untilMs, text: cooldownText(cooldown, Date.now()) },
+    })
 
   if (taskID === undefined) {
     const title = brief.objective.split("\n")[0] ?? ""
@@ -1495,6 +1507,8 @@ async function statusOf(ctx: Context, root: string, id: string) {
   const tokensUsed = usage?.used
   const contextTokens = await sessionContextTokens(ctx, record)
   const exhaustion = budgetExhaustion(record, { tokensUsed })
+  const cooling = providerKeyOfRun(record)
+  const cooldown = cooling === undefined ? undefined : await activeCooldown(root, cooling, Date.now())
   return {
     run: record.id,
     role: record.role,
@@ -1539,6 +1553,10 @@ async function statusOf(ctx: Context, root: string, id: string) {
       history: record.history.filter((h): h is BudgetHistoryEntry => "reason" in h),
     },
     retrying: activeRetrying(record.retrying),
+    ...(cooldown === undefined || cooling === undefined
+      ? {}
+      : { cooldown: { provider: cooling, untilMs: cooldown.untilMs, text: cooldownText(cooldown, Date.now()), run: cooldown.run } }),
+    ...(last?.blockedUntil === undefined ? {} : { blockedUntil: last.blockedUntil }),
   }
 }
 
