@@ -2301,7 +2301,8 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    recovered adds `Provider errors: the host retried … (last: <type>
    (<status>))` before its `next:`. An idle parent is prompted with it
    immediately; a working parent receives it through its own idle handoff. An
-   attempt kept open is not settled, so nothing is told;
+   attempt kept open is not settled, so nothing is told. A quota answer with a
+   readable reset instead settles `blocked` (see **Quota cooldown** below);
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run
    `idle → working`: a new attempt (trigger `followup`) when the last attempt
    has ended, the same attempt when it is still open. Items already recorded
@@ -2327,6 +2328,27 @@ once, unless that parent is the run that stopped it.
 `InboxKind` gains `child.settled`; `partition` and `batchNotify` classify it
 with `notify` and `system`, so a batch of settlements reaches a parent as one
 synthetic text.
+
+**Quota cooldown.** A quota 429 is neither a broken run nor a briefly
+unavailable model: the provider answers again at a named reset, so
+`settleAttempt` reads it with the cliproxyapi parser (`quotaReset`,
+`packages/cliproxyapi/src/quota-reset.ts`; both plugins share it rather than
+keeping a copy), records the attempt's `blockedUntil`, writes the provider's
+cooldown to `<teams root>/cooldowns.json` (`{ [key]: { untilMs, text, error,
+at, run } }` through `atomicJson`, expired entries dropped on the next write)
+and the settlement reads `settled: blocked — <key> quota; resets at <text>. Not
+retried.` followed by the usual `Error:` line and `next: delegate the Brief to
+a member on another provider, or follow up after the reset.` The key is the
+run's `loadedModel ?? requestedModel` as `provider/model`, or `provider/vendor`
+when the model id names a vendor first (`cliproxyapi/commandcode/deepseek/
+deepseek-v4.1-flash` → `cliproxyapi/commandcode`): one CPA account's quota is
+not one model's. `team_delegate` refuses `E_COOLDOWN` when the member's active
+model is on a cooling provider, before any worktree is created, and skips the
+check when no active model is known; `team_followup` refuses the same way only
+for a call that would prompt that child (`prompt`; a budget or paths change is
+allowed). `team_status` adds the run's active `cooldown` and its
+`blockedUntil`. `packages/cliproxyapi/src/outage.ts` ends a step at once when
+such a quota resets more than two minutes out, even if Core said retry.
 
 `lifecycle.sweep(ctx, root)` is the one periodic tick: `startSweep` runs it at
 `policy.sweep.tickMs` (default 2000 ms) forked on the plugin scope, so it is
