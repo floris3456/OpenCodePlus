@@ -95,6 +95,10 @@ test.skipIf(skip !== false)("a pointers worktree holds the LFS pointer text and 
   expect(text.startsWith(POINTER)).toBe(true)
   expect(text).toContain("oid sha256:")
   expect(await git(created.dir, ["status", "--porcelain"])).toBe("")
+  // The commands Plus runs in a worktree (checkpoint expands directories with
+  // `diff HEAD`, finishes on `status`, checks measure a temp index) see the
+  // same clean tree: the pointer text hashes to the committed blob.
+  expect(await git(created.dir, ["diff", "HEAD", "--name-only", "--no-renames"])).toBe("")
   // A checkpoint-shaped commit (stage the files the run names, then commit)
   // leaves the pointer alone: the clean filter keeps it, so the LFS file is
   // not "modified" afterwards either.
