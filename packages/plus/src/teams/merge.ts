@@ -363,7 +363,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
         ),
       )
       const groups = new Map<string, { check: Check; runID: string; own: boolean; bindings: { check: Check; runID: string }[] }>()
-      const skippedChecks: NonNullable<MergeEntry["skippedChecks"]> = []
+      const skipped: Array<{ check: Check; runID: string }> = []
       for (const source of [{ runID: entry.parentRun, checks: ctx.checks }, ...sources]) {
         for (const check of source.checks) {
           // A size, budget or anti-mess gate judges the change the run it is
@@ -371,7 +371,7 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           // different change, so running it here would judge the wrong one
           // (and go red for a change this child never made).
           if (source.runID !== entry.childRun && isChangeScoped(check, project)) {
-            skippedChecks.push({ id: check.id, runID: source.runID })
+            skipped.push({ check, runID: source.runID })
             continue
           }
           const key = commandKey(check)
@@ -384,6 +384,9 @@ export async function process(root: string, entry: MergeEntry, ctx: MergeContext
           })
         }
       }
+      // The same command may still run as the landing child's own check (it is
+      // then in groups): it is not "not run", so it is no longer reported.
+      const skippedChecks = skipped.filter((item) => !groups.has(commandKey(item.check))).map((item) => ({ id: item.check.id, runID: item.runID }))
       let cur: MergeEntry = { ...entry, state: "rebasing", updatedAt: nowIso(), ...(skippedChecks.length === 0 ? {} : { skippedChecks }) }
       yield* io(() => saveEntry(root, cur))
       const tempDir = tempDirFor(ctx, entry.parentRun, entry.id)

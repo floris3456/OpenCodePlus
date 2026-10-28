@@ -475,6 +475,29 @@ if (changed.length > 1) process.exit(1)
     expect(result.processed[1]).toMatchObject({ state: "red", redChecks: ["contract"] })
   })
 
+  test("a change-scoped check the landing child is also given still runs and is not reported skipped", async () => {
+    const gate = `import { spawnSync } from "node:child_process"
+const out = (...args: string[]) => spawnSync("git", args, { encoding: "utf8" }).stdout.trim()
+const changed = out("diff", "--name-only", "--no-renames", out("merge-base", "HEAD", "main"), "HEAD").split("\\n").filter(Boolean)
+if (changed.length > 1) process.exit(1)
+`
+    const base = await commitMain({ "tools/teamgate/shared-gate.ts": gate }, "test: shared change gate")
+    const size = { id: "size", argv: ["bun", "tools/teamgate/shared-gate.ts"] }
+    await writeProjectChecks(repoRoot, { version: 1, checks: { size: { argv: size.argv, scope: "change" } } })
+    const parent = await parentAt("shared-scope", base)
+    const parentRun = "shared-scope-parent"
+    const childRun = "shared-scope-child"
+    const child = await makeChild("shared-scope", base, { "only.txt": "only\n" }, "feat: only")
+    await atomicJson(join(stateDir, "runs", childRun, "checks.json"), [size])
+    await create(stateDir, childRun, [{ id: childRun, title: "Shared", dependsOn: [], role: "implementer", effort: "small", deliverable: { kind: "commit" }, paths: ["only.txt"], checks: [size] }])
+    // The parent's Brief carries the same gate the child is given.
+    await enqueue(stateDir, { parentRun, parentWorktree: parent.dir, childRun, childBranch: child.branch, childHead: child.head })
+    const result = await drain(stateDir, parentRun, ctxFor(parent.dir, [size]))
+    expect(result.processed[0].state).toBe("landed")
+    expect(result.processed[0].skippedChecks).toBeUndefined()
+    expect(await lastReceipt(stateDir, parentRun, "size", result.processed[0].landedHead!)).toMatchObject({ passed: true })
+  })
+
   test("enqueue guards: stale head, dirty parent, already landed", async () => {
     const parent = await makeParent("guards")
     const p = await headOf(parent.dir)
