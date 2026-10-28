@@ -167,8 +167,8 @@ test("l relinks an agent to another preset with the current link preselected, an
   })
   try {
     await goto(fixture, "agent:project:alice", "alice")
+    // l is secondary, so the bar leaves it to the help dialog; the key works.
     expect(binds(fixture)).toContain("l")
-    expect(footer(fixture.captureCharFrame())).toContain("l preset link")
     expect(dispatch(fixture, "l")).toBe(true)
     await until(fixture, () => fixture.fake.linkSets.length === 1)
     expect(fixture.fake.linkSets[0]).toEqual({ level: "project", agent: "alice", preset: basicPlanner })
