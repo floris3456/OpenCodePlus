@@ -1343,10 +1343,12 @@ function describeChecks(
 const CHECKS_NOTE_KEY = JSON.stringify(["projectChecksNote"])
 
 // Scrub the session prompt: drop whole lines containing disabled keywords
-// from every tool description and every system part (base plus instructions).
-// Runs inside the existing session.context hook, after the text plans.
-// Preservation discipline (mirroring spliceToolGuidance): if scrubbing would
-// empty a description or system text entirely, leave the original text rather
+// from every tool description. Runs inside the existing session.context hook,
+// after the text plans. System parts (role rows, user system rows, base
+// prompts, Core's own parts such as the skill list) are author or host text
+// and are never cut: a denied action is enforced by its permission rule, not
+// by hiding prose. Preservation discipline (mirroring spliceToolGuidance): if
+// scrubbing would empty a description entirely, leave the original text rather
 // than installing nothing.
 function applyRuleScrub(event: SessionContext, keywords: readonly string[]): void {
   if (keywords.length === 0) return
@@ -1354,13 +1356,6 @@ function applyRuleScrub(event: SessionContext, keywords: readonly string[]): voi
     const scrubbed = scrubLines(tool.description, keywords).text
     if (scrubbed.trim().length === 0) continue
     tool.description = scrubbed
-  }
-  for (let index = 0; index < event.system.length; index++) {
-    const part = event.system[index]
-    if (part === undefined || typeof part.text !== "string") continue
-    const scrubbed = scrubLines(part.text, keywords).text
-    if (scrubbed.trim().length === 0) continue
-    if (scrubbed !== part.text) event.system[index] = { ...part, text: scrubbed }
   }
 }
 

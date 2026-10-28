@@ -74,8 +74,10 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       .filter((part) => part.text.trim().length > 0),
   ]
   // Listed in the order the agent's requests carry them (its System order).
+  // System parts are author or host text and are never scrubbed live either
+  // (apply.ts applyRuleScrub), so they are reported whole.
   const order = systemOrders({ ...input, agents: [owner] })[0]?.[1]
-  const system = arrangeBySlot(parts, (part) => part.slot, order ?? defaultSystemOrder(userSystemRows(input.items))).map((part) => preserveScrub(part.text, scrubbed))
+  const system = arrangeBySlot(parts, (part) => part.slot, order ?? defaultSystemOrder(userSystemRows(input.items))).map((part) => part.text)
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])
@@ -164,7 +166,8 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // win and the copy would never be consulted.
       const current = skillContent(skills, input.agent, id)
       if (current === undefined) return []
-      return [{ id, content: preserveScrub(current, scrubbed) }]
+      // Skills are never scrubbed: apply installs skill text whole.
+      return [{ id, content: current }]
     })
   return { agent: input.agent, system, tools: visibleTools, skills: visibleSkills }
 }

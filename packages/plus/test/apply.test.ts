@@ -1739,7 +1739,7 @@ test("a team-scoped agent keeps its established chain and the Teams catalogue", 
   }
 })
 
-test("a perm rule off scrubs whole-word lines, keeping head-only lines", async () => {
+test("a perm rule off scrubs whole-word lines from tool descriptions, never from system text", async () => {
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
     tool: toolDomainFor([nativeTool("reader", "read things")]),
@@ -1761,15 +1761,15 @@ test("a perm rule off scrubs whole-word lines, keeping head-only lines", async (
   expect(applied.registrations.length).toBeGreaterThan(0)
   const run = callbacks[0]
   if (!run) throw new Error("missing context hook")
-  const event = sessionEvent("alpha", {}, [{ type: "text", text: description }])
+  const event = sessionEvent("alpha", { shell: { description, input: { type: "object" } } }, [{ type: "text", text: description }])
   await Effect.runPromise(run(event))
-  const text = event.system.map((part) => part.text).join("\n")
-  expect(text).not.toContain("git push to publish")
-  expect(text).toContain("git status")
-  expect(text).toContain("gitpush without space")
+  // Whole-word: the "git push" line goes, head-only and glued forms stay.
+  expect(event.tools["shell"]?.description).toBe("Use git status to inspect.\nUse gitpush without space.")
+  // System parts are author or host text: never cut, whatever a rule matches.
+  expect(event.system.map((part) => part.text).join("\n")).toBe(description)
 })
 
-test("a broad scrub keyword never empties a tool description or system text", async () => {
+test("a broad scrub keyword never empties a tool description, and system text is never cut", async () => {
   const callbacks: ((event: SessionHooks["context"]) => Effect.Effect<void>)[] = []
   const ctx = context({
     tool: toolDomainFor([nativeTool("reader", "read things")]),
