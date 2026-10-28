@@ -122,10 +122,12 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
 
   // Whether the child takes corrections is the child's own row (Briefs it
   // accepts → Corrections by followup), read for the child, not the caller. A
-  // budget raise is no correction, so only a followup carrying text is held to
-  // the row: budget alone reaches any child still working.
+  // budget raise is no correction: only a followup that sends the child text
+  // (a prompt, a widened scope's note, a rebase's note) is held to the row, so
+  // budget alone reaches any child still working.
   const corrections = row(table, child.role, "get_context", "accepts.followup")
-  if (args.prompt !== undefined && (corrections === undefined || !corrections.on))
+  const sendsText = args.prompt !== undefined || args.paths !== undefined || args.rebase === true
+  if (sendsText && (corrections === undefined || !corrections.on))
     return fail(
       "E_NO_FOLLOWUP",
       `${child.role} ${corrections?.item.message ?? "takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report"} (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.`,

@@ -297,6 +297,10 @@ test("a budget-only followup raises a working child's budget even with Correctio
       "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.",
     )
     expect((await loadRun(root, child.id))?.budget.wallMs).toBe(9_000_000)
+
+    // A widened scope sends the child a note too, so it is a correction.
+    const widened = rejected(await api.followup({ run: child.id, requestID: "paths-only", paths: ["docs/notes.md"] }, callerFor(parent)))
+    expect(widened.code).toBe("E_NO_FOLLOWUP")
   })
 })
 
