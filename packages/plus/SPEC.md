@@ -1727,6 +1727,11 @@ still admitted, and the line lets the delegator redirect the work.
 Followup returns `{ attempt, state, next }`, with
 `next: "End your turn: its settlement wakes you."` for admitted, queued and
 budget-only calls. Identical request IDs return the stored output unchanged.
+A call that sends the child text (`prompt`, `paths` or `rebase`) is refused
+with `E_CONTEXT` when the child's latest step holds more context than the
+member's `limits.context` row (default 400 000, `TEAM_CONTEXT_TOKENS`), naming
+the run, its size, the limit and `team_delegate` of a fresh run with the report
+and branch; a budget-only call still applies.
 Session/worktree paths, Brief paths, budgets, model provenance and hashes stay
 in durable run data rather than these admission responses.
 
@@ -2022,8 +2027,9 @@ working at once 4, Delegation depth 3, Brief size 6000 characters, Attached
 brief file 8000 characters, Live team runs in total 12, all on (`E_BOUNDS`,
 `E_ROLE`, `E_TOO_LONG`; an off row removes the bound; an attachment over the
 attachment limit is named by path only, must be committed at the child's base
-(`E_PATHS` otherwise), and does not count toward the brief limit); `team_followup` Limits (Followups per child 5, shipped off;
-`E_ROUNDS`); `team_finish` Requirements for done (Assigned checks pass at HEAD,
+(`E_PATHS` otherwise), and does not count toward the brief limit); `team_followup` Limits (Followups per child 5, shipped off,
+`E_ROUNDS`; Child context limit 400000 tokens, on, `E_CONTEXT`; Budget reminder
+interval 15 minutes); `team_finish` Requirements for done (Assigned checks pass at HEAD,
 on, `E_DIRTY` before checks on uncommitted work, otherwise `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
 `E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
 `E_NOT_DONE`) and Branches it lands on (Protected branches `main`, `master`,
@@ -2183,6 +2189,7 @@ Error codes carrying `accepted` today:
 - `E_BOUNDS`: delegation and followup both name `In-flight limit <n> reached (<runs>).` or `Live team runs limit <n> reached (<runs>).`, then ask the caller to end its turn and retry after a run settles. `<n>` is the caller's Children working at once / Live team runs in total row. Both count only slot-holding team member runs, excluding `kind: "main"` user chats and idle runs with terminal attempts; a session id and a live `starting|working|idle|blocked_input` state are required. The total remains install-wide across projects. Delegation's accepted guidance is `"end your turn and delegate after a child settles"`; followup's is `"retry after a run settles"`.
 - `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
 - `E_ROUNDS`: `"team_stop and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
+- `E_CONTEXT`: `"team_delegate a fresh run"` when a followup that sends text (`prompt`, `paths` or `rebase`) targets a child whose latest step holds more context than the caller's Child context limit row (default 400000); the message names the run, its token size, the limit, `team_followup limits.context`, and the fresh run's Brief carrying this run's report and branch
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
 - `E_NO_COMMIT`: `{"status":"blocked","needs":[{"kind":"info","detail":"why nothing was committed"}]}` for `done` on a commit deliverable with no commit since the base, while its row is on
 - `E_PERMISSION` (from `team_check`): `{"status":"blocked","needs":[{"kind":"check","detail":"<check id>"}]}` when the caller's Checks it may run row for that check's family is off
@@ -2315,6 +2322,30 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    has ended, the same attempt when it is still open. Items already recorded
    on an attempt's `inbox` list (a followup that was delivered immediately to
    an already idle child) are consumed without being prompted again.
+
+### Context: the team default and the Brief re-send (`compaction/rows.ts`, `teams/brief-resend.ts`, `index.ts`)
+
+A team member — the lead included — condenses at `TEAM_CONTEXT_TOKENS`
+(400 000, `teams/schema.ts`) when no Compaction › Input row sets a threshold
+for its (agent, model): `decideCompaction` receives `team: true` from
+`decideCompactionFor` when its cached agent source carries a team, and
+`inputThresholdOf` answers the same value for `compaction.window`, so the
+footer's context % measures a member against it. An explicit row at any level
+still decides and `off` still means no early trigger; a non-team agent keeps
+core's window.
+
+A child's Brief is its first user message, and core's compaction summarizes
+everything older than its kept tail. On the durable `session.compaction.ended`
+event (which carries `sessionID`, also published for manual compaction) Plus
+looks the session up with `bySession`; for a delegated run (`kind: "w"`, never
+the lead's `main-*`) that is `working` or `idle` with an open attempt, it sends
+`runs/<id>/brief.md` again whole as one steer,
+`"[team] Your Brief, whole again after the condense (the summary above may
+shorten it):\n\n" + brief`. A stopped, settled or missing run, and a run with no
+`brief.md`, gets nothing. The delivery is remembered per (run, compaction event
+id) in the process, and the steer's `SessionMessage.ID` is a hash of that pair,
+so a replay after a restart reuses the inbox id and core treats it as the same
+admission.
 
 **Waiting on children.** There is no `team_wait`: a parent ends its turn and a
 settling child wakes it (step 3 of the child's own pass). A turn that ends
@@ -2963,7 +2994,7 @@ the shipped limits):
 | `opencode_session_move` | Sessions (param `sessionID`: other sessions) · Destinations (input `directory`: absolute paths, `../`) |
 | `opencode_session_rename` | Sessions (param `sessionID`) · Limits (Longest title 80 characters, refuse) |
 | `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 12, on) · Requirements (team: reason) · Approval |
-| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`, `paths`) · Limits (team: Followups per child 5, off) · Approval |
+| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`, `paths`) · Limits (team: Followups per child 5, off; Child context limit 400000, on) · Approval |
 | `team_integrate` | Outcomes it lands (team) · Branches it lands on (team: protected branches) · Approval |
 | `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
 | `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |

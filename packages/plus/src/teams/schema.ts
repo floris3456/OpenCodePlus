@@ -208,6 +208,11 @@ function field<S extends Schema.Constraint>(
   return Schema.withDecodingDefaultTypeKey<S, never>(Effect.sync(def))(schema)
 }
 
+// A team member's context at which it condenses or starts fresh, unless an
+// Instructions row sets Compaction › Input token threshold for it. Read by the
+// compaction decision and by team_followup's own context limit.
+export const TEAM_CONTEXT_TOKENS = 400_000
+
 // Identity primitives.
 export const Head = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))
 export type Head = typeof Head.Type
@@ -693,7 +698,9 @@ export type BudgetOverBy = typeof BudgetOverBy.Type
 
 // A child session's context size in the status output is the prompt size of
 // its latest completed step (input + cache read + cache write), or null when
-// it has no completed step. Its compaction is its own model's (compactionInput).
+// it has no completed step. A team member (the lead included) condenses at
+// TEAM_CONTEXT_TOKENS of context unless a Compaction › Input row sets its own
+// threshold.
 
 export interface BudgetDimension {
   name: "turns" | "tokens" | "wall"

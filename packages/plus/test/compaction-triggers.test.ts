@@ -6,6 +6,7 @@ import { Session } from "@opencode/schema/session"
 import { decideCompactionTriggers } from "../src/compaction/triggers.js"
 import { decideCompaction } from "../src/compaction/decide.js"
 import type { ModelSettingsRecord } from "../src/instructions/model-settings.js"
+import { TEAM_CONTEXT_TOKENS } from "../src/teams/schema.js"
 
 const decision = (overrides: Partial<SessionCompactionDecision> = {}): SessionCompactionDecision => ({
   sessionID: Session.ID.make("ses_threshold"),
@@ -40,6 +41,36 @@ test("either inclusive early threshold arms only compaction, preserving strategy
   expect(event.compact).toBeUndefined()
   decideCompactionTriggers(event, {})
   expect(event.compact).toBeUndefined()
+})
+
+test("a team member with no threshold row compacts at the team's 400k, an explicit row still decides, a non-team agent is unchanged", () => {
+  const every = (overrides: Partial<ModelSettingsRecord>): ModelSettingsRecord => ({
+    type: "modelSettings",
+    level: "defaults",
+    updated: "2026-10-11",
+    ...overrides,
+  })
+  const at = (input: number, context: Parameters<typeof decideCompaction>[1] = {}) => {
+    const event = decision({ metrics: { input, output: 0, advanced: true } })
+    decideCompaction(event, context)
+    return event.compact === true
+  }
+  // No row: the team default, inclusively.
+  expect(at(TEAM_CONTEXT_TOKENS - 1, { team: true })).toBe(false)
+  expect(at(TEAM_CONTEXT_TOKENS, { team: true })).toBe(true)
+  expect(at(900_000, { team: true })).toBe(true)
+  // An explicit row at any level wins, including off.
+  const row = { compactionInput: { value: "750000", level: "project" as const } }
+  expect(at(TEAM_CONTEXT_TOKENS, { team: true, rows: row })).toBe(false)
+  expect(at(750_000, { team: true, rows: row })).toBe(true)
+  expect(at(900_000, { team: true, rows: { compactionInput: { value: "off", level: "project" as const } } })).toBe(false)
+  expect(at(750_000, { team: true, every: every({ compactionInput: "750000" }) })).toBe(true)
+  // A non-team agent keeps today's behaviour: no row, no early trigger.
+  expect(at(900_000, {})).toBe(false)
+  expect(at(900_000, { team: false })).toBe(false)
+  expect(at(750_000, { every: every({ compactionInput: "750000" }) })).toBe(true)
+  // Off is no threshold for a non-team agent too.
+  expect(at(900_000, { every: every({ compactionInput: "off" }) })).toBe(false)
 })
 
 test("manual, overflow, safety threshold, auto:false, cold/armed/quota and fresh native checkpoints retain precedence", () => {

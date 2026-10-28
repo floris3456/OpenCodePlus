@@ -33,6 +33,7 @@ import { createTeamApi } from "./teams/api.js"
 import { byDirectory, bySession, loadRun } from "./teams/run.js"
 import { readJson } from "./teams/store.js"
 import { onSessionEvent, slowWarning, startSweep } from "./teams/lifecycle.js"
+import { resendBriefAfterCompaction } from "./teams/brief-resend.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
@@ -101,7 +102,7 @@ import { agentAttention, mergeAttention, type AttentionRow } from "./attention-s
 import { attentionStore } from "./attention.js"
 import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
-import { armedColdListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
+import { armedColdListOf, compactionRowsOf, inputThresholdOf, isTeamMember, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionInstructionsUpdate, SessionWarming } from "@opencode/plugin/effect/session"
@@ -4239,6 +4240,7 @@ export function decideCompactionFor(
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),
       ...(agentWide === undefined ? {} : { agent: agentWide }),
+      ...(isTeamMember(state, event.agent) ? { team: true } : {}),
       ...(consulted && cold !== undefined ? { cold } : {}),
     })
   })
@@ -7056,6 +7058,11 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
           const completedAt = typeof created === "number" ? created : Date.now()
           warmingStore.invalidateCompaction(sessionID, completedAt)
           yield* emitWarmingChanged(state, sessionID)
+          // A child's condensed chat gets its Brief again whole, as one steer.
+          if (event.type === "session.compaction.ended")
+            yield* Effect.promise(() =>
+              resendBriefAfterCompaction(ctx, teamsDataDir(), { id: event.id, sessionID }),
+            ).pipe(Effect.catchCause((cause) => Effect.logWarning("plus team brief re-send failed", { cause, sessionID })))
         }
       }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus compaction event failed", { cause, type: event.type })),
