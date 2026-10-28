@@ -1479,6 +1479,9 @@ async function statusOf(ctx: Context, root: string, id: string) {
     ...(record.stopReason === undefined ? {} : { stopReason: record.stopReason }),
     attempt: last?.n ?? 0,
     attemptState: last?.state ?? "queued",
+    // The uncommitted work the last attempt left when it settled without a
+    // report, so a parent can apply it or delegate a run that starts from it.
+    patch: last?.patch ?? null,
     task: record.task,
     head,
     base: record.base,

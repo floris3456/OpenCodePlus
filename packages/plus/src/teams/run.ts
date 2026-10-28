@@ -24,6 +24,14 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  /** The uncommitted work this attempt left when it settled without a report:
+   * one binary patch in the run folder that a parent can apply in a worktree
+   * (`git apply --index <file>`) or hand to a fresh run. Undefined for a clean
+   * worktree, a removed worktree, or a failed save (see the settlement text). */
+  patch?: { file: string; files: number; bytes: number; skipped: string[] }
+  /** Why the patch could not be saved, when the settlement had uncommitted work
+   * but writing it failed. The settlement still goes out and says so. */
+  patchError?: string
   /** Plus asked this delegated attempt once to report after a turn ended without team_finish. */
   finishNudged?: boolean
   /** Error types already notified to the parent during this attempt. */

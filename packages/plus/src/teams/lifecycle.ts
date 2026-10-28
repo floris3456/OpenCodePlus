@@ -7,7 +7,7 @@ import { Session } from "@opencode/schema/session"
 import { Duration, Effect, Fiber, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
 import { batchNotify, partition, peek, put, take, teamInboxKey, type InboxItem } from "./inbox.js"
 import { io, errCode } from "./io.js"
-import { gitRaw, parsePorcelain } from "./git.js"
+import { gitRaw, parsePorcelain, savePatch } from "./git.js"
 import type { MergeEntry } from "./merge.js"
 import {
   attemptTransition,
@@ -56,15 +56,25 @@ export function resetSweepState(): void {
   lastGcAt = 0
 }
 
-function settledText(run: RunRecord, previous: string, attemptN: number): string {
+function settledText(run: RunRecord, previous: string, attempt: AttemptRecord | undefined): string {
   const task = run.task ?? "-"
   const session = run.sessionID ?? "-"
-  return (
-    `[team] ${run.id} (${run.role}, ${task}) settled: failed — host session gone; attempt ${attemptN} marked failed.\n` +
-    `summary: session ${session} is no longer known to the host; the run was ${previous} and is now dead.\n` +
-    `report: none\n` +
-    `next: team_stop + delegate fresh`
-  )
+  const lines = [
+    `[team] ${run.id} (${run.role}, ${task}) settled: failed — host session gone; attempt ${attempt?.n ?? 0} marked failed.`,
+    `summary: session ${session} is no longer known to the host; the run was ${previous} and is now dead.`,
+    `report: none`,
+  ]
+  if (attempt?.patch !== undefined) lines.push(patchLine(attempt.patch))
+  if (attempt?.patchError !== undefined) lines.push(`Uncommitted work: could not be saved (${attempt.patchError}).`)
+  lines.push("next: team_stop + delegate fresh")
+  return lines.join("\n")
+}
+
+// The uncommitted work of an attempt that ended without a report, as one line:
+// where the patch is and how to use it. A clean worktree says nothing.
+function patchLine(patch: NonNullable<AttemptRecord["patch"]>): string {
+  const skipped = patch.skipped.length > 0 ? `, skipped: ${pathList(patch.skipped)}` : ""
+  return `Uncommitted work saved: ${patch.file} (${patch.files} files, ${patch.bytes} bytes${skipped}). Apply it in a worktree with git apply --index ${patch.file}, or delegate a fresh run that starts from it.`
 }
 
 function deadTrigger(state: RunRecord["state"]): string | undefined {
@@ -143,6 +153,36 @@ async function notifySafe(root: string, parent: string, from: string, text: stri
   await Effect.runPromise(io(() => put(root, parent, { kind: "notify", from, text, dedupeKey })).pipe(Effect.ignore))
 }
 
+// A settlement without a report is the only news a parent gets of what the
+// attempt left behind, so the uncommitted work is written to the run folder
+// before the text is rendered. A clean worktree, a removed worktree and an
+// attempt that did report all keep the settlement as it was; a failed save
+// records its reason on the attempt and never blocks the settlement.
+async function saveAttemptPatch(root: string, run: RunRecord, attempt: AttemptRecord): Promise<AttemptRecord> {
+  if (attempt.patch !== undefined || attempt.patchError !== undefined) return attempt
+  if (!isAttemptTerminal(attempt.state)) return attempt
+  if (run.worktree === "removed" || run.directory === "") return attempt
+  if (!(await onDisk(run.directory))) return attempt
+  if ((await readJson<unknown>(path.join(root, "runs", run.id, `report-${attempt.n}.json`))) !== undefined) return attempt
+  const file = path.join(root, "runs", run.id, `uncommitted-${attempt.n}.patch`)
+  const result = await Effect.runPromise(io(() => savePatch(run.directory, file)).pipe(Effect.result))
+  // The patch lands on the attempt as it is at write time: the settlement pass
+  // may have marked the attempt notified since this copy was read.
+  const saved = await updateRun(root, run.id, (current) => {
+    const last = current.attempts.at(-1)
+    if (last === undefined || last.n !== attempt.n) return current
+    const next: AttemptRecord =
+      result._tag === "Failure"
+        ? { ...last, patchError: result.failure instanceof Error ? result.failure.message : String(result.failure) }
+        : result.success === undefined
+          ? last
+          : { ...last, patch: result.success }
+    if (next === last) return current
+    return { ...current, attempts: [...current.attempts.slice(0, -1), next] }
+  })
+  return saved?.attempts.at(-1) ?? attempt
+}
+
 async function reconcileOne(ctx: Context, root: string, entry: string): Promise<string | undefined> {
   if (entry.startsWith(".")) return undefined
   const record = await loadRecordSafe(root, entry)
@@ -188,10 +228,11 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
     return await failOpenAttempt(dead)
   })
   if (saved === undefined || !applied.changed) return undefined
-  const last = saved.attempts[saved.attempts.length - 1]
-  const attemptN = last?.n ?? 0
-  if (saved.parent !== null && saved.parent !== undefined)
-    await notifySafe(root, saved.parent, saved.id, settledText(saved, applied.previous, attemptN))
+  if (saved.parent !== null && saved.parent !== undefined) {
+    const last = saved.attempts.at(-1)
+    const attempt = last === undefined ? undefined : await saveAttemptPatch(root, saved, last)
+    await notifySafe(root, saved.parent, saved.id, settledText(saved, applied.previous, attempt))
+  }
   return saved.id
 }
 
@@ -500,7 +541,11 @@ export async function onSessionIdle(
   })
   if (marked === undefined) return (await loadRun(root, run.id)) ?? run
   if (settled.nudged) await put(root, marked.id, { kind: "system", from: "plus", text: FINISH_NUDGE })
-  if (settled.attempt !== undefined) await notifyParent(ctx, root, marked, settled.attempt)
+  if (settled.attempt !== undefined) {
+    // The patch is written before the parent's text names it.
+    const attempt = await saveAttemptPatch(root, marked, settled.attempt)
+    await notifyParent(ctx, root, marked, attempt)
+  }
   if (settled.stopped) {
     await evictRunFolder(ctx, marked)
     return marked
@@ -598,7 +643,7 @@ export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: 
   await saveRun(root, toSave)
   await evictRunFolder(ctx, toSave)
   if (waiting && attempt !== undefined && stopped.parent !== null && stopped.parent !== by)
-    await notifyParent(ctx, root, stopped, attempt)
+    await notifyParent(ctx, root, stopped, await saveAttemptPatch(root, stopped, attempt))
   return toSave
 }
 
@@ -655,6 +700,8 @@ export function childSettledText(
   const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    if (attempt.patch !== undefined) lines.push(patchLine(attempt.patch))
+    if (attempt.patchError !== undefined) lines.push(`Uncommitted work: could not be saved (${attempt.patchError}).`)
     if (run.parent !== null && run.state === "stopped" && (run.stopRequestedBy ?? run.stoppedBy) === run.parent) {
       lines.push("next: nothing is needed; you stopped this child. team_followup resumes it with its context.")
       return lines.join("\n")
