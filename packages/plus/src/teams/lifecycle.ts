@@ -279,16 +279,31 @@ export async function onSessionEvent(
 
       const alreadyNotified = (lastAttempt?.notifiedErrors ?? []).includes(errorObj.type)
       const shouldNotify = !alreadyNotified && at - Date.now() >= 10 * 60_000
+      // Provider errors the host retried: counted on the attempt they kept alive,
+      // which is the one the settlement later calls failed or recovered.
+      const retries =
+        lastAttempt !== undefined && !isAttemptTerminal(lastAttempt.state)
+          ? {
+              firstAt: lastAttempt.retries?.firstAt ?? new Date().toISOString(),
+              count: (lastAttempt.retries?.count ?? 0) + 1,
+              error: {
+                type: parsedError?.type ?? errorObj.type,
+                message: parsedError?.message ?? errorObj.message,
+                ...(parsedError?.status === undefined ? {} : { status: parsedError.status }),
+              },
+            }
+          : undefined
 
       let nextAttempts = record.attempts
-      if (shouldNotify && lastAttempt !== undefined) {
+      if (lastAttempt !== undefined && (retries !== undefined || shouldNotify)) {
         const updatedAttempt: AttemptRecord = {
           ...lastAttempt,
-          notifiedErrors: [...(lastAttempt.notifiedErrors ?? []), errorObj.type],
+          ...(retries === undefined ? {} : { retries }),
+          ...(shouldNotify ? { notifiedErrors: [...(lastAttempt.notifiedErrors ?? []), errorObj.type] } : {}),
         }
         nextAttempts = [...record.attempts.slice(0, lastIndex), updatedAttempt]
 
-        if (record.parent !== null && record.parent !== undefined) {
+        if (shouldNotify && record.parent !== null && record.parent !== undefined) {
           const modelObj = lastAttempt.resolvedModel ?? record.resolvedModel
           const providerModel = modelObj ? `${modelObj.providerID}/${modelObj.modelID}` : "unknown"
           const text = `Run ${record.id} (${record.role}, ${providerModel}) got ${retryReason(parsedError ?? errorObj)}. It retries at ${utcTime(at)} UTC, attempt ${attemptNum}. Wait, or stop it with team_stop force and delegate the Brief to another worker.`

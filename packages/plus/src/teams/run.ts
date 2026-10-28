@@ -28,6 +28,9 @@ export interface AttemptRecord {
   finishNudged?: boolean
   /** Error types already notified to the parent during this attempt. */
   notifiedErrors?: string[]
+  /** Provider errors the host retried during this attempt: when the first retry was
+   * scheduled, how many, and the last error. */
+  retries?: { firstAt: string; count: number; error: AttemptError }
   /** Why the host ended this attempt failed (a provider or quota error, say), as the host reported it. */
   error?: AttemptError
   requestedModel?: ModelIdentity | null
