@@ -988,7 +988,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         implCtx,
       )
       expect(summaryMsg).toBe(
-        `E_SUMMARY: summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤40 lines"`,
+        `E_SUMMARY: summary is 41 lines (max 15 for implementer, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.\naccepted: "a summary of ≤15 lines"`,
       )
 
     } finally {

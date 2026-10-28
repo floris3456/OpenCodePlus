@@ -115,22 +115,17 @@ function caught(fn: () => unknown): Promise<unknown> {
   )
 }
 
-test("validateSummary accepts 40 commit lines and rejects 41 with E_SUMMARY", async () => {
-  expect(() => validateSummary(lines(27), "commit")).not.toThrow()
-  expect(() => validateSummary(lines(40), "commit")).not.toThrow()
-  const thrown = await caught(() => validateSummary(lines(41), "commit"))
+test("validateSummary takes the member's limit and names it with the role and row", async () => {
+  expect(() => validateSummary(lines(15), "implementer", 15)).not.toThrow()
+  const thrown = await caught(() => validateSummary(lines(16), "implementer", 15))
   expect(thrown).toMatchObject({
     code: "E_SUMMARY",
-    message: "summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on.",
-    accepted: "a summary of ≤40 lines",
+    message: "summary is 16 lines (max 15 for implementer, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.",
+    accepted: "a summary of ≤15 lines",
   })
-  expect(() => validateSummary(lines(40), undefined)).not.toThrow()
-  // Answers share the same limit, with their locations in findings.
-  expect(() => validateSummary(lines(40), "report")).not.toThrow()
-  expect(await caught(() => validateSummary(lines(41), "findings"))).toMatchObject({
-    code: "E_SUMMARY",
-    message: "summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on, and put each located item in findings instead.",
-  })
+  // The limit is the caller's to give: a longer one passes the same summary.
+  expect(() => validateSummary(lines(30), "scout", 30)).not.toThrow()
+  expect(await caught(() => validateSummary(lines(31), "scout", 30))).toMatchObject({ code: "E_SUMMARY" })
 })
 
 test("teams/schema exports every tool input schema as the single source", () => {

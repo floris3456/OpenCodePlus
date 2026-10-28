@@ -31,7 +31,7 @@ import { stopHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
-import { wildcardMatch } from "../instructions/permission-catalog.js"
+import { summaryLineLimit, wildcardMatch } from "../instructions/permission-catalog.js"
 import { decide, rowState, shellLine, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
@@ -701,10 +701,10 @@ async function uncommittedNamed(directory: string, brief: Brief, attached: strin
 
 async function finishHandler(args: Report, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const assignedBrief = await readJson<{ deliverable?: { kind?: Deliverable["kind"] } }>(path.join(root, "runs", caller.run.id, "brief.json"))
-  validateSummary(args.summary, assignedBrief?.deliverable?.kind)
   const stored = await loadRun(root, caller.run.id)
   if (stored === undefined) return fail("E_INTERNAL", `Unknown run "${caller.run.id}".`, caller.run.id)
+  const assignedBrief = await readJson<{ deliverable?: { kind?: Deliverable["kind"] } }>(path.join(root, "runs", caller.run.id, "brief.json"))
+  validateSummary(args.summary, stored.role, summaryLineLimit(bound(table, stored.role, "finish", "limits.summary"), stored.role))
   const last = stored.attempts[stored.attempts.length - 1]
   if (last === undefined) return fail("E_INTERNAL", `Run ${stored.id} has no attempts to finish.`, stored.id)
   const n = last.n

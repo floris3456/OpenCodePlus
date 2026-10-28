@@ -357,6 +357,10 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...readOnly,
     ...rows(off, ["skill:opencode", "tool:skill"]),
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list", "check", "diff"]),
+    // A scout's report is a list of located facts the parent reads in full, so
+    // its summary may run longer than the shipped 15 lines (its "Report
+    // summary (lines)" row; team_finish refuses past it).
+    "perm:team_finish:limits.summary": { text: "20" },
   },
   // The build seat is the user's chat: nobody delegates to it, so it has no
   // report to finish. It checkpoints what it may edit, like any chat run.

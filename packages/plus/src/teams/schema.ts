@@ -432,16 +432,17 @@ export const Finding = Schema.Struct({
 })
 export type Finding = typeof Finding.Type
 
-// Every deliverable gets the same summary budget; located items still belong
-// in findings, which the parent receives as well.
-export function validateSummary(summary: string, deliverable: Deliverable["kind"] | undefined): void {
+// The line limit is the member's own (team_finish Limits → Report summary):
+// the handler reads it and passes it here, so the refusal names the number and
+// the row. Located items still belong in findings, which the parent receives
+// as well.
+export function validateSummary(summary: string, role: string, limit: number): void {
   const lines = summary.split("\n").length
-  const max = 40
-  if (lines > max) {
+  if (lines > limit) {
     throw toolError(
       "E_SUMMARY",
-      `summary is ${lines} lines (max ${max}). Detail goes to the report file automatically; keep the summary to what the parent must act on${deliverable !== undefined && deliverable !== "commit" ? ", and put each located item in findings instead" : ""}.`,
-      `a summary of ≤${max} lines`,
+      `summary is ${lines} lines (max ${limit} for ${role}, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.`,
+      `a summary of ≤${limit} lines`,
     )
   }
 }
@@ -452,7 +453,7 @@ export const Report = Schema.Struct({
       "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs. Work that still needs a file or check outside your scope is not done: blocked, with one need per file (path) or check.",
   }),
   summary: Schema.String.check(Schema.isMaxLength(5000)).annotate({
-    description: "What your parent must act on, at most 40 lines; it receives it in full.",
+    description: "What your parent must act on; it receives it in full. The line limit is set per member (team_finish Limits → Report summary), and the tool refuses a longer summary: put detail in findings, concerns or a file.",
   }),
   concerns: field(
     Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
