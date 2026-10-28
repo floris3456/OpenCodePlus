@@ -168,7 +168,7 @@ test("help dialog lists keys and leaves the screen untouched", async () => {
   const keys = new Map(HELP.flatMap(([, entries]) => entries))
   expect(keys.get("space")).toContain("on/off")
   expect(keys.get("p")).toContain("pin a Code Mode tool")
-  expect(keys.get("l")).toBe("link an agent, member, team, entry or User preset to a preset (or unlink)")
+  expect(keys.get("l")).toBe("link an agent, member, team, entry or user preset to a preset (or unlink)")
   expect([...keys.values()].some((label) => label.includes("keep yours or take the new value"))).toBe(true)
   // The filter keys stay discoverable without leaving the TUI: structural
   // keys first, then the slower text-dependent ones.
@@ -190,7 +190,7 @@ test("help dialog lists keys and leaves the screen untouched", async () => {
   })
   try {
     const frame = await dialog.waitForFrame((next) => next.includes("Filter"))
-    expect(frame).toContain("link an agent, member, team, entry or User preset to a preset (or unlink)")
+    expect(frame).toContain("link an agent, member, team, entry or user preset to a preset (or unlink)")
     expect(frame).toContain("keep yours or take the new value")
   } finally {
     dialog.destroy()
