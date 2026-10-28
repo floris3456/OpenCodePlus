@@ -138,6 +138,49 @@ test("a 400 is left to Core and the quota hook at once", () => {
   expect(outage.retried(sessionID)).toBe(false)
 })
 
+test("a quota 429 resetting hours out ends the step even when Core said retry", () => {
+  const clock = { now: Date.parse("2026-10-28T12:33:00Z") }
+  const outage = createOutageRetry(() => clock.now)
+  const scheduled: Parameters<typeof outage.retry>[0] = {
+    sessionID,
+    error: { type: "provider.quota", message: "Quota exceeded. Your limit resets in 3h12m.", status: 429 },
+    decision: { retry: true, delay: 2_000 },
+  }
+  outage.retry(scheduled)
+  expect(scheduled.decision).toEqual({ retry: false })
+  expect(outage.retried(sessionID)).toBe(false)
+
+  // The same for a plain 429 that still names a quota and its reset.
+  const throttled: Parameters<typeof outage.retry>[0] = {
+    sessionID,
+    error: { type: "provider.rate-limit", message: "429 Too Many Requests. Quota exhausted, retry after 3600", status: 429 },
+    decision: { retry: true, delay: 84_000 },
+  }
+  outage.retry(throttled)
+  expect(throttled.decision).toEqual({ retry: false })
+})
+
+test("a quota 429 resetting within two minutes keeps Core's decision", () => {
+  const clock = { now: Date.parse("2026-10-28T12:33:00Z") }
+  const outage = createOutageRetry(() => clock.now)
+  const soon: Parameters<typeof outage.retry>[0] = {
+    sessionID,
+    error: { type: "provider.quota", message: "Quota exceeded for a moment, resets in 60s.", status: 429 },
+    decision: { retry: true, delay: 2_000 },
+  }
+  outage.retry(soon)
+  expect(soon.decision).toEqual({ retry: true, delay: 2_000 })
+
+  // And a plain throttle with no quota word is untouched either way.
+  const throttle: Parameters<typeof outage.retry>[0] = {
+    sessionID,
+    error: { type: "provider.rate-limit", message: "Too many requests, slow down", status: 429 },
+    decision: { retry: false },
+  }
+  outage.retry(throttle)
+  expect(throttle.decision).toEqual({ retry: false })
+})
+
 test("an answer resets a provider error's six minutes and its backoff", () => {
   const clock = { now: 0 }
   const outage = createOutageRetry(() => clock.now)

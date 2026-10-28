@@ -1,5 +1,6 @@
 import type { SessionRetry } from "@opencode/plugin/effect/session"
 import type { SessionError } from "@opencode/schema/session-error"
+import { quotaReset } from "./quota-reset.js"
 
 /**
  * How long a chat keeps retrying while CPA cannot answer: long enough for a CPA restart, including the
@@ -21,6 +22,12 @@ export const PROVIDER_ERROR_RETRY_FOR = 6 * 60_000
 /** The first wait between those retries; each one doubles up to the cap. */
 export const PROVIDER_ERROR_RETRY_DELAY = 15_000
 export const PROVIDER_ERROR_RETRY_MAX_DELAY = 60_000
+/**
+ * A quota answer whose reset is further out than this is never retried: a step
+ * must not burn its attempts (and its context) into a quota that resets in
+ * hours. A reset closer than this is left to Core and the next step.
+ */
+export const QUOTA_RETRY_WINDOW = 2 * 60_000
 
 /** CPA explained a quota answer (its own protocol uses HTTP 500 for some of them). */
 const QUOTA_CODE = /\bquota_[a-z_]+/
@@ -54,6 +61,19 @@ export function createOutageRetry(now: () => number) {
     retry(event: Pick<SessionRetry, "sessionID" | "error" | "decision">) {
       if (isOutage(event.error)) return outage(event)
       if (isProviderError(event.error)) return providerError(event)
+      // An out-of-quota answer is not an outage: the provider will answer again,
+      // but not before its reset, which may be hours out. Core already does not
+      // retry `provider.quota`; a plain 429 it retries for about 84 s. Either
+      // way, a reset more than a couple of minutes away ends the step now so the
+      // caller can move the work to another provider, and a reset inside that
+      // window keeps whatever Core decided.
+      const quota = quotaReset(event.error, now())
+      if (quota !== undefined && quota.untilMs - now() > QUOTA_RETRY_WINDOW) {
+        event.decision = { retry: false }
+        since.delete(event.sessionID)
+        extensions.delete(event.sessionID)
+        return
+      }
       since.delete(event.sessionID)
       extensions.delete(event.sessionID)
     },
