@@ -1,4 +1,4 @@
-import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorRequestDetail, MonitorTotals } from "../rpc.js"
+import type { MonitorQueryInput, MonitorReport, MonitorRequest, MonitorTotals } from "../rpc.js"
 import {
   foldSession,
   isMiss,

@@ -5,7 +5,7 @@ import { Effect, Option, Schema } from "effect"
 import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
 import { interactiveActor } from "./instructions-cli.js"
 import { captureRows, pasteRows, type Clipboard } from "./instructions/clipboard.js"
-import { duplicateName, duplicateSource, itemRecordsCopy, materializedOwnerRecords, ownerLayoutCopy, systemCopyId, systemOrderCopy, teamLayoutCopy, teamRecordsCopy, type DuplicateSource } from "./instructions/duplicate.js"
+import { duplicateName, duplicateSource, itemRecordsCopy, materializedOwnerRecords, ownerLayoutCopy, systemCopyId, teamLayoutCopy, teamRecordsCopy, type DuplicateSource } from "./instructions/duplicate.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -76,7 +76,6 @@ import {
   resolve,
   resolveSplit,
   sameTeam,
-  scopedTo,
   threeWay,
   upstreamForEdit,
 } from "./instructions/model.js"
@@ -120,7 +119,7 @@ import {
   type ModelSettingsField,
   type ModelSettingsKey,
 } from "./instructions/model-settings.js"
-import { presetListing, presetOwner } from "./instructions/presets.js"
+import { presetListing } from "./instructions/presets.js"
 import { folderIdOfRef, folderRef } from "./instructions/folders.js"
 import type { PlusApi } from "./index.js"
 import { Plus } from "./rpc.js"
@@ -3072,7 +3071,6 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
     const row = yield* createdRowOrFail(api, (input) => createdPresetRow(input, copy), `preset "${copy.id}"`)
     const after = yield* snapshotOrFail(api)
     const current = memoFromSnapshot(after)
-    const from = presetOwner(ref)
     const copied = materializedOwnerRecords(treeMemoOf(current), {
       row: row.id, level: "preset", agent: ref.id,
       ...(ref.kind === "member" ? { team: { level: "preset" as const, team: ref.team } } : {}),

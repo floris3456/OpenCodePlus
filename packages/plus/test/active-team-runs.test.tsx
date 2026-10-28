@@ -56,7 +56,7 @@ async function held() {
       <TeamMonitorTab
         sessionID="ses_root"
         active={() => false}
-        close={() => {}}
+        open={() => {}}
         context={context}
         showInactive={showInactive}
         setShowInactive={setShowInactive}
