@@ -102,6 +102,12 @@ export function merge(...rulesets: Permission.Ruleset[]): Permission.Ruleset {
 
 export interface Interface {
   readonly close: Effect.Effect<void>
+  /**
+   * The rules an agent's calls are evaluated against: its own rules merged with the
+   * Session's. Skills read this to answer what an agent may load, so the list the model
+   * is shown and the tool that loads a skill decide from one rule set.
+   */
+  readonly rules: (sessionID: SessionSchema.ID, agent?: Agent.ID) => Effect.Effect<Permission.Ruleset, SessionErrors.NotFoundError>
   readonly ask: (input: AssertInput) => Effect.Effect<AskResult, SessionErrors.NotFoundError>
   readonly assert: (input: AssertInput) => Effect.Effect<void, Error | SessionErrors.NotFoundError>
   readonly reply: (input: ReplyInput) => Effect.Effect<void, NotFoundError>
@@ -342,7 +348,7 @@ const layer = Layer.effect(
       return Array.from(pending.values(), (item) => item.request).filter((request) => request.sessionID === sessionID)
     })
 
-    return Service.of({ ask, assert, reply, get, forSession, list, close })
+    return Service.of({ rules: configured, ask, assert, reply, get, forSession, list, close })
   }),
 )
 

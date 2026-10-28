@@ -93,6 +93,7 @@ describe("SkillTool", () => {
           const assertions: Permission.AssertInput[] = []
           let deny = false
           const permission = permissionLayer({
+            rules: () => Effect.succeed([{ action: "*", resource: "*", effect: "allow" }]),
             assert: (input) =>
               Effect.sync(() => assertions.push(input)).pipe(
                 Effect.andThen(
