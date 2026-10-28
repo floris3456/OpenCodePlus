@@ -122,6 +122,14 @@ export interface RunRecord {
    * resumes it (a prompt in its chat, or its parent's team_followup). */
   held?: { at: string; reason: "inactivity" }
   worktree?: WorktreeState
+  /**
+   * `pointers`: the member's "LFS files in its worktrees" row resolved to
+   * pointers when `delegate` created this worktree, so it holds LFS pointer
+   * files and not their content. Absent means full content (the default and
+   * every record written before this field existed). Only `delegate` sets it;
+   * a reopened worktree (`api-followup.ts`) keeps full content.
+   */
+  lfs?: "pointers"
   promotedFrom?: string
   /** Where the chat moved after this run was tied to a folder, when the run stays behind. Cleared once a team call reports it. */
   movedTo?: string

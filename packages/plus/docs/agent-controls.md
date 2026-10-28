@@ -36,6 +36,12 @@ positive integer of at least 1 000 or `off`; empty means 10 000 for a team
 member and no cap for any other agent. It is a Plus setting, not an OpenCode
 agent field, so it never changes model or provider token limits.
 
+A team member also has **LFS files in its worktrees**: `pointers` gives its
+delegated worktree LFS pointer files instead of their content (empty or `full`
+keeps the content, which is the default). See the README's team worktree notes;
+the setting changes only what `team_delegate` puts on disk, never a landing or
+merge worktree.
+
 The **OpenCode → Special** group contains only `title`, `compaction`, and
 `summary`. A custom agent does not become Special merely because it is hidden.
 OpenCode supplies agent presets, not team presets.

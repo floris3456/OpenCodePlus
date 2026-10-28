@@ -2117,6 +2117,7 @@ export function controlValue(item: string, text: string, enabled: boolean): stri
   if (item === "setting:steps") return "Unlimited"
   // Empty is a value here, not "not set": it means the member default or no cap.
   if (item === "setting:tool-output") return "Default"
+  if (item === "setting:lfs") return "Full"
   return "Not set"
 }
 

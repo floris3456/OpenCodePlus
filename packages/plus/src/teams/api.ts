@@ -453,6 +453,11 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   const effortBudget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
   const budget = wallMs === undefined ? effortBudget : { ...effortBudget, wallMs }
   const newPaths = await pathsNotAt(repo.root, baseSha, resolved.scope.paths)
+  // A member whose "LFS files in its worktrees" row is `pointers` gets pointer
+  // files, not their content: less disk, and nothing to fetch for a member that
+  // never opens an LFS file. The row is resolved for the member being delegated
+  // to, not the caller, and the Brief then says what its LFS files are.
+  const pointers = state.lfsPointers.has(brief.role)
 
   // A review starts where the delegating run started and ends at the commit
   // the reviewer's worktree starts from; the run's own check results there
@@ -471,15 +476,6 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
           ),
         }
       : undefined
-  const rendered = briefModule.render(resolved, {
-    budget,
-    newPaths,
-    ...(attached === undefined ? {} : { attached }),
-    ...(attachmentLimit === undefined ? {} : { attachmentLimit }),
-    ...(review === undefined ? {} : { review }),
-  })
-  const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")
-
   // The worktree is created and its starting child run registered in one
   // repository-lock hold. Creating the session activates Plus in the new
   // worktree, and the periodic sweep collects any worktree no run record
@@ -491,7 +487,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   // and names the project directory it inherits.
   const now = new Date().toISOString()
   const gitCommonDir = await realpath(await git(repo.root, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--path-format=absolute", "--git-common-dir"]))
-  const { created, value: streaming } = await provision(
+  const { created, value: prepared } = await provision(
     root,
     {
       repoRoot: repo.root,
@@ -500,8 +496,19 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       name: slug(taskID ?? brief.requestID, childID),
       base: baseSha,
       workspaceRoot: root,
+      ...(pointers ? { lfs: "pointers" as const } : {}),
     },
     async (worktree) => {
+      // Rendered here, after `provision` named the directory: the Brief names
+      // the worktree it is read in, so the child never has to ask where it is.
+      const rendered = briefModule.render(resolved, {
+        budget,
+        newPaths,
+        ...(attached === undefined ? {} : { attached }),
+        ...(attachmentLimit === undefined ? {} : { attachmentLimit }),
+        ...(review === undefined ? {} : { review }),
+        worktree: { directory: worktree.dir, ...(pointers ? { lfs: "pointers" as const } : {}) },
+      })
       const opened = startAttempt(
         {
           id: childID,
@@ -521,7 +528,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
           task: taskID,
           parent: parent.id,
           children: [],
-          briefSha,
+          briefSha: createHash("sha256").update(rendered, "utf8").digest("hex"),
           bundle: parent.bundle,
           budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
           createdAt: now,
@@ -532,6 +539,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
           // directory.
           projectDirectory: parent.projectDirectory ?? parent.directory,
           configDigest: null,
+          ...(pointers ? { lfs: "pointers" as const } : {}),
           history: [],
         },
         { trigger: "delegate" },
@@ -539,9 +547,11 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       const admitted = attemptTransition(opened, "admitted", "admit")
       const registered = attemptTransition(admitted, "streaming", "first_event")
       await saveRun(root, registered)
-      return registered
+      return { record: registered, rendered }
     },
   )
+  const streaming = prepared.record
+  const rendered = prepared.rendered
 
   // The child run is a session in this same process, created directly in its
   // worktree; no session.move is needed.

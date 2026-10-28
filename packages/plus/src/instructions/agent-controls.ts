@@ -11,7 +11,7 @@ import { toolOutputCapError } from "./tool-output-cap.js"
 // toolOutputCapsOf (apply.ts) hands it to the hook.
 export const controlIds = [
   "setting:enabled", "setting:mode", "setting:description", "setting:hidden", "setting:color", "setting:steps",
-  "setting:tool-output",
+  "setting:tool-output", "setting:lfs",
   "compaction:strategy", "compaction:model", "compaction:instructions",
   ...ATTENTION_ROWS,
 ] as const
@@ -43,6 +43,14 @@ export function controlItemFor(items: readonly Item[], address: Pick<Address, "a
     ?? rows.find((item) => item.agents === undefined)
 }
 
+const controlTitles: Partial<Record<ControlId, string>> = {
+  "setting:tool-output": "tool result cap (tokens)",
+  "setting:lfs": "LFS files in its worktrees",
+}
+
+/** The one stored value of `setting:lfs`: a member worktree gets LFS pointer files. */
+export const LFS_POINTERS = "pointers"
+
 export function controlItems(agent?: string, fields: AgentControls = {}): Item[] {
   const model = fields.compaction?.model
   const texts: Record<Exclude<ControlId, (typeof ATTENTION_ROWS)[number]>, string> = {
@@ -53,6 +61,9 @@ export function controlItems(agent?: string, fields: AgentControls = {}): Item[]
     "setting:color": fields.color ?? "",
     "setting:steps": fields.steps === undefined ? "" : String(fields.steps),
     "setting:tool-output": "",
+    // Empty means "full": a member worktree gets the LFS content, as before
+    // this setting existed (`LFS_POINTERS` is the only stored value).
+    "setting:lfs": "",
     "compaction:strategy": fields.compaction?.strategy ?? "auto",
     "compaction:model": model === undefined ? "" : `${model.providerID}/${model.id}${model.variant === undefined ? "" : `#${model.variant}`}`,
     "compaction:instructions": fields.compaction?.system ?? "",
@@ -61,7 +72,7 @@ export function controlItems(agent?: string, fields: AgentControls = {}): Item[]
     id,
     kind: id.startsWith("setting:") ? "setting" : "compaction",
     group: "none",
-    title: isAttentionRow(id) ? attentionRowTitle(id) : id === "setting:tool-output" ? "tool result cap (tokens)" : id.slice(id.indexOf(":") + 1),
+    title: isAttentionRow(id) ? attentionRowTitle(id) : (controlTitles[id] ?? id.slice(id.indexOf(":") + 1)),
     // A notification row's upstream is empty: as in Settings › Notifications.
     text: isAttentionRow(id) ? "" : texts[id],
     enabled: id === "setting:enabled" ? fields.disabled !== true : id === "setting:hidden" ? fields.hidden === true : true,
@@ -94,6 +105,7 @@ export function controlRecordError(record: Pick<CustomizationRecord, "item" | "s
   if (record.item === "setting:steps" && text !== "" && (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(Number(text)))) return "Steps must be a positive integer or empty (unlimited)"
   if (record.item === "setting:color" && text !== "" && !/^#[0-9a-fA-F]{6}$/.test(text)) return "Color must be a six-digit #RRGGBB value or empty"
   if (record.item === "setting:tool-output") return toolOutputCapError(text)
+  if (record.item === "setting:lfs" && !["", "full", LFS_POINTERS].includes(text)) return "LFS files must be pointers, full, or empty (full)"
   if (isAttentionRow(record.item)) return attentionRowError(record.item, text)
   if (record.item === "compaction:strategy" && !["auto", "local", "remote"].includes(text)) return "Compaction strategy must be auto, local, or remote"
   if (record.item === "compaction:model" && text !== "" && !/^[^/\s#]+\/[^\s#]+(?:#[^\s#]+)?$/.test(text)) return "Compaction model must be provider/model with an optional #variant, or empty (inherit, otherwise the chat's own model)"

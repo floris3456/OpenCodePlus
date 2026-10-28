@@ -2511,6 +2511,30 @@ the field, and `removed` is terminal for it.
   their project directory through `activationDirectory`, so a child worktree's API sees and edits the
   project its run recorded.
 
+### LFS content in member worktrees (`teams/worktree.ts`, `teams/api.ts`, `teams/brief.ts`, `teams/run.ts`)
+
+A member's **LFS files in its worktrees** row (`setting:lfs`, empty/`full` or `pointers`)
+decides what `delegate`'s `git worktree add` puts on disk:
+
+- Empty or `full` (the default, and every record written before the row existed) runs the
+  repository's own smudge filter, so every LFS file arrives as its content.
+- `pointers` runs `git worktree add` with `GIT_LFS_SKIP_SMUDGE=1` **and**
+  `-c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false`. Both are needed:
+  a repository carrying `filter.lfs.process` (what `git lfs install` writes) ignores the
+  variable, and the empty process/smudge filters are what leave the committed pointer text.
+  The worktree is otherwise ordinary: the index matches the committed blobs, so `git status
+  --porcelain` is empty and a `team_checkpoint` commit neither re-smudges nor shows an LFS file
+  as modified. Fetched content is the run's own business: `git lfs pull --include <path>` in the
+  worktree.
+- `delegate` records `lfs: "pointers"` on the child's `run.json` only when it created the
+  worktree that way, and its Brief gains an Environment section naming the worktree directory,
+  plus one line that its LFS files are pointers and how to fetch one. Landing and merge
+  worktrees (`teams/merge.ts`) never set it; a landed child reopened by `team_followup` gets an
+  ordinary full-content worktree.
+- `lfsRowsOf` (`instructions/apply.ts`) resolves the row down the member's chain at publish;
+  `publishFresh` keeps the resulting member ids in `PlusState.lfsPointers`, which `delegate`
+  reads for the role being delegated to.
+
 ## §11 Tools, log, and query
 
 Agent-facing Code Mode namespace `instructions` (`teaching.ts` pins the
