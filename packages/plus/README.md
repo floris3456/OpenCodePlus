@@ -46,7 +46,7 @@ Hidden is a visibility setting, not an origin: `general` and `explore` stay ordi
 
 ```
 <Agent>
-  Settings                   Enabled · Mode · Description · Hidden · Color · Steps
+  Settings                   Enabled · Mode · Description · Hidden · Color · Steps · Tool result cap
   Models                     union down the chain plus the agent's upstream model (`source` badge, the effective row `active`)
     <provider>               one built-in group per provider (`…:models:provider=<provider>`), by id
       <lab>                  one per AI lab (`…:provider=<provider>:lab=<lab>`): Claude, ChatGPT, Gemini, … , Other last
@@ -86,6 +86,14 @@ for inheritance, reset behavior, and Instructions Tool examples.
   eligible primary agent. Disabled agents stay editable in Instructions.
 - **Enter** on Mode cycles **Primary → Subagent → All**. Description, Hidden,
   Color, and Steps use OpenCode's existing agent fields.
+- **Tool result cap** is Plus's own setting, not an agent field: a tool result
+  above that many tokens (estimated at 2.5 characters per token) is written to
+  `<tmp>/tool-output/<session>/<tool>-<call>.txt`, and the model gets its head
+  plus a notice naming the file. Text is measured; images and PDFs are kept
+  whole. A `read` result is not saved again: it keeps a head and the `offset`
+  that continues it. Skills, `team_*` and `instructions_*` results always arrive
+  whole. Empty means 10 000 for a team member and no cap for any other agent;
+  `off` means no cap.
 - Compaction supports **Auto**, **Local**, and **Remote**, with per-agent model
   and instruction overrides. Remote grays and locks the local fields without
   discarding their values. Unsupported provider compaction fails explicitly.
