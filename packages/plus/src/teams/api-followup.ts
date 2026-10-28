@@ -33,6 +33,7 @@ import {
 } from "./run.js"
 import { FollowupInput, PATH_LIST_LIMIT, pathList, toolError, type ResolvedBrief } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
+import { activeCooldown, cooldownRefusal, cooldownText, providerKeyOfRun } from "./cooldown.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { NO_REPOSITORY_PROGRAMS, provision, slug } from "./worktree.js"
@@ -136,6 +137,17 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.childBranch === child.branch && entry.state === "landed")
   if (args.prompt === undefined && args.budget === undefined && args.rebase !== true && !args.paths?.length)
     return fail("E_NO_CONTENT", "team_followup requires prompt, budget, paths, or rebase.", "prompt, budget, paths, or rebase")
+  // A prompt goes back into the same provider the child runs on: while its
+  // quota is out, the follow-up would only fail again. Budget and path changes
+  // touch no model, so they are allowed.
+  if (args.prompt !== undefined) {
+    const cooling = providerKeyOfRun(child)
+    const cooldown = cooling === undefined ? undefined : await activeCooldown(root, cooling, Date.now())
+    if (cooling !== undefined && cooldown !== undefined)
+      return fail("E_COOLDOWN", cooldownRefusal(child.role, cooling, cooldown, Date.now()), {
+        cooldown: { key: cooling, untilMs: cooldown.untilMs, text: cooldownText(cooldown, Date.now()) },
+      })
+  }
   const briefPath = path.join(root, "runs", child.id, "brief.json")
   const brief = args.paths === undefined ? undefined : await readJson<ResolvedBrief>(briefPath)
   if (args.paths !== undefined && brief === undefined)

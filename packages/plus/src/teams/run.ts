@@ -33,6 +33,10 @@ export interface AttemptRecord {
   retries?: { firstAt: string; count: number; error: AttemptError }
   /** Why the host ended this attempt failed (a provider or quota error, say), as the host reported it. */
   error?: AttemptError
+  /** The attempt failed on a provider whose quota is out until then (ISO): a
+   * quota answer named a reset, so the run is blocked rather than broken. The
+   * provider is cooled in `cooldowns.json` until the same moment. */
+  blockedUntil?: string
   requestedModel?: ModelIdentity | null
   loadedModel?: ModelIdentity | null
   resolvedModel?: ModelIdentity | null
@@ -44,6 +48,12 @@ export interface AttemptError {
   type: string
   message: string
   status?: number
+}
+
+/** A failure as the host reported it: `AttemptError` plus the answer body the
+ * quota parser reads. Only the three fields above are stored on the attempt. */
+export interface AttemptFailure extends AttemptError {
+  response?: { body: string }
 }
 
 export interface StateHistoryEntry {

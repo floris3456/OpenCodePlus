@@ -24,6 +24,7 @@ import {
   transition,
   updateRun,
   type AttemptError,
+  type AttemptFailure,
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
@@ -35,6 +36,8 @@ import { RETRY_SCHEDULED, SessionOutcomes, type SessionOutcome } from "./session
 import { lock, readJson } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
 import { removeLeftoverSnapshotStores } from "./snapshots.js"
+import { saveCooldown, providerKeyOfRun } from "./cooldown.js"
+import { quotaReset, quotaResetText } from "@opencodeplus/cliproxyapi/server"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -448,12 +451,27 @@ function utcTime(at: number) {
   return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`
 }
 
+/** The three fields an attempt stores: the answer body stays in the event. */
+function storedError(error: AttemptFailure): AttemptError {
+  return {
+    type: error.type,
+    message: error.message,
+    ...(error.status === undefined ? {} : { status: error.status }),
+  }
+}
+
+/** "provider.quota (429): Quota exceeded …", for a cooldown's record. */
+function failureLine(error: AttemptFailure): string {
+  return `${error.type}${error.status === undefined ? "" : ` (${error.status})`}: ${error.message.slice(0, 300)}`
+}
+
 // The host's reason for a failed execution (core's SessionError.Error): what
 // the parent needs to tell a provider that is out of quota from a broken run.
 const FailedError = Schema.Struct({
   type: Schema.String,
   message: Schema.String,
   status: Schema.optional(Schema.Number),
+  response: Schema.optional(Schema.Struct({ body: Schema.String })),
 })
 
 // Order matters: settle the attempt that just ended, move the run to idle,
@@ -465,7 +483,7 @@ export async function onSessionIdle(
   root: string,
   run: RunRecord,
   outcome: SessionOutcome = "idle",
-  error?: AttemptError,
+  error?: AttemptFailure,
   inactive = false,
 ): Promise<RunRecord> {
   // The settle, the notify bookkeeping and a pending stop transition in one
@@ -508,7 +526,7 @@ export async function onSessionIdle(
   return deliverInbox(ctx, root, marked)
 }
 
-async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptError): Promise<RunRecord> {
+async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptFailure): Promise<RunRecord> {
   const current = withoutRetrying(run)
   const last = current.attempts[current.attempts.length - 1]
   if (last === undefined || isAttemptTerminal(last.state)) return current
@@ -517,7 +535,26 @@ async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutco
     if (error === undefined) return failed
     const attempt = failed.attempts.at(-1)
     if (attempt === undefined) return failed
-    return { ...failed, attempts: [...failed.attempts.slice(0, -1), { ...attempt, error }] }
+    const quota = quotaReset(error, Date.now())
+    const key = providerKeyOfRun(failed)
+    // An out-of-quota failure is not the Brief going wrong: the provider serves
+    // again at its reset, so the attempt records until when and the provider is
+    // cooled for every run. The settlement then says "blocked", not "failed".
+    if (quota === undefined || key === undefined)
+      return { ...failed, attempts: [...failed.attempts.slice(0, -1), { ...attempt, error: storedError(error) }] }
+    await saveCooldown(
+      root,
+      key,
+      { untilMs: quota.untilMs, text: quota.text, error: failureLine(error), at: new Date().toISOString(), run: failed.id },
+      Date.now(),
+    )
+    return {
+      ...failed,
+      attempts: [
+        ...failed.attempts.slice(0, -1),
+        { ...attempt, error: storedError(error), blockedUntil: new Date(quota.untilMs).toISOString() },
+      ],
+    }
   }
   if (outcome === "interrupted") return attemptTransition(current, "interrupted", "interrupt")
   // finish wrote this attempt's report and owns its terminal state.
@@ -651,8 +688,16 @@ export function childSettledText(
   _reportPath?: string,
 ): string {
   const task = run.task ?? "-"
-  const status = typeof report?.status === "string" ? report.status : attempt.state
-  const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
+  const blocked = attempt.blockedUntil
+  // A quota failure blocks the run's provider, it does not fail the work: the
+  // settlement says when it serves again so the parent can route around it.
+  const status = blocked !== undefined ? "blocked" : typeof report?.status === "string" ? report.status : attempt.state
+  const key = providerKeyOfRun(run)
+  const lines = [
+    blocked === undefined
+      ? `[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`
+      : `[team] ${run.id} (${run.role}, ${task}) settled: blocked — ${key ?? "provider"} quota; resets at ${quotaResetText(Date.parse(blocked), Date.now())}. Not retried.`,
+  ]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
     if (run.parent !== null && run.state === "stopped" && (run.stopRequestedBy ?? run.stoppedBy) === run.parent) {
@@ -675,6 +720,10 @@ export function childSettledText(
         lines.push(
           `The host retried it ${times(attempt.retries.count)} over ${retryDuration(attempt.retries.firstAt, attempt.endedAt)} (from ${utcTime(Date.parse(attempt.retries.firstAt))} UTC) before the step failed.`,
         )
+      if (blocked !== undefined) {
+        lines.push("next: delegate the Brief to a member on another provider, or follow up after the reset.")
+        return lines.join("\n")
+      }
       lines.push(
         `next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member; otherwise read team_status and team_diff with run: "${run.id}", then team_followup or team_stop.`,
       )

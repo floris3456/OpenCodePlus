@@ -25,7 +25,7 @@ import { migratingStorage } from "./legacy.js"
 export { applyCatalogue, applyRelayToExistingModels, applyRelayToModels } from "./catalog.js"
 export { onQuotaFact, type QuotaFact } from "./facts.js"
 export { pacerCache, pacerUsedUp, type PacerCache, type PacerCacheQuery, type PacerUsedUp } from "./pacer-cache.js"
-export { quotaReset, QUOTA_RESET_UNKNOWN_MS, type QuotaReset } from "./quota-reset.js"
+export { quotaReset, quotaResetText, QUOTA_RESET_UNKNOWN_MS, type QuotaReset } from "./quota-reset.js"
 export { provideLegacyQuotaStorage, legacyRead, migratingStorage } from "./legacy.js"
 
 export const ID = "opencode.plus.cliproxyapi"

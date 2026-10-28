@@ -42,9 +42,14 @@ export function quotaReset(
   // must not be retried at once, and 15 minutes is the shortest wait worth it.
   if (untilMs === undefined) {
     const fallback = now + QUOTA_RESET_UNKNOWN_MS
-    return { untilMs: fallback, text: `${clock(fallback)} UTC (${relative(fallback, now)}; reset time unknown)` }
+    return { untilMs: fallback, text: `${quotaResetText(fallback, now)}; reset time unknown` }
   }
-  return { untilMs, text: `${clock(untilMs)} UTC (${relative(untilMs, now)})` }
+  return { untilMs, text: quotaResetText(untilMs, now) }
+}
+
+/** "<HH:MM> UTC (in <h> h <m> min)", the line a settlement and a refusal print. */
+export function quotaResetText(untilMs: number, now: number): string {
+  return `${clock(untilMs)} UTC (${relative(untilMs, now)})`
 }
 
 /** The moment the answer names, from its body text, in ms; undefined when nothing parses. */
