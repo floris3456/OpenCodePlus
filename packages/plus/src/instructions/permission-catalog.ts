@@ -17,6 +17,7 @@
 // - An allow-list row (`allow: true`) lets through what it matches while it is
 //   on, and only matters once the fallback is off.
 import { fingerprint, permItemId, type Item, type PermKind } from "./model.js"
+import { TEAM_CONTEXT_TOKENS } from "../teams/schema.js"
 
 export interface RowSpec {
   readonly id: string
@@ -838,6 +839,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       rows: [
         { id: "rounds", label: "Followups per child", on: false, limit: 5 },
         { id: "budget-ping", label: "Budget reminder interval (minutes)", on: true, limit: 15 },
+        { id: "context", label: "Child context limit (tokens)", on: true, limit: TEAM_CONTEXT_TOKENS },
       ],
     },
     approval(),

@@ -16,6 +16,7 @@ import { coldPlanOf } from "../compaction/cold-now.js"
 import type { PlusState } from "../index.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { bound, mayReach, relationOf, row } from "./reach.js"
+import { sessionContextTokens } from "./usage.js"
 import {
   attemptTransition,
   isAttemptTerminal,
@@ -168,6 +169,21 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
       return fail("E_BUDGET_REASON", "Budget reason must be at most 300 characters.", "provide a reason")
   }
   await requireSession(ctx, child)
+  // A child above the team's context limit takes no more corrections: its next
+  // turn would condense at once, and the report it already owes is what a fresh
+  // run needs. Only a call that sends the child text is refused; a budget change
+  // alone is not (the same calls that compute a `prompt` below).
+  const sendsText = args.prompt !== undefined || args.rebase === true || (args.paths?.length ?? 0) > 0
+  if (sendsText) {
+    const limit = bound(table, caller.agent, "followup", "limits.context")
+    const tokens = await sessionContextTokens(ctx, child)
+    if (limit !== undefined && tokens !== undefined && tokens > limit)
+      return fail(
+        "E_CONTEXT",
+        `${child.id} holds ${tokens} tokens of context (limit ${limit}, team_followup limits.context). Start a fresh run with team_delegate instead: give it this run's report and branch ${child.branch} (or its commit) in the Brief.`,
+        "team_delegate a fresh run",
+      )
+  }
   if (child.state === "stopped") {
     const warm = child.sessionID ? await isSessionWarm(child.sessionID) : false
     if (!warm) {
