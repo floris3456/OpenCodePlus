@@ -85,7 +85,7 @@ export function MonitorHelp(props: HelpProps) {
       title: "Team Tab",
       entries: [
         { key: "↑ / ↓", desc: "Select run" },
-        { key: "Enter", desc: "Open the run's chat (closes the monitor)" },
+        { key: "Enter", desc: "Open the run's chat; the monitor stays open there, on this row" },
         { key: "ctrl+a / ctrl+t", desc: "Active or inactive runs · this chat's tree or all runs" },
         { key: "ctrl+d", desc: "Stop an idle run, resume a stopped one" },
         { key: "e", desc: "Edit the project checks (.opencodeplus/checks.json)" },

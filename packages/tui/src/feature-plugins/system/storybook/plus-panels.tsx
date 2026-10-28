@@ -15,6 +15,8 @@ function Panels(props: { context: Plugin.Context }) {
   const dimensions = useTerminalDimensions()
   const panels = usePanel()
   const [focused, setFocused] = createSignal(true)
+  // The chat on screen: opening a run's chat changes it, as the host's route does.
+  const [chat, setChat] = createSignal("ses_lead")
   const [message, setMessage] = createSignal("Fixture only: actions never start or stop real runs")
   // A team as the active agent group shows the Monitor's Team tab.
   const [group, setGroup] = createSignal<string | undefined>("team:project:fixture")
@@ -81,17 +83,25 @@ function Panels(props: { context: Plugin.Context }) {
       },
       router: {
         register: () => () => {},
-        current: () => ({ type: "session", sessionID: "ses_lead" }),
-        navigate: (route) => setMessage(`Navigate to ${route.type === "session" ? route.sessionID : route.type} (fixture only)`),
+        current: () => ({ type: "session", sessionID: chat() }),
+        navigate: (route) => {
+          if (route.type === "session") setChat(route.sessionID)
+          setMessage(`Navigate to ${route.type === "session" ? route.sessionID : route.type} (fixture only)`)
+        },
       },
       panel: {
         open: (name, options) => {
-          panels.open({ plugin: "storybook", name: `fixture.${name}`, sessionID: "ses_lead" }, options?.presentation)
+          panels.open({ plugin: "storybook", name: `fixture.${name}`, sessionID: chat() }, options?.presentation)
           setFocused(true)
           return true
         },
         close: panels.close,
-        current: () => panels.current(),
+        // The plugin's own panel, by the name it opened, as the host answers.
+        current: () => {
+          const current = panels.current()
+          if (!current?.name.startsWith("fixture.")) return undefined
+          return { name: current.name.slice(8), sessionID: current.sessionID }
+        },
       },
       slot: (claim) => {
         if (claim.append !== "session.panel") return () => {}
@@ -108,6 +118,11 @@ function Panels(props: { context: Plugin.Context }) {
   const monitor = createMonitor(context, { team: team.activeTeam })
   onCleanup(() => { team.dispose(); monitor.dispose() })
   createEffect(() => panels.setWidth(dimensions().width))
+  // A panel belongs to one chat: another chat closes it, as the host does.
+  createEffect(() => {
+    const current = panels.current()
+    if (current !== undefined && current.sessionID !== chat()) panels.close()
+  })
   monitor.open()
   const fullscreen = () => panels.presentation() === "fullscreen"
   const width = () => fullscreen() ? dimensions().width : Math.floor(dimensions().width / 2)
@@ -127,12 +142,14 @@ function Panels(props: { context: Plugin.Context }) {
     <box width={dimensions().width} height={dimensions().height} flexDirection="column">
       <box flexGrow={1} minHeight={0} flexDirection="row">
         <box visible={!panels.current() || !fullscreen()} flexGrow={1} minWidth={0}>
-          <text fg={context.theme.text.muted}>Session fixture · {focused() ? "panel focused" : "session focused"}</text>
+          <text fg={context.theme.text.muted}>
+            Session fixture {chat()} · {focused() ? "panel focused" : "session focused"}
+          </text>
         </box>
-        <Show when={panels.current()}>
+        <Show when={panels.current()} keyed>
           {(target) => (
             <box width={width()} minHeight={0}>
-              <PanelHost panel={target()} width={width()} focused={focused()} onFocus={() => setFocused(true)} onTarget={() => {}} />
+              <PanelHost panel={target} width={width()} focused={focused()} onFocus={() => setFocused(true)} onTarget={() => {}} />
             </box>
           )}
         </Show>

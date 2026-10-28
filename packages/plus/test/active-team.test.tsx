@@ -8,7 +8,7 @@ import { createStore } from "solid-js/store"
 import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState } from "../src/index.js"
 import { projectTeamsPath, teamsDataDir } from "../src/instructions/paths.js"
-import { createActiveTeam, resetRunMountLog, runMountLog, stopRunMountLog, TeamMonitorTab } from "../src/tui/active-team.js"
+import { createActiveTeam, resetRunMountLog, runMountLog, stopRunMountLog, TeamMonitorTab, type TeamPlace } from "../src/tui/active-team.js"
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { RGBA } from "@opentui/core"
@@ -470,10 +470,9 @@ test("createActiveTeam no longer opens a side panel; its footer slot unwinds on 
   expect(unregistered).toBe(1)
 })
 
-test("TeamMonitorTab renders active runs by default, toggles to inactive with ctrl+a, and navigates with select", async () => {
+test("TeamMonitorTab renders active runs by default, toggles to inactive with ctrl+a, and opens a run's chat with select", async () => {
   let commands: any[] = []
-  let closeCalled = 0
-  let navigated: any = undefined
+  const opened: { sessionID: string; place: TeamPlace }[] = []
   const toasts: any[] = []
   const stopCalled: string[] = []
 
@@ -570,11 +569,6 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
     ui: {
       toast: { show: (t: any) => toasts.push(t) },
       dialog: { clear: () => {} },
-      router: {
-        navigate: (dest: any) => {
-          navigated = dest
-        },
-      },
     },
   }
 
@@ -586,7 +580,7 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
       <TeamMonitorTab
         sessionID="ses_root"
         active={() => true}
-        close={() => closeCalled++}
+        open={(sessionID, place) => opened.push({ sessionID, place })}
         context={context}
         showInactive={showInactiveSignal}
         setShowInactive={setShowInactiveSignal}
@@ -613,14 +607,13 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   const toggleTreeCmd = commands.find((c) => c.id === "composer.team.toggle_tree")
   const actionCmd = commands.find((c) => c.id === "composer.team.action")
   expect(toggleTreeCmd).toBeDefined()
-  // At the top row, up stays put instead of closing anything.
+  // At the top row, up stays put instead of opening anything.
   upCmd.run()
-  expect(closeCalled).toBe(0)
+  expect(opened).toEqual([])
 
-  // Enter on index 0 (w-run-active) navigates to its sessionID
+  // Enter on index 0 (w-run-active) opens its chat, with the list's place.
   selectCmd.run()
-  expect(navigated).toEqual({ type: "session", sessionID: "ses_active" })
-  expect(closeCalled).toBe(1)
+  expect(opened).toEqual([{ sessionID: "ses_active", place: { selected: 0, showInactive: false, treeView: true, scrollTop: 0 } }])
 
   // 2. Toggle to inactive runs with ctrl+a
   toggleCmd.run()
@@ -633,10 +626,9 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
   expect(inactiveFrame).not.toContain("w-run-active")
   expect(inactiveFrame).not.toContain("w-run-idle")
 
-  // Enter on inactive row (w-run-stopped) attaches to its session
+  // Enter on inactive row (w-run-stopped) opens its chat; the place keeps the inactive list.
   selectCmd.run()
-  expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
-  expect(closeCalled).toBe(2)
+  expect(opened.at(-1)).toEqual({ sessionID: "ses_stopped", place: { selected: 0, showInactive: true, treeView: true, scrollTop: 0 } })
 
   // 3. Toggle back to active
   toggleCmd.run()
@@ -649,8 +641,7 @@ test("TeamMonitorTab renders active runs by default, toggles to inactive with ct
 
 test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working shows warning toast", async () => {
   let commands: any[] = []
-  let closeCalled = 0
-  let navigated: any = undefined
+  const opened: { sessionID: string; place: TeamPlace }[] = []
   const toasts: any[] = []
   const stopCalled: string[] = []
 
@@ -722,11 +713,6 @@ test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working s
     },
     ui: {
       toast: { show: (t: any) => toasts.push(t) },
-      router: {
-        navigate: (dest: any) => {
-          navigated = dest
-        },
-      },
     },
   }
 
@@ -738,7 +724,7 @@ test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working s
       <TeamMonitorTab
         sessionID="ses_root"
         active={() => true}
-        close={() => closeCalled++}
+        open={(sessionID, place) => opened.push({ sessionID, place })}
         context={context}
         showInactive={showInactiveSignal}
         setShowInactive={setShowInactiveSignal}
@@ -764,20 +750,19 @@ test("TeamMonitorTab ctrl+d actions: idle stops, stopped/dead resumes, working s
   actionCmd.run()
   expect(stopCalled).toEqual(["w-run-idle"])
 
-  // Up past index 0 stays on the first run; nothing closes
+  // Up past index 0 stays on the first run; nothing opens
   upCmd.run()
   await output.renderOnce()
   upCmd.run()
-  expect(closeCalled).toBe(0)
+  expect(opened).toEqual([])
 
-  // Toggle to inactive (w-run-stopped): ctrl+d attaches/resumes, closing the Monitor first
+  // Toggle to inactive (w-run-stopped): ctrl+d attaches/resumes by opening its chat
   toggleCmd.run()
   await new Promise((r) => setTimeout(r, 10))
   await output.renderOnce()
 
   actionCmd.run()
-  expect(navigated).toEqual({ type: "session", sessionID: "ses_stopped" })
-  expect(closeCalled).toBe(1)
+  expect(opened.map((entry) => entry.sessionID)).toEqual(["ses_stopped"])
 
   output.renderer.destroy()
 })
@@ -841,7 +826,7 @@ test("TeamMonitorTab ctrl+d surfaces warning toast when stop RPC is rejected", a
       <TeamMonitorTab
         sessionID="ses_root"
         active={() => true}
-        close={() => {}}
+        open={() => {}}
         context={context}
       />
     ),
@@ -910,7 +895,7 @@ test("TeamMonitorTab refreshes runs only on session lifecycle events, once per 2
 
   const output = await createTestRenderer({ width: 100, height: 20 })
   render(
-    () => <TeamMonitorTab sessionID="ses_root" active={() => false} close={() => {}} context={context} />,
+    () => <TeamMonitorTab sessionID="ses_root" active={() => false} open={() => {}} context={context} />,
     output.renderer,
   )
   await output.renderOnce()
@@ -1007,7 +992,7 @@ test("a poll that returns equal runs keeps the row components; a changed state s
 
   const output = await createTestRenderer({ width: 100, height: 20 })
   render(
-    () => <TeamMonitorTab sessionID="ses_root" active={() => false} close={() => {}} context={context} />,
+    () => <TeamMonitorTab sessionID="ses_root" active={() => false} open={() => {}} context={context} />,
     output.renderer,
   )
   try {
@@ -1144,7 +1129,7 @@ test("the tree from an implementer's session shows its orchestrator root and sib
         <TeamMonitorTab
           sessionID="ses_impl_1"
           active={() => true}
-          close={() => {}}
+          open={() => {}}
           context={tabContext((list) => (commands = list))}
           treeView={treeView}
           setTreeView={setTreeView}
@@ -1184,7 +1169,7 @@ test("the tree from an implementer's session shows its orchestrator root and sib
         <TeamMonitorTab
           sessionID="ses_standalone"
           active={() => true}
-          close={() => {}}
+          open={() => {}}
           context={tabContext((list) => (emptyCommands = list))}
         />
       ),

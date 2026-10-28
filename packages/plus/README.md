@@ -165,7 +165,7 @@ While a team is the active agent group (picked in `ctrl+x a`), the Monitor (`ctr
 - Default view shows active runs in the current team tree.
 - `ctrl+t` toggles between the current chat's team tree and all runs in the namespace.
 - `ctrl+a` toggles between active runs and inactive runs (`stopped`, `dead`, `superseded`, `reaped`).
-- `Enter` closes the Monitor and opens that run's session (`sessionID`).
+- `Enter` opens that run's session (`sessionID`). The Monitor stays open in it, on the same tab, scope, row and scroll position.
 - `ctrl+d`: stops an `idle` run, resumes a `stopped` or `dead` run by attaching to its session (the resume consumes any retained stop intent, so the run's next successful turn settles `idle`), or displays a warning message that a `working` run must be interrupted first. `ctrl+a`, `Enter` and `ctrl+d` work in both views.
 - A chat in no team tree shows `No team runs from this chat · ctrl+t shows all`.
 - Arrow keys keep the selected run visible, including beyond the last visible row and when wrapping back to the top. `Esc`, the tab keys and `M` (fullscreen in a chat) stay the Monitor's.
@@ -835,6 +835,10 @@ or polling it never replays or diffs session history.
   session); `S` adds a session to a combined report; `T` team; `t` window;
   `a`/`f`/`F` agent/tool/model; `/` text; `x` the tab's own filter. Selections
   are temporary drill steps; `?` lists every key.
+- **Esc** closes the Monitor, also while the chat beside its panel has the focus
+  (after typing in the prompt or clicking outside the panel). What Esc does in
+  the chat comes first: interrupting a running reply, leaving shell mode,
+  hiding autocomplete, closing a dialog.
 - **Cache**: each row shows time, request kind, **hit / cold / partial / miss**,
   reported reads, lost reuse, and the actual changed field or an explicit unknown
   cause. Compaction is a request-kind annotation, never a replacement for its
