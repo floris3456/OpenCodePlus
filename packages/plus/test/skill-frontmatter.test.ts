@@ -64,6 +64,22 @@ test("a missing name is added as the block's first line, and the description is 
   expect(file.body).toBe("\n  Take notes as you go.\nSecond line.\n")
 })
 
+test("a missing name is added as the block's first line, keeping its description", async () => {
+  const directory = await project()
+  const created = await createSkill({
+    scope: "project",
+    projectDirectory: directory,
+    name: "notes",
+    body: "---\ndescription: Keep notes.\ntype: Guide\n---\nTake notes as you go.\n",
+  })
+  if (!created.ok) throw new Error(`createSkill failed: ${JSON.stringify(created)}`)
+
+  const file = blocks(await written(directory, "notes"))
+  expect(file.count).toBe(2)
+  expect(file.fields).toEqual({ name: "notes", description: "Keep notes.", type: "Guide" })
+  expect(file.body).toBe("Take notes as you go.\n")
+})
+
 test("a description falls back to the name when the body has no text after the block", async () => {
   const directory = await project()
   const created = await createSkill({
