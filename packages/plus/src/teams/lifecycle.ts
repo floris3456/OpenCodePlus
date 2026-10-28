@@ -671,6 +671,10 @@ export function childSettledText(
     const error = attempt.error
     if (error !== undefined) {
       lines.push(`Error: ${error.type}${error.status === undefined ? "" : ` (${error.status})`}: ${error.message}`)
+      if (attempt.retries !== undefined)
+        lines.push(
+          `The host retried it ${attempt.retries.count} times over ${retryDuration(attempt.retries.firstAt, attempt.endedAt)} (from ${utcTime(Date.parse(attempt.retries.firstAt))} UTC) before the step failed.`,
+        )
       lines.push(
         `next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member; otherwise read team_status and team_diff with run: "${run.id}", then team_followup or team_stop.`,
       )
@@ -694,8 +698,20 @@ export function childSettledText(
   block("Concerns", list<string>(report.concerns))
   block("Deferred", list<string>(report.deferred))
   block("Findings", list<{ severity?: string; path?: string; detail?: string }>(report.findings).map((f) => `${f.severity} ${f.path}: ${f.detail}`))
+  if (attempt.retries !== undefined)
+    lines.push(
+      `Provider errors: the host retried ${attempt.retries.count} times over ${retryDuration(attempt.retries.firstAt, attempt.endedAt)} (last: ${attempt.retries.error.type} (${attempt.retries.error.status ?? "-"})); the run then continued.`,
+    )
   lines.push(`next: ${nextStep(run.id, status, commits.length > 0)}`)
   return lines.join("\n")
+}
+
+// "5 min 40 s", "48 s": how long a run of retries took, from the first to the end.
+function retryDuration(firstAt: string, endedAt: string | undefined) {
+  const ms = Math.max(0, (endedAt === undefined ? Date.now() : Date.parse(endedAt)) - Date.parse(firstAt))
+  const seconds = Math.round(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  return minutes === 0 ? `${seconds} s` : `${minutes} min ${seconds - minutes * 60} s`
 }
 
 // The run id is named: a parent told only "team_diff" diffed its own run.
