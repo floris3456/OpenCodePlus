@@ -1603,6 +1603,9 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
     // Space toggles (or makes the agent current) where it does something.
     if (!selection && canToggle(node)) hints.push(["space", node?.address?.item.startsWith("perm:") === true && (permItem(node!)?.patterns ?? []).length === 0 ? "switch" : "toggle"])
     else if (!selection && selectableAgent(node) !== undefined) hints.push(["space", "select"])
+    // Selecting the current agent stays a real action on a host agent row, so
+    // it follows the row's toggle instead of moving to the help dialog.
+    if (!selection && canToggle(node) && selectableAgent(node) !== undefined) hints.push(["ctrl+space", "select"])
     hints.push(...clipboardHints(node))
     if (targets.every((row) => addApplies(materialize(row)))) hints.push(["a", "add"])
     if (targets.length > 0 && targets.every((row) => row.actions.remove)) hints.push(["d", "delete"])
