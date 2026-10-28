@@ -134,6 +134,31 @@ test("off and an agent with no row leave the result whole", async () => {
   expect(event.result.metadata).toBeUndefined()
 })
 
+test("a non-team agent caps when its own row sets one, and empty stays no cap", async () => {
+  const row = controlItems("build").find((item) => item.id === "setting:tool-output")!
+  const withRow = (text: string): ApplyInput => ({
+    ...input([plain]),
+    records: [{ type: "customization", level: "project", agent: "build", item: "setting:tool-output", section: null, text, basedOn: row.fingerprint, updated: "" }],
+  })
+  expect(toolOutputCapsOf(withRow("3000")).get("build")).toBe(3_000)
+  expect(toolOutputCapsOf(withRow("")).get("build")).toBeUndefined()
+  const { after } = await installed(withRow("3000"))
+  const event = completed("shell", huge, {}, "build")
+  await Effect.runPromise(after[0]!(event))
+  expect(textOf(event.result)).toContain("capped at 3000 tokens (setting:tool-output)")
+})
+
+test("images are kept whole and not counted", async () => {
+  const { after } = await installed(input([member], "2000"))
+  const image = { type: "file" as const, uri: "data:image/png;base64,AAAA", mime: "image/png", name: "/work/shot.png" }
+  const event = completed("read", huge)
+  event.result = { content: [{ type: "text", text: huge }, image] }
+  await Effect.runPromise(after[0]!(event))
+  const content = event.result.content as readonly Tool.Content[]
+  expect(content.filter((item) => item.type === "file")).toEqual([image])
+  expect(textOf(event.result)).toContain("capped at 2000 tokens")
+})
+
 test("a read page is capped in place and continues by offset, with no file written", async () => {
   const page = [
     "Read file /work/notes.md, lines 1-200",
