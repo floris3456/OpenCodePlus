@@ -24,6 +24,10 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  /** Why the parent was not told of this settlement: a dead or terminal parent,
+   * or an inbox write that failed. Left on the attempt so team_status shows it,
+   * and cleared once a later idle delivers the settlement. */
+  notifyError?: string
   /** The uncommitted work this attempt left when it settled without a report:
    * one binary patch in the run folder that a parent can apply in a worktree
    * (`git apply --index <file>`) or hand to a fresh run. Undefined for a clean

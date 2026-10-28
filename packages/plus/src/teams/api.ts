@@ -1519,6 +1519,9 @@ async function statusOf(ctx: Context, root: string, id: string) {
       history: record.history.filter((h): h is BudgetHistoryEntry => "reason" in h),
     },
     retrying: activeRetrying(record.retrying),
+    // Why the parent has not been told of this settlement: a dead or terminal
+    // parent, or a failed inbox write. The next idle retries it.
+    notifyError: last?.notifyError ?? null,
   }
 }
 

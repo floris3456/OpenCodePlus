@@ -49,11 +49,15 @@ const policy = Schema.decodeUnknownSync(Policy)({})
 const sweepPermit = Semaphore.makeUnsafe(1)
 let lastPassAt = 0
 let lastGcAt = 0
+// One boot drain per process: pending settlements left by a restart are
+// delivered on the first pass, not on every pass.
+let bootDrained = false
 
 /** Test-only: reset the process-wide sweep pacing between isolated roots. */
 export function resetSweepState(): void {
   lastPassAt = 0
   lastGcAt = 0
+  bootDrained = false
 }
 
 function settledText(run: RunRecord, previous: string, attempt: AttemptRecord | undefined): string {
@@ -166,8 +170,8 @@ async function saveAttemptPatch(root: string, run: RunRecord, attempt: AttemptRe
   if ((await readJson<unknown>(path.join(root, "runs", run.id, `report-${attempt.n}.json`))) !== undefined) return attempt
   const file = path.join(root, "runs", run.id, `uncommitted-${attempt.n}.patch`)
   const result = await Effect.runPromise(io(() => savePatch(run.directory, file)).pipe(Effect.result))
-  // The patch lands on the attempt as it is at write time: the settlement pass
-  // may have marked the attempt notified since this copy was read.
+  // The patch lands on the attempt as it is at write time: the settle pass may
+  // have marked the attempt notified since this copy was read.
   const saved = await updateRun(root, run.id, (current) => {
     const last = current.attempts.at(-1)
     if (last === undefined || last.n !== attempt.n) return current
@@ -181,6 +185,27 @@ async function saveAttemptPatch(root: string, run: RunRecord, attempt: AttemptRe
     return { ...current, attempts: [...current.attempts.slice(0, -1), next] }
   })
   return saved?.attempts.at(-1) ?? attempt
+}
+
+// One settlement per attempt: `notified` is written after the put, so the
+// claim that keeps two concurrent passes (a sweep and an idle event) from
+// writing the item twice lives in this process, not in the record.
+const announcing = new Set<string>()
+
+// Writes the attempt's patch, tells the parent, and only then marks the attempt
+// notified, so a failed put is retried by the next idle.
+async function announceSettlement(ctx: Context, root: string, run: RunRecord, attempt: AttemptRecord): Promise<RunRecord> {
+  const key = `${run.id}:${attempt.n}`
+  if (announcing.has(key)) return run
+  announcing.add(key)
+  try {
+    const saved = await saveAttemptPatch(root, run, attempt)
+    const told = await notifyParent(ctx, root, run, saved)
+    if (!told.delivered) return (await loadRun(root, run.id)) ?? run
+    return (await markNotified(root, run.id, saved.n)) ?? run
+  } finally {
+    announcing.delete(key)
+  }
 }
 
 async function reconcileOne(ctx: Context, root: string, entry: string): Promise<string | undefined> {
@@ -530,25 +555,25 @@ export async function onSessionIdle(
       attempt !== undefined &&
       isAttemptTerminal(attempt.state) &&
       attempt.notified !== true
-    const next = announce ? markNotified(idle) : idle
     if (announce && attempt !== undefined) settled.attempt = attempt
+    // `notified` is not written here: announceSettlement records it only once
+    // the parent's inbox holds the item, so a failed write retries next idle.
     // A stopped run's session can still end a turn (a prompt admitted before
     // the stop): it is stopped already.
-    if (!next.stopRequested || next.state === "stopping" || next.state === "stopped") return next
+    if (!idle.stopRequested || idle.state === "stopping" || idle.state === "stopped") return idle
     settled.stopped = true
-    const stopped = transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
-    return next.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: next.stopRequestedBy } : stopped
+    const stopped = transition(transition(idle, "stopping", "shutdown"), "stopped", "exited")
+    return idle.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: idle.stopRequestedBy } : stopped
   })
   if (marked === undefined) return (await loadRun(root, run.id)) ?? run
   if (settled.nudged) await put(root, marked.id, { kind: "system", from: "plus", text: FINISH_NUDGE })
   if (settled.attempt !== undefined) {
-    // The patch is written before the parent's text names it.
-    const attempt = await saveAttemptPatch(root, marked, settled.attempt)
-    await notifyParent(ctx, root, marked, attempt)
+    // The patch and the inbox item are written before `notified` is recorded.
+    await announceSettlement(ctx, root, marked, settled.attempt)
   }
   if (settled.stopped) {
     await evictRunFolder(ctx, marked)
-    return marked
+    return (await loadRun(root, run.id)) ?? marked
   }
   return deliverInbox(ctx, root, marked)
 }
@@ -639,12 +664,13 @@ export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: 
   const stoppedTransition = transition(transition(ended, "stopping", "shutdown"), "stopped", "exited")
   const stopped = by !== undefined ? { ...stoppedTransition, stoppedBy: by } : stoppedTransition
   const attempt = stopped.attempts.at(-1)
-  const toSave = waiting ? markNotified(stopped) : stopped
-  await saveRun(root, toSave)
-  await evictRunFolder(ctx, toSave)
-  if (waiting && attempt !== undefined && stopped.parent !== null && stopped.parent !== by)
-    await notifyParent(ctx, root, stopped, await saveAttemptPatch(root, stopped, attempt))
-  return toSave
+  await saveRun(root, stopped)
+  await evictRunFolder(ctx, stopped)
+  if (!waiting || attempt === undefined || stopped.parent === null) return stopped
+  // A parent that stopped this child was answered by the tool result; there is
+  // no settlement to send it, and nothing may announce this attempt again.
+  if (stopped.parent === by) return (await markNotified(root, stopped.id, attempt.n)) ?? stopped
+  return announceSettlement(ctx, root, stopped, attempt)
 }
 
 /**
@@ -661,11 +687,22 @@ export async function evictRunFolder(ctx: Context, run: RunRecord): Promise<void
   )
 }
 
-function markNotified(run: RunRecord): RunRecord {
-  const last = run.attempts[run.attempts.length - 1]
-  if (last === undefined) return run
-  const updated: AttemptRecord = { ...last, notified: true }
-  return { ...run, attempts: [...run.attempts.slice(0, -1), updated] }
+function markNotified(root: string, runID: string, attemptN: number): Promise<RunRecord | undefined> {
+  return updateRun(root, runID, (current) => {
+    const last = current.attempts.at(-1)
+    if (last === undefined || last.n !== attemptN) return current
+    const next: AttemptRecord = { ...last, notified: true }
+    delete next.notifyError
+    return { ...current, attempts: [...current.attempts.slice(0, -1), next] }
+  })
+}
+
+function markNotifyError(root: string, runID: string, attemptN: number, message: string): Promise<RunRecord | undefined> {
+  return updateRun(root, runID, (current) => {
+    const last = current.attempts.at(-1)
+    if (last === undefined || last.n !== attemptN) return current
+    return { ...current, attempts: [...current.attempts.slice(0, -1), { ...last, notifyError: message }] }
+  })
 }
 
 // The settlement is the parent's whole view of the attempt: the report in
@@ -783,21 +820,36 @@ function landStep(id: string): string {
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;
-// a working parent gets it through its own idle drain.
-async function notifyParent(ctx: Context, root: string, child: RunRecord, attempt: AttemptRecord): Promise<void> {
+// a working parent gets it through its own idle drain. `delivered` is true only
+// once the item is on disk: a parent that is terminal or gone, or a failed
+// write, records why on the child's attempt instead of vanishing.
+async function notifyParent(
+  ctx: Context,
+  root: string,
+  child: RunRecord,
+  attempt: AttemptRecord,
+): Promise<{ delivered: boolean }> {
   const parentID = child.parent
-  if (parentID === null || parentID === undefined || parentID === child.id) return
+  if (parentID === null || parentID === undefined || parentID === child.id) return { delivered: true }
   const parent = await loadRun(root, parentID)
-  if (parent === undefined || isTerminal(parent.state) || parent.state === "dead") return
+  if (parent === undefined || isTerminal(parent.state) || parent.state === "dead") {
+    await markNotifyError(root, child.id, attempt.n, `parent ${parentID} is ${parent?.state ?? "gone"}`)
+    return { delivered: false }
+  }
   const reportPath = path.join(root, "runs", child.id, `report-${attempt.n}.json`)
   const report = await readJson<SettledReport>(reportPath)
   const displayPath = report === undefined ? undefined : path.join(root, "runs", child.id, `report-${attempt.n}.md`)
-  await Effect.runPromise(
+  const written = await Effect.runPromise(
     io(() =>
       put(root, parentID, { kind: "child.settled", from: child.id, text: childSettledText(child, attempt, report, displayPath) }),
-    ).pipe(Effect.ignore),
+    ).pipe(Effect.result),
   )
+  if (written._tag === "Failure") {
+    await markNotifyError(root, child.id, attempt.n, written.failure instanceof Error ? written.failure.message : String(written.failure))
+    return { delivered: false }
+  }
   await deliverInbox(ctx, root, parent)
+  return { delivered: true }
 }
 
 // The idle handoff: everything pending becomes ONE prompt. A run whose last
@@ -889,13 +941,43 @@ export function slowWarning(label: string, fields: Record<string, string>, detai
     })
 }
 
-function renderInbox(items: readonly InboxItem[]): string {
-  const split = partition([...items])
+// The parent reads the head line of a message and little else (issue 8: two
+// settlements arrived behind a budget notice and were missed). Settlements come
+// first in their own order; notices and prompts follow. A message of more than
+// one item opens with an index line naming each one, so nothing can hide.
+export function renderInbox(items: readonly InboxItem[]): string {
+  const sorted = [...items].sort((a, b) => a.id.localeCompare(b.id))
+  const settlements = sorted.filter((item) => item.kind === "child.settled")
+  const rest = sorted.filter((item) => item.kind !== "child.settled")
+  const split = partition(rest)
   const blocks = [
-    batchNotify([...items]).text,
+    ...settlements.map((item) => item.text.replace(/\r?\n$/, "")),
+    batchNotify(rest).text,
     ...[...split.prompts, ...split.shutdown].map((item) => item.text.replace(/\r?\n$/, "")),
   ]
-  return blocks.filter((block) => block.trim().length > 0).join("\n\n")
+  const text = blocks.filter((block) => block.trim().length > 0).join("\n\n")
+  if (text === "" || sorted.length <= 1) return text
+  return `${inboxIndex([...settlements, ...rest])}\n\n${text}`
+}
+
+function inboxIndex(items: readonly InboxItem[]): string {
+  const summaries = items.map((item) =>
+    item.kind === "child.settled" ? settlementSummary(item.text) : `notice: ${firstLine(item.text, 80)}`,
+  )
+  return `[team] ${items.length} items: ${summaries.join("; ")}`
+}
+
+// "[team] w-1 (runner, T315) settled: done — attempt 5 reported." reads as
+// "w-1 (runner, T315) settled: done"; a first line without that shape is kept.
+function settlementSummary(text: string): string {
+  const line = firstLine(text, 200).replace(/^\[team\] /, "")
+  const dash = line.indexOf(" — ")
+  return dash < 0 ? line : line.slice(0, dash)
+}
+
+function firstLine(text: string, max: number): string {
+  const line = (text.split("\n")[0] ?? "").trim()
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
 // The one periodic tick of the team runtime: everything that must happen
@@ -904,12 +986,35 @@ function renderInbox(items: readonly InboxItem[]): string {
 // mostly unnecessary, so it runs at most every policy.sweep.reconcileMs even
 // though a pass runs every tick.
 export async function sweep(ctx: Context, root: string): Promise<SweepResult> {
+  // A settlement written just before a restart survives on disk, but nothing
+  // prompted the parent: the first pass after boot delivers whatever is still
+  // pending. deliverInbox keeps its own guards, so a busy or held parent waits
+  // for its next idle as usual.
+  const first = !bootDrained
+  bootDrained = true
+  if (first) await deliverPendingInboxes(ctx, root)
   const dead = await reconcile(ctx, root)
   const now = Date.now()
   if (now - lastGcAt < policy.sweep.reconcileMs)
     return { dead, gc: { reaped: [], skippedDirty: [], orphansRemoved: [], removeFailed: [] } }
   lastGcAt = now
   return { dead, gc: await gc(root, policy, { background: true }) }
+}
+
+async function deliverPendingInboxes(ctx: Context, root: string): Promise<void> {
+  const entries = await Effect.runPromise(
+    io(() => readdir(path.join(root, "runs"))).pipe(
+      Effect.map((names) => [...names]),
+      Effect.catchCause(() => Effect.succeed([] as string[])),
+    ),
+  )
+  for (const entry of entries) {
+    if (entry.startsWith(".")) continue
+    const record = await loadRecordSafe(root, entry)
+    if (record === undefined || isTerminal(record.state)) continue
+    if ((await peek(root, record.id)).length === 0) continue
+    await deliverInbox(ctx, root, record).catch(() => undefined)
+  }
 }
 
 export interface SweepResult {

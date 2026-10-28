@@ -8,9 +8,9 @@ import { context } from "../harness.js"
 import { createState } from "../../src/index.js"
 import { createTeamApi, type TeamCaller } from "../../src/teams/api.js"
 import { peek, put } from "../../src/teams/inbox.js"
-import { gc, onSessionIdle, reconcile, childSettledText } from "../../src/teams/lifecycle.js"
+import { gc, onSessionIdle, reconcile, childSettledText, renderInbox, resetSweepState, sweep } from "../../src/teams/lifecycle.js"
 import { Policy } from "../../src/teams/schema.js"
-import { git, gitRaw, parsePorcelain } from "../../src/teams/git.js"
+import { git, gitRaw } from "../../src/teams/git.js"
 import { loadRun, saveRun, type RunRecord } from "../../src/teams/run.js"
 
 async function withIsolatedTeamsRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -481,6 +481,105 @@ test("a clean worktree settles with no patch and no uncommitted line", async () 
       expect(told).toHaveLength(1)
       expect(told[0]?.text).not.toContain("Uncommitted work")
       expect(told[0]?.text).not.toContain("Uncommitted:")
+    } finally {
+      await fs.rm(repo.dir, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("a settlement is never buried: the settlement comes first and the index names both items", () => {
+  const notice = {
+    id: "01J00000000000000000000001",
+    kind: "notify" as const,
+    from: "w-budget",
+    text: "Budget exceeded for child run:\n- Run w-budget (runner): tokens 1501181/1500000, 3 min over",
+    at: 1,
+  }
+  const settlement = {
+    id: "01J00000000000000000000002",
+    kind: "child.settled" as const,
+    from: "w-task",
+    text: "[team] w-task (runner, T315) settled: done — attempt 5 reported.\nAll checks pass.",
+    at: 2,
+  }
+  const text = renderInbox([notice, settlement])
+  const lines = text.split("\n")
+  expect(lines[0]).toBe(
+    "[team] 2 items: w-task (runner, T315) settled: done; notice: Budget exceeded for child run:",
+  )
+  // The body comes after the index and starts with the settlement.
+  expect(text.indexOf("- attempt 5 reported.")).toBeLessThan(text.indexOf("- Run w-budget"))
+  // Each item keeps its own text, unchanged, after the index.
+  expect(text).toContain("Budget exceeded for child run:\n- Run w-budget (runner): tokens 1501181/1500000, 3 min over")
+  expect(text).toContain("[team] w-task (runner, T315) settled: done — attempt 5 reported.\nAll checks pass.")
+})
+
+test("a single item keeps its message as it was, with no index line", () => {
+  const settlement = {
+    id: "01J00000000000000000000002",
+    kind: "child.settled" as const,
+    from: "w-task",
+    text: "[team] w-task (runner, T315) settled: done — attempt 5 reported.",
+    at: 2,
+  }
+  expect(renderInbox([settlement])).toBe(settlement.text)
+})
+
+test("a failed inbox write leaves notified unset and records why; the next idle delivers", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo("notify-retry")
+    try {
+      const parent = { ...parentRun("main-notify-retry", "ses_notify_parent"), directory: repo.dir, repoKey: "settle-repo", base: repo.head, head: repo.head }
+      const child = patchChild("w-notify-retry", parent.id, repo.dir, repo.head, "ses_notify_child")
+      await saveRun(root, parent)
+      await saveRun(root, child)
+      // The parent's inbox path is a file, so every write into it fails.
+      await fs.writeFile(path.join(root, "runs", parent.id, "inbox"), "not a directory")
+
+      const sessions = recordingSessions()
+      const ctx = context({ session: sessions.domain })
+      await onSessionIdle(ctx, root, child, "idle")
+      await onSessionIdle(ctx, root, (await loadRun(root, child.id))!, "idle")
+
+      const failed = await loadRun(root, child.id)
+      expect(failed?.attempts[0]?.state).toBe("no_report")
+      expect(failed?.attempts[0]?.notified).toBeUndefined()
+      expect(failed?.attempts[0]?.notifyError).toContain(path.join("runs", parent.id, "inbox"))
+
+      // The path is fixed; a later idle retries and this time the parent hears.
+      await fs.rm(path.join(root, "runs", parent.id, "inbox"))
+      await fs.mkdir(path.join(root, "runs", parent.id, "inbox"), { recursive: true })
+      await onSessionIdle(ctx, root, failed!, "idle")
+      const told = sessions.prompted.filter((entry) => entry.sessionID === "ses_notify_parent")
+      expect(told).toHaveLength(1)
+      expect(told[0]?.text).toContain("[team] w-notify-retry (muse-implementer, T5) settled: no_report")
+      const delivered = await loadRun(root, child.id)
+      expect(delivered?.attempts[0]?.notified).toBe(true)
+      expect(delivered?.attempts[0]?.notifyError).toBeUndefined()
+    } finally {
+      await fs.rm(repo.dir, { recursive: true, force: true })
+    }
+  })
+}, 30000)
+
+test("the first sweep after a restart delivers an inbox item left pending by a previous process", async () => {
+  resetSweepState()
+  await withIsolatedTeamsRoot(async (root) => {
+    const repo = await makeRepo("boot-drain")
+    try {
+      const parent = { ...parentRun("main-boot-drain", "ses_boot_parent"), directory: repo.dir, repoKey: "settle-repo", base: repo.head, head: repo.head }
+      await saveRun(root, parent)
+      await put(root, parent.id, {
+        kind: "child.settled",
+        from: "w-before-restart",
+        text: "[team] w-before-restart (runner, T9) settled: done — attempt 1 reported.",
+      })
+      const sessions = recordingSessions()
+      await sweep(context({ session: sessions.domain }), root)
+      const told = sessions.prompted.filter((entry) => entry.sessionID === "ses_boot_parent")
+      expect(told).toHaveLength(1)
+      expect(told[0]?.text).toContain("w-before-restart (runner, T9) settled: done")
+      expect(await peek(root, parent.id)).toEqual([])
     } finally {
       await fs.rm(repo.dir, { recursive: true, force: true })
     }
