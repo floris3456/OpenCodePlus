@@ -3035,7 +3035,10 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       ])
       const layout = levels.reduce((all, level) => ownerLayoutCopy(all, owner(source.agent)(level), owner(copy)(level), updated), layoutOf(after))
       const records = [...current.records, ...copied]
-      return yield* settle(after, current, row, layout, `Duplicated ${source.agent} as ${copy}`, records).pipe(Effect.catchTag("Tool.Error", (error) => discard().pipe(Effect.andThen(Effect.fail(error)))))
+      // The copy goes right after its original in its catalogue list (an
+      // owner row reorders inside its group), unless a folder takes it.
+      const placed = placeAfter({ ...current, records, ...layout }, layout, row, source)
+      return yield* settle(after, current, row, placed, `Duplicated ${source.agent} as ${copy}`, records).pipe(Effect.catchTag("Tool.Error", (error) => discard().pipe(Effect.andThen(Effect.fail(error)))))
     }
     const ref = source.ref
     if (ref.kind === "team") {
