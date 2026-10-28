@@ -6044,10 +6044,13 @@ async function reloadSkillFiles(
   if (settled !== undefined && settled(await registered())) return
   await Effect.runPromise(
     Effect.gen(function* () {
-      const rescans = yield* Queue.unbounded<void>()
+      const rescans = yield* Queue.unbounded<"update" | "ended">()
       const watch = yield* ctx.event.subscribe().pipe(
         Stream.filter((event) => event.type === Skill.Event.Updated.type),
-        Stream.runForEach(() => Queue.offer(rescans, undefined).pipe(Effect.asVoid)),
+        Stream.runForEach(() => Queue.offer(rescans, "update").pipe(Effect.asVoid)),
+        // A host whose event stream has ended can never announce the rescan, so
+        // the wait ends with it instead of holding the write for the deadline.
+        Effect.ensuring(Queue.offer(rescans, "ended").pipe(Effect.asVoid)),
         Effect.forkChild({ startImmediately: true }),
       )
       yield* Effect.ensuring(
@@ -6059,7 +6062,7 @@ async function reloadSkillFiles(
             // not extend it, and a host that never rescans gives up instead of
             // holding the write open. Its next config reload picks the file up.
             const next = yield* Queue.take(rescans).pipe(Effect.timeoutOption(Math.max(0, deadline - Date.now())))
-            if (Option.isNone(next)) return
+            if (Option.isNone(next) || next.value === "ended") return
             // No predicate (a delete): the first rescan announces the new list,
             // so the read after the write sees it.
             if (settled === undefined) return
