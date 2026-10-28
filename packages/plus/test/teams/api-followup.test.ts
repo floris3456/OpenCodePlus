@@ -1167,6 +1167,22 @@ test("the Limits row raises the child context limit: 600 000 lets 400 001 throug
   })
 })
 
+test("a caller whose context row is off (a member with no preset) still gets the 400 000 team default", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-eeeeeeeeeeeeeeee")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const orchestrator = shippedMembers().find((member) => member.id === "orchestrator")
+    if (orchestrator === undefined) throw new Error("no orchestrator in the shipped team")
+    const table = presetTable({ records: [change(orchestrator, "perm:team_followup:limits.context", { state: "off" })] })
+    const session = sessionWithContext(400_001)
+    const api = createTeamApi(context({ session: session.domain }), teamState(table))
+    expect(rejected(await api.followup(followupInput({ run: child.id, requestID: "ctx-off" }), callerFor(parent))).code).toBe("E_CONTEXT")
+    expect(session.prompted).toEqual([])
+  })
+})
+
 test("the context limit refuses a path-only or rebase followup too, but never a budget-only one", async () => {
   await withIsolatedTeamsRoot(async (root) => {
     const { parent, child } = parentChild("main-0123456789abcdef", "w-dddddddddddddddd")

@@ -32,7 +32,7 @@ import {
   type RunBudget,
   type RunRecord,
 } from "./run.js"
-import { FollowupInput, PATH_LIST_LIMIT, pathList, toolError, type ResolvedBrief } from "./schema.js"
+import { FollowupInput, PATH_LIST_LIMIT, TEAM_CONTEXT_TOKENS, pathList, toolError, type ResolvedBrief } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
@@ -177,11 +177,12 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
   // turn would condense at once, and the report it already owes is what a fresh
   // run needs. Only a call that sends the child text is refused; a budget change
   // alone is not (the same calls that compute a `prompt` below).
-  const sendsText = args.prompt !== undefined || args.rebase === true || (args.paths?.length ?? 0) > 0
   if (sendsText) {
-    const limit = bound(table, caller.agent, "followup", "limits.context")
+    // A member with no preset has every row off by default, so the team
+    // default applies whenever the row gives no number; the row raises it.
+    const limit = bound(table, caller.agent, "followup", "limits.context") ?? TEAM_CONTEXT_TOKENS
     const tokens = await sessionContextTokens(ctx, child)
-    if (limit !== undefined && tokens !== undefined && tokens > limit)
+    if (tokens !== undefined && tokens > limit)
       return fail(
         "E_CONTEXT",
         `${child.id} holds ${tokens} tokens of context (limit ${limit}, team_followup limits.context). Start a fresh run with team_delegate instead: give it this run's report and branch ${child.branch} (or its commit) in the Brief.`,
