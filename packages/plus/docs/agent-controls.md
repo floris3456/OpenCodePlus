@@ -22,8 +22,14 @@ current project, even while editing its Global or Defaults settings.
 Description, color, and maximum steps use OpenCode's existing agent fields. The
 step limit is a positive integer; new user input resets the allowance. Empty
 color or step values clear those fields; Reset resumes inheritance. Reset on an
-agent row clears its nine agent/compaction controls at that level, not its tool
+agent row clears its ten agent/compaction controls at that level, not its tool
 or prompt overrides.
+
+A team member also has **LFS files in its worktrees**: `pointers` gives its
+delegated worktree LFS pointer files instead of their content (empty or `full`
+keeps the content, which is the default). See the README's team worktree notes;
+the setting changes only what `team_delegate` puts on disk, never a landing or
+merge worktree.
 
 The **OpenCode → Special** group contains only `title`, `compaction`, and
 `summary`. A custom agent does not become Special merely because it is hidden.

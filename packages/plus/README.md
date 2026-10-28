@@ -46,7 +46,7 @@ Hidden is a visibility setting, not an origin: `general` and `explore` stay ordi
 
 ```
 <Agent>
-  Settings                   Enabled · Mode · Description · Hidden · Color · Steps
+  Settings                   Enabled · Mode · Description · Hidden · Color · Steps · LFS files in its worktrees
   Models                     union down the chain plus the agent's upstream model (`source` badge, the effective row `active`)
     <provider>               one built-in group per provider (`…:models:provider=<provider>`), by id
       <lab>                  one per AI lab (`…:provider=<provider>:lab=<lab>`): Claude, ChatGPT, Gemini, … , Other last
@@ -86,6 +86,14 @@ for inheritance, reset behavior, and Instructions Tool examples.
   eligible primary agent. Disabled agents stay editable in Instructions.
 - **Enter** on Mode cycles **Primary → Subagent → All**. Description, Hidden,
   Color, and Steps use OpenCode's existing agent fields.
+- **LFS files in its worktrees** (`pointers` or empty/`full`, team members):
+  `pointers` makes `team_delegate` create that member's worktree with pointer
+  files instead of LFS content — faster, less disk — for a member that never
+  opens one. The worktree stays clean (`git status` empty) and a checkpoint
+  commits normally; `git lfs pull --include <path>` in it fetches a file when
+  needed, and the Brief says so. Empty (or `full`) is the default and
+  materialises every LFS file. Landing and merge worktrees are unaffected, and
+  a landed child reopened by `team_followup` gets an ordinary full worktree.
 - Compaction supports **Auto**, **Local**, and **Remote**, with per-agent model
   and instruction overrides. Remote grays and locks the local fields without
   discarding their values. Unsupported provider compaction fails explicitly.
@@ -626,7 +634,9 @@ retried … (last: …)` before `next:` when the run recovered.
   stopped the child, the no-report settlement says nothing is needed and
   `team_followup` resumes it with its context.
 - The Brief a child receives (`brief.ts`) has no empty sections; says what
-  done means for its deliverable; marks a read-only task as such; states the
+  done means for its deliverable; marks a read-only task as such; names the
+  worktree the child works in under Environment (with one line when its LFS
+  files are pointers: `git lfs pull --include <path>` fetches one); states the
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
   budget); and attaches a `briefFile` inline up to the member's "Attached brief
   file" limit (a larger one is named by path so the child reads only what it
