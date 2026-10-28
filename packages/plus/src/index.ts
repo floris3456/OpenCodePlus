@@ -20,7 +20,7 @@ import { create, duplicate, formatMarkdown, remove, rename, validateAgentId, typ
 import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserBaseTitleSync, userBaseDir, userBaseFile } from "./agents/base.js"
 import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
-import { createSkill, deleteSkill, importSkill, type SkillTarget } from "./agents/skills.js"
+import { createSkill, deleteSkill, importSkill, type SkillScope, type SkillTarget } from "./agents/skills.js"
 import { applyPublishParts, attentionRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { inPublishBatch } from "./instructions/publish-runtime.js"
@@ -1297,6 +1297,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
+      await reloadSkillFiles(ctx, scope, (ids) => ids.has(result.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.create", target: result.path, summary: `skill.create ${result.id} (${scope})` })
       return { ok: true as const, value: { id: result.id, path: result.path, scope } }
@@ -1318,6 +1319,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "skill.invalid" as const, message: result.message, data: { id: result.id, reason: result.message } },
         }
+      await reloadSkillFiles(ctx, scope, (ids) => ids.has(result.id))
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.import", target: result.path, summary: `skill.import ${result.id} (${scope})` })
       return { ok: true as const, value: { id: result.id, path: result.path, scope } }
@@ -1350,6 +1352,9 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       const freshStored = await load(directory)
       const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
       await removeItemRecords(directory, freshLoaded, `skill:${result.id}`)
+      // A delete leaves no id to look for (another scope may own the same one),
+      // so the project file being gone is what asks for the rescan.
+      await reloadSkillFiles(ctx, scope)
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory))
       await logFileOp({ directory, actor: normalizeActor(input.actor), scope: scope === "project" ? "project" : "global", op: "skill.delete", target: result.path, summary: `skill.delete ${result.id} (${scope})` })
       return { ok: true as const, value: { id: result.id, path: result.path, scope } }
@@ -6000,6 +6005,57 @@ async function reloadAgentFiles(
           yield* ctx.config.reload({ force: true })
           while (settled === undefined || !settled(yield* Effect.promise(registered))) {
             // One deadline for the whole wait: an unrelated agent.updated must
+            // not extend it, and a host that never rescans gives up instead of
+            // holding the write open. Its next config reload picks the file up.
+            const next = yield* Queue.take(rescans).pipe(Effect.timeoutOption(Math.max(0, deadline - Date.now())))
+            if (Option.isNone(next)) return
+            // No predicate (a delete): the first rescan announces the new list,
+            // so the read after the write sees it.
+            if (settled === undefined) return
+          }
+        }),
+        Fiber.interrupt(watch),
+      )
+    }),
+  )
+}
+
+// Core reads skill files in its config skill plugin, and `Skill.reload` only
+// re-runs that plugin's installed transform over the skills it read last
+// (core/src/skill.ts, core/src/config/plugin/skill.ts). A project's skill
+// folder is not watched (ConfigWatch.plan: only the service-wide config roots
+// are), so a create, import or delete under the project reaches the host
+// registry only on that plugin's next scan — which a forced config reload asks
+// for, and which the plugin then announces with skill.updated. Waiting for
+// that announcement is what keeps a written skill out of a restart. A global,
+// defaults or preset skill needs neither: its directory is watched, so core
+// rescans it itself. `settled` names what the registry must show, so a write it
+// already reflects costs no rescan; a delete leaves no id to check (another
+// scope may hold the same id), so it passes none and the write itself decides.
+const SKILL_RESCAN_LIMIT = Duration.seconds(2)
+async function reloadSkillFiles(
+  ctx: Context,
+  scope: SkillScope,
+  settled?: (ids: ReadonlySet<string>) => boolean,
+): Promise<void> {
+  if (scope !== "project") return
+  const registered = () =>
+    Effect.runPromise(Effect.map(ctx.skill.list(), (result) => new Set(result.data.map((skill) => String(skill.id)))))
+  if (settled !== undefined && settled(await registered())) return
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const rescans = yield* Queue.unbounded<void>()
+      const watch = yield* ctx.event.subscribe().pipe(
+        Stream.filter((event) => event.type === Skill.Event.Updated.type),
+        Stream.runForEach(() => Queue.offer(rescans, undefined).pipe(Effect.asVoid)),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const deadline = Date.now() + Duration.toMillis(SKILL_RESCAN_LIMIT)
+          yield* ctx.config.reload({ force: true })
+          while (settled === undefined || !settled(yield* Effect.promise(registered))) {
+            // One deadline for the whole wait: an unrelated skill.updated must
             // not extend it, and a host that never rescans gives up instead of
             // holding the write open. Its next config reload picks the file up.
             const next = yield* Queue.take(rescans).pipe(Effect.timeoutOption(Math.max(0, deadline - Date.now())))
