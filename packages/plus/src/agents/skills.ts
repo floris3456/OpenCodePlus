@@ -115,6 +115,9 @@ export async function deleteSkill(input: SkillTarget & { id: string }): Promise<
 }
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
+// An opening `---` immediately followed by the closing one: a block with no
+// keys, which is not a mapping (and would otherwise be read as body text).
+const EMPTY_FRONTMATTER = /^---\r?\n---(?:\r?\n|$)/
 
 type FormattedSkill = { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string }
 
@@ -123,7 +126,7 @@ type FormattedSkill = { readonly ok: true; readonly text: string } | { readonly 
 // description survive); only a missing `name` or description is added, since
 // core reads the id from the folder and the row's label from `name`.
 function formatSkill(id: string, body: string): FormattedSkill {
-  const match = body.match(FRONTMATTER)
+  const match = body.match(FRONTMATTER) ?? body.match(EMPTY_FRONTMATTER)
   if (match === null) {
     const description = describeBody(body, id)
     const normalized = body.endsWith("\n") || body.length === 0 ? body : `${body}\n`
@@ -146,12 +149,17 @@ function formatSkill(id: string, body: string): FormattedSkill {
   const rest = body.slice(match[0].length)
   const normalized = rest.endsWith("\n") || rest.length === 0 ? rest : `${rest}\n`
   const own = described ? (match[1] ?? "") : withoutDescription(match[1] ?? "")
-  const block = [
-    ...(fields.name === undefined ? [`name: ${yamlString(id)}`] : []),
-    ...(described ? [] : [`description: ${yamlString(describeBody(rest, id))}`]),
-    ...(own.length === 0 ? [] : [own]),
-  ].join("\n")
-  return { ok: true, text: `---\n${block}\n---\n${normalized}` }
+  const lines = own.trim().length === 0 ? [] : own.split("\n")
+  if (fields.name === undefined) {
+    lines.unshift(`name: ${yamlString(id)}`)
+    if (!described) lines.splice(1, 0, `description: ${yamlString(describeBody(rest, id))}`)
+  }
+  if (fields.name !== undefined && !described) {
+    // Keep the body's key order: the description follows its `name` line.
+    const at = lines.findIndex((line) => /^name\s*:/.test(line))
+    lines.splice(at + 1, 0, `description: ${yamlString(describeBody(rest, id))}`)
+  }
+  return { ok: true, text: `---\n${lines.join("\n")}\n---\n${normalized}` }
 }
 
 function withoutDescription(raw: string): string {
