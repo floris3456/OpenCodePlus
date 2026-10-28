@@ -37,6 +37,12 @@ export interface RenderFilled {
   attachmentLimit?: number
   /** Scope paths the base does not hold yet: the child creates them. */
   newPaths?: readonly string[]
+  /**
+   * The worktree the child works in. Given, the Brief names it in an
+   * Environment section, so the child need not ask where it is; `lfs:
+   * "pointers"` adds what its LFS files are and how to fetch one.
+   */
+  worktree?: { readonly directory: string; readonly lfs?: "pointers" }
 }
 
 /**
@@ -95,6 +101,12 @@ export function render(brief: ResolvedBrief, filled: RenderFilled): string {
   if (checks.length > 0)
     sections.push(`## Checks\n${checks.map((c) => `- ${c.id}: ${c.argv.join(" ")}`).join("\n")}`)
   if (filled.review !== undefined) sections.push(reviewSection(filled.review))
+  if (filled.worktree !== undefined) {
+    const environment = [`Worktree: ${filled.worktree.directory} (your session's working directory).`]
+    if (filled.worktree.lfs === "pointers")
+      environment.push("LFS files here are pointer files; `git lfs pull --include <path>` fetches one.")
+    sections.push(`## Environment\n${environment.join("\n")}`)
+  }
   sections.push(
     `## Budget\neffort ${effort}: about ${tokens(budget.tokens)} tokens (input, cache writes, output) and ${minutes(budget.wallMs)}. A guide, not a limit: if you need more, keep going and say why in your report.`,
   )

@@ -21,7 +21,7 @@ import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserB
 import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillScope, type SkillTarget } from "./agents/skills.js"
-import { applyPublishParts, attentionRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
+import { applyPublishParts, attentionRowsOf, lfsRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
@@ -176,6 +176,12 @@ export interface PlusState {
   permissions: PermissionTable | undefined
   /** Every agent's notification rows from the last publish, resolved down its chain (attention-watch.ts). */
   attentionRows: ReadonlyMap<string, Readonly<Partial<Record<AttentionRow, string>>>>
+  /**
+   * Members whose "LFS files in its worktrees" row resolves to `pointers`: the
+   * delegated worktree `delegate` creates for one gets pointer files, not their
+   * content. Absent for every member whose row is empty or `full`.
+   */
+  lfsPointers: ReadonlySet<string>
   /** Hook-side permission state that outlives one publish (pending approvals, "always" answers). */
   enforcement: EnforcementState
   agentObserver?: Registration
@@ -244,6 +250,7 @@ export function createState(storage?: StorageDomain): PlusState {
     teamOutputIds: new Map(),
     permissions: undefined,
     attentionRows: new Map(),
+    lfsPointers: new Set(),
     enforcement: enforcementState(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
@@ -5963,6 +5970,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
       state.attentionRows = new Map()
+      state.lfsPointers = new Set()
       state.teamOutputIds = new Map()
       state.hostModels = undefined
       state.hostCatalog = undefined
@@ -6345,6 +6353,7 @@ function publishFresh(
         deferAgentControls: true,
       }
       state.attentionRows = attentionRowsOf(applyInput)
+      state.lfsPointers = new Set(lfsRowsOf(applyInput).keys())
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)

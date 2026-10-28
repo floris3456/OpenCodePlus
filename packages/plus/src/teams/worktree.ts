@@ -25,6 +25,21 @@ export const NO_REPOSITORY_PROGRAMS = [
   "commit.gpgSign=false",
 ]
 
+// `GIT_LFS_SKIP_SMUDGE=1` alone only stops LFS's own smudge command; a
+// repository with `filter.lfs.process` configured (what `git lfs install`
+// writes) runs LFS through one long-lived process per checkout and ignores it.
+// Clearing the process and smudge filters is what actually leaves pointer
+// files, and `filter.lfs.required=false` keeps git from failing on the empty
+// command. Each `-c` outranks repository config, like the entries above.
+export const LFS_POINTERS_FLAGS = [
+  "-c",
+  "filter.lfs.smudge=",
+  "-c",
+  "filter.lfs.process=",
+  "-c",
+  "filter.lfs.required=false",
+]
+
 function exists(p: string): Promise<boolean> {
   return Effect.runPromise(
     io(() => stat(p)).pipe(
@@ -63,6 +78,12 @@ export interface CreateOptions {
   name: string
   base: string
   workspaceRoot: string
+  /**
+   * `pointers`: the checkout gets LFS pointer files instead of their content.
+   * Empty is today's behaviour — git runs the repository's smudge filter, so
+   * every LFS file is materialised. Landing and merge worktrees never set it.
+   */
+  lfs?: "pointers"
 }
 
 export interface Created {
@@ -107,7 +128,15 @@ async function createLocked(opts: CreateOptions): Promise<Created> {
   // nothing that resolves it (the host's FileSystem.realPath, the writes
   // below) can miss it.
   await mkdir(dirname(dir), { recursive: true })
-  await git(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "add", "-b", branch, dir, verify.out])
+  const pointers = opts.lfs === "pointers"
+  // Both halves are needed: the flags replace the smudge filter itself, and the
+  // env stops any LFS helper that still runs from fetching content (a
+  // repository with `filter.lfs.process` set ignores the env alone).
+  await git(
+    opts.repoRoot,
+    [...NO_REPOSITORY_PROGRAMS, ...(pointers ? LFS_POINTERS_FLAGS : []), "worktree", "add", "-b", branch, dir, verify.out],
+    pointers ? { GIT_LFS_SKIP_SMUDGE: "1" } : {},
+  )
   const head = await git(dir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   // Hand back the canonical directory: the host realpaths the location it is
   // given, and a data root reached through a symlink would otherwise yield two

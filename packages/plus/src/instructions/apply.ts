@@ -60,7 +60,7 @@ import { guidanceItemId, guidancePath, isModelPromptFile, teachingFilePath, teac
 import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
-import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
+import { booleanControl, controlItemFor, isControl, LFS_POINTERS } from "./agent-controls.js"
 import { isAttentionRow, type AttentionRow } from "../attention-settings.js"
 import { runPublish } from "./publish-runtime.js"
 import type { OrderRecord } from "./folders.js"
@@ -539,6 +539,17 @@ export function attentionRowsOf(input: ApplyInput): ReadonlyMap<string, Readonly
       return [agent.id, Object.fromEntries(texts)] as const
     }),
   )
+}
+
+/** Members whose `setting:lfs` resolves to `pointers`; every other member's worktree keeps full LFS content. */
+export function lfsRowsOf(input: ApplyInput): ReadonlyMap<string, "pointers"> {
+  const found = input.agents.flatMap((agent) => {
+    const rows = input.items.filter((item) => item.id === "setting:lfs" && applies(item, agent.id))
+    const item = controlItemFor(rows, { agent: agent.id, item: "setting:lfs", team: agent.team })
+    if (item === undefined) return []
+    return resolvedFor(item, agent, input).assembled === LFS_POINTERS ? [[agent.id, "pointers" as const] as const] : []
+  })
+  return new Map(found)
 }
 
 export async function applyControlsWithPlans(
