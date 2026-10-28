@@ -86,7 +86,7 @@ function splitLines(text: string): string[] {
 // Whole lines from the start, as many as fit in the cap's character budget; a
 // first line longer than that is cut at the budget.
 function headOfLines(lines: readonly string[], cap: number): string[] {
-  const budget = Math.floor(cap * CHARS_PER_TOKEN)
+  const budget = Math.max(0, Math.floor(cap * CHARS_PER_TOKEN))
   const kept: string[] = []
   let chars = 0
   for (const line of lines) {
@@ -95,7 +95,7 @@ function headOfLines(lines: readonly string[], cap: number): string[] {
     kept.push(line)
     chars += size
   }
-  if (kept.length === 0 && lines[0] !== undefined) kept.push(lines[0].slice(0, budget))
+  if (kept.length === 0 && budget > 0 && lines[0] !== undefined) kept.push(lines[0].slice(0, budget))
   return kept
 }
 
