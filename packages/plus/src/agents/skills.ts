@@ -148,17 +148,15 @@ function formatSkill(id: string, body: string): FormattedSkill {
   const described = typeof fields.description === "string" && fields.description.trim().length > 0
   const rest = body.slice(match[0].length)
   const normalized = rest.endsWith("\n") || rest.length === 0 ? rest : `${rest}\n`
-  const own = described ? (match[1] ?? "") : withoutDescription(match[1] ?? "")
-  const lines = own.trim().length === 0 ? [] : own.split("\n")
+  const kept = (described ? (match[1] ?? "") : withoutDescription(match[1] ?? "")).split("\n")
+  const lines = kept.length === 1 && kept[0]?.trim() === "" ? [] : kept
+  const derived = `description: ${yamlString(describeBody(rest, id))}`
   if (fields.name === undefined) {
     lines.unshift(`name: ${yamlString(id)}`)
-    if (!described) lines.splice(1, 0, `description: ${yamlString(describeBody(rest, id))}`)
+    if (!described) lines.splice(1, 0, derived)
   }
-  if (fields.name !== undefined && !described) {
-    // Keep the body's key order: the description follows its `name` line.
-    const at = lines.findIndex((line) => /^name\s*:/.test(line))
-    lines.splice(at + 1, 0, `description: ${yamlString(describeBody(rest, id))}`)
-  }
+  // Keep the body's own key order: the derived description follows its `name`.
+  if (fields.name !== undefined && !described) lines.splice(lines.findIndex((line) => /^name\s*:/.test(line)) + 1, 0, derived)
   return { ok: true, text: `---\n${lines.join("\n")}\n---\n${normalized}` }
 }
 
