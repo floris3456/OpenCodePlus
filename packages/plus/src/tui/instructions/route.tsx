@@ -167,6 +167,7 @@ export function fitHints(hints: readonly (readonly [string, string])[], width: n
 
 function controlHelp(item: string | undefined): string {
   if (item === "setting:steps") return "Positive whole number; empty means unlimited"
+  if (item === "setting:lfs") return "pointers or full; empty means full"
   if (item === "setting:color") return "#RRGGBB; empty clears the color"
   if (item === "compaction:model") return "provider/model#variant; empty inherits"
   return "Empty clears it"

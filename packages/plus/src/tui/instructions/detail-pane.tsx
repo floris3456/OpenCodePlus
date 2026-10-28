@@ -304,6 +304,7 @@ export function controlDetail(node: TreeNode, snapshot: Snapshot, memo?: Memo): 
     : item === "setting:hidden" ? "On hides the agent from the picker; it does not disable the agent."
     : item === "setting:mode" ? "Enter cycles Primary → Subagent → All."
     : item === "setting:steps" ? "Positive whole-number step limit; empty means unlimited. Reset follows the value above."
+    : item === "setting:lfs" ? "pointers: the member's worktree gets LFS pointer files, not the content. Empty means full LFS content."
     : item === "setting:color" ? "Agent display color (#RRGGBB); empty clears the color. Reset follows the value above."
     : isAttentionRow(item) ? attentionHelp(item)
     : item === "compaction:strategy" ? "Enter cycles Auto → Local → Remote. Remote requires provider support."

@@ -167,7 +167,7 @@ test("owner categories name the agent, member, preset or title agent they belong
     expect(detail(`group:preset:basic/:implementer:${category}`)).toBeDefined()
   }
   expect(detail("group:project:alice:settings")).toBe(
-    "This agent's settings: Enabled, Mode, Description, Hidden, Color, Steps and Notifications. Space toggles Enabled; enter edits a value.",
+    "This agent's settings: Enabled, Mode, Description, Hidden, Color, Steps, LFS files in its worktrees and Notifications. Space toggles Enabled; enter edits a value.",
   )
   expect(detail("group:project:alice:notifications")).toStartWith("Notifications and sounds for this agent's chats")
   expect(detail("group:project:crew/:mate:tools")).toBe(
@@ -177,7 +177,7 @@ test("owner categories name the agent, member, preset or title agent they belong
     "Models this title agent may use: the candidates down its chain plus its own model, grouped by provider, then AI lab. The first active row down the chain wins; space activates one at this level, enter edits it (model, effort, warming), d removes or hides it here.",
   )
   expect(detail("group:preset:basic/:implementer:settings")).toBe(
-    "This member preset's settings: Enabled, Mode, Description, Hidden, Color, Steps and Notifications. Space toggles Enabled; enter edits a value.",
+    "This member preset's settings: Enabled, Mode, Description, Hidden, Color, Steps, LFS files in its worktrees and Notifications. Space toggles Enabled; enter edits a value.",
   )
 })
 
