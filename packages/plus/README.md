@@ -498,11 +498,12 @@ gate — not the code. A landing does not run such a check for the parent or for
 an earlier landed child: their change is a different one, so it says nothing
 about this landing (and used to turn it red). The landing child's own
 change-scoped checks still run on the rebased commits, where the gate measures
-the child's own change. The ones not run are named in `skippedChecks` and in
-the answer's `note`. Then, on the checks that do run:
+the child's own change. The checks not run are named in `skippedChecks` and in
+the answer's `note`.
 
-The landing child's checks must pass on the rebased tip. Other failing checks
-run again at the parent's HEAD: new failures block; failures there too are
+Among the checks that do run, the landing child's checks must pass on the
+rebased tip. Other failing checks run again at the parent's HEAD: new
+failures block; failures there too are
 reported as `stillRed` and do not block. Passing receipts remain available at
 the new HEAD for the parent's finish.
 Finish and landing reuse a passing receipt with the same check definition and
