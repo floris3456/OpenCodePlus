@@ -3955,10 +3955,11 @@ export function createHandlers(ctx: Context, state: PlusState, options?: PlusApi
       Effect.gen(function* () {
         const root = yield* Effect.promise(() => mainCheckout(ctx.location.directory))
         if (root === undefined) return yield* Effect.fail(context.error("checks.invalid", "not inside a git repository", { reason: "not inside a git repository" }))
-        const entry = (check: { readonly argv: readonly string[]; readonly cwd?: string; readonly description?: string }) => ({
+        const entry = (check: { readonly argv: readonly string[]; readonly cwd?: string; readonly description?: string; readonly scope?: "tree" | "change" }) => ({
           argv: [...check.argv],
           ...(check.cwd === undefined ? {} : { cwd: check.cwd }),
           ...(check.description === undefined ? {} : { description: check.description }),
+          ...(check.scope === undefined ? {} : { scope: check.scope }),
         })
         const written = yield* Effect.promise(() =>
           writeProjectChecks(root, {

@@ -6,7 +6,9 @@ import { execute } from "../../src/teams/checks.js"
 import { git } from "../../src/teams/git.js"
 import {
   PROJECT_CHECKS_FILE,
+  checkList,
   describeProjectChecks,
+  isChangeScoped,
   readProjectChecks,
   resolveChecks,
   suggestChecks,
@@ -206,6 +208,69 @@ test("delegators read the project's checks on the checks field of team_delegate"
   const bare = { team_delegate: { input: Schema.toJsonSchemaDocument(nullTolerant(Brief as Schema.Top)).schema as unknown } }
   describeProjectChecks(bare, undefined)
   expect(JSON.stringify(bare.team_delegate.input)).toContain("This project names no checks")
+})
+
+// A size, budget or anti-mess gate judges the change its own run made; it
+// must not be inherited by a later landing, which has a different change.
+test("a check's scope is read, written back and named in the list; anything else is invalid", async () => {
+  const dir = await repo("scoped")
+  const written = await writeProjectChecks(dir, {
+    version: 1,
+    checks: {
+      "gate-small": { argv: ["python3", "tools/teamgate/gate.py", "--budget", "small"], scope: "change", description: "small change" },
+      "size-file": { argv: ["python3", "tools/size.py", "{path}"], scope: "tree" },
+      unit: { argv: ["pytest"] },
+    },
+  })
+  expect(written.ok).toBe(true)
+  const read = await readProjectChecks(dir)
+  expect(read?.checks.map((check) => [check.id, check.scope])).toEqual([
+    ["gate-small", "change"],
+    ["size-file", "tree"],
+    ["unit", undefined],
+  ])
+  expect(JSON.parse(await fs.readFile(path.join(dir, PROJECT_CHECKS_FILE), "utf8"))).toMatchObject({
+    checks: { "gate-small": { scope: "change" }, "size-file": { scope: "tree" } },
+  })
+  expect(checkList(read!.checks)).toBe("gate-small (small change) — judges the run's own change; size-file — needs path; unit")
+  // The order is description, then the scope note, then the path note.
+  expect(checkList([{ id: "gate-file", argv: ["gate", "{path}"], description: "one dir", scope: "change" }])).toBe(
+    "gate-file (one dir) — judges the run's own change — needs path",
+  )
+  // An unknown scope makes the whole file invalid: it is never half-used.
+  await fs.writeFile(path.join(dir, PROJECT_CHECKS_FILE), JSON.stringify({ version: 1, checks: { gate: { argv: ["gate"], scope: "x" } } }))
+  const invalid = await readProjectChecks(dir)
+  expect(invalid?.checks).toEqual([])
+  expect(invalid?.invalid).toContain("is not valid")
+  expect((await writeProjectChecks(dir, { version: 1, checks: { gate: { argv: ["gate"], scope: "x" as "change" } } })).ok).toBe(false)
+})
+
+test("isChangeScoped matches a stored check to the project's change-scoped one, {path} included", () => {
+  const scoped: ProjectChecks = {
+    root: "/repo",
+    checks: [
+      { id: "gate-small", argv: ["python3", "tools/teamgate/gate.py", "--budget", "small"], scope: "change" },
+      { id: "gate-data", argv: ["python3", "tools/teamgate/gate.py", "--data"], cwd: "tools", scope: "change" },
+      { id: "size-file", argv: ["python3", "tools/size.py", "{path}"], scope: "change" },
+      { id: "unit", argv: ["pytest", "tests"], scope: "tree" },
+      { id: "lint", argv: ["ruff", "check", "."] },
+    ],
+  }
+  // A run stores resolved checks without the scope: the same command is it.
+  expect(isChangeScoped({ id: "gate-small", argv: ["python3", "tools/teamgate/gate.py", "--budget", "small"] }, scoped)).toBe(true)
+  expect(isChangeScoped({ id: "local-name", argv: ["python3", "tools/teamgate/gate.py", "--data"], cwd: "tools" }, scoped)).toBe(true)
+  // {path} matches whatever path the delegator named.
+  expect(isChangeScoped({ id: "size-file", argv: ["python3", "tools/size.py", "src/a.ts"] }, scoped)).toBe(true)
+  expect(isChangeScoped({ id: "size-file", argv: ["python3", "tools/size.py"] }, scoped)).toBe(false)
+  // A tree-scoped or unscoped project check is never change-scoped.
+  expect(isChangeScoped({ id: "unit", argv: ["pytest", "tests"] }, scoped)).toBe(false)
+  expect(isChangeScoped({ id: "lint", argv: ["ruff", "check", "."] }, scoped)).toBe(false)
+  // cwd and argv must both match; a different command is not this check.
+  expect(isChangeScoped({ id: "gate-data", argv: ["python3", "tools/teamgate/gate.py", "--data"] }, scoped)).toBe(false)
+  expect(isChangeScoped({ id: "gate-small", argv: ["python3", "tools/teamgate/gate.py", "--budget", "big"] }, scoped)).toBe(false)
+  expect(isChangeScoped({ id: "gate-small", argv: ["gate.py", "--budget", "small"] }, scoped)).toBe(false)
+  // No project file at all (or an invalid one, which reads as no checks).
+  expect(isChangeScoped({ id: "gate-small", argv: ["python3", "tools/teamgate/gate.py", "--budget", "small"] }, undefined)).toBe(false)
 })
 
 // A worker learns the project's checks from team_check itself, not from a
