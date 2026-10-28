@@ -95,7 +95,7 @@ The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and sh
 - System rows and their sections: \`requires: ["tool:<id>", "skill:<id>", "!perm:<tool>:<rule>"]\` sends it only while those rows are on (\`!\`: off) for the agent; \`[]\` always, \`null\` drops this level's condition. A model prompt row (\`system:model/<id>\`) takes \`models\`, the patterns of the models it is sent for.
 - \`reset({ id })\` drops this level's override of the row (a model row: only this level's active flag; an agent row: its settings and compaction controls).
 
-Code Mode tools: \`off\` denies the tool, \`text\` rewrites its catalog line (the first line, up to 120 characters), \`pin\` overrides the default; \`tool:execute\` off removes Code Mode. Filter with \`codemode:true\`, \`pinned:true|false\`, \`namespace:<name>\`.
+Code Mode tools: \`off\` denies the tool, \`text\` rewrites its catalog line (the first line, up to 120 characters), \`pin\` overrides the default; \`tool:execute\` off removes Code Mode, so none of that agent's Code Mode tools can be called even when on (their rows read \`unreachable (execute off)\`): give it execute, or set the tool's Exposure row (\`toolmode:<id>\`) to \`direct\`. Filter with \`codemode:true\`, \`pinned:true|false\`, \`namespace:<name>\`.
 
 ## Models
 
