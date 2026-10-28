@@ -63,6 +63,8 @@ export interface Interface {
    * children are resumed separately through their durable Job records.
    */
   readonly listSuspended: () => Effect.Effect<ReadonlyArray<Session.ID>>
+  /** Child Sessions holding an execution claim: their turn was cut by a shutdown or a crash. */
+  readonly listSuspendedChildren: () => Effect.Effect<ReadonlyArray<Session.ID>>
   /**
    * Records the execution claim: the durable write-ahead intent that a turn is
    * (or was) in flight. Set when execution starts; a claim that survives to the
@@ -196,6 +198,17 @@ const layer = Layer.effect(
           .select({ sessionID: SessionTable.id })
           .from(SessionTable)
           .where(and(isNotNull(SessionTable.time_suspended), isNull(SessionTable.parent_id)))
+          .all()
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows.map((row) => row.sessionID)),
+          )
+      }),
+      listSuspendedChildren: Effect.fn("SessionStore.listSuspendedChildren")(function* () {
+        return yield* db
+          .select({ sessionID: SessionTable.id })
+          .from(SessionTable)
+          .where(and(isNotNull(SessionTable.time_suspended), isNotNull(SessionTable.parent_id)))
           .all()
           .pipe(
             Effect.orDie,
