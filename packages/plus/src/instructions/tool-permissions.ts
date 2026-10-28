@@ -169,14 +169,17 @@ export const curatedRules: readonly CuratedRule[] = rawRules.map((rule) => ({
 }))
 
 // Subagent rules populate from the discovered agents at discovery time, so
-// names are never hardcoded: one rule per id matching exactly that id.
+// names are never hardcoded: one rule per id matching exactly that id. They
+// carry no scrub keywords: Core already lists only the subagents an agent may
+// run (core/src/tool/plugin/subagent.ts filters by permission), so a keyword
+// here would only cut prose that names an agent.
 export function idRules(tool: string, ids: readonly string[]): CuratedRule[] {
   return ids.map((id) => ({
     tool,
     id,
     label: id,
     patterns: [id],
-    keywords: keywordsForPattern(id),
+    keywords: [],
   }))
 }
 

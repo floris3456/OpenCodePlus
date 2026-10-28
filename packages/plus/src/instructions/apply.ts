@@ -1294,6 +1294,10 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
     const keywords = input.items.flatMap((upstream) => {
       const item = runtimeRule(upstream, agent, input)
       if (item === undefined || item.kind !== "perm") return []
+      // A subagent row never scrubs, whatever keywords a stored record holds:
+      // Core already lists only the subagents an agent may run, so a keyword
+      // would only cut prose that names an agent (tool-permissions.ts idRules).
+      if (item.permTool === "subagent") return []
       // An allow row that is off opens nothing; scrubbing its keywords would
       // only delete prompt lines for a refusal it never makes.
       if (item.allow === true) return []
