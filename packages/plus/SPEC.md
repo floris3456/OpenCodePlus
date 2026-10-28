@@ -1748,6 +1748,12 @@ Scheduled provider retries notify a team run's parent only for waits of at
 least 10 minutes, once per error type per attempt. Plain subagents follow the
 same threshold, once per error type per busy period. Short waits never notify
 merely because the retry count reached three; team retry status still updates.
+The attempt also records the retries (`retries`: `firstAt`, `count`, and the
+last `error`), and its settlement names them: `The host retried it <count>
+times over <duration> (from <HH:MM> UTC) before the step failed.` after the
+`Error:` line of a failed attempt, or `Provider errors: the host retried
+<count> times over <duration> (last: <type> (<status>)); the run then
+continued.` before `next:` when the run recovered.
 
 On a landing conflict, `next` sends the same child `team_followup` with
 `rebase: true`. A clean, idle child first attempts an ordinary rebase. If it
@@ -2270,9 +2276,13 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    status) and the settlement shows it as `Error: <type> (<status>):
    <message>`, with a `next:` line that tells an unavailable model (quota,
    rate limit, provider down) — hand the same Brief to another member — from
-   a broken run. An idle parent is prompted with it immediately; a working
-   parent receives it through its own idle handoff. An attempt kept open is
-   not settled, so nothing is told;
+   a broken run. An attempt the host retried carries `retries` (`firstAt`,
+   `count`, last `error`) and its settlement adds `The host retried it <count>
+   times over <duration> (from <HH:MM> UTC) before the step failed.`; one that
+   recovered adds `Provider errors: the host retried … (last: <type>
+   (<status>))` before its `next:`. An idle parent is prompted with it
+   immediately; a working parent receives it through its own idle handoff. An
+   attempt kept open is not settled, so nothing is told;
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run
    `idle → working`: a new attempt (trigger `followup`) when the last attempt
    has ended, the same attempt when it is still open. Items already recorded
