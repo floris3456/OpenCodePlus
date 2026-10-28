@@ -1422,3 +1422,64 @@ test("a pin stored with relative instruction ids announces nothing when nothing 
   expect(request.system.map((part) => part.text)).toEqual(["You are helpful.", "Worktree names, as edited.", "Workspace rules."])
   expect(again.synthetics).toHaveLength(0)
 })
+
+test("an edit of checks.json leaves a pinned chat's team tools as first sent, across a restart; a new pin lists the new checks", async () => {
+  const fs = await import("node:fs/promises")
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const { git } = await import("../src/teams/git.js")
+  const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? os.tmpdir(), "plus-checks-pin-"))
+  try {
+    await git(dir, ["init", "-b", "main"])
+    const file = path.join(dir, ".opencodeplus", "checks.json")
+    const write = async (checks: Record<string, { argv: string[] }>, at: number) => {
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      await fs.writeFile(file, JSON.stringify({ version: 1, checks }))
+      await fs.utimes(file, at, at)
+    }
+    await write({ lint: { argv: ["echo", "lint"] } }, 1_700_000_000)
+    const { storage } = memoryStorage()
+    const { ctx, contextCallbacks } = createHarness(undefined, dir)
+    const plan: PublishPartsInput = {
+      applyInput: {
+        agents: [{ id: "lead", level: "project" }],
+        items: [],
+        records: [],
+        splits: [],
+        scopes: { global: new Set(), defaults: new Set() },
+        teamAgents: ["lead"],
+      },
+    }
+    const request = () =>
+      sessionEvent("ses_checks_pin", "lead", {
+        team_check: { description: "run a check", input: { type: "object", properties: { id: { type: "string", description: "The check." } } } },
+      }, [{ type: "text", text: "system" }])
+    const described = (event: SessionHooks["context"]) =>
+      (event.tools.team_check?.input as { properties: { id: { description: string } } }).properties.id.description
+
+    await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, plan)
+    const first = request()
+    await Effect.runPromise(contextCallbacks.at(-1)!(first))
+    expect(described(first)).toContain("lint")
+
+    // The lead registers another check mid-chat: the tools stay as first sent.
+    await write({ lint: { argv: ["echo", "lint"] }, gate: { argv: ["echo", "gate"] } }, 1_700_000_100)
+    const second = request()
+    await Effect.runPromise(contextCallbacks.at(-1)!(second))
+    expect(second.tools).toEqual(first.tools)
+
+    // And after a restart, from the stored pin.
+    await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager(storage) }, plan)
+    const restarted = request()
+    await Effect.runPromise(contextCallbacks.at(-1)!(restarted))
+    expect(restarted.tools).toEqual(first.tools)
+
+    // A new pin (no stored one) reads the file as it is now.
+    await applyPublishParts(ctx, { appliedParts: new Map(), sessionPins: new SessionPinManager() }, plan)
+    const repinned = request()
+    await Effect.runPromise(contextCallbacks.at(-1)!(repinned))
+    expect(described(repinned)).toContain("gate")
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})

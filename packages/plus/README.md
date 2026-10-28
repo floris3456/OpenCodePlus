@@ -326,7 +326,11 @@ keep working for Bun projects. Anything else is refused with `E_CHECKS`
 naming the project's checks. Every request a team member makes lists the
 project's checks on the `checks` field of `team_delegate` and the `id` field
 of `team_check` (and `team_get_context` reports them as `projectChecks`), so
-the first call names a real check. `setup` prepares each fresh worktree once,
+the first call names a real check. A chat keeps the list it was first sent
+until its prompt is rebuilt: the tools head the cached prompt, so editing
+`checks.json` mid-chat must not rewrite them (that missed the whole cache). A
+check added meanwhile still works at once; the delegate and check tools read
+the file themselves. `setup` prepares each fresh worktree once,
 before its first check, in place of the built-in Bun install.
 
 The Monitor's Team tab lists them; `e` there suggests entries from what the

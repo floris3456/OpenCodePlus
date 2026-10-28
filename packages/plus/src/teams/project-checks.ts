@@ -267,7 +267,11 @@ export function checksNote(project: ProjectChecks | undefined): string {
  * field's description sits in its non-null branch, which is where it goes.
  */
 export function describeProjectChecks(tools: Record<string, { input: unknown }>, project: ProjectChecks | undefined): void {
-  const note = checksNote(project)
+  describeChecksNote(tools, checksNote(project))
+}
+
+/** describeProjectChecks with a note already made (a chat's pinned one). */
+export function describeChecksNote(tools: Record<string, { input: unknown }>, note: string): void {
   // team_delegate's checks field and team_check's id field: both name a check.
   for (const [name, fieldName] of [["team_delegate", "checks"], ["team_check", "id"]] as const) {
     const definition = tools[name]

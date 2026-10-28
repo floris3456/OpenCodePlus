@@ -42,7 +42,7 @@ import {
   type TeamRef,
 } from "./model.js"
 import { actionForToolId, curatedRuleMessage, scrubLines } from "./tool-permissions.js"
-import { describeProjectChecks, readProjectChecks } from "../teams/project-checks.js"
+import { checksNote, describeChecksNote, readProjectChecks } from "../teams/project-checks.js"
 import {
   allowListMessage,
   enforcementState,
@@ -1311,13 +1311,36 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
 // The project's named checks (main checkout .opencodeplus/checks.json) on the
 // checks field of team_delegate and the id field of team_check. Only when one
 // of them is in the request; a failed read leaves the tools as they are.
-function describeChecks(ctx: Context, event: { readonly tools: Record<string, { input: unknown }> }): Effect.Effect<void> {
+// A pinned chat keeps the note it was first sent, stored with the pin's other
+// answers: the tools come first in the cached prompt, so a note read anew
+// after checks.json changed made the next request miss the whole cache. The
+// chat gets the new list when it re-pins; team_delegate and team_check read
+// the file themselves, so a check added meanwhile already works.
+function describeChecks(
+  ctx: Context,
+  event: { readonly tools: Record<string, { input: unknown }> },
+  pinned?: { readonly pin: SessionPin; readonly agent: string },
+): Effect.Effect<void> {
   if (event.tools.team_delegate === undefined && event.tools.team_check === undefined) return Effect.void
   return Effect.promise(async () => {
-    const project = await readProjectChecks(ctx.location.directory).catch(() => undefined)
-    describeProjectChecks(event.tools, project)
+    const answers = pinned === undefined ? undefined : (pinned.pin.permissionAnswers.get(pinned.agent) ?? new Map<string, unknown>())
+    const kept = answers?.get(CHECKS_NOTE_KEY)
+    if (typeof kept === "string") return describeChecksNote(event.tools, kept)
+    const project = await readProjectChecks(ctx.location.directory).then(
+      (value) => ({ value }),
+      () => undefined,
+    )
+    if (project === undefined) return
+    const note = checksNote(project.value)
+    if (pinned !== undefined && answers !== undefined) {
+      answers.set(CHECKS_NOTE_KEY, note)
+      pinned.pin.permissionAnswers.set(pinned.agent, answers)
+    }
+    describeChecksNote(event.tools, note)
   })
 }
+
+const CHECKS_NOTE_KEY = JSON.stringify(["projectChecksNote"])
 
 // Scrub the session prompt: drop whole lines containing disabled keywords
 // from every tool description and every system part (base plus instructions).
@@ -1793,7 +1816,7 @@ export async function installSessionPlans(
             pin.pinnedRoles.set(agent, activePlanSet.roles.get(agent) ?? "")
             pin.lastRequestAt = Date.now()
             applySystemOrder(event, activePlanSet.orders.get(agent))
-            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event)
+            if (activePlanSet.needsNarrowing) yield* describeChecks(ctx, event, { pin, agent })
             yield* pinManager.save(pin, agent)
           })
           const pin = yield* pinManager.load(sessionID, activePlanSet)
@@ -1913,7 +1936,7 @@ function applyPinnedPlans(
   applyRuleScrub(event, pin.planSet.scrubByAgent.get(agent) ?? [])
   if (pin.planSet.needsNarrowing) narrowTools(event, pinnedPermissions(pin, agent, pin.planSet.permissions))
   applySystemOrder(event, pin.planSet.orders.get(agent))
-  if (pin.planSet.needsNarrowing) return describeChecks(ctx, event)
+  if (pin.planSet.needsNarrowing) return describeChecks(ctx, event, { pin, agent })
   return Effect.void
 }
 
