@@ -2245,6 +2245,10 @@ New input and output fields:
   via `integrate` or GC reaping), or is stopped with uncommitted/tracked modifications.
   `status` reports the record's value (`worktree` defaulting to `"present"`) next to
   its live `dirty` git read, so the registered `team_status` and `team_list` agree.
+- `status` carries `patch: { file, files, bytes, skipped } | null` — the last
+  attempt's saved uncommitted work (see Uncommitted work) — and `notifyError:
+  string | null`, why the parent was not told of the last settlement (a dead or
+  terminal parent, or a failed inbox write).
 
 ### Audit chain and permission gating (`teams/audit.ts`, `teams/tools.ts`)
 
@@ -2326,7 +2330,11 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    recovered adds `Provider errors: the host retried … (last: <type>
    (<status>))` before its `next:`. An idle parent is prompted with it
    immediately; a working parent receives it through its own idle handoff. An
-   attempt kept open is not settled, so nothing is told. A quota answer with a
+   attempt kept open is not settled, so nothing is told. `notified` is written
+   only after the `put` of the item succeeded: a failed write leaves it unset
+   and the next idle retries, recording `notifyError`; a parent that is dead or
+   terminal also records `notifyError: "parent <id> is <state>"` on the child's
+   attempt instead of dropping the settlement. `status` reports it. A quota answer with a
    readable reset instead settles `blocked` (see **Quota cooldown** below);
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run
    `idle → working`: a new attempt (trigger `followup`) when the last attempt
@@ -2376,7 +2384,31 @@ once, unless that parent is the run that stopped it.
 
 `InboxKind` gains `child.settled`; `partition` and `batchNotify` classify it
 with `notify` and `system`, so a batch of settlements reaches a parent as one
-synthetic text.
+synthetic text. `renderInbox` puts every `child.settled` block first, in its
+own order, before notices, prompts and shutdown items; a message of more than
+one item opens with one `[team] <k> items: …` index line naming each one, then
+renders each item's text unchanged.
+
+**Uncommitted work.** An attempt that settles with no `report-<n>.json`
+(`no_report`, `failed`, `interrupted`, a stop, or a session that is gone
+through `reconcile`) saves the worktree first, before the settlement text is
+rendered: `teams/git.ts` `savePatch(directory, file)` writes
+`<root>/runs/<run>/uncommitted-<n>.patch` — `git diff --binary HEAD` plus one
+`git diff --binary --no-index /dev/null <path>` per untracked file, skipping
+`node_modules/` and files over 5 MB, capped at 50 MB, with every skipped path
+listed. It never stages or stashes: the index and the worktree are unchanged.
+`AttemptRecord.patch` holds `{ file, files, bytes, skipped }` and `status`
+reports it; the settlement gains `Uncommitted work saved: <file> (<files>
+files, <bytes> bytes[, skipped: …]). Apply it in a worktree with git apply
+--index <file>, or delegate a fresh run that starts from it.` A clean worktree
+saves nothing and adds no line; a failing save adds `Uncommitted work: could
+not be saved (<message>).` and the settlement still goes out.
+
+**Delivery after a restart.** The first `sweep` pass after the plugin starts
+delivers pending inbox items (`deliverPendingInboxes`): every non-terminal run
+with a non-empty inbox gets `deliverInbox`, with its existing guards (a busy or
+held parent waits for its next idle). `resetSweepState` clears the one-shot
+boot flag for isolated test roots.
 
 **Quota cooldown.** A quota 429 is neither a broken run nor a briefly
 unavailable model: the provider answers again at a named reset, so

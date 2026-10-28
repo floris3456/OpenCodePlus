@@ -596,7 +596,9 @@ test("two queued followups arrive as one prompt and one attempt", async () => {
     const sessions = recordSession()
     await onSessionEvent(context({ session: sessions.domain }), root, succeededEvent("ses_child_009"))
     expect(sessions.prompted).toHaveLength(1)
-    expect(sessions.prompted[0]?.text).toBe("First correction.\n\nSecond correction.")
+    expect(sessions.prompted[0]?.text).toBe(
+      "[team] 2 items: notice: First correction.; notice: Second correction.\n\nFirst correction.\n\nSecond correction.",
+    )
     expect((await loadRun(root, child.id))?.attempts).toHaveLength(2)
   })
 })

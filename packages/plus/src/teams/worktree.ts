@@ -1,29 +1,14 @@
 import { lstat, mkdir, realpath, stat } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Effect } from "effect"
-import { git, gitRaw } from "./git.js"
+import { git, gitRaw, NO_REPOSITORY_PROGRAMS } from "./git.js"
 import { toolError } from "./schema.js"
 import { lock } from "./store.js"
 import { errCode, io } from "./io.js"
 import { directoryUse } from "./directory-use.js"
 import { removeSnapshotStores } from "./snapshots.js"
 
-// Team worktrees share one repository, so a task executor can write the
-// repository-local git config — hooks, `core.fsmonitor`, `commit.gpgSign` — and a
-// later host-plane git command would run that program as the host, outside every
-// placement boundary. `-c` outranks repository config, and each value cannot be
-// redirected by the executor: `/dev/null` can never be a directory, and `false`
-// disables the feature outright. Add a key here only once a canary proves git
-// spawns it for one of our subcommands; `packages/core/src/git.ts` carries the
-// same list as its own copy because it cannot import plugin code.
-export const NO_REPOSITORY_PROGRAMS = [
-  "-c",
-  "core.hooksPath=/dev/null",
-  "-c",
-  "core.fsmonitor=false",
-  "-c",
-  "commit.gpgSign=false",
-]
+export { NO_REPOSITORY_PROGRAMS } from "./git.js"
 
 // `GIT_LFS_SKIP_SMUDGE=1` alone only stops LFS's own smudge command; a
 // repository with `filter.lfs.process` configured (what `git lfs install`
