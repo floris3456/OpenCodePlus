@@ -35,7 +35,7 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
   // Copy freezes values; cut relocates the current source at paste time. The
   // caller's revision guard prevents a concurrent edit from being overwritten.
   const source = buildTreeMemo(clipboard.mode === "cut" ? current : clipboard.source)
-  const draft = { memo: current, layout: { folders: current.folders ?? [], orders: current.orders ?? [] }, rows: [] as string[] }
+  const draft = { memo: current, layout: { folders: current.folders ?? [], orders: current.orders ?? [] }, rows: [] as string[], cutSources: [] as MemoInput["records"][number][] }
   const activatedOwners = new Set<string>()
   // Ops and row lookups share one memo per draft state: rebuilding it for
   // every pasted row made an agent's paste take most of a minute.
@@ -370,8 +370,10 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       layout(moved.layout)
     }
     if (!relocating && clipboard.mode === "cut") {
+      const written = new Set(draft.memo.records)
       const refusal = apply(origin.actions.toggle ? setEnabled(draft.memo, origin.id, false) : reset(draft.memo, origin.id))
       if (refusal !== undefined) return refusal
+      draft.cutSources.push(...draft.memo.records.filter((record) => !written.has(record)))
       const rule = parsePermItemId(origin.address.item)
       if (rule !== undefined) draft.memo = { ...draft.memo, records: draft.memo.records.filter((record) =>
         record.type !== "rule" || record.tool !== rule.tool || record.id !== rule.ruleId || !scopedTo(record, origin.address!),
@@ -384,8 +386,9 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     const refusal = transfer(id, destination)
     if (refusal !== undefined) return { refusal }
   }
-  // A pasted value its row already inherits is not stored: the row keeps following.
-  return { ...draft, memo: { ...draft.memo, records: withoutCopiedInherited(draft.memo, draft.memo.records, new Set(current.records)) } }
+  // A pasted value its row already inherits is not stored: the row keeps
+  // following. A cut's own change at its source is not a copied value.
+  return { layout: draft.layout, rows: draft.rows, memo: { ...draft.memo, records: withoutCopiedInherited(draft.memo, draft.memo.records, new Set([...current.records, ...draft.cutSources])) } }
 }
 
 // The category a group row is: a layout tab, or an owner's Skills list (which
