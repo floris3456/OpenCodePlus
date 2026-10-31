@@ -2235,6 +2235,13 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           )}
         </Show>
       </Show>
+      <Show when={state.progress()}>
+        {(line) => (
+          <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.feedback.info.base}>
+            {line()}
+          </text>
+        )}
+      </Show>
       <Show when={state.status()}>
         {(line) => (
           <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.feedback.info.base}>

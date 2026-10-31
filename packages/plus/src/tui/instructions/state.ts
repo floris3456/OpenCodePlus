@@ -251,13 +251,15 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     await awaitDrain()
     const previous = clipboard()
     // A paste carries every row's configuration and can take a while (a whole agent).
-    if (action === "paste" && previous !== undefined) setStatus(`Pasting ${previous.rows.length} row(s)…`)
+    const label = action === "paste" && previous !== undefined ? `Pasting ${previous.rows.length} row(s) onto "${node.label}"` : undefined
+    const started = Date.now()
     try {
-      const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
+      const request = plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
         action,
         ...(previous === undefined ? {} : { clipboard: previous.id }),
         ...(action === "paste" ? { into: node.id } : { ids: selectionContains(node) ? [...selection()] : [node.id] }),
       } }, { location: context.location })
+      const result = label === undefined ? await request : await running(label, request)
       const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsClipboardOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
       if (disposed) {
         if (Option.isSome(decoded) && !("error" in decoded.value) && decoded.value.clipboard !== undefined)
@@ -279,7 +281,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(decoded.value.status)
       return true
     } catch (error) {
-      setStatus(errorMessage(error))
+      if (label === undefined) setStatus(errorMessage(error))
+      else failed(label, started, error)
       return false
     }
   }
@@ -288,11 +291,14 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // becomes the cursor row. `name` names the copy of a single row.
   async function duplicateRows(ids: readonly string[], name?: string): Promise<boolean> {
     await awaitDrain()
-    setStatus(ids.length === 1 ? "Duplicating…" : `Duplicating ${ids.length} rows…`)
+    const only = ids.length === 1 ? treeMemo() : undefined
+    const first = only === undefined ? undefined : findLazy(only, ids[0]!)
+    const label = first === undefined ? `Duplicating ${ids.length} row(s)` : `Duplicating "${first.label}"`
+    const started = Date.now()
     try {
-      const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
+      const result = await running(label, plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
         action: "duplicate", ids: [...ids], ...(name === undefined ? {} : { name }),
-      } }, { location: context.location })
+      } }, { location: context.location }))
       if (disposed) return false
       const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsClipboardOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
       if (Option.isNone(decoded)) { setStatus("Unexpected duplicate response"); return false }
@@ -308,9 +314,41 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       context.ui.toast.show({ variant: "success", message: decoded.value.status })
       return true
     } catch (error) {
-      setStatus(errorMessage(error))
+      failed(label, started, error)
       return false
     }
+  }
+
+  // A long op (a team copy can take minutes) shows that it runs and for how
+  // long, in a line a reload does not clear (load() empties the status).
+  const [busy, setBusy] = createSignal<{ readonly label: string; readonly started: number }>()
+  const [clock, setClock] = createSignal(Date.now())
+  async function running<T>(label: string, request: Promise<T>): Promise<T> {
+    setBusy({ label, started: Date.now() })
+    setClock(Date.now())
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    try {
+      return await request
+    } finally {
+      clearInterval(timer)
+      setBusy(undefined)
+    }
+  }
+
+  function progress(): string | undefined {
+    const current = busy()
+    if (current === undefined) return undefined
+    const elapsed = clock() - current.started
+    if (elapsed < BUSY_NOTE_MS) return `${current.label}… ${formatDuration(elapsed)}`
+    return `${current.label}… ${formatDuration(elapsed)} · still running on the server, wait for its answer`
+  }
+
+  // The status line can be emptied by a reload when the server comes back:
+  // the toast keeps the failure in sight.
+  function failed(label: string, started: number, error: unknown) {
+    const message = longOpFailure(label, Date.now() - started, error)
+    setStatus(message)
+    context.ui.toast.show({ variant: "error", message })
   }
 
   function cancelClipboard(): boolean {
@@ -1989,6 +2027,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     setFilter,
     status,
     setStatus,
+    progress,
     loading,
     toggle: toggleSelected,
     cycle: cycleRow,
@@ -2100,6 +2139,17 @@ function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord 
     ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
   ]
   return `Defaults › Models "${label}": ${set.join(", ")}`
+}
+
+const BUSY_NOTE_MS = 10_000
+
+// A transport failure says what it means for the op: the server closed the
+// connection or stopped, and the op may have written part of its rows.
+function longOpFailure(label: string, elapsed: number, error: unknown): string {
+  const after = formatDuration(elapsed)
+  if (typeof error === "object" && error !== null && "reason" in error && error.reason === "Transport")
+    return `${label} got no answer after ${after}: the server closed the connection or stopped (${errorMessage(error)}). Part of it may be written; the list reloads when the server is back.`
+  return `${label} failed after ${after}: ${errorMessage(error)}`
 }
 
 function errorMessage(error: unknown): string {
