@@ -2002,6 +2002,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     },
     saveText: reflect(saveTextRow, "Description"),
     reset: (node: TreeNode) => confirmSelection(node, "Reset", resetNode),
+    // Why r does nothing on a row: the op's own refusal, as the reset tool answers.
+    resetRefusal: (node: TreeNode) => {
+      const result = reset(memoInput(), node.id, treeMemo())
+      return "refusal" in result ? result.refusal : `"${node.label}" has no override to reset`
+    },
     saveSplit: reflect(saveSplitRow, "Split"),
     addSection: reflect(addSectionRow, "Added section"),
     createTeam,

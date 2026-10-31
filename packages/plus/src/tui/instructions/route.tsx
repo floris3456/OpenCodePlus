@@ -1844,7 +1844,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           group: "Instructions",
           run: () => void renameCurrent(),
         },
-        ...(canReset(node) ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }] : []),
+        // r says why on a row with nothing to reset instead of doing nothing (d-09).
+        ...(node === undefined ? [] : [{ bind: "r", title: "Reset override", group: "Instructions", run: canReset(node) ? resetRow : () => state.setStatus(state.resetRefusal(node)) }]),
         ...(node?.actions?.split === true ? [{ bind: "s", title: "Split", group: "Instructions", run: split }] : []),
         { bind: "n", title: "Next to review", group: "Instructions", run: () => nextReview(1) },
         { bind: "shift+n", title: "Previous to review", group: "Instructions", run: () => nextReview(-1) },

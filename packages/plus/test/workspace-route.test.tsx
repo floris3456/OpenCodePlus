@@ -306,6 +306,21 @@ test("moving the sidebar from an agent to Teams empties the list instead of keep
   await fixture.waitForFrame((next) => next.includes("shell"))
 })
 
+// d-09: r on a row with no override was a silent no-op while the reset tool
+// answered "has no override to reset".
+test("r on a row with no override says so and writes nothing", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build], items: [toolItem("tool:shell", "shell", {})] })],
+    width: 130,
+    height: 40,
+  })
+  await reach(fixture, "item:project:build:tool:shell", "shell")
+  expect(dispatch(fixture, "r")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes('"shell" has no override to reset'))
+  expect(fixture.fake.mutateInputs).toEqual([])
+  expect(fixture.fake.dialogConfirms).toEqual([])
+})
+
 test("an owner with nothing switched on warns no tools and says how to turn some on", async () => {
   await using fixture = await renderInstructionsRoute({
     snapshots: [createSnapshot({ agents: [build] })],
