@@ -1284,8 +1284,8 @@ test("rule.update keeps a Teams rule's catalogue on a message edit and materiali
     catalogue: "teams",
     message: "Round3 team edit revised.",
   })
-  const agentsCopy = rows.find((record) => record.type !== "rule" || record.catalogue === undefined)
-  expect(agentsCopy).toMatchObject({ level: "defaults", agent: null, message: "Agents refuses." })
+  const agentsCopy = rows.find((record) => record.type === "rule" && record.catalogue === undefined)
+  expect(agentsCopy).toMatchObject({ type: "rule", level: "defaults", agent: null, message: "Agents refuses." })
   expect(Object.keys(agentsCopy ?? {}).includes("catalogue")).toBe(false)
 
   // A first write through update (an override of a curated/mined row with no
