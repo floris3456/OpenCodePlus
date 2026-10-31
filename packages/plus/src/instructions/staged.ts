@@ -1,6 +1,8 @@
 import type { PlusApi } from "../index.js"
 import type { Plus } from "../rpc.js"
 import { contentOf, keyIdentity, recordIdentity, recordKeyOf } from "./delta.js"
+import { userRuleItem } from "./discover.js"
+import { ruleRecordFor } from "./rule-record.js"
 import type { StoredRecord } from "./store.js"
 
 // One call that changes several rows: every op runs against one in-memory
@@ -8,8 +10,9 @@ import type { StoredRecord } from "./store.js"
 // writes once at the end, so it is one store revision, one log entry and one
 // publish. Record writes (`mutate`) and placement (`layoutWrite`) are staged;
 // an op that writes anything else (a file, a team, a link) first writes what
-// is staged, then runs as itself. A dry run stages the same way, never writes,
-// and refuses those other writes, since it cannot show them.
+// is staged, then runs as itself. A new rule is a record too, so it is staged
+// with the rest. A dry run stages the same way, never writes, and refuses
+// those other writes, since it cannot show them.
 export interface Staged {
   readonly api: PlusApi
   /** Write what is staged (once); the rows it covered stay pending until then. */
@@ -40,6 +43,8 @@ export function stagedApi(real: PlusApi, options: { readonly dryRun: boolean; re
     view?: Plus.Snapshot
     // identity → the staged record (undefined: removed), relative to base.
     records: Map<string, Plus.SnapshotRecord | undefined>
+    // Rows discovery adds when it publishes (a new rule's row), shown until the write.
+    items: Plus.SnapshotItem[]
     layout?: { folders: readonly Plus.SnapshotFolderRecord[]; orders: readonly Plus.SnapshotOrderRecord[]; targets: string[] }
     actor?: Plus.Actor
     changes: number
@@ -47,7 +52,7 @@ export function stagedApi(real: PlusApi, options: { readonly dryRun: boolean; re
     pending: string[]
     refused: { id: string; reason: string }[]
     written: Written
-  } = { records: new Map(), changes: 0, writes: 0, pending: [], refused: [], written: {} }
+  } = { records: new Map(), items: [], changes: 0, writes: 0, pending: [], refused: [], written: {} }
 
   const current = async () => {
     if (state.view !== undefined) return state.view
@@ -68,8 +73,10 @@ export function stagedApi(real: PlusApi, options: { readonly dryRun: boolean; re
     for (const key of remove) state.records.set(keyIdentity(key), undefined)
     for (const record of upsert) state.records.set(identityOf(record), record)
     const touched = new Set(state.records.keys())
+    const known = new Set(base.items.map((item) => item.id))
     state.view = {
       ...base,
+      items: [...base.items, ...state.items.filter((item) => !known.has(item.id))],
       records: [
         ...base.records.filter((record) => !touched.has(identityOf(record))),
         ...[...state.records.values()].filter((record) => record !== undefined),
@@ -100,6 +107,7 @@ export function stagedApi(real: PlusApi, options: { readonly dryRun: boolean; re
     state.view = undefined
     state.base = undefined
     state.records = new Map()
+    state.items = []
     state.layout = undefined
     state.pending = []
     if (upsert.length === 0 && remove.length === 0 && layout === undefined) return {}
@@ -177,6 +185,18 @@ export function stagedApi(real: PlusApi, options: { readonly dryRun: boolean; re
       state.actor ??= input.actor
       state.changes += stage(base, input.changes.upsert, input.changes.remove) > 0 ? 1 : 0
       return { ok: true as const, value: { ok: true as const, revision: base.revision, globalRevision: base.globalRevision } }
+    },
+    addRule: async (input) => {
+      const view = await current()
+      const made = ruleRecordFor(input, view.records as unknown as StoredRecord[])
+      if (!made.ok) return made
+      state.actor ??= input.actor
+      // The tool's own perm rows carry how core checks it.
+      const action = view.items.find((item) => item.permTool === made.record.tool && item.permAction !== undefined)?.permAction
+      state.items.push(userRuleItem(made.record, action))
+      state.changes += stage(state.base!, [made.record as unknown as Plus.SnapshotRecord], []) > 0 ? 1 : 0
+      const record = made.record
+      return { ok: true as const, value: { level: record.level, agent: record.agent, tool: record.tool, id: record.id, label: record.label } }
     },
     layoutWrite: async (input) => {
       const view = await current()

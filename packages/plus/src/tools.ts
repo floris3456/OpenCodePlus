@@ -1190,20 +1190,24 @@ function eachStep(
     }
     const refused = new Map(staged.refused().map((entry) => [entry.id, entry.reason]))
     const nested = done.flatMap((entry) => (isMany(entry.output) ? [entry.output] : []))
-    const changed = [
+    // A row created and then set by a later change is one changed row.
+    const changed = [...new Set([
       ...done.filter((entry) => entry.changed && !isMany(entry.output) && !refused.has(entry.id)).map((entry) => createdIdOf(entry.output) ?? entry.id),
       ...nested.flatMap((many) => many.changed),
-    ]
+    ])]
     const notDone = [
       ...done.flatMap((entry) => (entry.error === undefined ? [] : [{ id: entry.id, reason: entry.error }])),
       ...staged.refused(),
       ...nested.flatMap((many) => many.notDone),
     ]
     const already = done.filter((entry) => entry.error === undefined && !entry.changed && !isMany(entry.output)).length + nested.reduce((sum, many) => sum + many.already, 0)
-    const wrote = !dryRun && written.revision !== undefined
+    // Files, teams and links are written as their op runs, besides the one record write.
+    const writes = staged.writes()
+    const wrote = !dryRun && writes > 0
     const counted = `${changed.length} ${dryRun ? "would change" : "changed"}, ${already} already so, ${notDone.length} not done`
+    const how = writes === 1 ? "written once" : `written in ${writes} writes`
     const many: Many = {
-      status: `${dryRun ? "Dry run, nothing written: " : ""}${counted}${wrote ? ` (written once: revision ${written.revision}, global ${written.globalRevision})` : ""}`,
+      status: `${dryRun ? "Dry run, nothing written: " : ""}${counted}${wrote ? ` (${how}${written.revision === undefined ? "" : `: revision ${written.revision}, global ${written.globalRevision}`})` : ""}`,
       changed,
       already,
       notDone,

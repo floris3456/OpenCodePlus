@@ -37,7 +37,11 @@ async function fixture(toolCount = 3) {
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("alpha", "role"), agentInfo("beta", "role"), agentInfo("gamma", "role")],
-    tools: Array.from({ length: toolCount }, (_, index) => ({ id: `t${index}`, description: `Tool ${index}.`, options: { codemode: false } })),
+    tools: [
+      ...Array.from({ length: toolCount }, (_, index) => ({ id: `t${index}`, description: `Tool ${index}.`, options: { codemode: false } })),
+      // Rules hang under tools like shell.
+      { id: "shell", description: "Run shell.", options: { codemode: false } },
+    ],
     session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
   })
   const api = createPlusApi(ctx, createState())
@@ -216,8 +220,41 @@ test("batch creates an agent and a later change sets that agent's rows", async (
   })) as Written
   expect(answer.notDone).toEqual([])
   expect(answer.changed).toContain("agent:project:lead")
+  // The agent's file is written as it is created; its rows with the one record write.
+  expect(answer.status).toContain("written in 2 writes")
   expect(await stateOf(api, "lead", "tool:t0")).toBe("on")
   expect(await stateOf(api, "lead", "tool:t1")).toBe("on")
+})
+
+test("rules created for several agents, then switched, are one write that one undo takes back", async () => {
+  const { api, tools, project } = await fixture()
+  const before = await revisions(project)
+  const logBefore = await logLines(project)
+  const agents = ["alpha", "beta", "gamma"]
+  const rule = { kind: "rule", tool: "shell", id: "no-npm", label: "npm install", patterns: ["npm install *"], level: "defaults" }
+  const answer = (await run(tools, "batch", {
+    changes: [
+      { op: "create", ...rule, agent: agents },
+      { op: "set", find: { agent: agents, type: "rule", name: "no-npm", level: "defaults" }, state: "off" },
+    ],
+  })) as Written
+  expect(answer.notDone).toEqual([])
+  expect(answer.changed.toSorted()).toEqual(agents.map((agent) => `item:defaults:${agent}:perm:shell:no-npm`))
+  expect(answer.status).toContain("3 changed")
+  expect(answer.status).toContain("written once")
+  expect((await revisions(project)) - before).toBe(1)
+  expect((await logLines(project)) - logBefore).toBe(1)
+  const rules = async () => {
+    const snapshot = await api.snapshot()
+    if (!snapshot.ok) throw new Error("snapshot failed")
+    return snapshot.value.records.filter((record) => record.type === "rule" && record.id === "no-npm").length
+  }
+  expect(await rules()).toBe(3)
+  // The same rule again is refused per agent, by name.
+  const again = (await run(tools, "create", { ...rule, agent: ["alpha", "beta"] })) as Written
+  expect(again.notDone.map((entry) => entry.reason.split(":")[0])).toEqual(["rule.exists", "rule.exists"])
+  await run(tools, "undo", {})
+  expect(await rules()).toBe(0)
 })
 
 test("create takes lists: several agents in one call", async () => {

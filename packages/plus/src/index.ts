@@ -62,6 +62,7 @@ import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, modelItemId, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { appendUndo, changedSides, planUndo, readUndo } from "./instructions/undo.js"
+import { ruleRecordFor } from "./instructions/rule-record.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
@@ -2647,46 +2648,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // A preset's rows are not an agent's, whatever its id.
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
-      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
-      if (!validated.ok)
-        return {
-          ok: false as const,
-          error: { code: "rule.invalid" as const, message: validated.reason, data: { tool: input.tool, id: input.id, reason: validated.reason } },
-        }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const existing = loaded.records.find(
-        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id && scopedTo(record, input),
-      )
-      if (existing !== undefined)
-        return {
-          ok: false as const,
-          error: {
-            code: "rule.exists" as const,
-            message: `Rule ${validated.tool}:${validated.id} already exists`,
-            data: { level: existing.level, agent: existing.agent, tool: validated.tool, id: validated.id },
-          },
-        }
-      const next: RuleRecord = {
-        type: "rule",
-        level: input.level,
-        agent: input.agent,
-        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
-        ...(input.team === undefined ? {} : { team: input.team }),
-        tool: validated.tool,
-        id: validated.id,
-        label: validated.label,
-        patterns: validated.patterns,
-        keywords: validated.keywords,
-        ...(validated.message === undefined ? {} : { message: validated.message }),
-        updated: new Date().toISOString(),
-      }
+      const made = ruleRecordFor(input, loaded.records)
+      if (!made.ok) return made
+      const next = made.record
       const saved = await saveRuleRecords(directory, loaded, [...loaded.records, next])
       if (!saved.ok) {
-        const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
+        const reason = `Rule ${next.tool}:${next.id} changed concurrently; retry`
         return {
           ok: false as const,
-          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: next.tool, id: next.id, reason } },
         }
       }
       if (saved.changed)
@@ -2695,7 +2667,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           actor: normalizeActor(input.actor),
           op: "rule.add",
           target: ruleRecordTarget(next),
-          summary: `rule.add ${validated.tool}:${validated.id} (${input.level})`,
+          summary: `rule.add ${next.tool}:${next.id} (${input.level})`,
           revision: saved.revision,
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
