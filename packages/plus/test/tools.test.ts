@@ -33,7 +33,7 @@ import { resolve } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
-import { teachingSkillContent } from "../src/instructions/teaching.js"
+import { teachingReferences } from "../src/instructions/teaching.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { memoInputOf, presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -329,7 +329,8 @@ test("C1 registered model set and emitted field reset persist atomically without
   const values = { compactWarm: "on", coldFirst: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
   // Bind the taught typed fields to the registered schema and real write,
   // not just the permissive field-id parser.
-  for (const field of Object.keys(values)) expect(teachingSkillContent).toContain(`\`${field}\``)
+  // The model fields are taught in the skill's models reference file.
+  for (const field of Object.keys(values)) expect(teachingReferences["reference/models.md"]).toContain(`\`${field}\``)
   const input = decoded(set, { id: created.id, ...values })
   expect(input).toMatchObject(values)
   // The per-model cold switch is retired: setting it names the Settings row and writes nothing.
@@ -403,7 +404,7 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
     expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty(field)
   }
   expect(emitted.some((node) => node.address?.item.startsWith("modelsetting:coldModels:"))).toBe(false)
-  expect(teachingSkillContent).toContain("no `modelsetting:coldModels` field row is emitted")
+  expect(teachingReferences["reference/models.md"]).toContain("no `modelsetting:coldModels` field row is emitted")
   const bogus = `item:defaults:/models:modelsetting:coldModels:${row.address!.item.slice("modeldefault:".length)}`
   const untouched = await load(project)
   expect((await runFail(set, decoded(set, { id: bogus, text: "acme/guessed" }))).message).toContain("row.unknown")
