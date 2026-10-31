@@ -231,13 +231,19 @@ function foldCopies(state: QueryState, candidates: readonly Candidate[]): Map<Ca
 // their own things.
 function mostSpecific(candidates: readonly Candidate[]): Candidate[] {
   const rank = { project: 3, global: 2, defaults: 1 } as Record<string, number>
-  const thing = (candidate: Candidate) => candidate.id.split(":").map((part, index) => (index === 1 ? "*" : part)).join(":")
+  const thing = (candidate: Candidate) => {
+    const first = candidate.id.indexOf(":")
+    if (first === -1) return candidate.id
+    const second = candidate.id.indexOf(":", first + 1)
+    return second === -1 ? `${candidate.id.slice(0, first)}:*` : `${candidate.id.slice(0, first)}:*${candidate.id.slice(second)}`
+  }
   const best = new Map<string, Candidate>()
   for (const candidate of candidates) {
     const level = rank[levelOf(candidate) ?? ""]
     if (level === undefined) continue
-    const current = best.get(thing(candidate))
-    if (current === undefined || level > (rank[levelOf(current) ?? ""] ?? 0)) best.set(thing(candidate), candidate)
+    const key = thing(candidate)
+    const current = best.get(key)
+    if (current === undefined || level > (rank[levelOf(current) ?? ""] ?? 0)) best.set(key, candidate)
   }
   const kept = new Set(best.values())
   return candidates.filter((candidate) => kept.has(candidate) || rank[levelOf(candidate) ?? ""] === undefined)
@@ -351,6 +357,14 @@ interface Filter {
   /** `kind:group`: a tool's Description group only exists once its sections are known. */
   readonly mentionsGroups?: boolean
   readonly propagating: boolean
+  /**
+   * A positive `level:` or `agent:` term (without `_`): an item row's tool
+   * groups, parameters, rules and model fields share its owner, so when the
+   * item row fails it, every one of them does.
+   */
+  readonly ownerScoped?: boolean
+  /** A positive `type:` term naming only owner rows (agent, team, …): no item row or row below one matches it. */
+  readonly ownersOnly?: boolean
   /** Positive `level:`/`id:` terms: the only root levels whose rows can match. */
   readonly roots?: ReadonlySet<string>
   /** Positive `id:` terms: the lowercased prefixes a matching id starts with. */
@@ -474,8 +488,11 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false, co
   const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
-      const enumerated = !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
+      // Another owner's row, or a find for owners only: no row below it can match either.
+      const below = missesBelow(parsed, lazy)
+      const enumerated = below || !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
       push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
+      if (below) return
       for (const section of enumerated) {
         if (!skipRows)
           push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: section.row, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
@@ -563,8 +580,21 @@ function missesById(parsed: Parsed, itemId: string): boolean {
 }
 
 function failsPropagating(parsed: Parsed, lazy: Lazy): boolean {
-  const probe: Candidate = { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
+  const probe = probeOf(lazy)
   return parsed.filters.some((filter) => filter.propagating && !filter.test(probe))
+}
+
+const ownerTypes = new Set(["agent", "team", "member", "preset", "entry"])
+
+function missesBelow(parsed: Parsed, lazy: Lazy): boolean {
+  if (parsed.filters.some((filter) => filter.ownersOnly === true)) return true
+  if (!parsed.filters.some((filter) => filter.ownerScoped === true)) return false
+  const probe = probeOf(lazy)
+  return parsed.filters.some((filter) => filter.ownerScoped === true && !filter.test(probe))
+}
+
+function probeOf(lazy: Lazy): Candidate {
+  return { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
 }
 
 interface SectionRow {
@@ -1054,7 +1084,7 @@ function parseTerm(raw: string, state: QueryState): TermOut | undefined {
   const roots = rootsFor(key, alts, negate)
   const idPrefixes = !negate && key === "id" ? alts.map(lower) : undefined
   const wantsOrphans = (key === "orphan" && wantsTrue(alts, negate)) || (key === "is" && !negate && alts.some((alt) => lower(alt) === "orphaned"))
-  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
+  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ownerScoped: !negate && (key === "level" || (key === "agent" && !alts.includes("_"))), ownersOnly: !negate && key === "type" && alts.every((alt) => ownerTypes.has(lower(alt))), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
 }
 
 // The roots a positive `level:` or `id:` term can match under: every row id

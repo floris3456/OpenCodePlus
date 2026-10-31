@@ -4,6 +4,7 @@ import { controlItems } from "../src/instructions/agent-controls.js"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item } from "../src/instructions/model.js"
 import { memoBuildCounter, resetMemoBuildCounter } from "../src/instructions/resolve-memo.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
+import { findCollapse, query } from "../src/instructions/query.js"
 import { buildTreeMemo, expandedTree, findLazy, lazyPath, materialize, tree, treeOf, type TeamInput, type TreeNode } from "../src/instructions/tree.js"
 import { advanceMove, startMove } from "../src/tui/instructions/move.js"
 import { removalPlan, teamPlan, toggle } from "../src/instructions/ops.js"
@@ -534,4 +535,25 @@ test("realistic lab dataset benchmark: Enter -> tree rows and d -> confirm dialo
 
   const settledBeforeD = fixture.captureCharFrame()
   expect(selectedRow(settledBeforeD)).toContain("testttt")
+})
+
+// A find for one owner, or for owner rows only, walks no other owner's tool
+// groups, rules and parameters (they cannot match), so on the live-sized
+// fixture it costs a fraction of a find that must look at every owner's tools.
+// Each find runs on its own fresh memo, as the first find after a write does.
+test("a find for one agent or for teams skips every other owner's rows", () => {
+  const timed = (where: string) => {
+    const input = memoInputOf(makeLargeSnapshot())
+    const start = performance.now()
+    const found = query(input, { where, fields: ["id", "badges", "from"], limit: 500, withoutAliases: true, collapse: findCollapse(where) }, buildTreeMemo(input))
+    return { ms: performance.now() - start, total: found.total }
+  }
+  timed(`type:"tool"`)
+  const every = timed(`type:"rule"`)
+  const one = timed(`agent:"bulk-project-0" type:"rule"`)
+  const teams = timed(`type:"team"`)
+  expect(one.total).toBeGreaterThan(0)
+  expect(teams.total).toBeGreaterThan(0)
+  expect(one.ms).toBeLessThan(every.ms / 4)
+  expect(teams.ms).toBeLessThan(every.ms / 4)
 })
