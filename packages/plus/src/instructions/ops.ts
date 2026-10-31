@@ -905,7 +905,7 @@ function controlRow(memo: Memo, id: string): TreeNode | undefined {
   const team = member === null ? undefined : { level, team: member[1] }
   const address: Address = {
     level, agent: shared ? null : member?.[3] ?? owner, item, section: null,
-    ...(team === undefined ? {} : level === "preset" || member?.[2] !== undefined || parent?.owner?.entry !== undefined ? { team } : { memberOf: team }),
+    ...(team === undefined ? {} : { team }),
     ...(member !== null || owner === "/teams" ? { catalogue: "teams" as const } : {}),
   }
   const upstream = controlItemFor(memo.ctx.items, address)
@@ -996,7 +996,6 @@ export interface CreatedItemAddress {
   readonly item: string
   readonly catalogue?: Catalogue
   readonly team?: TeamRef
-  readonly memberOf?: TeamRef
 }
 
 // Only the root of the written level is walked: the row lives under it, and
@@ -1009,7 +1008,6 @@ export function createdItemRow(input: MemoInput, address: CreatedItemAddress): C
       candidate.address.level === address.level &&
       candidate.address.agent === address.agent &&
       sameTeam(candidate.address.team, address.team) &&
-      (address.memberOf === undefined || sameTeam(candidate.address.memberOf, address.memberOf)) &&
       candidate.address.item === address.item &&
       candidate.address.section === null &&
       catalogueOf(candidate.address.catalogue) === catalogueOf(address.catalogue),
@@ -2207,7 +2205,6 @@ export function modelReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
     agent: address.agent,
     ...(address.team === undefined ? {} : { team: address.team }),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
     ...(upstream === undefined ? {} : { upstream }),
   })
   if (above === undefined) return { mine: found.node.label }
@@ -2270,7 +2267,7 @@ function modelUpstreamOf(memo: Memo, address: Address) {
 function runtimeModelInput(memo: Memo, address: Address, models: readonly ModelRecord[]): ModelInput {
   const owner = address.agent
   const agentScope = owner === null ? undefined : memo.ctx.agents.find((entry) => entry.id === owner)?.scope
-  const team = address.memberOf ?? address.team
+  const team = address.team
   const runtime = modelRuntimeScope({
     scopes: memo.ctx.scopes,
     level: address.level,
@@ -2286,7 +2283,6 @@ function runtimeModelInput(memo: Memo, address: Address, models: readonly ModelR
     agent: owner,
     ...(address.team === undefined ? {} : { team: address.team }),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
     ...(upstream === undefined ? {} : { upstream }),
   }
 }
@@ -2558,15 +2554,14 @@ function modelTargetOf(address: Address): { providerID: string; modelID: string;
   return parseModelItemId(address.item)
 }
 
-// The row's own node (a member row's is per-agent) plus the team it resolves
-// with, which activation reads for the active model above.
-function modelScopeOf(address: Address): RecordScope & { readonly memberOf?: TeamRef } {
+// The row's own node (a member row's is its team's), which activation also
+// reads for the active model above.
+function modelScopeOf(address: Address): RecordScope {
   return {
     level: address.level,
     agent: address.agent,
     ...(address.team !== undefined ? { team: address.team } : {}),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
   }
 }
 
@@ -2671,38 +2666,28 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
   const upstream =
     agents.find((entry) => entry.id === pick.agent && entry.scope === owner.level)?.model ??
     agents.find((entry) => entry.id === pick.agent)?.model
-  const memberOf = owner.kind === "member" ? { level: owner.level, team: owner.team } : undefined
+  const team = owner.kind === "member" ? { level: owner.level, team: owner.team } : undefined
   const catalogue = owner.kind === "member" ? ("teams" as const) : undefined
   // Resolve the effective model exactly as buildActiveModels does.
   const runtime = modelRuntimeScope({
     scopes: ctx.scopes,
     level: owner.level,
     owner: pick.agent,
-    ...(memberOf === undefined ? {} : { team: memberOf }),
+    ...(team === undefined ? {} : { team }),
   })
   const effective = resolveActiveModel({
     models: ctx.models,
     scopes: runtime.scopes,
     level: runtime.level,
     agent: pick.agent,
-    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(team === undefined ? {} : { team }),
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   })
   // Write level: for an agent (not a team member), always the chat's Project
-  // level so other projects are never affected. For a team member, keep the
-  // level that supplies the model, else Global, else the team's tier,
-  // because member resolution and tree rows sit at the team's definition
-  // level and cannot resolve a Project-level member row.
-  const winnerSource = effective?.source
-  const writeLevel: Level =
-    owner.kind === "agent"
-      ? "project"
-      : winnerSource === "project" || winnerSource === "global"
-        ? winnerSource
-        : runtime.scopes.global.has(pick.agent)
-          ? "global"
-          : owner.level
+  // level so other projects are never affected. For a team member, its team's
+  // level: its own rows are stored with its team (`L/A@T`).
+  const writeLevel: Level = owner.kind === "agent" ? "project" : owner.level
   const ownerPath = owner.kind === "member" ? `${owner.team}/:${pick.agent}` : pick.agent
   const rowId = `item:${writeLevel}:${ownerPath}:${modelItemId(target)}`
   // The rows shown at the write level: the union down the chain from there.
@@ -2711,7 +2696,7 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     scopes: ctx.scopes,
     level: writeLevel,
     agent: pick.agent,
-    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(team === undefined ? {} : { team }),
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   })
@@ -2765,7 +2750,7 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
   const scope = {
     level: writeLevel,
     agent: pick.agent,
-    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(team === undefined ? {} : { team }),
     ...(catalogue === undefined ? {} : { catalogue }),
   }
   const next = ensureActivateModel(ctx.models, scope, target, now(), {

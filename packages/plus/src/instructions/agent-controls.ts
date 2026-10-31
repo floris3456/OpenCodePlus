@@ -33,11 +33,11 @@ export function booleanControl(id: string): boolean {
 // Items by id, once per items array (tree rows look controls up per agent).
 const rowsById = new WeakMap<readonly Item[], Map<string, Item[]>>()
 
-export function controlItemFor(items: readonly Item[], address: Pick<Address, "agent" | "item" | "team" | "memberOf">): Item | undefined {
+export function controlItemFor(items: readonly Item[], address: Pick<Address, "agent" | "item" | "team">): Item | undefined {
   const index = rowsById.get(items) ?? Map.groupBy(items, (item) => item.id)
   rowsById.set(items, index)
   const rows = index.get(address.item) ?? []
-  const team = address.team ?? address.memberOf
+  const team = address.team
   return rows.find((item) => item.agents?.includes(address.agent ?? "") && sameTeam(item.controlTeam, team))
     ?? rows.find((item) => item.agents?.includes(address.agent ?? "") && item.controlTeam === undefined)
     ?? rows.find((item) => item.agents === undefined)

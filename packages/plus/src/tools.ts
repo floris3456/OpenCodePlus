@@ -3171,16 +3171,11 @@ function createRow(
             }),
           )
       }
-      const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`, treeMemoOf(memo))
-      // Match the TUI Models group: presets and Defaults entries own scoped
-      // records; an ordinary member writes its agent's records in this team's chain.
+      // Match the TUI Models group: a member, a member preset and a Teams
+      // entry own records scoped to their team.
       if (team !== undefined && (agent === null || findRow(memo, `group:${level}:${team}/:${agent}:models`, treeMemoOf(memo)) === undefined))
         return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
-      const owner = team === undefined
-        ? {}
-        : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
-          ? { team: { level, team } }
-          : { memberOf: { level, team } }
+      const owner = team === undefined ? {} : { team: { level, team } }
       if (team === undefined && findRow(memo, `group:${level}:${agent ?? (input.catalogue === "teams" ? "/teams" : "")}:models`, treeMemoOf(memo)) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown model owner ${JSON.stringify(agent)} at ${level}` }))
       const created = yield* Effect.promise(() =>
@@ -3229,8 +3224,7 @@ function createRow(
       const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`, treeMemoOf(memo))
       if (team !== undefined && member?.owner === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `rule.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
-      const owner = team === undefined ? {} : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
-        ? { team: { level, team } } : { memberOf: { level, team } }
+      const owner = team === undefined ? {} : { team: { level, team } }
       const created = yield* Effect.promise(() =>
         api.addRule({
           level,
@@ -3430,7 +3424,7 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       const after = yield* snapshotOrFail(api)
       const current = memoFromSnapshot(after)
       const nodes = nodesFor(copy)
-      const records = copyRecords(current, nodes, updated, team)
+      const records = copyRecords(current, nodes, updated)
       const levels = [...new Set(source.kind === "agent" ? [source.scope, source.level] : [source.level])]
       const owner = (agent: string) => (level: string) => team === undefined ? `group:${level}:${agent}:` : `group:${level}:${team.team}/:${agent}:`
       const layout = levels.reduce((all, level) => ownerLayoutCopy(all, owner(source.agent)(level), owner(copy)(level), updated), layoutOf(after))
@@ -3475,7 +3469,7 @@ function duplicateTeam(api: PlusApi, tree: Memo, source: Extract<DuplicateSource
     yield* createdRowOrFail(api, (input) => findRow(input, row, treeMemoOf(input)) === undefined ? undefined : { id: row, item: label }, `team "${label}"`)
     const after = yield* snapshotOrFail(api)
     const current = memoFromSnapshot(after)
-    // A member keeps its name, so its own per-name rows are already shared.
+    // Every owner of the team: its rows, its Special agents' and its members'.
     const nodes = [{ from: { level: source.level, team: from }, to: { level: source.level, team: to } }]
     const records = copyRecords(current, nodes, updated)
     const layout = copied.reduce(
@@ -3549,11 +3543,11 @@ function duplicatePreset(api: PlusApi, tree: Memo, source: Extract<DuplicateSour
 
 // The store with a copy's nodes holding its original's own records, its
 // active models based on what the copy inherits (`current` holds the copy and
-// its link already). `memberOf`: a member copy's team.
-function copyRecords(current: MemoInput, nodes: readonly NodeCopy[], updated: string, memberOf?: TeamRef) {
+// its link already).
+function copyRecords(current: MemoInput, nodes: readonly NodeCopy[], updated: string) {
   const kept = withoutCopyNodes(current.records, nodes)
   const copied = ownerRecordsCopy(current.records, nodes, updated)
-  return [...kept, ...copyActiveModelsRebased(copied, treeMemoOf(current), [...kept, ...copied], memberOf)]
+  return [...kept, ...copyActiveModelsRebased(copied, treeMemoOf(current), [...kept, ...copied])]
 }
 
 function presetLabelOf(tree: Memo, ref: Plus.PresetRef): string {

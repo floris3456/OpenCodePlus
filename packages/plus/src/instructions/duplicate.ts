@@ -8,9 +8,9 @@
 // and carries the original's own records, re-addressed (ownerRecordsCopy).
 // It is never linked to its original, and nothing it inherits is written.
 
-import { recordIdentity } from "./delta.js"
 import { folderSlug } from "./folders.js"
-import { aboveActiveModelKey, presetOrigin, sameTeam, type Level, type PresetOrigin, type PresetRef, type Scopes, type TeamRef } from "./model.js"
+import { aboveActiveModelKey, presetOrigin, type Level, type PresetOrigin, type PresetRef, type Scopes, type TeamRef } from "./model.js"
+import { owns, type NodeCopy } from "./owner-records.js"
 import type { LayoutRecords } from "./ops.js"
 import { rowTeamOf, wholeOf } from "./resolve-memo.js"
 import { agentsMdItemId, isAgentsFile, isModelPrompt, toolsItemId } from "./system-order.js"
@@ -144,84 +144,36 @@ function skillIds(memo: Memo): string[] {
 
 type StoredRow = MemoInput["records"][number]
 
-/**
- * One chain node of the original whose stored records go to one node of its
- * copy. `agent` absent matches every owner of the team (a team's copy takes
- * its team-scoped rows, its Special agents' and its members' alike); in `to`
- * it keeps each record's own.
- */
-export interface NodeCopy {
-  readonly from: { readonly level: Level; readonly agent?: string | null; readonly team?: TeamRef }
-  readonly to: { readonly level: Level; readonly agent?: string | null; readonly team?: TeamRef }
-}
+export { ownerRecordsCopy, withoutCopyNodes, type NodeCopy } from "./owner-records.js"
 
 /**
  * Where an agent's or a member's own records go in its copy, most specific
- * node first: a member's team-scoped node (`L/A@T`), then its own node
- * (`L/A`), then the Global node a project agent also reads when an agent of
- * that name is global. The copy has the same nodes under its own name; a
- * Global node the copy does not read (a built-in agent's copy is a project
- * file) folds into its most specific own node. A member's own rows are stored
- * per name today, so a member that keeps its name (a team's copy) already
- * shares them: those nodes map onto themselves and need nothing written.
+ * node first. An agent's: its own node (`L/A`), then the Global node a
+ * project agent also reads when an agent of that name is global; the copy has
+ * the same nodes under its own name, and a Global node the copy does not read
+ * (a built-in agent's copy is a project file) folds into its most specific
+ * own node. A member's own node is its team's (`L/A@T`); the Global agent of
+ * its name a project member also reads folds into the copy's own node, so the
+ * copy never writes a stand-alone agent's records.
  */
 export function ownNodeCopies(
   scopes: Scopes,
   source: { readonly level: "project" | "global"; readonly agent: string; readonly team?: TeamRef },
   copy: { readonly agent: string; readonly team?: TeamRef; readonly global: boolean },
 ): NodeCopy[] {
+  if (source.team !== undefined && copy.team !== undefined) {
+    const to = { level: source.level, agent: copy.agent, team: copy.team }
+    return [
+      { from: { level: source.level, agent: source.agent, team: source.team }, to },
+      ...(source.level === "project" && scopes.global.has(source.agent) ? [{ from: { level: "global" as const, agent: source.agent }, to }] : []),
+    ]
+  }
   const levels = (global: boolean): Level[] => (source.level === "project" && global ? ["project", "global"] : [source.level])
   const to = levels(copy.global)
-  return [
-    ...(source.team === undefined || copy.team === undefined
-      ? []
-      : [{ from: { level: source.level, agent: source.agent, team: source.team }, to: { level: source.level, agent: copy.agent, team: copy.team } }]),
-    ...levels(scopes.global.has(source.agent)).map((level) => ({
-      from: { level, agent: source.agent },
-      to: { level: to.includes(level) ? level : to[0]!, agent: copy.agent },
-    })),
-  ]
-}
-
-/**
- * The original's own records re-addressed to its copy: its row edits,
- * sections, models, rules and links between its rows, nothing it inherits.
- * Item ids are shared, so only the owner (level, agent, team) changes. Each
- * address gets one record: two of the original's nodes landing on one node of
- * the copy merge field by field with the more specific one winning, which is
- * how the chain reads them; two records at one address of one node keep the
- * first, the one the chain reads.
- */
-export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly NodeCopy[], updated: string): StoredRow[] {
-  // `active`: the original node a model's active flag comes from, which a merge
-  // can make another than the node of the record it lands on.
-  const merged = new Map<string, { record: StoredRow; rank: number; active?: number }>()
-  nodes.forEach((node, rank) => {
-    if (sameNode(node.from, node.to)) return
-    records.forEach((record) => {
-      if (!owns(node.from, record)) return
-      const next = readdressed(record, node.to, updated)
-      const key = recordIdentity(next)
-      const known = merged.get(key)
-      const active = next.type === "model" && next.active === true ? rank : undefined
-      if (known === undefined) return void merged.set(key, { record: next, rank, ...(active === undefined ? {} : { active }) })
-      // A second record at one address of the same node is one the chain never reads.
-      if (known.rank === rank && next.type !== "model") return
-      merged.set(key, { ...known, record: mergedRecord(known.record, next), ...(known.active === undefined && active !== undefined ? { active } : {}) })
-    })
-  })
-  // One active model per node: the most specific original node's.
-  const active = new Map<string, number>()
-  for (const entry of merged.values())
-    if (entry.active !== undefined) {
-      const owner = ownerKey(entry.record)
-      active.set(owner, Math.min(active.get(owner) ?? Infinity, entry.active))
-    }
-  return [...merged.values()].map((entry) =>
-    entry.record.type === "model" && entry.record.active === true && active.get(ownerKey(entry.record)) !== entry.active
-      ? withoutKeys(entry.record, ["active", "basedOn"])
-      : entry.record,
-  )
+  return levels(scopes.global.has(source.agent)).map((level) => ({
+    from: { level, agent: source.agent },
+    to: { level: to.includes(level) ? level : to[0]!, agent: copy.agent },
+  }))
 }
 
 /**
@@ -233,7 +185,7 @@ export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly 
  * resolves now, in `memo`, the store with the copy and its link in it, as
  * activating it there would record.
  */
-export function copyActiveModelsRebased(copied: readonly StoredRow[], memo: Memo, records: readonly StoredRow[], memberOf?: TeamRef): StoredRow[] {
+export function copyActiveModelsRebased(copied: readonly StoredRow[], memo: Memo, records: readonly StoredRow[]): StoredRow[] {
   const models = records.filter((record) => record.type === "model")
   return copied.map((record) => {
     if (record.type !== "model" || record.active !== true || record.basedOn === undefined) return record
@@ -244,66 +196,12 @@ export function copyActiveModelsRebased(copied: readonly StoredRow[], memo: Memo
       scopes: memo.ctx.scopes,
       level: record.level,
       agent: record.agent,
-      ...(record.team === undefined ? (memberOf === undefined ? {} : { memberOf }) : { team: record.team }),
+      ...(record.team === undefined ? {} : { team: record.team }),
       ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
       ...(upstream === undefined ? {} : { upstream }),
     })
     return basedOn === record.basedOn ? record : { ...record, basedOn }
   })
-}
-
-/** The records without any a copy's node held before (an earlier agent of that name left them): the copy starts from its original's alone. */
-export function withoutCopyNodes<R extends { readonly level: Level; readonly agent: string | null; readonly team?: TeamRef }>(records: readonly R[], nodes: readonly NodeCopy[]): R[] {
-  const targets = nodes.filter((node) => !sameNode(node.from, node.to)).map((node) => node.to)
-  return records.filter((record) => !targets.some((to) => owns(to, record)))
-}
-
-function owns(from: NodeCopy["from"], record: { readonly level: Level; readonly agent: string | null; readonly team?: TeamRef }): boolean {
-  return record.level === from.level && (from.agent === undefined || record.agent === from.agent) && sameTeam(record.team, from.team)
-}
-
-function sameNode(from: NodeCopy["from"], to: NodeCopy["to"]): boolean {
-  return from.level === to.level && (to.agent === undefined || from.agent === to.agent) && sameTeam(from.team, to.team)
-}
-
-function readdressed(record: StoredRow, to: NodeCopy["to"], updated: string): StoredRow {
-  return {
-    ...withoutKeys(record, ["team"]),
-    level: to.level,
-    ...(to.agent === undefined ? {} : { agent: to.agent }),
-    ...(to.team === undefined ? {} : { team: to.team }),
-    updated,
-  } as StoredRow
-}
-
-function ownerKey(record: StoredRow): string {
-  return JSON.stringify([record.level, record.agent, record.team?.level ?? null, record.team?.team ?? null, record.catalogue ?? null])
-}
-
-// The fields that go together: a text with what it was based on, a state or
-// pin with the value it was set against.
-const fieldGroups = [["text", "basedOnText", "acknowledged"], ["state", "basedOnState"], ["pin", "basedOnPin"], ["requires"]] as const
-
-// `specific` is from a more specific node of the original than `general`.
-function mergedRecord(specific: StoredRow, general: StoredRow): StoredRow {
-  if (specific.type === "customization" && general.type === "customization")
-    return fieldGroups.reduce<StoredRow>((record, group) => {
-      const own = record as unknown as Record<string, unknown>
-      const other = general as unknown as Record<string, unknown>
-      if (own[group[0]] !== undefined || other[group[0]] === undefined) return record
-      return { ...record, ...Object.fromEntries(group.flatMap((key) => (other[key] === undefined ? [] : [[key, other[key]]]))) }
-    }, specific)
-  // A model row's settings are read field by field down the chain; whether it
-  // is hidden is its most specific record's.
-  if (specific.type === "model" && general.type === "model") {
-    const filled = Object.fromEntries(Object.entries(general).filter(([key, value]) => key !== "removed" && value !== undefined && (specific as unknown as Record<string, unknown>)[key] === undefined))
-    return { ...specific, ...filled }
-  }
-  return specific
-}
-
-function withoutKeys(record: StoredRow, keys: readonly string[]): StoredRow {
-  return Object.fromEntries(Object.entries(record).filter(([key]) => !keys.includes(key))) as unknown as StoredRow
 }
 
 /**
@@ -325,8 +223,8 @@ const NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/
 /**
  * Why a copy cannot take `name`: a name with characters an id cannot carry,
  * or one an agent already has. Agent and member copies refuse every agent's
- * name, built-in ones included, and a member's every member's at its level:
- * a member's own rows are stored per name, so it would share another's rows.
+ * name, built-in ones included (a stand-alone agent of a member's name wins
+ * over the member when both run), and a member's copy a name its team has.
  */
 export function copyNameRefusal(memo: Memo, source: DuplicateSource, name: string): string | undefined {
   if (source.kind === "folder" || source.kind === "system" || source.kind === "skill") return undefined
@@ -339,10 +237,10 @@ export function copyNameRefusal(memo: Memo, source: DuplicateSource, name: strin
       return `name.taken: an agent named "${name}" exists already${taken.origin === "native" || taken.origin === "special" || taken.origin === "plus" ? " (a built-in agent)" : ""}; give the copy another name`
   }
   if (source.kind === "member") {
-    const team = memo.ctx.teams.find((entry) => entry.level === source.level && entry.agents.includes(name))
-    if (team !== undefined) return `name.taken: team ${team.team} has a member named "${name}" already; give the copy another name`
+    if (memo.ctx.teams.some((entry) => entry.level === source.level && entry.team === source.team && entry.agents.includes(name)))
+      return `name.taken: team ${source.team} has a member named "${name}" already; give the copy another name`
     if (memo.ctx.agents.some((agent) => agent.id === name && agent.team === undefined))
-      return `name.taken: an agent named "${name}" exists already, and a member's own rows are stored by its name; give the copy another name`
+      return `name.taken: an agent named "${name}" exists already, and it would run instead of a member of that name; give the copy another name`
   }
   return undefined
 }

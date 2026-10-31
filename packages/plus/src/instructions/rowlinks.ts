@@ -81,7 +81,6 @@ export function sameOwnerView(left: Address, right: Address): boolean {
     left.level === right.level &&
     left.agent === right.agent &&
     sameTeam(left.team, right.team) &&
-    sameTeam(left.memberOf, right.memberOf) &&
     catalogueForAddress(left) === catalogueForAddress(right)
   )
 }

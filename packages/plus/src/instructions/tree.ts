@@ -1435,7 +1435,7 @@ function ownerAddressOfTab(tabId: string, tab: string): Address | undefined {
   const member = owner.indexOf("/:")
   if (member === -1) return { ...at, agent: owner }
   const team: TeamRef = { level, team: owner.slice(0, member) }
-  return level === "preset" ? { ...at, agent: owner.slice(member + 2), team } : { ...at, agent: owner.slice(member + 2), memberOf: team }
+  return { ...at, agent: owner.slice(member + 2), team }
 }
 
 // Each arranged tab's owners down its chain (layoutOwners), so the lists
@@ -1943,7 +1943,7 @@ function lazyTeamMember(
   const scoped = entry || preset !== undefined
   // An ordinary member resolves as a member of this team — its team-scoped
   // link and records, this team's Teams entries — exactly as apply resolves
-  // it, while its own records stay the per-agent ones (`memberOf`).
+  // it; its own records are stored with its team (`L/A@T`).
   const teamRef: RowTeam = scoped ? { level, team: team.team } : { memberOf: { level, team: team.team } }
   const removable =
     preset !== undefined
@@ -1977,13 +1977,10 @@ function lazyTeamMember(
     ...(preset === undefined ? { add: "agent" as const } : {}),
     ...(rowOwner === undefined ? {} : { owner: rowOwner }),
     actions: { ...noActions(), remove: removable },
-    // A member's rows address the same per-agent records as its Agents-group
-    // rows (level + agent + item), so an edit made here and an edit made there
-    // are one record. What differs is the chain — this team's `L/A@T` node,
-    // link and Teams entries, then the Teams catalogue, never Agents — which
-    // is a different resolved answer, so the rows carry their own ids under
-    // the member's `<team>/:<member>` owner path instead of colliding with
-    // the stand-alone agent's.
+    // A member's rows address its team-scoped node (`L/A@T`): an edit here
+    // changes this member only, not the stand-alone agent of its name nor a
+    // member of that name in another team. The rows carry their own ids under
+    // the member's `<team>/:<member>` owner path.
     children: () =>
       withFolders(memo, [
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
@@ -2416,9 +2413,9 @@ function lazyModelsState(
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   }
-  // Ordinary members carry memberOf, not team. Their runtime level is the
-  // team's tier even when discovery lists the same agent at Defaults.
-  const team = view.memberOf ?? view.team
+  // A member's runtime level is the team's tier even when discovery lists the
+  // same agent at Defaults.
+  const team = view.team
   const runtime = modelRuntimeScope({
     scopes: ctx.scopes,
     level,
@@ -2470,7 +2467,6 @@ function lazyModelItem(
   const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
   const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
   const isActive = active !== undefined && sameModelCandidate(target, active)
-  // The row's own node: a member row's is per-agent (teamFields → memberOf).
   const own = teamFields(teamRef).team
   const scope = { level, agent: owner, ...(own !== undefined ? { team: own } : {}), ...(catalogue === undefined ? {} : { catalogue }) }
   const canResetHere = hasModelActiveAt(ctx.models, scope)
@@ -3845,7 +3841,7 @@ function lazyItem(
       toggle: executable || codemode || !wholeNoToggle,
       edit: !executable,
       reset: !executable && canReset(ctx.customizations, address),
-      remove: teamFields(teamRef).team !== undefined ? false : removable(level, owner, item),
+      remove: teamRef !== undefined && !("memberOf" in teamRef) ? false : removable(level, owner, item),
       split: splittable,
       pin: codemode && !executable,
       // An instruction file or Tools and rules can be sent only when rows are

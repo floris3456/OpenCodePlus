@@ -430,7 +430,7 @@ function splitOfAddress(state: QueryState, address: Address): SplitRecord | unde
   return state.splits.get(JSON.stringify([address.level, address.agent, address.item, catalogueForAddress(address)]))?.[0]
 }
 
-function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "memberOf" | "level" | "catalogue">): Item | undefined {
+function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "level" | "catalogue">): Item | undefined {
   if (isControl(itemId)) return controlItemFor(state.memo.ctx.items, { item: itemId, agent: owner, ...context })
   const matches = state.items.get(itemId) ?? []
   const item = (owner === null ? undefined : matches.find((entry) => applies(entry, owner))) ?? matches[0]
@@ -887,7 +887,7 @@ function isOf(state: QueryState, candidate: Candidate, what: string): boolean {
 }
 
 function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
-  const team = candidate.address?.memberOf ?? candidate.address?.team
+  const team = candidate.address?.team
   if (team !== undefined) return [team.team]
   // Team presets, member presets and Teams entries name their team on the row.
   const ownerTeam = candidate.lazy?.owner?.team

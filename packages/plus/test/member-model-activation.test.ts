@@ -223,8 +223,8 @@ test("member row activates exclusively through set active:true and a bare set", 
   const record = (await runOk(show, { id: member, view: "record" })) as {
     record: { level: string; agent: string; team?: unknown; active?: boolean } | null
   }
-  expect(record.record).toMatchObject({ level: "global", agent: "Planner", active: true })
-  expect(record.record?.team).toBeUndefined()
+  // A member's own rows are stored with its team (phase 4, member-scope).
+  expect(record.record).toMatchObject({ level: "global", agent: "Planner", team: { level: "global", team: "Basic" }, active: true })
 
   // The row resolves active on the member chain, and a bare set on the sibling
   // candidate activates it exclusively, clearing the previous flag.
@@ -235,7 +235,7 @@ test("member row activates exclusively through set active:true and a bare set", 
   expect(models).toHaveLength(2)
   expect(models.find((entry) => entry.modelID === "nova-2")?.active).toBeUndefined()
   expect(models.find((entry) => entry.modelID === "nova-3")?.active).toBe(true)
-  expect(models.every((entry) => entry.team === undefined)).toBe(true)
+  expect(models.every((entry) => entry.team?.team === "Basic")).toBe(true)
 })
 
 test("activation is one revision and one log line and preserves another owner's active candidate", async () => {
@@ -319,13 +319,12 @@ test("create model with the member's team writes the member row, not a flat reco
   expect(created.id).toBe(member)
   expect(created.item).toBe("model:acme/nova-3")
 
-  // The write is a per-agent Global record (no team owner path), exactly the
-  // record the member chain reads.
+  // The write is the member's own Global record, stored with its team: the
+  // record the member chain reads, and no stand-alone Planner's.
   const stored = (await load(project)).records.find(
     (record) => record.type === "model" && record.agent === "Planner" && record.modelID === "nova-3",
   )
-  expect(stored).toMatchObject({ level: "global", agent: "Planner" })
-  expect(stored).not.toHaveProperty("team")
+  expect(stored).toMatchObject({ level: "global", agent: "Planner", team: { level: "global", team: "Basic" } })
 })
 
 async function labHost(project: string) {
@@ -451,7 +450,7 @@ test("preset team members badge their own active model and agree with the instal
     expect(runtime.data.find((entry) => entry.id === agent)?.model).toMatchObject({ providerID: "cliproxyapi", id: "claude-opus-5-5", variant: "high" })
     const models = snapshot.records.filter(isModelRecord).filter((entry) => entry.agent === agent && entry.level === "global")
     expect(models).toHaveLength(2)
-    expect(models.every((entry) => entry.team === undefined)).toBe(true)
+    expect(models.every((entry) => entry.team?.team === "lab")).toBe(true)
     expect(models.find((entry) => entry.modelID === "claude-haiku-5-5")?.active).toBeUndefined()
     expect(models.find((entry) => entry.modelID === "claude-opus-5-5")).toMatchObject({ variant: "high", active: true })
     expect(models.find((entry) => entry.modelID === "claude-opus-5-5")?.basedOn).toBe(agent === "orchestrator" ? "cliproxyapi/claude-haiku-5-5" : undefined)
@@ -470,7 +469,7 @@ test("preset team members badge their own active model and agree with the instal
   }
 })
 
-test("find team model rows includes ordinary members addressed through memberOf", async () => {
+test("find team model rows includes ordinary members' rows", async () => {
   const { tools } = await labFixture()
   const found = await runOk(need(tools, "instructions_find"), { team: "lab", type: "model" })
   expect(found).toMatchObject({ total: 4, rows: expect.arrayContaining(

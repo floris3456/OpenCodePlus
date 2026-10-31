@@ -380,7 +380,7 @@ test("member controls inherit hidden host fields and an explicit hidden off publ
   await save(f.directory, { expectedProjectRevision: store.projectRevision, expectedGlobalRevision: store.globalRevision, records: [{ type: "team", level: "project", team: "crew", enabled: true, updated: "" }] })
   await f.api.refresh()
   const initial = await f.snapshot()
-  expect(controlItemFor(initial.items, { agent: "build", item: "setting:hidden", memberOf: { level: "project", team: "crew" } })?.enabled).toBe(true)
+  expect(controlItemFor(initial.items, { agent: "build", item: "setting:hidden", team: { level: "project", team: "crew" } })?.enabled).toBe(true)
   expect(f.agents.state.get("build")).toMatchObject({ hidden: true, color: "#123456", steps: 7 })
   await f.edit(setEnabled(memoInputOf(initial), "item:project:crew/:build:setting:hidden", false))
   expect(f.agents.state.get("build")?.hidden).toBe(false)

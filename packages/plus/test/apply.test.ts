@@ -1702,9 +1702,9 @@ test("a member row resolves with its own team: the enabled team's row shows what
   expect(shown("item:project:beta/:m:tool:shell")?.state).toBe("on")
   expect(shown("item:project:beta/:m:tool:shell")?.from).toEqual({ kind: "preset", id: "shell-on", shipped: false })
   expect(shown("item:project:beta/:m:tool:read")?.state).toBe("on")
-  // The member's own edits stay per-agent records: the row's own node is `project/m`.
+  // The member's own edits are stored with its team: the row's own node is `project/m@alpha`.
   const row = nodes.find((node) => node.id === "item:project:alpha/:m:tool:shell")
-  expect(row?.address).toEqual({ level: "project", agent: "m", item: "tool:shell", section: null, catalogue: "teams", memberOf: alpha })
+  expect(row?.address).toEqual({ level: "project", agent: "m", item: "tool:shell", section: null, catalogue: "teams", team: alpha })
 })
 
 test("a team-scoped agent keeps its established chain and the Teams catalogue", async () => {

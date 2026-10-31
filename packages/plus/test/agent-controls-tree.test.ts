@@ -58,7 +58,7 @@ test("all agent, member, preset and Defaults owners expose discovered Settings w
   expect(row(nodes, "team:project:crew:build").enabledRow).toBe("item:project:crew/:build:setting:enabled")
   expect(row(nodes, "item:project:crew/:build:setting:mode").address).toEqual({
     level: "project", agent: "build", item: "setting:mode", section: null,
-    memberOf: { level: "project", team: "crew" }, catalogue: "teams",
+    team: { level: "project", team: "crew" }, catalogue: "teams",
   })
 })
 
