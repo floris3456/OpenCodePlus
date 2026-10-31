@@ -129,7 +129,9 @@ export interface MoveTarget {
   readonly after?: string | undefined
 }
 
-export type LayoutChange = { readonly target: string; readonly status: string; readonly layout: LayoutRecords } | { readonly refusal: string }
+export type LayoutChange =
+  | { readonly target: string; readonly status: string; readonly layout: LayoutRecords; /** The tree row id of the folder this change created. */ readonly row?: string }
+  | { readonly refusal: string }
 
 export type LayoutPlan = LayoutRecords | { readonly refusal: string }
 
@@ -677,7 +679,14 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   if (folder === undefined) return { refusal: "the folder was not created" }
   const orders =
     parent === undefined ? setOrder(created.orders, tab, [...container.children().flatMap((row) => { const token = rowToken(row); return token === undefined ? [] : [local.token(token)] }), folderRef(folder.id)], updated) : created.orders
-  return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: local.finish({ folders: created.folders, orders }, updated) }
+  return {
+    target: folderRef(folder.id),
+    // The row create answers with is the folder row read, moved, renamed and
+    // deleted: `folder:` alone is a layout ref no tree op finds (a-22).
+    row: `${owner}${FOLDER_MARK}${folder.id}`,
+    status: `Created folder "${folder.name}" in ${tab}`,
+    layout: local.finish({ folders: created.folders, orders }, updated),
+  }
 }
 
 // `owner` is the tab the folder shows in; `from` the tab its layout comes from

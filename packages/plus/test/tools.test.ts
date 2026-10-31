@@ -3544,7 +3544,10 @@ test("create kind member adds members at project level, refuses a Defaults team,
   expect(memberRows).toContain(subtreeTool)
   round3Capture("member flow: project member subtree rows", { subtreeTool, memberRows }, project)
   const toggled = (await runOk(need(tools, "instructions_set"), { id: subtreeTool, state: "off" })) as { status: string }
-  expect(toggled.status).toBe('Disabled "shell"')
+  // The row already resolves off and holds no own record, so this set writes
+  // nothing and says so (a-18). Storing the inherited value as an own value is
+  // the own-changes-win phase's decision, not this one's.
+  expect(toggled.status).toBe('Disabled "shell" (no change: it was already so)')
   round3Capture("member flow: subtree row set", { request: { id: subtreeTool, state: "off" }, output: toggled }, project)
   const enabled = await api.setTeamEnabled({ level: "project", team: "crew:one", enabled: true, actor: { type: "tui" } })
   if (!enabled.ok) throw new Error(`setTeamEnabled failed: ${enabled.error.message}`)
@@ -4768,4 +4771,60 @@ test("find keeps an agent's own edit out of the shared Defaults row", async () =
   await runOk(set, { id: alpha, state: "off" })
   const rows = (await runOk(find, { name: "git-push", limit: 20 })) as { rows: readonly string[] }
   expect(rows.rows).toContain(`${alpha} | off | set here`)
+})
+
+// a-18/a-21/d-07/b-08/b-09: the texts the tools answer. A write that saved
+// nothing says so, an unknown clipboard token is refused, a copied owner is
+// named instead of counted, a shipped preset row's save says what it reaches,
+// and a missing create-member field is the field that is missing.
+test("the tool answers say what actually happened", async () => {
+  const { project } = await tempProject()
+  for (const id of ["alpha", "beta"]) await Bun.write(path.join(project, ".opencode", "agent", `${id}.md`), formatMarkdown({}, "role\n"))
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const read = need(tools, "instructions_read")
+  const find = need(tools, "instructions_find")
+  const clipboard = need(tools, "instructions_clipboard")
+
+  // a-18: a set that writes nothing says it wrote nothing.
+  const rule = rowIds((await runOk(find, { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] })
+    .find((id) => id.endsWith("perm:shell:git-push"))
+  if (rule === undefined) throw new Error("expected alpha's git-push row")
+  // It already reads off; setting it off again stores nothing.
+  const nothing = (await runOk(set, { id: rule, state: "off" })) as { status: string; revision: number }
+  expect(nothing.status).toBe('Disabled "Git push" (no change: it was already so)')
+  // A set that writes does not carry the note.
+  const wrote = (await runOk(set, { id: rule, state: "on" })) as { status: string }
+  expect(wrote.status).toBe('Enabled "Git push"')
+
+  // a-21: an unknown clipboard token is refused, not answered as "cleared".
+  const unknown = await runFail(clipboard, { action: "clear", clipboard: "not-a-clipboard" })
+  expect(unknown.message).toContain("clipboard.unknown")
+
+  // d-07: copying an agent names it, since its whole configuration moves.
+  const copied = (await runOk(clipboard, { action: "copy", ids: ["agent:project:alpha"] })) as { status: string; clipboard: string }
+  expect(copied.status).toBe("agent alpha copied")
+  const pasted = (await runOk(clipboard, { action: "paste", clipboard: copied.clipboard, into: "agent:project:beta" })) as { status: string }
+  expect(pasted.status).toBe("Pasted agent alpha into agent:project:beta")
+
+  // b-08: a shipped preset row's save names the preset it reaches.
+  const presetRow = "item:preset:build:tool:shell"
+  const savedPreset = (await runOk(set, { id: presetRow, state: "off" })) as { status: string }
+  expect(savedPreset.status).toContain('Disabled "shell"')
+  expect(savedPreset.status).toContain("ships with the release")
+  expect(savedPreset.status).toContain("every agent linked to it")
+
+  // b-09: the refusal names only the field that is missing.
+  const noTeam = await runFail(create, { kind: "member", level: "defaults", id: "worker3*" })
+  expect(noTeam.message).toBe("create member requires team")
+  const noId = await runFail(create, { kind: "member", team: "crew", level: "project" })
+  expect(noId.message).toBe("create member requires id")
+  void read
 })

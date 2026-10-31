@@ -305,8 +305,14 @@ test("the instruction tools create, move, rename and delete a folder through the
   const ownedFolder = (id: string) => `${toolsTab}:folder:${id}`
   const created = (await runOk(need("instructions_create"), { kind: "folder", name: "Mine", id: toolsTab })) as {
     id: string
+    row?: string
   }
-  expect(created.id).toBe(`folder:${toolsTab}:mine`)
+  // The id create answers with is the folder row itself, which read, move,
+  // set and delete accept; `folder:<ref>` named nothing (a-22).
+  expect(created.id).toBe(`${toolsTab}:folder:${toolsTab}:mine`)
+  expect(created.row).toBe(created.id)
+  // The returned id reads back as the folder row.
+  expect(await runOk(need("instructions_read"), { id: created.id })).toMatchObject({ kind: "group", label: "Mine" })
 
   const moved = (await runOk(need("instructions_move"), { id: owned("tool:reader"), into: created.id })) as {
     status: string
