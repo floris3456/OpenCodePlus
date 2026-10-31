@@ -378,7 +378,7 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(base?.address?.catalogue).toBe("teams")
 })
 
-test("a team member's own rows list under the tools they govern, rows for absent tools under Other permissions, and team tools never reach the Agents catalogue", () => {
+test("a team member's own rows list under the tools they govern, rows for absent tools under Other permissions, and the Agents catalogue lists team tools off", () => {
   const member = "gemini-implementer"
   const peer = "sol-orchestrator"
   const run = { id: "w-0000000000000001", role: member, paths: ["src/*"] }
@@ -419,10 +419,12 @@ test("a team member's own rows list under the tools they govern, rows for absent
   // One copy per owner. The member's stand-alone Agents-catalogue row reads
   // the same records, so it carries its own single copy.
   expect(nodes.filter((node) => node.id === `item:project:crew/:${member}:perm:team_delegate:to.${peer}`)).toHaveLength(1)
-  // The Agents catalogue lists no team tool, for the member or for anyone else.
-  expect(nodes.some((node) => node.id === `item:project:${member}:tool:team_delegate`)).toBe(false)
-  expect(nodes.some((node) => node.id === "item:project:Implementer:tool:team_delegate")).toBe(false)
-  expect(nodes.some((node) => node.id === "item:defaults::tool:team_delegate")).toBe(false)
+  // The Agents catalogue lists team tools for every owner too (any agent may
+  // be given one); a stand-alone agent's row is off until something turns it on.
+  const shown = (id: string) => nodes.find((node) => node.id === id)?.badges
+  expect(shown(`item:project:${member}:tool:team_delegate`)).toMatchObject({ state: "off", fromLabel: "off by default" })
+  expect(shown("item:project:Implementer:tool:team_delegate")).toMatchObject({ state: "off", fromLabel: "off by default" })
+  expect(shown("item:defaults::tool:team_delegate")).toMatchObject({ state: "off" })
   expect(nodes.some((node) => node.id === `item:project:crew/:${member}:tool:team_delegate`)).toBe(true)
 })
 

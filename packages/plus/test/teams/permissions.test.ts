@@ -294,7 +294,7 @@ test("a run whose role is not a member of an enabled team contributes no row", a
 // path decides that list, and it decides it again on every publish: the second
 // publish re-discovers a host that now reports each installed member back as an
 // ordinary defaults agent. Read the end of the path — what /api/agent shows.
-test("a published member carries its preset's denies while a non-member carries the namespace deny", async () => {
+test("a published member carries its preset's denies while a non-member's team tools are off one by one", async () => {
   process.env.OPENCODE_CONFIG_DIR = join(dir, "config")
   process.env.XDG_DATA_HOME = join(dir, "data")
   const project = join(dir, "project")
@@ -335,7 +335,12 @@ test("a published member carries its preset's denies while a non-member carries 
   // A member is never hidden from the namespace it belongs to.
   expect(has(member, "team.*", "*", "deny")).toBe(false)
 
-  expect(has(permissionsOf("build"), "team.*", "*", "deny")).toBe(true)
+  // A stand-alone agent, OpenCode's build included, has no namespace deny:
+  // each of its team tool rows is off by default and refuses on its own.
+  const build = permissionsOf("build")
+  expect(has(build, "team.*", "*", "deny")).toBe(false)
+  for (const name of teamTools) expect([name, has(build, `team.${name}`, "*", "deny")]).toEqual([name, true])
+  expect(has(orchestrator, "team.delegate", "*", "deny")).toBe(false)
 })
 
 // The wire every reader outside the server goes through: the server encodes

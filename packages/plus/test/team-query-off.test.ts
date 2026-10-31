@@ -263,7 +263,8 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
     ctx,
     makeInput({
       items: discovered.items,
-      agents: [{ id: "muse-implementer", level: "defaults" as Level }],
+      // A published member carries its team (index.ts applyAgentsOf).
+      agents: [{ id: "muse-implementer", level: "defaults" as Level, team: { level: "defaults", team: "crew" } }],
       scopes: fromBuild(teamAgents, discovered.items, [{ id: "muse-implementer", level: "defaults" }]),
       records,
       teamAgents: ["muse-implementer"],
@@ -322,7 +323,7 @@ test("off on team.diff for a defaults-level team agent denies that tool and drop
 // registry produces the catalog. A non-member sees no team entry at all; a
 // member created from Plus `implementer` sees exactly the old implementer
 // ceiling of Code Mode team tools, because its team tool rows are that ceiling.
-test("a non-member agent sees no team tool while an implementer-preset member sees exactly its ceiling", async () => {
+test("a non-member agent sees no team tool until its row turns one on, while an implementer-preset member sees exactly its ceiling", async () => {
   const agents = agentHarness([agentInfo("build", "upstream")])
   // Every team tool registered for Code Mode, as an Exposure row can put
   // one: the catalog is where a deny on its name shows.
@@ -355,7 +356,7 @@ test("a non-member agent sees no team tool while an implementer-preset member se
   expect(agents.state.get(member)?.permissions?.some((rule) => rule.action === "execute" && rule.effect === "deny")).toBe(true)
   for (const registration of first.registrations) await Effect.runPromise(registration.dispose)
   // With execute on again, the team tool rows are the catalog's ceiling.
-  await publish([
+  const withExecute = await publish([
     { type: "customization", level: "defaults", agent: member, item: "tool:execute", section: null, state: "on", basedOn: fingerprint("upstream"), updated: UPDATED },
   ])
 
@@ -391,4 +392,13 @@ test("a non-member agent sees no team tool while an implementer-preset member se
   // The implementer ceiling (no team_status: it addresses only its own run).
   const ceiling = ["checkpoint", "finish", "diff", "get_context", "check"]
   expect((await visible(member)).toSorted()).toEqual(ceiling.map((name) => `team.${name}`).toSorted())
+  // A stand-alone agent's team tool row governs like any other: turned on in
+  // its own row, build sees that one tool and still no other.
+  for (const registration of withExecute.registrations) await Effect.runPromise(registration.dispose)
+  const second = await publish([
+    { type: "customization", level: "defaults", agent: member, item: "tool:execute", section: null, state: "on", basedOn: fingerprint("upstream"), updated: UPDATED },
+    { type: "customization", level: "project", agent: "build", item: "tool:team_status", section: null, state: "on", basedOn: fingerprint("upstream"), updated: UPDATED },
+  ])
+  expect(await visible("build")).toEqual(["team.status"])
+  for (const registration of second.registrations) await Effect.runPromise(registration.dispose)
 })

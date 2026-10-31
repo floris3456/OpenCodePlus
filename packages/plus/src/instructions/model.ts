@@ -1922,6 +1922,10 @@ function valueAt(
   section: string | null,
 ): ShippedValue | undefined {
   if (node.shipped === undefined) return at(records, node)
+  // A Native preset ships OpenCode's value of every row, but OpenCode's value
+  // of a team tool does not reach a stand-alone agent (standAloneTeamTool):
+  // the preset ships nothing there, so Defaults or the fallback (off) answer.
+  if (node.shipped.kind === "agent" && standAloneTeamTool(input.address)) return undefined
   return input.scopes.presets?.shipped(node.shipped, input.upstream.permissionSource ?? input.address.item, section, input.upstream, input.address.agent, (agent) =>
     linkedPresets({ ...input.address, agent }, input.scopes),
   )
@@ -1946,7 +1950,9 @@ export function linkedPresets(address: Address, scopes: Scopes): PresetRef[] {
 // Defaults "for every agent" included — falls back to off. A context without
 // `native` keeps the pre-preset rule: everything falls back to upstream. An
 // MCP server row is server configuration, not an agent's setting (apply reads
-// it at Defaults for every agent only), so it keeps its upstream state.
+// it at Defaults for every agent only), so it keeps its upstream state. A
+// stand-alone agent's team tool rows fall back to off, OpenCode agents
+// included (standAloneTeamTool).
 function fallbackOf(input: ChainInput): { enabled: boolean; from: From } {
   const kind = fallbackKind(input)
   return { enabled: kind === "off" || unusedByTitle(input.address.agent, input.upstream) ? false : input.upstream.enabled, from: { kind } }
@@ -1971,6 +1977,7 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
   // A parameter is part of its tool: the tool row decides whether the agent has it at all.
   if (input.upstream.kind === "param") return "upstream"
   if (agent === null) return "off"
+  if (standAloneTeamTool(input.address)) return "off"
   if (input.address.level === "preset") {
     if (input.address.team !== undefined) return "off"
     return presetOrigin(input.scopes, { kind: "agent", id: agent }) === "native" ? "native" : "off"
@@ -1978,6 +1985,21 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
   if (native.has(agent)) return "native"
   if (input.upstream.agents?.includes(agent) || input.upstream.ownedBy === agent) return "upstream"
   return "off"
+}
+
+/**
+ * A team tool row (`tool:team_*`) of an address outside the Teams catalogue: a
+ * stand-alone agent, an agent preset or an Agents entry. Such a row is off
+ * until a level, a Defaults row or a preset that ships it on (a member preset)
+ * says otherwise: neither OpenCode's upstream value nor a Native preset turns
+ * it on. A team member's row (Teams catalogue) resolves as it always has.
+ */
+export function standAloneTeamTool(address: Pick<Address, "item" | "team" | "memberOf" | "catalogue">): boolean {
+  return isTeamToolId(address.item) && address.team === undefined && address.memberOf === undefined && catalogueForAddress(address) === "agents"
+}
+
+export function isTeamToolId(item: string): boolean {
+  return item.startsWith("tool:team_")
 }
 
 function aboveWholeText(input: ChainInput, whole?: readonly CustomizationRecord[]): string {
