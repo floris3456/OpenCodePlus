@@ -2698,7 +2698,21 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
+      const item = permItemId(validated.tool, validated.id)
       const next = loaded.records.filter((record) => record !== existing)
+      // Definitions are owner-scoped, so several owners may define the same
+      // tool/id: the item (and with it every owner's row state) exists while
+      // one of them remains. Only the last definition takes the item's
+      // customizations and splits with it, so re-adding the rule does not
+      // resurrect a stale state; removing one owner's definition leaves the
+      // item and the other owners' rows alone.
+      const lastDefinition = !next.some(
+        (record) => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+      )
+      // That cascade is a write to other agents' rows, so a tool actor may not
+      // trigger it while one of them belongs to a protected agent.
+      const cascadeRefusal = lastDefinition ? refuseProtectedItemCascade(input.actor, loaded.records, item, config) : undefined
+      if (cascadeRefusal !== undefined) return { ok: false as const, error: cascadeRefusal }
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
         const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
@@ -2706,6 +2720,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
         }
+      }
+      if (lastDefinition) {
+        const freshStored = await load(directory)
+        const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+        await removeItemRecords(directory, freshLoaded, item)
       }
       if (saved.changed)
         await appendForLevel(directory, existing.level, {

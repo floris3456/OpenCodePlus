@@ -1,6 +1,7 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
 import { upstreamFor } from "./inherited.js"
+import { ruleItem } from "./rules.js"
 import {
   COLD_SWITCH_MOVED,
   coldModelItemId,
@@ -1124,7 +1125,7 @@ function chainFor(
   | undefined {
   const address = node.address
   if (!address) return undefined
-  const found = upstreamFor(memo.ctx.items, address)
+  const found = upstreamAt(memo, address)
   if (!found) return undefined
   return {
     address,
@@ -1132,6 +1133,16 @@ function chainFor(
     customizations: [...memo.ctx.customizations],
     splits: [...memo.ctx.splits],
   }
+}
+
+// A whole perm row's upstream is the rule its owner stores, exactly as the
+// tree (resolve-memo `wholeOf`) and apply read it: the discovered item is the
+// row's shape, its label, patterns, refusal text and upstream on/off come from
+// the owner's rule. Reading the raw item instead loses them.
+function upstreamAt(memo: Memo, address: Address): Item | undefined {
+  const item = upstreamFor(memo.ctx.items, address)
+  if (item === undefined || address.section !== null || item.kind !== "perm") return item
+  return ruleItem(item, memo.ctx.rules, memo.ctx.scopes, address) ?? item
 }
 
 function resolvedTextOf(memo: Memo, chain: { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] }): string {
@@ -1263,7 +1274,7 @@ function applySwitches(
       disabled.push(endpoint.item)
       continue
     }
-    const upstream = upstreamFor(memo.ctx.items, address)
+    const upstream = upstreamAt(memo, address)
     if (upstream === undefined) return { refusal: `Linked row "${endpoint.item}" cannot be switched` }
     // Already off (by inheritance or an earlier row): writing an off record
     // would be noise, and an off toggle never writes a linked row at all.
@@ -1436,7 +1447,7 @@ export function toggleGroup(
       skipped.push(`"${row.label}" — ${refusal}`)
       continue
     }
-    const upstream = upstreamFor(memo.ctx.items, address)
+    const upstream = upstreamAt(memo, address)
     if (upstream === undefined) {
       skipped.push(`"${row.label}" — Item not found for "${row.label}"`)
       continue
