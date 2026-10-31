@@ -2317,6 +2317,12 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     if (view === "resolved") {
       const resolved = resolve(chain)
       const text = address.section === null ? (resolved.fullText ?? resolved.text) : resolved.text
+      // A model row's provenance is its model candidate's: a model record at
+      // this level, a preset that ships the model, or the host model. The
+      // generic chain answers from the item's own text, which a preset also
+      // "ships" at its upstream value, so a member's own project model read as
+      // `source: preset` while `from` said "set here" (c-10). Report one source.
+      const modelRow = address.item.startsWith("model:")
       return {
         output: {
           id,
@@ -2325,9 +2331,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           // What reaches the model, only when gates or markers make it differ.
           ...(resolved.assembled === text ? {} : { assembled: resolved.assembled }),
           enabled: resolved.enabled,
-          source: resolved.source,
-          stateFrom: resolved.from,
-          textFrom: resolved.textFrom,
+          source: modelRow ? node.badges.source : resolved.source,
+          stateFrom: modelRow ? node.badges.from : resolved.from,
+          textFrom: modelRow ? node.badges.from : resolved.textFrom,
           ...(node.badges.fromLabel === undefined ? {} : { from: node.badges.fromLabel }),
           ...(node.badges.reviewOf === undefined ? {} : { reviewOf: node.badges.reviewOf }),
           // Instructions that follow capabilities (requires.ts): a section's

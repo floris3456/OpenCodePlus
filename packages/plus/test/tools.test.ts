@@ -4700,3 +4700,40 @@ test("read renders a team's Special agent row", async () => {
     record: { kind: "special", level: "project", team: "crew", agent: "title" },
   })
 })
+
+// c-10: a member's own model row named two sources: `stateFrom`/`textFrom`
+// pointed at the member preset (which ships no model) while `from` said
+// "set here". A model row names the one source its candidate has.
+test("a member's own model row names one source, not the preset that has none", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+    models: [modelInfo("acme", "nova-2")],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project", preset: "basic" })
+  const created = (await runOk(need(tools, "instructions_create"), {
+    kind: "model",
+    providerID: "acme",
+    modelID: "nova-2",
+    level: "project",
+    team: "crew",
+    agent: "implementer",
+  })) as { id: string }
+  expect(created.id).toBe("item:project:crew/:implementer:model:acme/nova-2")
+  const shown = (await runOk(need(tools, "instructions_read"), { id: created.id })) as Record<string, unknown>
+  expect(shown).toMatchObject({
+    source: "project",
+    stateFrom: { kind: "level", level: "project" },
+    textFrom: { kind: "level", level: "project" },
+    from: "set here",
+  })
+  const found = (await runOk(need(tools, "instructions_find"), { team: "crew", agent: "implementer", type: "model", fields: ["id", "from", "source"] })) as {
+    rows: readonly string[]
+  }
+  expect(found.rows).toEqual([`${created.id} | set here | project`])
+})
