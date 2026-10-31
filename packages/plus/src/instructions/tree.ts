@@ -3411,7 +3411,7 @@ export function systemOrderAt(memo: Memo, address: Address): string[] {
 export function systemSlotOf(memo: Memo, row: Pick<Lazy, "id" | "kind" | "address">): string | undefined {
   if (row.kind === "group") return row.id.endsWith(":base") ? firstSlot : row.id.endsWith(":model-prompts") ? modelPromptsSlot : undefined
   const id = row.address?.section === null ? row.address.item : undefined
-  const item = id === undefined ? undefined : memo.ctx.items.find((entry) => entry.id === id)
+  const item = id === undefined ? undefined : itemsWithId(memo.ctx.items, id)[0]
   return item === undefined ? undefined : slotOfItem(item)
 }
 
@@ -3619,7 +3619,7 @@ function toolServerGroup(
 function exposedTools(memo: Memo, items: readonly Item[], level: Level, owner: string | null, catalogue?: Catalogue, teamRef?: RowTeam): readonly Item[] {
   return items.map((item) => {
     if (item.execute === true) return item
-    const exposure = memo.ctx.items.find((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+    const exposure = itemsWithId(memo.ctx.items, `toolmode:${item.id.slice("tool:".length)}`)[0]
     if (exposure === undefined) return item
     return { ...item, codemode: wholeOf(memo, level, owner, exposure, catalogue, teamRef).assembled === "codemode" }
   })
@@ -3804,7 +3804,7 @@ function lazyItem(
     if (!tool) return sections
     return [
       ...sections,
-      ...ctx.items.filter((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+      ...itemsWithId(ctx.items, `toolmode:${item.id.slice("tool:".length)}`)
         .map((entry) => lazyControl(memo, level, owner, entry, depth + 1, teamRef, catalogue, ownerPath)),
       ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
       ...toolPermissions(ctx, memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath),
@@ -3889,6 +3889,27 @@ export function toolPermissionRows(
   level?: Level,
   team?: RowTeam,
   catalogue?: Catalogue,
+): readonly { category: string; rows: ListedRow[] }[] {
+  // A tool row and each of its parameters ask for the same rows: build them once per owner.
+  const key = JSON.stringify([owner, toolId, level ?? null, team ?? null, catalogue ?? null])
+  const cache = permissionRowsCache.get(ctx) ?? new Map<string, readonly { category: string; rows: ListedRow[] }[]>()
+  permissionRowsCache.set(ctx, cache)
+  const cached = cache.get(key)
+  if (cached !== undefined) return cached
+  const built = permissionRowsOf(ctx, owner, toolId, level, team, catalogue)
+  cache.set(key, built)
+  return built
+}
+
+const permissionRowsCache = new WeakMap<BuildContext, Map<string, readonly { category: string; rows: ListedRow[] }[]>>()
+
+function permissionRowsOf(
+  ctx: BuildContext,
+  owner: string | null,
+  toolId: string,
+  level?: Level,
+  team?: RowTeam,
+  catalogue?: Catalogue,
 ): { category: string; rows: ListedRow[] }[] {
   const listed = permIndex(ctx).get(toolId) ?? []
   const rows = listed.flatMap((row) => {
@@ -3935,6 +3956,16 @@ export function toolPermRows(
   return toolPermissionRows(ctx, owner, item.id.slice("tool:".length), level, teamRef, catalogue).flatMap((entry) =>
     entry.rows.map((row) => lazyPermRow(memo, level, owner, row.item, depth, teamRef, catalogue, ownerPath, row.alias)),
   )
+}
+
+const itemIndexCache = new WeakMap<readonly Item[], Map<string, Item[]>>()
+
+// Items with one id, in list order: rows look up their toolmode and guidance
+// items per owner, and scanning the whole inventory each time cost seconds.
+function itemsWithId(items: readonly Item[], id: string): readonly Item[] {
+  const cached = itemIndexCache.get(items) ?? Map.groupBy(items, (item) => item.id)
+  itemIndexCache.set(items, cached)
+  return cached.get(id) ?? []
 }
 
 const permIndexCache = new WeakMap<readonly Item[], Map<string, ListedRow[]>>()
@@ -4378,7 +4409,7 @@ function unmet(requires: TreeNodeBadges["requires"]): boolean {
 // Whether the owner has a row on, as apply decides it for that agent;
 // undefined for a row it does not have. Shared rows (no owner) cannot answer.
 function ownerHas(memo: Memo, level: Level, owner: string, id: string, teamRef?: RowTeam, catalogue?: Catalogue): boolean | undefined {
-  const item = memo.ctx.items.find((candidate) => candidate.id === id && applies(candidate, owner))
+  const item = itemsWithId(memo.ctx.items, id).find((candidate) => applies(candidate, owner))
   return item === undefined ? undefined : wholeOf(memo, level, owner, item, catalogue, teamRef).enabled
 }
 
@@ -4453,7 +4484,7 @@ function capabilityBadges(
 // The Tools and rules sections whose condition names this row, as this owner
 // resolves them (a level may have rewritten, added or re-conditioned sections).
 function guidanceFor(memo: Memo, level: Level, owner: string | null, id: string, teamRef?: RowTeam, catalogue?: Catalogue): readonly string[] {
-  const row = memo.ctx.items.find((candidate) => candidate.id === guidanceItemId && (owner === null || applies(candidate, owner)))
+  const row = itemsWithId(memo.ctx.items, guidanceItemId).find((candidate) => owner === null || applies(candidate, owner))
   if (row === undefined) return []
   return splitOf(memo, level, owner, row, catalogue, teamRef)
     .sections.filter((section) =>
