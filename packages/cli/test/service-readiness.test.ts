@@ -10,13 +10,14 @@ import path from "node:path"
 test(
   "service start returns a ready endpoint through the production start path",
   async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-readiness-"))
+    const home = await serviceHome("opencode-service-readiness-")
+    const root = home.root
     const port = await availablePort()
     const registration = path.join(root, "state", "opencode", "service-local.json")
     await fs.mkdir(path.join(root, "config", "opencode"), { recursive: true })
     await fs.writeFile(path.join(root, "config", "opencode", "service-local.json"), JSON.stringify({ port }))
     const child = Bun.spawn(
-      [process.execPath, path.join(import.meta.dir, "../src/index.ts"), "service", "start"],
+      [process.execPath, home.entry, "service", "start"],
       {
         cwd: path.join(import.meta.dir, ".."),
         env: serviceEnv(root),
@@ -51,7 +52,7 @@ test(
       await Effect.runPromise(Service.stop({ file: registration }).pipe(Effect.provide(NodeFileSystem.layer))).catch(
         () => undefined,
       )
-      await fs.rm(root, { recursive: true, force: true })
+      await removeHome(home)
     }
   },
   20_000,
@@ -60,7 +61,8 @@ test(
 test(
   "service start recovers from a stale registration through the production start path",
   async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-readiness-stale-"))
+    const home = await serviceHome("opencode-service-readiness-stale-")
+    const root = home.root
     const port = await availablePort()
     const registration = path.join(root, "state", "opencode", "service-local.json")
     await fs.mkdir(path.join(root, "config", "opencode"), { recursive: true })
@@ -71,7 +73,7 @@ test(
       JSON.stringify({ id: "dead", version: "dead", url: `http://127.0.0.1:${port}`, pid: 2_147_483_647 }),
     )
     const child = Bun.spawn(
-      [process.execPath, path.join(import.meta.dir, "../src/index.ts"), "service", "start"],
+      [process.execPath, home.entry, "service", "start"],
       {
         cwd: path.join(import.meta.dir, ".."),
         env: serviceEnv(root),
@@ -100,7 +102,7 @@ test(
       await Effect.runPromise(Service.stop({ file: registration }).pipe(Effect.provide(NodeFileSystem.layer))).catch(
         () => undefined,
       )
-      await fs.rm(root, { recursive: true, force: true })
+      await removeHome(home)
     }
   },
   20_000,
@@ -109,14 +111,15 @@ test(
 test(
   "service start fails fast with a clear error when the port is occupied",
   async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-readiness-occupied-"))
+    const home = await serviceHome("opencode-service-readiness-occupied-")
+    const root = home.root
     using listener = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("unrelated") })
     const port = listener.port
     const registration = path.join(root, "state", "opencode", "service-local.json")
     await fs.mkdir(path.join(root, "config", "opencode"), { recursive: true })
     await fs.writeFile(path.join(root, "config", "opencode", "service-local.json"), JSON.stringify({ port }))
     const child = Bun.spawn(
-      [process.execPath, path.join(import.meta.dir, "../src/index.ts"), "service", "start"],
+      [process.execPath, home.entry, "service", "start"],
       {
         cwd: path.join(import.meta.dir, ".."),
         env: serviceEnv(root),
@@ -136,11 +139,47 @@ test(
     } finally {
       child.kill("SIGTERM")
       await child.exited
-      await fs.rm(root, { recursive: true, force: true })
+      await removeHome(home)
     }
   },
   20_000,
 )
+
+// `service start` and every server it spawns run this home's entry, so their command lines name
+// it. Under load `service start` spawns a second contender while the first is slow to register;
+// that one retries the port for 15 s and takes it once the test stops the registered server, which
+// `Service.stop` cannot see. Removing the home stops every process started through its entry.
+async function serviceHome(prefix: string) {
+  // Bun resolves symlinks in the entry path, so process command lines carry the real directory.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)))
+  const entry = path.join(root, "opencode.ts")
+  await fs.writeFile(entry, `import ${JSON.stringify(path.join(import.meta.dir, "../src/index.ts"))}\n`)
+  return { root, entry }
+}
+
+async function removeHome(home: { readonly root: string; readonly entry: string }) {
+  const pids = (await Bun.$`pgrep -f ${home.entry}`.nothrow().quiet().text()).split("\n").filter(Boolean).map(Number)
+  pids.forEach((pid) => signal(pid, "SIGKILL"))
+  await Promise.all(pids.map(exited))
+  await fs.rm(home.root, { recursive: true, force: true })
+}
+
+async function exited(pid: number) {
+  const deadline = Date.now() + 10_000
+  while (signal(pid, 0)) {
+    if (Date.now() >= deadline) throw new Error(`Process ${pid} did not exit`)
+    await Bun.sleep(25)
+  }
+}
+
+function signal(pid: number, value: NodeJS.Signals | 0) {
+  try {
+    process.kill(pid, value)
+    return true
+  } catch {
+    return false
+  }
+}
 
 async function readLine(stream: ReadableStream<Uint8Array>, timeout: number) {
   const reader = stream.getReader()

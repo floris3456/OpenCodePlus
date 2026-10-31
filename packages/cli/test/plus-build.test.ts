@@ -8,7 +8,7 @@ import { getBuildInfo } from "../src/commands/handlers/build-info"
 import { Commands } from "../src/commands/commands"
 import { Runtime } from "../src/framework/runtime"
 import { type Spec } from "../src/framework/spec"
-import { upstreamHandlers } from "../src/index"
+import { handlers } from "../src/handlers"
 import { plusCommands, plusHandlers } from "../src/plus"
 import { OPENCODE_UPSTREAM, OPENCODE_VERSION } from "../src/version"
 
@@ -186,10 +186,10 @@ describe("plus build configuration", () => {
     ])
   })
 
-  test("every command node in Commands has a handler in upstream index.ts", () => {
-    expect(typeof upstreamHandlers.$).toBe("function")
-    expect(findMissingHandlers(Commands, upstreamHandlers)).toEqual([])
-    expect(() => Runtime.handlers(Commands, upstreamHandlers)).not.toThrow()
+  test("every command node in Commands has a handler in the upstream handlers (handlers.ts)", () => {
+    expect(typeof handlers.$).toBe("function")
+    expect(findMissingHandlers(Commands, handlers)).toEqual([])
+    expect(() => Runtime.handlers(Commands, handlers)).not.toThrow()
   })
 
   test("every command node in Commands has a handler in plus.ts", () => {
@@ -204,7 +204,7 @@ describe("plus build configuration", () => {
     expect("notify" in plusCommands.commands).toBe(true)
     expect(typeof plusHandlers.notify).toBe("function")
     expect("notify" in Commands.commands).toBe(false)
-    expect("notify" in upstreamHandlers).toBe(false)
+    expect("notify" in handlers).toBe(false)
     expect(findMissingHandlers(plusCommands, plusHandlers)).toEqual([])
     expect(() => Runtime.handlers(plusCommands, plusHandlers)).not.toThrow()
   })
