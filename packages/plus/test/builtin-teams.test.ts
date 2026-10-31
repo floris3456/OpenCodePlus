@@ -224,7 +224,7 @@ test("a Basic role whose team tools are off leaves out every section that works 
   const input = presetInput({
     members: team.members.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
   })
-  const headings = (text: string) => text.match(/^## .*$/gm) ?? []
+  const headings = (text: string) => text.split("\n").filter((line) => line.startsWith("## "))
   const dropped = Object.fromEntries(
     team.members.map((member) => {
       const states = resolvedStates(input, member.id)
