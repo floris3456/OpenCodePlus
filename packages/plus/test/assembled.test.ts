@@ -286,6 +286,57 @@ test("reports a natively denied tool as absent once the denial is installed", as
   expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("reader")
 })
 
+// c-03: a stored text edit installs through the session context hook, so the
+// registry keeps the upstream description. The assembled view must report what
+// the agent receives, not the registry's text.
+test("a direct tool reports the installed plan's text, not the registry's", async () => {
+  const { handlers, state } = await setupTools({
+    agents: ["alpha"],
+    tools: [{ id: "reader", description: "upstream reader text", options: { codemode: false } }],
+    fromBuild: true,
+  })
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const item = snapshot.items.find((entry) => entry.id === "tool:reader")
+  if (!item) throw new Error("expected tool:reader")
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      {
+        expectedRevision: snapshot.revision,
+        expectedGlobalRevision: snapshot.globalRevision,
+        records: [customization(item, "installed reader text")],
+      },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  expect(state.installedTools.find((plan) => plan.tool === "reader")?.text).toBe("installed reader text")
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.find((entry) => entry.id === "reader")?.description).toBe("installed reader text")
+})
+
+// c-02: core drops a wholly denied tool for every tool type, so a direct tool
+// this agent's live rules deny is not in its request.
+test("a live rule deny hides a direct tool too", async () => {
+  const { handlers, agents } = await setupTools({
+    agents: ["alpha", "beta"],
+    tools: [{ id: "reader", description: "native tool", options: { codemode: false } }],
+  })
+  await Effect.runPromise(
+    Effect.scoped(
+      agents.domain.transform((editor) => {
+        editor.update("alpha", (agent) => {
+          agent.permissions.push({ action: "reader", resource: "*", effect: "deny" })
+        })
+      }),
+    ),
+  )
+  const forAlpha = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "alpha" }, throwingContext({})))
+  expect(forAlpha.tools.map((entry) => entry.id)).not.toContain("reader")
+  const forBeta = await Effect.runPromise(handlers["instructions.assembled"]({ agent: "beta" }, throwingContext({})))
+  expect(forBeta.tools.map((entry) => entry.id)).toContain("reader")
+})
+
 test("reports a stored native-tool off that was never published as present", async () => {
   const { project } = await tempRoot()
   const agentPath = path.join(project, ".opencode", "agent", "alpha.md")

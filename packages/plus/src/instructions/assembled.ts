@@ -132,7 +132,18 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // installed denial excludes the tool, while an unapplied or cleared
       // stored off leaves the tool present because the host still serves it.
       if (deniedTools.has(live.id)) return []
-      return [{ id: live.id, description: scrub(`tool:${live.id}`, live.description) }]
+      // A direct tool can also be denied by this agent's live permission rules
+      // (a namespace deny such as `team.*`, or a pattern rule keyed on the tool
+      // id): core drops a wholly denied tool from the request's tool set for
+      // every tool type, direct ones included.
+      if (liveRules !== undefined && toolDenied(live.id, live.group, liveRules)) return []
+      // The text the agent receives is the installed plan's, never the
+      // registry's: a stored text edit installs through the session context
+      // hook, so the registry keeps the upstream description.
+      const installed = (input.installedTools ?? []).find(
+        (plan) => plan.agent === input.agent && plan.codemode !== true && plan.tool === live.id,
+      )
+      return [{ id: live.id, description: scrub(`tool:${live.id}`, installed?.text ?? live.description) }]
     })
   const skills = await listSkills(input.ctx)
   const deniedSkills: ReadonlySet<string> | undefined =
