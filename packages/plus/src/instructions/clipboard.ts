@@ -1,7 +1,8 @@
 import { controlItemFor, isControl } from "./agent-controls.js"
+import { contentOf, recordIdentity } from "./delta.js"
 import { folderIdOfRef, folderRef, tabOfGroupId } from "./folders.js"
 import { rowlinkView, sameOwnerView, writeRowlink, type RowlinkEndpoint, type RowlinkRecord } from "./rowlinks.js"
-import { applies, merge, parseModelItemId, parsePermItemId, resolveModelFields, sameModelCandidate, scopedTo, type ModelRecord, type RuleRecord } from "./model.js"
+import { applies, merge, parseModelItemId, parsePermItemId, resolveModelFields, sameModelCandidate, scopedTo, type CustomizationRecord, type ModelRecord, type RuleRecord, type SplitRecord } from "./model.js"
 import { ruleAt, ruleItem } from "./rules.js"
 import { resolveModelCompactionFields } from "./model-settings.js"
 import { isValueRow } from "./permission-catalog.js"
@@ -49,14 +50,28 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
   }
   const apply = (result: OpResult): string | undefined => {
     if ("refusal" in result) return result.refusal
+    // An op answers every customization and split as the memo it ran on reads
+    // them: without what their rows inherit (inherited.ts), and with only the
+    // first of two records at one address. Taking that whole list dropped
+    // every such record of the store, other agents' too (a-07, a-19), so only
+    // the records the op changed are taken; every other record stays as stored.
+    const base = built().ctx
+    const before = [...base.customizations, ...base.splits]
+    const after = [...result.records, ...result.splits]
+    const kept = new Set<unknown>(before)
+    const next = new Set<unknown>(after)
+    const content = (records: readonly (CustomizationRecord | SplitRecord)[]) => new Set(records.map(contentOf))
+    const unsure = { before: before.filter((record) => !next.has(record)), after: after.filter((record) => !kept.has(record)) }
+    const known = { before: content(unsure.before), after: content(unsure.after) }
+    const added = unsure.after.filter((record) => !known.before.has(contentOf(record)))
+    const gone = new Set([...unsure.before.filter((record) => !known.after.has(contentOf(record))), ...added].map(recordIdentity))
     // An op that wrote nothing keeps the draft (and its built memo) as it is.
-    const kept = new Set(draft.memo.records)
-    const count = (type: string) => draft.memo.records.filter((record) => record.type === type).length
-    if (result.models === undefined && result.rowlinks === undefined && result.records.length === count("customization") && result.splits.length === count("split")
-      && [...result.records, ...result.splits].every((record) => kept.has(record))) return undefined
+    if (result.models === undefined && result.rowlinks === undefined && gone.size === 0) return undefined
     draft.memo = { ...draft.memo, records: [
-      ...draft.memo.records.filter((record) => record.type !== "customization" && record.type !== "split" && (result.models === undefined || record.type !== "model") && (result.rowlinks === undefined || record.type !== "rowlink")),
-      ...result.records, ...result.splits, ...(result.models ?? []), ...(result.rowlinks ?? []),
+      ...draft.memo.records.filter((record) =>
+        !((record.type === "customization" || record.type === "split") && gone.has(recordIdentity(record)))
+        && (result.models === undefined || record.type !== "model") && (result.rowlinks === undefined || record.type !== "rowlink")),
+      ...added, ...(result.models ?? []), ...(result.rowlinks ?? []),
     ] }
     return undefined
   }
@@ -208,8 +223,12 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
       return undefined
     }
     const sourceTab = lazyPath(source, id).findLast((row) => categoryOf(row.id) !== undefined)
-    const destinationTab = path.findLast((row) => categoryOf(row.id) !== undefined && categoryOf(row.id) === (sourceTab === undefined ? undefined : categoryOf(sourceTab.id)))
-      ?? collectSkeleton([target]).find((row) => categoryOf(row.id) === (sourceTab === undefined ? undefined : categoryOf(sourceTab.id)))
+    const pathTab = path.findLast((row) => categoryOf(row.id) !== undefined && categoryOf(row.id) === (sourceTab === undefined ? undefined : categoryOf(sourceTab.id)))
+    const destinationTab = pathTab ?? collectSkeleton([target]).find((row) => categoryOf(row.id) === (sourceTab === undefined ? undefined : categoryOf(sourceTab.id)))
+    // A team has no such tab of its own: the first one below it is a member's,
+    // and which member that is says nothing about what was meant (a-14).
+    if (pathTab === undefined && destinationTab !== undefined && target.owner !== undefined && lazyPath(memo, destinationTab.id).findLast((row) => row.owner !== undefined)?.id !== target.id)
+      return `"${target.label}" has no ${sourceTab?.label ?? origin.label} of its own: paste onto one of its members instead`
     if (origin.address === undefined) {
       if (destinationTab === undefined) return `The destination does not have ${sourceTab?.label ?? origin.label}`
       for (const child of origin.children()) {
@@ -327,10 +346,11 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
             const current = built()
             const upstream = isControl(next.address.item) ? controlItemFor(current.ctx.items, next.address) : current.ctx.items.find((entry) => entry.id === next.address!.item)
             if (upstream === undefined) return `The destination lacks ${row.label}`
-            draft.memo = { ...draft.memo, records: [
-              ...draft.memo.records.filter((record) => record.type !== "customization"),
-              ...merge(current.ctx.customizations, next.address, { text: resolved.fullText ?? resolved.text }, upstream, current.ctx.scopes, current.ctx.splits),
-            ] }
+            const merged = apply({
+              records: [...merge(current.ctx.customizations, next.address, { text: resolved.fullText ?? resolved.text }, upstream, current.ctx.scopes, current.ctx.splits)],
+              splits: [...current.ctx.splits], status: "", retryHint: "",
+            })
+            if (merged !== undefined) return merged
           }
         }
         if (address.section === null && row.actions.split && next.actions.split) {
