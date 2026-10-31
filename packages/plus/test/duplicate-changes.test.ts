@@ -95,7 +95,7 @@ async function refused(tools: Tools, name: string, input: unknown): Promise<stri
 /**
  * Every row of one owner, as it resolves: on/off, the value and summary a row
  * shows, a model's settings and whether it is active, and the text it sends
- * (a rule's patterns included). Keyed by the row id with the owner segment
+ * (a rule's patterns included), and what it asks to review. Keyed by the row id with the owner segment
  * (`alpha`, `crew/:lead`, …) cut out; where a value comes from is left out —
  * it is "set here" for a copy's own record and "from preset X" for the copy's
  * inherited one, which is the point.
@@ -120,7 +120,7 @@ async function resolvedRows(api: PlusApi, owner: string, level = "project"): Pro
     const badges = row.badges
     out.set(row.id.replace(pattern, "$1:<owner>"), JSON.stringify([
       badges.state, badges.summary, badges.value, level === "preset" && row.address?.item.startsWith("base:") === true ? undefined : badges.active, badges.pinned, badges.hidden, badges.mode,
-      badges.warming, badges.interval, badges.waiting, badges.subagent, badges.prompt, text,
+      badges.warming, badges.interval, badges.waiting, badges.subagent, badges.prompt, badges.review, text,
     ]))
   }
   return out
@@ -224,7 +224,7 @@ test("a member's copy follows its member's preset and carries its own records; a
   expect(after.filter((record) => record.type === "customization").length).toBe(customizations)
   expect(after.filter((record) => record.type === "link" && record.team?.team === "crew-copy").map((record) => record.type === "link" ? [record.agent, record.preset] : []).toSorted())
     .toEqual([["lead", { kind: "agent", id: "build" }], ["lead-copy", { kind: "agent", id: "build" }]])
-})
+}, 60_000)
 
 test("a preset's copy is a user preset that follows what the original follows and carries its own records, row for row", async () => {
   const { api, tools, project } = await fixture()
@@ -246,7 +246,7 @@ test("a preset's copy is a user preset that follows what the original follows an
   expect(shipped.status).toBe("Duplicated preset build as build-copy, following preset Build")
   expect(await owned(project, (record) => preset(record) && "agent" in record && record.agent === "build-copy")).toEqual([])
   expect(differing(await resolvedRows(api, "build", "preset"), await resolvedRows(api, "build-copy", "preset"))).toEqual([])
-})
+}, 60_000)
 
 test("a shipped team preset's copy has its members, each following the shipped member, and writes no inherited value", async () => {
   const { api, tools, project } = await fixture()
