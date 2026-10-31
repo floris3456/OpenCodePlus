@@ -420,6 +420,11 @@ function coerceFlag(name: string, value: string | undefined, property: JsonPrope
   if (value === "null" && types.includes("null")) return { value: null }
   if (types.includes("array")) {
     if (value === undefined) return `Option --${name} expects a value.`
+    // A one-or-a-list input keeps one value as one: the instruction tools
+    // answer a single id or agent as before, and a list, even of one, as
+    // several rows. A comma list or a repeated flag still makes a list.
+    const scalar = types.filter((type) => type !== "array" && type !== "null")
+    if (scalar.length > 0 && value.length > 0 && !value.includes(",")) return coerceScalar(name, value, scalar)
     const itemType = property.items?.type
     const pieces = value.split(",").filter((piece) => piece.length > 0)
     const coerced: unknown[] = []
@@ -468,8 +473,8 @@ function appendFlag(input: Record<string, unknown>, name: string, value: unknown
   property = flagProperty(property)
   const types = property.type === undefined ? [] : Array.isArray(property.type) ? property.type : [property.type]
   const current = input[name]
-  if (types.includes("array") && Array.isArray(current) && Array.isArray(value)) {
-    input[name] = [...current, ...(value as unknown[])]
+  if (types.includes("array") && current !== undefined && current !== null && value !== null) {
+    input[name] = [...(Array.isArray(current) ? current : [current]), ...(Array.isArray(value) ? value : [value])]
     return
   }
   input[name] = value
