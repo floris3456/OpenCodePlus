@@ -278,7 +278,7 @@ const FindInput = Schema.Struct({
 // find filter matches (eachRow).
 const Rows = {
   id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({
-    description: "A row id, or a list of row ids: a list is written once and answers counts and the rows not done.",
+    description: "A row id, or a list of row ids (a write over a list is written once and answers counts and the rows not done).",
   }),
   find: Schema.optionalKey(FindFilter).annotate({
     description:
