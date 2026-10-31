@@ -2182,6 +2182,15 @@ function showAssembled(api: PlusApi, id: string): Effect.Effect<{ output: unknow
   })
 }
 
+// The rows directly under an entity row, one line each in find's columns, for
+// `read` of a preset, a member or a team: what creating from it yields, and
+// how many rows are on, without a full `find` dump (b-10, c-15).
+function childListing(treeMemo: Memo, id: string): { readonly columns?: string; readonly rows?: readonly string[] } {
+  const children = findLazy(treeMemo, id)?.children().map(materialize)
+  if (children === undefined) return {}
+  return { columns: "id | badges | from", rows: children.map(childLine) }
+}
+
 function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     const snapshot = yield* snapshotOrFail(api)
@@ -2214,7 +2223,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       return { output: { id, view, label: node.label, field: modelField.field, value: node.badges.value ?? null } }
     }
     // Presets and Defaults entries carry no text of their own: resolved and
-    // record render what the row is and what it is linked to.
+    // record render what the row is and what it is linked to. Resolved also
+    // lists the rows directly under it, as an agent does, so a preset's or a
+    // member's groups and their on counts are one cheap read (b-10, c-15).
     const owner = node.owner
     if (owner !== undefined && (owner.preset !== undefined || owner.entry !== undefined)) {
       if (view !== "resolved" && view !== "record")
@@ -2228,7 +2239,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         ...(owner.linkMissing === true ? { linkMissing: true } : {}),
       }
       if (view === "record") return { output: { id, view, record: entity } }
-      return { output: { id, view, ...entity } }
+      return { output: { id, view, ...entity, ...childListing(treeMemo, id) } }
     }
     if (node.kind === "team") {
       // Team and member rows carry no item address, so resolved/record render
@@ -2240,7 +2251,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           new Tool.Error({ message: `view.unsupported: ${view} view is not available for team rows (got ${id})` }),
         )
       if (view === "record") return { output: { id, view, record: entity } }
-      return { output: { id, view, ...entity } }
+      // A member lists its rows like an agent, so its Tools group and on count
+      // are visible without a full find dump (c-15).
+      return { output: { id, view, ...entity, ...childListing(treeMemo, id) } }
     }
     if (isModelDefaultRowId(id) || isModelSettingRowId(id)) {
       const key = defaultsKeyOf(node)

@@ -4828,3 +4828,58 @@ test("the tool answers say what actually happened", async () => {
   expect(noId.message).toBe("create member requires id")
   void read
 })
+
+// b-10/c-15: read of a preset or a member answered only an identity stub, so
+// comparing an agent with its preset, or seeing a member's on counts, needed
+// two ~150 kB find dumps. Resolved lists the rows directly under it.
+test("read of a preset, an entry and a member lists their rows", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const show = need(tools, "instructions_read")
+  const create = need(tools, "instructions_create")
+
+  // A shipped agent preset: its groups, with on counts, beside its identity.
+  const preset = (await runOk(show, { id: "agent:preset:build" })) as { kind: string; rows?: readonly string[]; columns?: string }
+  expect(preset).toMatchObject({ kind: "preset", columns: "id | badges | from" })
+  expect(preset.rows?.map((row) => row.split(" | ")[0])).toEqual([
+    "group:preset:build:models",
+    "group:preset:build:tools",
+    "group:preset:build:skills",
+    "group:preset:build:system",
+    "group:preset:build:settings",
+  ])
+  expect(preset.rows?.some((row) => row.startsWith("group:preset:build:tools |") && row.includes("on"))).toBe(true)
+
+  // A member preset.
+  const member = (await runOk(show, { id: "team:preset:basic:implementer" })) as { kind: string; rows?: readonly string[] }
+  expect(member.kind).toBe("preset")
+  expect(member.rows?.map((row) => row.split(" | ")[0])).toContain("group:preset:basic/:implementer:tools")
+
+  // A Defaults entry.
+  await runOk(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*" })
+  const entry = (await runOk(show, { id: "agent:defaults:*orchestrator*" })) as { kind: string; rows?: readonly string[] }
+  expect(entry.kind).toBe("entry")
+  expect(entry.rows?.map((row) => row.split(" | ")[0])).toEqual([
+    "group:defaults:*orchestrator*:models",
+    "group:defaults:*orchestrator*:tools",
+    "group:defaults:*orchestrator*:skills",
+    "group:defaults:*orchestrator*:system",
+    "group:defaults:*orchestrator*:settings",
+  ])
+
+  // A live team member: its groups and their on counts.
+  await runOk(create, { kind: "team", team: "crew", level: "project", preset: "basic" })
+  const live = (await runOk(show, { id: "team:project:crew:implementer" })) as { kind: string; team: string; rows?: readonly string[] }
+  expect(live).toMatchObject({ kind: "member", team: "crew" })
+  expect(live.rows?.map((row) => row.split(" | ")[0])).toContain("group:project:crew/:implementer:tools")
+  // The record view stays the identity, with no rows: it is the stored record.
+  const record = (await runOk(show, { id: "team:project:crew:implementer", view: "record" })) as { record: Record<string, unknown> }
+  expect(record.record).toMatchObject({ kind: "member", team: "crew", member: "implementer" })
+  expect("rows" in record.record).toBe(false)
+})
