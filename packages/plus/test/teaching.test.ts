@@ -19,10 +19,21 @@ import {
 import { discover } from "../src/instructions/discover.js"
 import { query, rowTypes } from "../src/instructions/query.js"
 import { teachingFilePath, teachingItemId, teachingSkillId } from "../src/instructions/paths.js"
-import { installTeaching, seedSystemInstruction, teachingContent, teachingSkillContent } from "../src/instructions/teaching.js"
+import {
+  installTeaching,
+  seedSkillReferences,
+  seedSystemInstruction,
+  teachingContent,
+  teachingReferences,
+  teachingSkillContent,
+  teachingSkillLocation,
+} from "../src/instructions/teaching.js"
 import { context } from "./harness.js"
 
 const roots: string[] = []
+// The skill and its reference files: the facts the tests below pin may sit in
+// either, as long as the agent can reach them.
+const skillText = [teachingSkillContent, ...Object.values(teachingReferences)].join("\n")
 const previousConfigDir = process.env.OPENCODE_CONFIG_DIR
 
 afterEach(async () => {
@@ -129,13 +140,13 @@ test("the skill content covers the tool surface", async () => {
     "(denied by ",
     'id: "allow.<name>"',
   ]) {
-    expect(teachingSkillContent).toContain(phrase)
+    expect(skillText).toContain(phrase)
   }
-  expect(teachingSkillContent.length).toBeGreaterThan(2000)
+  expect(skillText.length).toBeGreaterThan(2000)
 })
 
 test("every filter expression in the skill parses in the real query engine", async () => {
-  const wheres = [...teachingSkillContent.matchAll(/where:\s*"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1] ?? "")
+  const wheres = [...skillText.matchAll(/where:\s*"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1] ?? "")
   expect(wheres.length).toBeGreaterThan(0)
   const snapshot = { items: [], records: [], agents: [], teams: [] }
   for (const where of wheres) {
@@ -149,7 +160,7 @@ test("every filter expression in the skill parses in the real query engine", asy
 // as the terms the find tool builds from it.
 test("every find example in the skill names real keys and values", async () => {
   // The signature (`find({ agent?, … })`) is not an example.
-  const calls = [...teachingSkillContent.matchAll(/find\(\{([^}]*)\}\)/g)].map((match) => match[1] ?? "").filter((call) => !call.includes("?"))
+  const calls = [...skillText.matchAll(/find\(\{([^}]*)\}\)/g)].map((match) => match[1] ?? "").filter((call) => !call.includes("?"))
   expect(calls.length).toBeGreaterThan(5)
   const snapshot = { items: [], records: [], agents: [], teams: [] }
   for (const call of calls) {
@@ -162,14 +173,14 @@ test("every find example in the skill names real keys and values", async () => {
 test("declared key values validate against the real query engine", async () => {
   const snapshot = { items: [], records: [], agents: [], teams: [] }
   const listed = (key: string) => {
-    const line = teachingSkillContent.split("\n").find((entry) => entry.startsWith(`- \`${key}\`:`)) ?? ""
+    const line = skillText.split("\n").find((entry) => entry.startsWith(`- \`${key}\`:`)) ?? ""
     return (line.match(/^- `\w+`: ([^.;]+)/)?.[1] ?? "").split(/, | or /).map((value) => value.trim())
   }
   expect(listed("type")).toEqual([...rowTypes])
   expect(listed("level")).toEqual(["project", "global", "defaults", "preset"])
   for (const type of listed("type")) expect(() => query(snapshot, { where: `type:${type}` })).not.toThrow()
-  expect(teachingSkillContent).toContain("`_` is the shared rows")
-  const line = teachingSkillContent.split("\n").find((entry) => entry.includes("More keys:")) ?? ""
+  expect(skillText).toContain("`_` is the shared rows")
+  const line = skillText.split("\n").find((entry) => entry.includes("More keys:")) ?? ""
   const declarations = [...line.matchAll(/`([A-Za-z]+)`\s*\(([^)]+)\)/g)].map((match) => ({ key: match[1] ?? "", raw: match[2] ?? "" }))
   const validated = declarations.flatMap((declaration) => {
     const values = declaration.raw
@@ -242,7 +253,7 @@ test("a plugin origin does not survive Skill.Info decoding, so the skill matches
 test("documented per-model compaction ids are the ones the real parsers produce", async () => {
   for (const field of ["compactWarm", "coldFirst", "coldCompact", "coldModels", "compactionStrategy", "compactionModel", "compactionInstructions"] as const) {
     expect(MODEL_DEFAULT_FIELDS).toContain(field)
-    expect(teachingSkillContent).toContain(field)
+    expect(skillText).toContain(field)
   }
   expect(MODEL_FIELD_NAMES).toContain("compactionModel")
   expect(MODEL_FIELD_NAMES).toContain("compactionInstructions")
@@ -266,7 +277,7 @@ test("documented per-model compaction ids are the ones the real parsers produce"
     field: "compactionStrategy",
   })
   // The stable shape the skill quotes for a Defaults field row.
-  expect(teachingSkillContent).toContain("item:defaults:/models:modelsetting:<field>:<* or provider/model>")
+  expect(skillText).toContain("item:defaults:/models:modelsetting:<field>:<* or provider/model>")
 
   const agentField = modelFieldItemId({ providerID: "anthropic", modelID: "claude-opus-4", variant: "high" }, "compactionModel")
   expect(agentField).toBe("modelfield:compactionModel:anthropic/claude-opus-4@high")
@@ -274,18 +285,18 @@ test("documented per-model compaction ids are the ones the real parsers produce"
     target: { providerID: "anthropic", modelID: "claude-opus-4", variant: "high" },
     field: "compactionModel",
   })
-  expect(teachingSkillContent).toContain("modelfield:<field>:<provider>/<model>[@variant]")
+  expect(skillText).toContain("modelfield:<field>:<provider>/<model>[@variant]")
 })
 
 test("documented compaction values validate with the real field parser", async () => {
   expect(COMPACTION_STRATEGIES).toEqual(["auto", "local", "remote"])
-  expect(teachingSkillContent).toContain("`auto`, `local` or `remote`")
+  expect(skillText).toContain("`auto`, `local` or `remote`")
 
   const on = compactionFieldsOf({ compactWarm: "on" })
   expect("fields" in on && on.fields.compactWarm).toBe("on")
   // `coldFirst` takes the documented on|off and overrides the Settings switch per model.
-  expect(teachingSkillContent).toContain("`coldFirst` (`on`|`off`)")
-  expect(teachingSkillContent).toContain('the row reads "as in Settings" and the global switch decides')
+  expect(skillText).toContain("`coldFirst` (`on`|`off`)")
+  expect(skillText).toContain('the row reads "as in Settings" and the global switch decides')
   const coldFirst = compactionFieldsOf({ coldFirst: "off" })
   expect("fields" in coldFirst && coldFirst.fields.coldFirst).toBe("off")
   expect("error" in compactionFieldsOf({ coldFirst: "sometimes" })).toBe(true)
@@ -304,9 +315,9 @@ test("documented compaction values validate with the real field parser", async (
 test("the skill states the empty-instructions rule and the prompt-prefix timing", async () => {
   // Review point 1: empty compactionInstructions is an explicit empty summary
   // prompt, and reset resumes inheritance, unlike the other empty fields.
-  expect(teachingSkillContent).toContain("explicit empty summary prompt")
-  expect(teachingSkillContent).toContain("unlike the other fields")
-  expect(teachingSkillContent).toContain("`reset` resumes inheritance")
+  expect(skillText).toContain("explicit empty summary prompt")
+  expect(skillText).toContain("unlike the other fields")
+  expect(skillText).toContain("`reset` resumes inheritance")
   // The real parser keeps that distinction: "" clears every other compaction
   // field to null, but stores an explicit "" for the instructions.
   const cleared = compactionFieldsOf({
@@ -331,8 +342,8 @@ test("the skill states the empty-instructions rule and the prompt-prefix timing"
 
   // Review point 2: setting edits alone do not rewrite a chat's prompt prefix;
   // the next actual compaction does.
-  expect(teachingSkillContent).toContain("editing them does not itself rewrite an existing chat's prompt prefix")
-  expect(teachingSkillContent).toContain("the next actual compaction does")
+  expect(skillText).toContain("editing them does not itself rewrite an existing chat's prompt prefix")
+  expect(skillText).toContain("the next actual compaction does")
 })
 
 test("documented merge kinds, defaults and B41 match the real engine", async () => {
@@ -373,9 +384,9 @@ test("documented merge kinds, defaults and B41 match the real engine", async () 
 
 test("the skill documents the compact-warm switch and the global cold-chat setting", async () => {
   for (const phrase of ["/compact-warm", "<leader>j", "Settings › OpenCodePlus › Compact cold chats first", "`coldCompact` is refused", 'resolve: "merge"']) {
-    expect(teachingSkillContent).toContain(phrase)
+    expect(skillText).toContain(phrase)
   }
-  for (const gone of ["/compact-cold", "follow the model settings"]) expect(teachingSkillContent).not.toContain(gone)
+  for (const gone of ["/compact-cold", "follow the model settings"]) expect(skillText).not.toContain(gone)
 })
 
 test("the release workflow is listed under Plus skills without relabeling unrelated skills", async () => {
@@ -422,4 +433,40 @@ test("the skill tells an allow row from a deny-list rule", async () => {
   expect(teachingSkillContent).toContain("off, it opens nothing and refuses nothing")
   expect(teachingSkillContent).toContain("allow row (opens nothing)")
   expect(teachingSkillContent).not.toContain("A rule row that is off refuses what it matches, whether")
+})
+
+// Cause 10: the skill was 25–31k chars, the largest output of most runs. Its
+// main text starts with the forms that do more per call and stays under 8k;
+// the details are reference files the agent reads when a task needs them.
+test("the skill's main text is short, starts with the forms of several rows per call, and names every reference file", async () => {
+  expect(teachingSkillContent.length).toBeLessThan(8000)
+  const forms = teachingSkillContent.indexOf("## Do more in one call")
+  expect(forms).toBeGreaterThan(0)
+  expect(forms).toBeLessThan(teachingSkillContent.indexOf("## Ids"))
+  for (const phrase of [
+    'agent: ["build", "plan"]',
+    "{ status, changed, already, notDone: [{ id, reason }] }",
+    "dryRun: true",
+    "batch({ changes: [",
+    'like: "general"',
+    "undo({ ts? })",
+    "row.unknown",
+    "delete.unconfirmed",
+  ])
+    expect(teachingSkillContent).toContain(phrase)
+  const named = [...teachingSkillContent.matchAll(/`(reference\/[a-z-]+\.md)`/g)].map((match) => match[1])
+  expect(new Set(named)).toEqual(new Set(Object.keys(teachingReferences)))
+})
+
+test("installTeaching writes the reference files beside the skill, and replaces a stale one", async () => {
+  await configDir()
+  const directory = path.dirname(teachingSkillLocation())
+  const stale = path.join(directory, "reference", "find.md")
+  await fs.mkdir(path.dirname(stale), { recursive: true })
+  await fs.writeFile(stale, "an older release's text")
+  const registrations = await installTeaching(context())
+  for (const [name, content] of Object.entries(teachingReferences))
+    expect(await fs.readFile(path.join(directory, name), "utf8")).toBe(content)
+  expect(await seedSkillReferences()).toEqual(Object.keys(teachingReferences).map((name) => path.join(directory, name)))
+  await Promise.all(registrations.map((registration) => Effect.runPromise(registration.dispose)))
 })
