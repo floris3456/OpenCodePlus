@@ -122,8 +122,14 @@ test("a store with no categories is untouched by the migration", async () => {
   const before = await load(project)
   expect(before.foldersMigrated).toBe(false)
   const persisted = await ensureCatalogues(project)
-  expect(persisted.loaded.globalRevision).toBe(1)
+  // The folders migration writes nothing. The one save is the members mark a
+  // store written before member-scope lacks (store.ts withMembersPerTeam): it
+  // is saved once, and the next ensureCatalogues writes nothing.
+  expect(persisted.foldersMigrated).toBe(false)
+  expect(persisted.loaded.globalRevision).toBe(2)
   expect(persisted.loaded.records).toEqual([])
+  expect(JSON.parse((await Bun.file(globalRecordsPath()).text()).split("\n")[0]!)).toMatchObject({ members: "team" })
+  expect((await ensureCatalogues(project)).loaded.globalRevision).toBe(2)
 })
 
 test("the migration persists once: after ensureCatalogues no category line is left", async () => {
