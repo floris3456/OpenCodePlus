@@ -38,4 +38,8 @@ test("the instruction tools' descriptions and input schemas stay small", async (
   const total = (key: "description" | "schema" | "signature") => rows.reduce((sum, row) => sum + row[key], 0)
   console.log(JSON.stringify({ tools: rows.length, description: total("description"), schema: total("schema"), signature: total("signature"), rows }))
   expect(rows.length).toBe(14)
+  // After instr-tokens: 7,667 / 17,901 / 10,533. A budget, so growth is a choice.
+  expect(total("description")).toBeLessThanOrEqual(8000)
+  expect(total("schema")).toBeLessThanOrEqual(19000)
+  expect(total("signature")).toBeLessThanOrEqual(11500)
 })
