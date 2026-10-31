@@ -4737,3 +4737,35 @@ test("a member's own model row names one source, not the preset that has none", 
   }
   expect(found.rows).toEqual([`${created.id} | set here | project`])
 })
+
+// c-14: after `set` on one agent's copy, a plain find folded that copy into
+// the shared Defaults row, so the edit read as "off by default" and looked
+// lost. An own edit keeps its own row.
+test("find keeps an agent's own edit out of the shared Defaults row", async () => {
+  const { project } = await tempProject()
+  for (const id of ["alpha", "beta"]) await Bun.write(path.join(project, ".opencode", "agent", `${id}.md`), formatMarkdown({}, "role\n"))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  // alpha follows the native build preset, so it inherits the host's git-push
+  // rule on; beta inherits the shared Defaults row's off.
+  await linkToBuild(project, "project", ["alpha"])
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const find = need(tools, "instructions_find")
+  const set = need(tools, "instructions_set")
+  const read = need(tools, "instructions_read")
+  const shared = "item:defaults::perm:shell:git-push"
+  const alpha = "item:project:alpha:perm:shell:git-push"
+  await runOk(set, { id: shared, state: "off" })
+  // alpha's inherited value is on, so switching it off is its own edit — and
+  // its state then equals the shared row's, which is what folded it away.
+  expect(await runOk(read, { id: alpha })).toMatchObject({ enabled: true })
+  await runOk(set, { id: alpha, state: "off" })
+  const rows = (await runOk(find, { name: "git-push", limit: 20 })) as { rows: readonly string[] }
+  expect(rows.rows).toContain(`${alpha} | off | set here`)
+})
