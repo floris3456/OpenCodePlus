@@ -257,7 +257,7 @@ test("scope display does not override preset denial messages", async () => {
     'Private keys cannot be read here (denied by item:project:opencodeplus-team/:implementer:perm:read:files.keys "Private keys": off, from preset basic › implementer)',
   )
   expect(evaluate("external_directory", "/etc/hosts", preset.permissions).message).toBe(
-    'paths outside this checkout are not available here; still allowed: Temporary directories (denied by item:project:opencodeplus-team/:implementer:perm:read:where.external "Outside this checkout, for every tool (external_directory)": off, from preset basic › implementer)',
+    'paths outside this checkout are not available here; still allowed: Temporary directories, Reference files of the instructions-tools skill (denied by item:project:opencodeplus-team/:implementer:perm:read:where.external "Outside this checkout, for every tool (external_directory)": off, from preset basic › implementer)',
   )
 })
 

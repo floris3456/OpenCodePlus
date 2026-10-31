@@ -347,6 +347,15 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
       },
       rows: [
         { id: "tmp", label: "Temporary directories", on: true, allow: true, patterns: ["/tmp/*", "*/run/plus/tmp/*"] },
+        // The instructions-tools skill points its reader at reference files
+        // beside it in the global config (teaching.ts), outside every checkout.
+        {
+          id: "skill-reference",
+          label: "Reference files of the instructions-tools skill",
+          on: true,
+          allow: true,
+          patterns: ["*/opencodeplus/skills/instructions-tools/*"],
+        },
         // Core asks `external_directory` before any tool (read, edit, the
         // shell) touches a path outside the checkout; a delegated run has
         // nobody to answer, so this row refuses instead of asking.
