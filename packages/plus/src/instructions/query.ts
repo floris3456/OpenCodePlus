@@ -363,6 +363,8 @@ interface Filter {
    * item row fails it, every one of them does.
    */
   readonly ownerScoped?: boolean
+  /** A positive `type:` term naming only owner rows (agent, team, …): no item row or row below one matches it. */
+  readonly ownersOnly?: boolean
   /** Positive `level:`/`id:` terms: the only root levels whose rows can match. */
   readonly roots?: ReadonlySet<string>
   /** Positive `id:` terms: the lowercased prefixes a matching id starts with. */
@@ -486,10 +488,11 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false, co
   const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
-      const enumerated = !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
+      // Another owner's row, or a find for owners only: no row below it can match either.
+      const below = missesBelow(parsed, lazy)
+      const enumerated = below || !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
       push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
-      // Another owner's row: none of the rows below it can match either.
-      if (missesOwner(parsed, lazy)) return
+      if (below) return
       for (const section of enumerated) {
         if (!skipRows)
           push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: section.row, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
@@ -581,7 +584,10 @@ function failsPropagating(parsed: Parsed, lazy: Lazy): boolean {
   return parsed.filters.some((filter) => filter.propagating && !filter.test(probe))
 }
 
-function missesOwner(parsed: Parsed, lazy: Lazy): boolean {
+const ownerTypes = new Set(["agent", "team", "member", "preset", "entry"])
+
+function missesBelow(parsed: Parsed, lazy: Lazy): boolean {
+  if (parsed.filters.some((filter) => filter.ownersOnly === true)) return true
   if (!parsed.filters.some((filter) => filter.ownerScoped === true)) return false
   const probe = probeOf(lazy)
   return parsed.filters.some((filter) => filter.ownerScoped === true && !filter.test(probe))
@@ -1078,7 +1084,7 @@ function parseTerm(raw: string, state: QueryState): TermOut | undefined {
   const roots = rootsFor(key, alts, negate)
   const idPrefixes = !negate && key === "id" ? alts.map(lower) : undefined
   const wantsOrphans = (key === "orphan" && wantsTrue(alts, negate)) || (key === "is" && !negate && alts.some((alt) => lower(alt) === "orphaned"))
-  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ownerScoped: !negate && (key === "level" || (key === "agent" && !alts.includes("_"))), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
+  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ownerScoped: !negate && (key === "level" || (key === "agent" && !alts.includes("_"))), ownersOnly: !negate && key === "type" && alts.every((alt) => ownerTypes.has(lower(alt))), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
 }
 
 // The roots a positive `level:` or `id:` term can match under: every row id
