@@ -2185,13 +2185,13 @@ test("create model preserves the selected member owner and returns its addressab
   expect(await runOk(show, { id: member.id, view: "record" })).toMatchObject({ record: { active: true } })
   expect((await load(project)).records.find((record) => record.type === "model" && record.team === undefined))
     .toEqual(prior.records.find((record) => record.type === "model"))
-  // Ordinary discovered members keep per-agent storage, just like the TUI,
-  // but the returned row stays in the selected team's inheritance chain.
+  // An ordinary discovered member's own rows are stored with its team, just
+  // like the TUI writes them (phase 4, member-scope; before, per agent name).
   await runOk(create, { kind: "team", team: "live", level: "project", preset: "crew" })
   const live = await runOk(create, { ...model, level: "project", team: "live" }) as { id: string }
   expect(live.id).toBe("item:project:live/:reader:model:acme/nova-2")
-  expect(await runOk(show, { id: live.id, view: "record" })).toMatchObject({ record: { level: "project", agent: "reader" } })
-  expect((await snapshotOf(api)).records.find((record) => record.type === "model" && record.level === "project")?.team).toBeUndefined()
+  expect(await runOk(show, { id: live.id, view: "record" })).toMatchObject({ record: { level: "project", agent: "reader", team: { level: "project", team: "live" } } })
+  expect((await snapshotOf(api)).records.find((record) => record.type === "model" && record.level === "project")?.team).toEqual({ level: "project", team: "live" })
 
   await runOk(create, { kind: "entry", catalogue: "teams", team: "crew*", name: "reader*" })
   const entry = await runOk(create, { ...model, level: "defaults", team: "crew*", agent: "reader*" }) as { id: string }
