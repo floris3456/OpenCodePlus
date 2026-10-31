@@ -606,31 +606,32 @@ function pushOrphans(
 ): void {
   const seen = new Set<string>()
   for (const record of state.memo.ctx.customizations) {
-    const key = JSON.stringify([record.level, record.agent, record.item, record.section, catalogueOf(record.catalogue)])
+    const key = JSON.stringify([record.level, record.agent, record.item, record.section, catalogueOf(record.catalogue), record.team ?? null])
     if (seen.has(key)) continue
     seen.add(key)
     if (record.section !== null && skipSections) continue
-    if (!isOrphan(state, record.level, record.agent, record.item, record.section, record.catalogue)) continue
+    if (!isOrphan(state, record.level, record.agent, record.item, record.section, record.catalogue, record.team)) continue
     const address: Address = {
       level: record.level,
       agent: record.agent,
       item: record.item,
       section: record.section,
+      ...(record.team === undefined ? {} : { team: record.team }),
       ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
     }
-    const owner = ownerSegmentOf(record.agent, record.catalogue)
+    const owner = record.team !== undefined && record.agent !== null ? `${record.team.team}/:${record.agent}` : ownerSegmentOf(record.agent, record.catalogue)
     if (record.section === null)
       push({ id: `item:${record.level}:${owner}:${record.item}`, kind: "item", label: record.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
     else
       push({ id: `section:${record.level}:${owner}:${record.item}:${record.section}`, kind: "section", label: record.section, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
   }
   for (const split of state.memo.ctx.splits) {
-    const key = JSON.stringify([split.level, split.agent, split.item, null, catalogueOf(split.catalogue)])
+    const key = JSON.stringify([split.level, split.agent, split.item, null, catalogueOf(split.catalogue), split.team ?? null])
     if (seen.has(key)) continue
     seen.add(key)
-    if (!isOrphan(state, split.level, split.agent, split.item, null, split.catalogue)) continue
+    if (!isOrphan(state, split.level, split.agent, split.item, null, split.catalogue, split.team)) continue
     push({
-      id: `item:${split.level}:${ownerSegmentOf(split.agent, split.catalogue)}:${split.item}`,
+      id: `item:${split.level}:${split.team !== undefined && split.agent !== null ? `${split.team.team}/:${split.agent}` : ownerSegmentOf(split.agent, split.catalogue)}:${split.item}`,
       kind: "item",
       label: split.item,
       depth: 0,
@@ -642,6 +643,7 @@ function pushOrphans(
         agent: split.agent,
         item: split.item,
         section: null,
+        ...(split.team === undefined ? {} : { team: split.team }),
         ...(split.catalogue === undefined ? {} : { catalogue: split.catalogue }),
       },
       sectionIds: [],
@@ -661,14 +663,24 @@ function isOrphan(
   itemId: string,
   section: string | null,
   catalogue?: Catalogue,
+  team?: TeamRef,
 ): boolean {
   const item = lookupItem(state, itemId, agent)
   if (item === undefined && !state.memo.ctx.items.some((row) => row.permissionSource === itemId)) return true
-  // Presets and Defaults entries own records too, without being agents.
-  if (agent !== null && !state.agents.has(agent) && !ownsRecords(state, level, agent)) return true
+  if (agent !== null && !knownOwner(state, level, agent, team)) return true
   if (section === null) return false
   if (item === undefined) return true
-  return !splitOf(state.memo, level, agent, item, catalogue).sections.some((entry) => entry.id === section)
+  return !splitOf(state.memo, level, agent, item, catalogue, team).sections.some((entry) => entry.id === section)
+}
+
+// A member's rows are stored with its team: they belong to a member of that
+// team (or a team's Special agent), not to whatever agent has the name.
+// Presets and Defaults entries own records too, without being agents.
+function knownOwner(state: QueryState, level: Level, agent: string, team: TeamRef | undefined): boolean {
+  if (team !== undefined && (team.level === "project" || team.level === "global"))
+    return state.memo.ctx.teams.some((entry) => entry.level === team.level && entry.team === team.team && entry.agents.includes(agent)) ||
+      state.agents.get(agent)?.origin === "special"
+  return state.agents.has(agent) || ownsRecords(state, level, agent)
 }
 
 function ownsRecords(state: QueryState, level: Level, agent: string): boolean {
