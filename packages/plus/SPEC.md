@@ -118,22 +118,37 @@ registered the agent. The owner for those groups is the bare member id with
 the registered agent when one exists
 (`ctx.agents.find(a => a.id === member && a.scope === level) ?? find(a => a.id === member) ?? null`),
 so shared items (`agents === undefined`) populate for unregistered members
-while `system:role` appears only for registered ones. A member's rows address
-the same records as its Agents-catalogue rows (level + agent + item, and
-`address.agent` stays the bare agent id), so an edit made under Teams and one
-made under Agents are one record — but they resolve through different
-catalogues, so they carry their own ids under the member's owner path:
+while `system:role` appears only for registered ones. A member's own rows are
+stored with its team: its rows address the team-scoped node `L/A@T` (level +
+agent + item + `team`, `address.agent` stays the bare agent id), so an edit of
+one member changes neither the member of that name in another team nor the
+stand-alone agent of that name, and a rename or delete of the member or its
+team takes them along. They carry their own ids under the member's owner path:
 `group:<level>:<team>/:<member>:models|tools|base|system` for the four
 groups (with nested Tools subgroup ids extending those prefixes) and
 `item:<level>:<team>/:<member>:<itemId>` /
 `section:<level>:<team>/:<member>:<itemId>:<id>` for their rows, whose address
-carries `catalogue: "teams"` and `memberOf: { level, team }`. `memberOf` makes
-the row resolve with its own team exactly as apply resolves that member
-(`L/A@T` first, the team-scoped link of T, T's Teams entries), so a member of an
-enabled team never shows a same-id disabled team's link, and team-scoped
-overrides are in the displayed chain; the address's own node (what edits,
-resets and model activations write) stays the per-agent `L/A`. The flat `item:<level>:<member>:<itemId>` id
-still resolves: it is the stand-alone Agents-catalogue row for the same agent.
+carries `catalogue: "teams"` and `team: { level, team }`. The row resolves with
+its own team exactly as apply resolves that member (`L/A@T`, the team-scoped
+link of T, T's Teams entries), and its own node — what edits, resets and model
+activations write — is `L/A@T`. An ordinary member's chain does not read the
+stand-alone agent of its name at its own level (`L/A`); a project member still
+reads the Global agent of its name (`global/A`), as a project agent does
+(`ChainContext.members`, `model.ts` ownNodes). The flat
+`item:<level>:<member>:<itemId>` id still resolves: it is the stand-alone
+Agents-catalogue row of an agent of that name, another owner.
+
+Before 2.0.32-plus-1.3.31 (phase 4 of the Instructions fixes) a member's own
+rows were stored under its name (`L/A`). The load migration
+(`owner-records.ts` memberRowsPerTeam, run by `store.ts` load for each store
+file whose header lacks `members: "team"`) copies every member's per-name
+records (row edits, sections, models, rules, row links, its link) to
+`L/A@T` of each team at that level that has it, merged field by field under
+what `L/A@T` held (the order the member's chain read them), and leaves them at
+`L/A` for the stand-alone agent. `loadMigrated` saves it once with the header
+mark and logs `migrate.members`; it is not an undoable change (no undo
+journal entry): undoing it would leave members reading the new chain without
+their rows.
 `dialogs.tsx` `scopeFromModelsGroup` accepts the `<team>/:<member>` owner form
 and strips the `<team>/:` prefix so `a` on a member's Models group adds for the
 member id; for a member preset, a Teams entry member and a team's Special agent
@@ -881,8 +896,8 @@ export function modelRuntimeScope(input: { scopes: Scopes; level: Level; owner: 
   replaces a target's tombstone (re-adding clears the hide); `hasModelRecordAt`
   counts live records only.
   `modelRuntimeScope` names the chain a row's agent resolves through: the
-  address itself for shared and team-scoped rows (ordinary members carrying
-  `memberOf` use their team's tier too), `runtimeScope` for an
+  address itself for shared and team-scoped rows (ordinary members use their
+  team's tier too), `runtimeScope` for an
   agent's own level (a native built-in's Defaults row runs at Project). The
   TUI marks the runtime winner active (`badges.activeFrom` when it sits at
   another level) and carries `badges.effective` on the group when the winner
@@ -1041,12 +1056,12 @@ memo behind the tree/query/ops, the tools' `read`, and the TUI state and
 inspector (`snapshot.ts` `contextOfSnapshot`, `memoInputOf`).
 
 A member's link carries its team (`L/A@T`). The tree's member rows carry
-`memberOf` (the row's own team), so their chain is apply's team-scoped chain
-for that team; an address without a team or `memberOf` in the Teams catalogue
-reads a link of `L/A@T` for any team `memberTeams` names. Both pick
-the nearest link among the member's own nodes with the team-scoped node first:
-`L/A@T`, then `L/A`, then `global/A` — a Global link of the same id never
-beats the member's team-scoped link.
+`team` (the row's own team), so their chain is apply's team-scoped chain for
+that team; an address without a team in the Teams catalogue reads a link of
+`L/A@T` for any team `memberTeams` names. An ordinary member's own nodes are
+`L/A@T` (then `global/A` for a project member); a team's Special agent and a
+member of a team the context does not list keep `L/A@T`, `L/A`, `global/A`. A
+Global link of the same id never beats the member's team-scoped link.
 
 Apply installs nothing without records only while every agent is *plain*
 (no Defaults entry exists, no link names it, and its fallback is upstream);
