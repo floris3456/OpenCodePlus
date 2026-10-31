@@ -1304,9 +1304,11 @@ stores the candidate AND makes it the active model at that level for that
 owner, exclusively (the previously active row at the same level/agent stops
 being active) in one revision and one log line. `rule.add` derives `keywords` through
 `keywordsForPattern` when omitted and matches existing rules by `(tool, id)`
-globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
-`level`/`agent` are carried but not part of the lookup. `rule.update`
-upserts a `RuleRecord` by `(tool, id)`, so editing a curated or catalog row
+within its owner (level, agent, team, catalogue): another owner may define
+its own rule with the same tool and id. `rule.remove` removes the addressed
+owner's own definition. `rule.update` edits the owner's own definition or,
+when the row reads an inherited one (another level's, a curated or catalog
+row), writes one for this owner, so editing a curated or catalog row
 materialises a custom override of the same identity; blank `keywords`
 derive server-side via `keywordsForPattern` like `rule.add`. `message` is
 trimmed, a blank one clears the stored text, and an omitted one on
@@ -1323,15 +1325,17 @@ semantics, not an unconditional compatibility guarantee. `rule.add`,
 the protected-agent refusal is decided at the PlusApi boundary from the
 request's `actor`, so a tool-originated write is refused whichever surface
 forwarded it (tools, the RPC, or a direct API call), while a missing actor —
-the TUI — is never refused. Protection follows the row's effective owner: on
-an update the matched record's owner, not the caller's row address; on an
-add the requested `agent`. The declared error is `agent.protected` with
+the TUI — is never refused. Protection follows the owner the write lands on:
+the addressed owner (an update of an inherited rule writes that owner's own
+definition); on an add the requested `agent`. The declared error is `agent.protected` with
 `{ agent, id?, reason }`, and the reason text is the same
 `agent.protected: row belongs to protected agent "<id>"` the tools raise.
-Deleting an item is a write to other agents' rows too: `rule.remove` refuses
-a tool actor before the rule is saved when the item-record cascade would drop
-a customization or split owned by a protected agent, even when the removed
-rule itself is shared or owned by someone else. `skill.delete`,
+Removing the last definition of a tool and id deletes the item, and with it
+every owner's customizations and splits of it (so re-adding the rule starts
+from the rule's own state); while another owner's definition remains, the
+item and the other owners' rows stay. That cascade is a write to other
+agents' rows too: `rule.remove` refuses a tool actor before the rule is saved
+when it would drop a customization or split owned by a protected agent. `skill.delete`,
 `base.delete` and `mcp.remove` guard their cascades the same way before the
 file or the project config entry is removed. Their RPC inputs carry no
 `actor`, so their boundary always normalises to the TUI and the cascade
@@ -2924,9 +2928,10 @@ path is skipped.
   republishes; a stored state, number or `RuleRecord` enters via `records`).
   The TUI add-rule
   flow prompts for scope (row scope when invoked on a tool or perm row,
-  otherwise level then agent); custom rules are globally unique by `(tool, id)`,
-  not per level/agent (`rule.add`/`rule.remove`/`rule.update` match by tool+id
-  only, ownership and logging follow the record actually matched).
+  otherwise level then agent); a custom rule's identity is `(tool, id)` within
+  its owner, so each level, agent, team member and catalogue may define its
+  own rule with the same tool and id, and `rule.add`/`rule.remove`/`rule.update`
+  act on the addressed owner's definition.
 - Display and enforcement resolve one chain for every item kind (tools,
   skills, base, system, perm) and the active model. An OpenCode built-in
   (`build`, `plan`, `explore`, …: origin native or special, discovered at
