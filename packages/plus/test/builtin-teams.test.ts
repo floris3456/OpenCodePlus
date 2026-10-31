@@ -215,6 +215,33 @@ test("every Basic role names only tools its member preset ships on, and forbids 
   }
 })
 
+// Team tools are rows like any other (2026-10-31): an agent linked to a member
+// preset with its team tools turned off reads none of the sections that tell
+// it to delegate, wait for, report through or check with them.
+test("a Basic role whose team tools are off leaves out every section that works through them", () => {
+  const team = builtinTeams.find((entry) => entry.name === "basic")
+  if (team === undefined) throw new Error("missing basic")
+  const input = presetInput({
+    members: team.members.map((member) => ({ id: member.id, team: "basic", preset: { kind: "member", team: "basic", id: member.id } })),
+  })
+  const headings = (text: string) => text.match(/^## .*$/gm) ?? []
+  const dropped = Object.fromEntries(
+    team.members.map((member) => {
+      const states = resolvedStates(input, member.id)
+      const on = (id: string) => (states[id] === undefined ? undefined : states[id] === "on")
+      const kept = headings(applyRequires(member.body, (id) => (id.startsWith("tool:team_") ? false : on(id))))
+      return [member.id, headings(applyRequires(member.body, on)).filter((heading) => !kept.includes(heading))]
+    }),
+  )
+  expect(dropped).toEqual({
+    planner: ["## Reporting", "## Briefs", "## Waiting", "## Hand-off"],
+    orchestrator: ["## Reporting", "## Briefs", "## Waiting", "## Ownership", "## Splitting the work", "## Agent Routing", "## Tests", "## Following children", "## Review and finish", "## Worktrees"],
+    implementer: ["## Reporting", "## Checks"],
+    reviewer: ["## Reporting", "## Checks"],
+    scout: ["## Reporting"],
+    "build-seat": ["## Briefs", "## Waiting", "## Agent Routing", "## Following runs"],
+  })
+})
 
 // Each part of a Basic body is its own section row in the Instructions tree
 // (derived from its headings), so a level can turn off or rewrite one part

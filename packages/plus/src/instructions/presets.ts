@@ -679,8 +679,16 @@ export function ownerRoleItems(items: readonly Item[], owners: readonly string[]
     }))
 }
 
-/** `items` plus a Role/persona row for every preset and Defaults entry that has none. */
-export function withOwnerRoles(items: readonly Item[], state: PresetState): Item[] {
+/**
+ * `items` plus a Role/persona row for every preset and Defaults entry that has
+ * none, and for every member of a team (enabled or not): a member of a
+ * disabled team is no host agent, so discovery gives it no role, yet its
+ * preset's role is part of it whether the team is on or off.
+ */
+export function withOwnerRoles(
+  items: readonly Item[],
+  state: PresetState & { readonly teams?: readonly { readonly agents: readonly string[] }[] },
+): Item[] {
   const owners = [
     ...presetListing(state.presets).flatMap((entry) => (entry.ref.kind === "team" ? [] : [entry.ref.id])),
     ...(state.entries ?? []).map((entry) => entry.name),
@@ -690,7 +698,7 @@ export function withOwnerRoles(items: readonly Item[], state: PresetState): Item
     controlItems(owner)
       .filter((row) => !owned.has(`${row.id}\u0000${owner}`)),
   )
-  return [...items, ...ownerRoleItems(items, owners), ...controls]
+  return [...items, ...ownerRoleItems(items, [...owners, ...(state.teams ?? []).flatMap((team) => team.agents)]), ...controls]
 }
 
 /**

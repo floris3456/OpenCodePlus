@@ -310,9 +310,9 @@ export function memoInputOf(snapshot: Plus.Snapshot): MemoInput {
 
 function memoInputFrom(snapshot: Plus.Snapshot): MemoInput {
   return {
-    // Presets and Defaults entries get the Role/persona row discovery gives
-    // every agent (presets.ts withOwnerRoles).
-    items: withOwnerRoles(snapshot.items.map(itemOf), presetStateOfSnapshot(snapshot)),
+    // Presets, Defaults entries and team members get the Role/persona row
+    // discovery gives every agent (presets.ts withOwnerRoles).
+    items: withOwnerRoles(snapshot.items.map(itemOf), { ...presetStateOfSnapshot(snapshot), teams: snapshot.teams ?? [] }),
     // Model and rule records are tree rows in phases 2 and 3. They
     // round-trip through recordOf losslessly above.
     records: snapshot.records
