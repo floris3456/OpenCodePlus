@@ -723,6 +723,7 @@ test("the instructions namespace still registers alongside team", async () => {
     "instructions_reset",
     "instructions_set",
     "instructions_split",
+    "instructions_undo",
   ])
   expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(11)
 })
