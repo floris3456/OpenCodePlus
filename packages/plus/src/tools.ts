@@ -93,6 +93,7 @@ import { rowlinksOf, storedRecords } from "./instructions/resolve-memo.js"
 import { markerIn } from "./instructions/requires.js"
 import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkRecord, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
+import { stagedApi } from "./instructions/staged.js"
 import type { StoredRecord } from "./instructions/store.js"
 import { IMAGE_FIELDS, type ImageField } from "./image-settings.js"
 import {
@@ -230,22 +231,26 @@ const Sort = Schema.Union([
   Schema.Literal("-id"),
 ])
 
+// A filter value: one, or a list matching any of them. In the string form a
+// comma separates values too (agent:"build,plan"), as in where.
+const OneOrMore = <S extends Schema.Top>(value: S) => Schema.Union([value, Schema.Array(value)])
+
 const FindFilter = Schema.Struct({
-  agent: Schema.optionalKey(Schema.String).annotate({
-    description: "An agent or team member by name, ignoring case; * stands for any text.",
+  agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate({
+    description: "An agent or team member by name, ignoring case; * stands for any text. A list (or a,b) matches any of them.",
   }),
-  team: Schema.optionalKey(Schema.String).annotate({ description: "A team: its rows and its members' rows." }),
-  level: Schema.optionalKey(Schema.Literals(["project", "global", "defaults", "preset"])).annotate({
-    description: "Only this level. Without it, each row at the most specific level it has (what runs here).",
+  team: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "A team: its rows and its members' rows. A list matches any." }),
+  level: Schema.optionalKey(OneOrMore(Schema.Literals(["project", "global", "defaults", "preset"]))).annotate({
+    description: "Only this level (or these). Without it, each row at the most specific level it has (what runs here).",
   }),
-  type: Schema.optionalKey(Schema.Literals(rowTypes)),
-  name: Schema.optionalKey(Schema.String).annotate({
-    description: "A row's own name: tool, skill, rule, setting, section or agent name, ignoring case; * stands for any text.",
+  type: Schema.optionalKey(OneOrMore(Schema.Literals(rowTypes))),
+  name: Schema.optionalKey(OneOrMore(Schema.String)).annotate({
+    description: "A row's own name: tool, skill, rule, setting, section or agent name, ignoring case; * stands for any text. A list matches any.",
   }),
   in: Schema.optionalKey(Schema.String).annotate({ description: "Only rows under this row id, e.g. a tool's parameters and rules." }),
   state: Schema.optionalKey(Schema.Literals(["on", "off"])),
-  text: Schema.optionalKey(Schema.String).annotate({ description: "Rows whose text contains this, ignoring case." }),
-  is: Schema.optionalKey(Schema.Literals(namedFinds)).annotate({
+  text: Schema.optionalKey(Schema.String).annotate({ description: "Rows whose text contains this, ignoring case (taken whole)." }),
+  is: Schema.optionalKey(OneOrMore(Schema.Literals(namedFinds))).annotate({
     description:
       "Rows holding an edit: review (what it was based on changed since), changed (any; reset drops it), " +
       "overruled (a more specific level sets it too, so it never applies), orphaned (its row is gone). " +
@@ -271,7 +276,18 @@ const Rows = {
   find: Schema.optionalKey(FindFilter).annotate({
     description:
       "Instead of id: the rows find lists with these filters (every page; without agent or team, each agent's copy). " +
-      `One result per row; at most ${maxRows} rows.`,
+      `At most ${maxRows} rows.`,
+  }),
+}
+
+// Every write takes these. Several rows are applied to one in-memory store and
+// written once: one store revision, one log entry, one publish.
+const WriteOptions = {
+  dryRun: Schema.optionalKey(Schema.Boolean).annotate({
+    description: "Answer what would change, in the same shape, and write nothing.",
+  }),
+  verbose: Schema.optionalKey(Schema.Boolean).annotate({
+    description: "Several rows: add each row's full answer (results).",
   }),
 }
 // Exactly one of id and find names the rows.
@@ -300,6 +316,11 @@ const ReadInput = Schema.Struct({
 
 const SetInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
+  like: Schema.optionalKey(Schema.String).annotate({
+    description:
+      "Each selected row takes the on/off (and text, where it has one) of the same row for this agent (\"<team>/<member>\" for a member), e.g. {find:{agent:\"lead\",type:\"skill\"},like:\"general\"}.",
+  }),
   mode: Schema.optionalKey(Schema.Literals(["primary", "subagent", "all"])),
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
@@ -354,6 +375,7 @@ const SetInput = Schema.Struct({
 
 const EditInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
   oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (read's text)" }),
   newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
   replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
@@ -362,7 +384,8 @@ const EditInput = Schema.Struct({
 }).check(oneSelection)
 
 const MoveInput = Schema.Struct({
-  id: Schema.String,
+  id: OneOrMore(Schema.String).annotate({ description: "A row id, or a list moved together in this order (each after the one before)." }),
+  ...WriteOptions,
   into: Schema.optionalKey(Schema.String),
   before: Schema.optionalKey(Schema.String),
   after: Schema.optionalKey(Schema.String),
@@ -370,10 +393,12 @@ const MoveInput = Schema.Struct({
 
 const ResetInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
 }).check(oneSelection)
 
 const SplitInput = Schema.Struct({
   id: Schema.String,
+  dryRun: WriteOptions.dryRun,
   boundaries: Schema.optionalKey(
     Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, start: Schema.Number, depth: Schema.optionalKey(Schema.Number) })),
   ),
@@ -398,7 +423,8 @@ const CreateInput = Schema.Struct({
     Schema.Literal("presetMember"),
     Schema.Literal("folder"),
   ]),
-  id: Schema.optionalKey(Schema.String),
+  id: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "A list creates one row per id (agents, members, presets, ...)." }),
+  ...WriteOptions,
   scope: Schema.optionalKey(
     Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults"), Schema.Literal("preset")]),
   ),
@@ -420,7 +446,10 @@ const CreateInput = Schema.Struct({
   providerID: Schema.optionalKey(Schema.String),
   modelID: Schema.optionalKey(Schema.String),
   variant: Schema.optionalKey(Schema.String),
-  agent: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "kind model|rule: the owner; a list creates it for each agent." }),
+  members: Schema.optionalKey(Schema.Array(Schema.Union([Schema.String, Schema.Struct({ id: Schema.String, preset: Schema.optionalKey(PresetInput) })]))).annotate({
+    description: "kind team: members to add right after the team is made (ids, or {id, preset}).",
+  }),
   tool: Schema.optionalKey(Schema.String),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -430,6 +459,7 @@ const CreateInput = Schema.Struct({
 
 const DeleteInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
   confirm: Schema.optionalKey(Schema.Boolean),
   force: Schema.optionalKey(Schema.Boolean),
 }).check(oneSelection)
@@ -441,8 +471,9 @@ const LogInput = Schema.Struct({
 })
 
 const LinkInput = Schema.Struct({
-  id: Schema.String,
-  target: Schema.optionalKey(Schema.String),
+  id: OneOrMore(Schema.String).annotate({ description: "The row (or rows) the link starts from." }),
+  target: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "The other row, or a list: every id is linked to every target." }),
+  ...WriteOptions,
   type: Schema.optionalKey(
     Schema.Union([
       Schema.Literal("either"),
@@ -453,8 +484,47 @@ const LinkInput = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
 })
 
+const BatchOps = ["set", "edit", "reset", "split", "create", "delete", "move", "link"] as const
+
+const BatchInput = Schema.Struct({
+  changes: Schema.optionalKey(Schema.Array(Schema.Record(Schema.String, Schema.Unknown))).annotate({
+    description:
+      "Different changes in one call, applied in order to one store and written once: each is { op: set|edit|reset|delete|create|move|link|split, ...that op's fields }. A later change can name a row an earlier one created.",
+  }),
+  op: Schema.optionalKey(Schema.Literals(BatchOps)).annotate({ description: "TUI multi-select: the op for every selected row." }),
+  id: Schema.optionalKey(Schema.String).annotate({ description: "TUI multi-select: the focused row." }),
+  selected: Schema.optionalKey(Schema.Array(Schema.String)).annotate({ description: "TUI multi-select: the selected roots." }),
+  input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)).annotate({ description: "TUI multi-select: the op's fields except id." }),
+  ...WriteOptions,
+}).check(Schema.makeFilter<{ readonly changes?: unknown; readonly op?: unknown; readonly id?: unknown; readonly selected?: unknown; readonly input?: unknown }>((input) =>
+  input.changes !== undefined
+    ? input.op === undefined && input.id === undefined && input.selected === undefined && input.input === undefined ? true : "Pass changes, or op with id, selected and input, not both"
+    : input.op !== undefined && input.id !== undefined && input.selected !== undefined && input.input !== undefined ? true : "Pass changes: [{ op, ...fields }]",
+))
+
+const BatchDescription =
+  "Several different changes in one call: batch({ changes: [{ op: \"create\", kind: \"agent\", id: \"lead\" }, { op: \"set\", find: { agent: \"lead\", type: \"tool\", name: [\"edit\", \"write\"] }, state: \"off\" }] }).\n" +
+  "Applied in order to one store and written once (one revision, one log entry); a change that refuses does not stop the rest, and the answer names each one not done and why. dryRun shows what would change; files (new agents, teams, skills) are not previewed.\n" +
+  "The TUI's multi-select form: op, id (focused row), selected (roots) and input apply one op to the corresponding row under each root; it answers applied, skipped and failed ids."
+
+const UndoInput = Schema.Struct({
+  ts: Schema.optionalKey(Schema.String).annotate({ description: "The log entry's ts (log lists them); omitted = the newest change of records." }),
+  dryRun: WriteOptions.dryRun,
+})
+
+const UndoDescription =
+  "Take back one change log entry (one whole call) to the values before it; undo of an undo puts it back.\n" +
+  "Not the same as reset, which drops this level's change. Rows changed again after that entry are not undone: the answer names each with who changed it. Only record changes undo; files (agents, skills, teams) are deleted or created again by hand."
+
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
   const clipboards = new Map<string, Clipboard>()
+  // The write ops batch runs, each against the api it is given (batch's
+  // staged one), so a batch is applied to one in-memory store.
+  const ops = new Map<string, { readonly input: Schema.Top; readonly run: (input: never, context: Tool.Context, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error> }>()
+  const registered = <S extends Schema.Top>(name: string, input: S, run: (input: S["Type"], context: Tool.Context, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>) => {
+    ops.set(name, { input, run })
+    return (value: S["Type"], context: Tool.Context) => run(value, context, api)
+  }
   return runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
     editor.add({
@@ -520,44 +590,60 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
     })
     editor.add({
       name: "batch",
-      description: "Apply one row operation to the corresponding setting in every selected row.\nid is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
-      input: Schema.Struct({
-        op: Schema.Literals(["set", "edit", "reset", "split", "create", "delete", "move", "link"]),
-        id: Schema.String,
-        selected: Schema.Array(Schema.String),
-        input: Schema.Record(Schema.String, Schema.Unknown),
-      }),
-      output: Plus.InstructionsBatchOutput,
+      description: BatchDescription,
+      input: BatchInput,
+      output: Schema.Unknown,
       options,
       origin,
       execute: (input, context) => Effect.gen(function* () {
+        if (input.changes !== undefined) {
+          const steps = input.changes.map((change, index) => {
+            const { op: name, dryRun: _dryRun, ...fields } = change
+            const entry = typeof name === "string" && name !== "batch" ? ops.get(name) : undefined
+            const label = `${index + 1}. ${String(name)}${typeof fields.id === "string" ? ` ${fields.id}` : ""}`
+            return {
+              id: label,
+              run: (api: PlusApi) => {
+                if (entry === undefined) return Effect.fail(new Tool.Error({ message: `unknown op ${JSON.stringify(name)}; ops: ${[...ops.keys()].filter((key) => key !== "undo").join(", ")}` }))
+                const decoded = Schema.decodeUnknownExit(entry.input as unknown as Schema.Codec<unknown>)(fields)
+                if (decoded._tag === "Failure") return Effect.fail(new Tool.Error({ message: `invalid ${String(name)}: ${String(decoded.cause).split("\n")[0]}` }))
+                return entry.run(decoded.value as never, context, api)
+              },
+            }
+          })
+          return yield* eachStep(api, steps, { single: false, dryRun: input.dryRun, verbose: input.verbose })
+        }
+        // The TUI's multi-select: one op on the corresponding row under each selected root.
+        const focus = input.id!
+        const selected = input.selected ?? []
+        const fieldsIn = input.input ?? {}
         const snapshot = yield* snapshotOrFail(api)
         const memo = treeMemoOf(memoFromSnapshot(snapshot))
-        const reflected = reflectedRows(memo, input.id, input.selected)
-        if (input.op === "set" && (input.input.active === true || input.input.state === "on")) {
+        const reflected = reflectedRows(memo, focus, selected)
+        if (input.op === "set" && (fieldsIn.active === true || fieldsIn.state === "on")) {
           const refusal = modelActivationRefusal(reflected.targets)
           if (refusal !== undefined) return yield* Effect.fail(new Tool.Error({ message: refusal }))
         }
-        const tools = yield* ctx.tool.list()
-        const operation = tools.find((tool) => tool.name === input.op && tool.options?.namespace === "instructions")
-        if (operation === undefined || !Schema.isSchema(operation.input)) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
+        const operation = input.op === undefined ? undefined : ops.get(input.op)
+        if (operation === undefined) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
+        const staged = stagedApi(api, { dryRun: input.dryRun === true, status: () => `${input.op} on ${reflected.targets.length} selected rows` })
         const applied: string[] = []
         const failed: { id: string; reason: string }[] = []
         const created = new Set<string>()
         const skipped = [...reflected.skipped]
         for (const row of reflected.targets) {
-          const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(input.input.target)) : undefined
-          const target = peer === undefined ? undefined : reflectedPeer(memo, input.id, row.id, input.selected, peer)
+          const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(fieldsIn.target)) : undefined
+          const target = peer === undefined ? undefined : reflectedPeer(memo, focus, row.id, selected, peer)
           if (peer !== undefined && target === undefined) {
             failed.push({ id: row.id, reason: "Does not have the corresponding link endpoint" })
             continue
           }
-          const fields = input.op === "create" ? creationFields(memo, row, input.input) : { ...input.input, id: row.id, ...(target === undefined ? {} : { target: target.id }) }
+          const fields = input.op === "create" ? creationFields(memo, row, fieldsIn) : { ...fieldsIn, id: row.id, ...(target === undefined ? {} : { target: target.id }) }
           if ("refusal" in fields) {
             failed.push({ id: row.id, reason: String(fields.refusal) })
             continue
           }
-          const decoded = Schema.decodeUnknownOption(operation.input)(fields)
+          const decoded = Schema.decodeUnknownOption(operation.input as unknown as Schema.Codec<unknown>)(fields)
           if (Option.isNone(decoded)) {
             failed.push({ id: row.id, reason: `Invalid arguments for ${input.op}` })
             continue
@@ -567,12 +653,14 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             skipped.push({ id: row.id, reason: "The same shared resource was already created for another selected row" })
             continue
           }
-          yield* operation.execute(decoded.value, context).pipe(Effect.match({
-            onSuccess: () => { applied.push(row.id); created.add(identity) },
+          yield* operation.run(decoded.value as never, context, staged.api).pipe(Effect.match({
+            onSuccess: () => { applied.push(row.id); created.add(identity); staged.settle(row.id) },
             onFailure: (error) => { failed.push({ id: row.id, reason: error.message }) },
           }))
         }
-        return { output: { applied, skipped, failed } }
+        yield* Effect.promise(() => staged.commit())
+        const refused = new Set(staged.refused().map((entry) => entry.id))
+        return { output: { applied: applied.filter((id) => !refused.has(id)), skipped, failed: [...failed, ...staged.refused()] } }
       }),
     })
     editor.add({
@@ -629,6 +717,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             if (view === "assembled") return yield* showAssembled(api, input.id)
             return yield* showRow(api, input.id, view)
           }),
+          true,
         ),
     })
     editor.add({
@@ -638,17 +727,23 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
-        eachRow(api, input, (input, api) =>
+      execute: registered("set", SetInput, (input, context, api) =>
+        eachRow(api, input, (given, api) =>
           Effect.gen(function* () {
             const actor = actorFrom(context)
             const snapshot = yield* snapshotOrFail(api)
             const memo = memoFromSnapshot(snapshot)
             const treeMemo = treeMemoOf(memo)
-            const node = findRow(memo, input.id, treeMemo)
-            if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+            const node = findRow(memo, given.id, treeMemo)
+            if (node === undefined) return yield* Effect.fail(unknownError(given.id, memo))
             const protectedAgent = protectedOf(snapshot, node)
             if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+            // like: the same row's on/off and text for that agent, set here.
+            const liked = given.like === undefined ? undefined : likeFields(memo, treeMemo, node, given)
+            if (liked !== undefined && "refusal" in liked) return yield* Effect.fail(new Tool.Error({ message: liked.refusal }))
+            if (liked !== undefined && liked.state === undefined && liked.text === undefined)
+              return { output: { id: given.id, status: `"${node.label}" is already like ${given.like}` } }
+            const input = liked === undefined ? given : { ...given, ...liked }
             const folderId = folderIdOfRef(rowToken(node) ?? "")
             if (folderId !== undefined) {
               if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
@@ -690,7 +785,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const applied = yield* mutateOp(api, memo, op, actor)
             return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
           }),
-        ),
+        )),
     })
     editor.add({
       name: "edit",
@@ -699,7 +794,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("edit", EditInput, (input, context, api) =>
         eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const snapshot = yield* snapshotOrFail(api)
@@ -720,7 +815,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const applied = yield* mutateOp(api, memo, op, actorFrom(context))
             return { output: { id: input.id, status: applied.status, replacements: replaced.replacements } }
           }),
-        ),
+        )),
     })
     editor.add({
       name: "move",
@@ -729,25 +824,18 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
-        Effect.gen(function* () {
-          const actor = actorFrom(context)
-          const snapshot = yield* snapshotOrFail(api)
-          const memo = memoFromSnapshot(snapshot)
-          const node = findRow(memo, input.id, treeMemoOf(memo))
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
-          const protectedAgent = protectedOf(snapshot, node)
-          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (node.kind === "section") {
-            const op = planSectionMove(memo, input.id, input, new Date().toISOString())
-            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-            const applied = yield* mutateOp(api, memo, op, actor)
-            return { output: { id: input.id, target: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
-          }
-          const change = planRowMove(memo, layoutOf(snapshot), input.id, input, new Date().toISOString())
-          const applied = yield* applyLayout(api, snapshot, change, actor)
-          return { output: { id: input.id, ...applied } }
-        }),
+      execute: registered("move", MoveInput, (input, context, api) => {
+        // Several ids keep their order: the first goes where asked, each next one right after it.
+        const ids = typeof input.id === "string" ? [input.id] : [...new Set(input.id)]
+        const first = {
+          ...(input.into === undefined ? {} : { into: input.into }),
+          ...(input.before === undefined ? {} : { before: input.before }),
+          ...(input.after === undefined ? {} : { after: input.after }),
+        }
+        return eachStep(api, ids.map((id, index) => ({ id, run: (api) => moveRow(api, id, index === 0 ? first : { after: ids[index - 1]! }, actorFrom(context)) })), {
+          single: typeof input.id === "string", dryRun: input.dryRun, verbose: input.verbose,
+        })
+      }),
     })
     editor.add({
       name: "reset",
@@ -756,7 +844,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("reset", ResetInput, (input, context, api) =>
         eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const actor = actorFrom(context)
@@ -780,7 +868,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const applied = yield* mutateOp(api, memo, op, actor)
             return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
           }),
-        ),
+        )),
     })
     editor.add({
       name: "split",
@@ -789,7 +877,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("split", SplitInput, (input, context, api) =>
         Effect.gen(function* () {
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
@@ -804,7 +892,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
-        }),
+        })),
     })
     editor.add({
       name: "create",
@@ -813,10 +901,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
-        Effect.gen(function* () {
-          return yield* createRow(api, input, actorFrom(context))
-        }),
+      execute: registered("create", CreateInput, (input, context, api) => {
+        const rows = createRows(input)
+        const single = rows.length === 1 && typeof input.id !== "object" && typeof input.agent !== "object"
+        return eachStep(api, rows.map((row) => ({ id: createLabel(row), run: (api) => createRow(api, row, actorFrom(context)) })), {
+          single, dryRun: input.dryRun, verbose: input.verbose,
+        })
+      }),
     })
     editor.add({
       name: "delete",
@@ -825,7 +916,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("delete", DeleteInput, (input, context, api) =>
         input.confirm !== true
           ? Effect.fail(new Tool.Error({ message: "delete.unconfirmed: delete requires confirm:true" }))
           : eachRow(api, input, (input, api) =>
@@ -857,7 +948,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
                 if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
                 return yield* deletePlan(api, plan, actor, input.force === true)
               }),
-            ),
+            )),
     })
     editor.add({
       name: "log",
@@ -885,10 +976,39 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("link", LinkInput, (input, context, api) => {
+        const ids = typeof input.id === "string" ? [input.id] : [...new Set(input.id)]
+        const targets = input.target === undefined ? [undefined] : typeof input.target === "string" ? [input.target] : [...new Set(input.target)]
+        const pairs = ids.flatMap((id) => targets.map((target) => ({ id, target })))
+        const fields = { ...(input.type === undefined ? {} : { type: input.type }), ...(input.enabled === undefined ? {} : { enabled: input.enabled }) }
+        const single = pairs.length === 1 && typeof input.id === "string" && typeof input.target !== "object"
+        // Without a target link only reads: several rows answer each row's links.
+        if (input.target === undefined && !single)
+          return Effect.forEach(ids, (id) => linkRow(api, { id }, actorFrom(context)).pipe(Effect.match({
+            onSuccess: (done) => ({ id, output: done.output }),
+            onFailure: (error) => ({ id, error: error.message }),
+          }))).pipe(Effect.map((results) => ({ output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } })))
+        return eachStep(api, pairs.map((pair) => ({
+          id: pair.target === undefined ? pair.id : `${pair.id} -> ${pair.target}`,
+          run: (api) => linkRow(api, { id: pair.id, ...(pair.target === undefined ? {} : { target: pair.target }), ...fields }, actorFrom(context)),
+        })), { single, dryRun: input.dryRun, verbose: input.verbose })
+      }),
+    })
+    editor.add({
+      name: "undo",
+      description: UndoDescription,
+      input: UndoInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: registered("undo", UndoInput, (input, context, api) =>
         Effect.gen(function* () {
-          return yield* linkRow(api, input, actorFrom(context))
-        }),
+          const result = yield* Effect.promise(() =>
+            api.undo({ ...(input.ts === undefined ? {} : { ts: input.ts }), dryRun: input.dryRun === true, actor: actorFrom(context) }),
+          )
+          if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+          return { output: result.value }
+        })),
     })
   })
 }
@@ -915,6 +1035,35 @@ function childLine(node: TreeNode): string {
   return [node.id, cell(badges.join(" ")), cell(node.badges.fromLabel)].join(" | ")
 }
 
+// `set { like }`: the on/off and the text (rows that hold one) the same row
+// has for that agent, at the row's level first, then the most specific level
+// it has, as fields for this row; only what differs. A member is
+// "<team>/<member>".
+function likeFields(
+  memo: MemoInput,
+  tree: Memo,
+  node: TreeNode,
+  input: { readonly id: string; readonly like?: string; readonly state?: unknown; readonly text?: unknown },
+): { state?: "on" | "off"; text?: string } | { refusal: string } {
+  const like = input.like!.trim()
+  if (input.state !== undefined || input.text !== undefined) return { refusal: `like takes the state and text from ${like}; set state or text in another change` }
+  const address = node.address
+  const kind = input.id.split(":", 1)[0]
+  const marker = address === undefined ? -1 : input.id.indexOf(`:${address.item}`, `${kind}:${address.level}:`.length)
+  if (address === undefined || (kind !== "item" && kind !== "section") || marker === -1)
+    return { refusal: `"${node.label}" is not a row another agent has (like works on tool, skill, rule, system, base and setting rows)` }
+  const owner = like.includes("/") ? `${like.slice(0, like.indexOf("/"))}/:${like.slice(like.indexOf("/") + 1)}` : like
+  const rest = input.id.slice(marker)
+  const levels = [address.level, "project", "global", "defaults", "preset"].filter((level, index, all) => all.indexOf(level) === index)
+  const source = levels.map((level) => `${kind}:${level}:${owner}${rest}`).map((id) => ({ id, row: findRow(memo, id, tree) })).find((entry) => entry.row !== undefined)
+  if (source?.row === undefined) return { refusal: `${like} has no row like "${node.label}" (${kind}:<level>:${owner}${rest})` }
+  const state = source.row.badges.state !== undefined && source.row.badges.state !== node.badges.state ? source.row.badges.state : undefined
+  const theirs = holdsText(source.id, source.row) ? editableText(memo, source.id, tree) : undefined
+  const mine = holdsText(input.id, node) ? editableText(memo, input.id, tree) : undefined
+  const text = theirs !== undefined && !("refusal" in theirs) && mine !== undefined && !("refusal" in mine) && theirs.text !== mine.text ? theirs.text : undefined
+  return { ...(state === undefined ? {} : { state }), ...(text === undefined ? {} : { text }) }
+}
+
 // Rows whose text set saves as an override; models and their fields,
 // permission rules, teams, groups and folders change by field instead.
 function holdsText(id: string, node: TreeNode): boolean {
@@ -924,12 +1073,19 @@ function holdsText(id: string, node: TreeNode): boolean {
   return !isPermRowId(id) && !item.startsWith("perm:")
 }
 
-// A find filter as the terms the TUI and CLI type, each value quoted whole.
+// A find filter as the terms the TUI and CLI type, each value quoted. A list,
+// or a comma in a string value of a key that names things, is alternatives
+// (`agent:"build","plan"`); in, state and text are taken whole.
 function findWhere(filter: typeof FindFilter.Type): string {
+  const quote = (value: string) => `"${value.replace(/[\\"]/g, "\\$&")}"`
   return [
     ...(["agent", "team", "level", "type", "name", "in", "state", "is", "text"] as const).flatMap((key) => {
       const value = filter[key]
-      return value === undefined || value === "" ? [] : [`${key}:"${value.replace(/[\\"]/g, "\\$&")}"`]
+      const whole = key === "in" || key === "state" || key === "text"
+      const values = (value === undefined ? [] : typeof value === "string" ? (whole ? [value] : value.split(",")) : [...value])
+        .map((entry) => (whole ? entry : entry.trim()))
+        .filter((entry) => entry !== "")
+      return values.length === 0 ? [] : [`${key}:${values.map(quote).join(",")}`]
     }),
     filter.where ?? "",
   ].join(" ")
@@ -938,39 +1094,124 @@ function findWhere(filter: typeof FindFilter.Type): string {
 // The rows one call acts on (the input names them with exactly one of id and
 // find, oneSelection). A single id answers exactly as before. A list of ids,
 // or the rows a find filter matches, runs the operation once per row in order
-// and answers one result per row: a row that refuses does not stop the rest,
-// and each one that succeeds stays saved.
-function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof FindFilter.Type }>(
+// against one in-memory store and writes once (eachStep); read answers one
+// result per row.
+function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof FindFilter.Type; readonly dryRun?: boolean; readonly verbose?: boolean }>(
   api: PlusApi,
   input: Input,
-  one: (input: Omit<Input, "id" | "find"> & { readonly id: string }, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>,
+  one: (input: Omit<Input, "id" | "find" | "dryRun" | "verbose"> & { readonly id: string }, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>,
+  reads = false,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const { id, find, ...rest } = input
-    if (typeof id === "string") return yield* one({ ...rest, id }, api)
-    const ids = find === undefined ? [...new Set(id ?? [])] : yield* foundRows(api, find)
-    // A list saves row by row but publishes once: each publish rediscovers and reinstalls everything.
-    const deferred = { writes: 0 }
-    const batch: PlusApi = {
-      ...api,
-      mutate: (change) => {
-        deferred.writes++
-        return api.mutate(change, { publish: false })
-      },
+    const { id, find, dryRun, verbose, ...rest } = input
+    if (typeof id === "string" && dryRun !== true) return yield* one({ ...rest, id }, api)
+    const ids = typeof id === "string" ? [id] : find === undefined ? [...new Set(id ?? [])] : yield* foundRows(api, find)
+    if (reads) {
+      const results = yield* Effect.forEach(ids, (row) =>
+        one({ ...rest, id: row }, api).pipe(
+          Effect.match({
+            onSuccess: (done) => ({ id: row, output: done.output }),
+            onFailure: (error) => ({ id: row, error: error.message }),
+          }),
+        ),
+      )
+      return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
     }
-    const results = yield* Effect.forEach(ids, (row) =>
-      one({ ...rest, id: row }, batch).pipe(
-        Effect.match({
-          onSuccess: (done) => ({ id: row, output: done.output }),
-          onFailure: (error) => ({ id: row, error: error.message }),
-        }),
-      ),
-    ).pipe(
-      // Also when interrupted: rows already saved must still reach the running chats.
-      Effect.ensuring(Effect.suspend(() => (deferred.writes > 0 ? Effect.promise(() => api.refresh()) : Effect.void))),
-    )
-    return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
+    return yield* eachStep(api, ids.map((row) => ({ id: row, run: (api) => one({ ...rest, id: row }, api) })), {
+      single: typeof id === "string", dryRun, verbose,
+    })
   })
+}
+
+interface Step {
+  readonly id: string
+  readonly run: (api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>
+}
+
+// What a call with several rows answers: one status line with the counts, the
+// rows it changed and every row it did not change with the reason; each row's
+// own answer only with verbose.
+interface Many {
+  readonly status: string
+  readonly changed: readonly string[]
+  readonly already: number
+  readonly notDone: readonly { readonly id: string; readonly reason: string }[]
+  readonly dryRun?: true
+  readonly revision?: number
+  readonly globalRevision?: number
+  readonly results?: readonly unknown[]
+}
+
+function isMany(value: unknown): value is Many {
+  return typeof value === "object" && value !== null && Array.isArray((value as Many).changed) && Array.isArray((value as Many).notDone) && typeof (value as Many).already === "number"
+}
+
+// Run steps in order against one staged store (staged.ts) and write once. A
+// step that refuses does not stop the rest; a write that refuses names every
+// row it carried. A single step that is not a dry run answers as itself.
+function eachStep(
+  api: PlusApi,
+  steps: readonly Step[],
+  options: { readonly single: boolean; readonly dryRun?: boolean; readonly verbose?: boolean },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const dryRun = options.dryRun === true
+    if (options.single && steps.length === 1 && !dryRun) return yield* steps[0]!.run(api)
+    const counts = { changed: 0 }
+    const staged = stagedApi(api, { dryRun, status: () => `${counts.changed} change${counts.changed === 1 ? "" : "s"}: ${steps.map((step) => step.id).join(", ")}` })
+    const done: { id: string; output?: unknown; error?: string; changed: boolean }[] = []
+    for (const step of steps) {
+      const before = staged.changes()
+      const outcome = yield* step.run(staged.api).pipe(
+        Effect.match({
+          onSuccess: (result): { id: string; output?: unknown; error?: string } => ({ id: step.id, output: result.output }),
+          onFailure: (error): { id: string; output?: unknown; error?: string } => ({ id: step.id, error: error.message }),
+        }),
+      )
+      const changed = outcome.error === undefined && staged.changes() > before
+      if (changed) counts.changed++
+      if (outcome.error === undefined) staged.settle(step.id)
+      done.push({ ...outcome, changed })
+    }
+    const written = yield* Effect.promise(() => staged.commit())
+    if (options.single && steps.length === 1) {
+      const only = done[0]!
+      if (only.error !== undefined) return yield* Effect.fail(new Tool.Error({ message: only.error }))
+      const output = only.output as { readonly status?: unknown }
+      return { output: { ...(typeof output === "object" && output !== null ? output : { output }), dryRun: true, status: `Dry run, nothing written: ${typeof output?.status === "string" ? output.status : only.changed ? "it would change" : "nothing to change"}` } }
+    }
+    const refused = new Map(staged.refused().map((entry) => [entry.id, entry.reason]))
+    const nested = done.flatMap((entry) => (isMany(entry.output) ? [entry.output] : []))
+    const changed = [
+      ...done.filter((entry) => entry.changed && !isMany(entry.output) && !refused.has(entry.id)).map((entry) => createdIdOf(entry.output) ?? entry.id),
+      ...nested.flatMap((many) => many.changed),
+    ]
+    const notDone = [
+      ...done.flatMap((entry) => (entry.error === undefined ? [] : [{ id: entry.id, reason: entry.error }])),
+      ...staged.refused(),
+      ...nested.flatMap((many) => many.notDone),
+    ]
+    const already = done.filter((entry) => entry.error === undefined && !entry.changed && !isMany(entry.output)).length + nested.reduce((sum, many) => sum + many.already, 0)
+    const wrote = !dryRun && written.revision !== undefined
+    const counted = `${changed.length} ${dryRun ? "would change" : "changed"}, ${already} already so, ${notDone.length} not done`
+    const many: Many = {
+      status: `${dryRun ? "Dry run, nothing written: " : ""}${counted}${wrote ? ` (written once: revision ${written.revision}, global ${written.globalRevision})` : ""}`,
+      changed,
+      already,
+      notDone,
+      ...(dryRun ? { dryRun: true as const } : {}),
+      ...(written.revision === undefined ? {} : { revision: written.revision, globalRevision: written.globalRevision }),
+      ...(options.verbose === true ? { results: done.map((entry) => (entry.error === undefined ? { id: entry.id, output: entry.output } : { id: entry.id, error: entry.error })) } : {}),
+    }
+    return { output: many }
+  })
+}
+
+// The row a create answered with, so a list of creates names what it made.
+function createdIdOf(output: unknown): string | undefined {
+  if (typeof output !== "object" || output === null || !("item" in output)) return undefined
+  const id = (output as { readonly id?: unknown }).id
+  return typeof id === "string" ? id : undefined
 }
 
 // The rows a find filter selects: every row find lists (all pages), with each
@@ -1312,6 +1553,31 @@ function setLink(
         status: members.length === 0 ? said : `${said}; relinked ${members.map((member) => member.agent).join(", ")}`,
       },
     }
+  })
+}
+
+function moveRow(
+  api: PlusApi,
+  id: string,
+  placement: { readonly into?: string; readonly before?: string; readonly after?: string },
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const snapshot = yield* snapshotOrFail(api)
+    const memo = memoFromSnapshot(snapshot)
+    const node = findRow(memo, id, treeMemoOf(memo))
+    if (node === undefined) return yield* Effect.fail(unknownError(id, memo))
+    const protectedAgent = protectedOf(snapshot, node)
+    if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+    if (node.kind === "section") {
+      const op = planSectionMove(memo, id, placement, new Date().toISOString())
+      if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+      const applied = yield* mutateOp(api, memo, op, actor)
+      return { output: { id, target: id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+    }
+    const change = planRowMove(memo, layoutOf(snapshot), id, placement, new Date().toISOString())
+    const applied = yield* applyLayout(api, snapshot, change, actor)
+    return { output: { id, ...applied } }
   })
 }
 
@@ -2865,6 +3131,34 @@ function createRow(
     }
     return yield* Effect.fail(new Tool.Error({ message: `create unknown kind ${input.kind}` }))
   })
+}
+
+type CreateOne = Parameters<typeof createRow>[1]
+
+// create's lists, one create each: every id (for every agent of a model or
+// rule), and a team's members right after the team.
+function createRows(input: typeof CreateInput.Type): CreateOne[] {
+  const { id, agent, members, dryRun: _dryRun, verbose: _verbose, ...rest } = input
+  const ids = id === undefined ? [undefined] : typeof id === "string" ? [id] : [...new Set(id)]
+  const agents = agent === undefined ? [undefined] : typeof agent === "string" ? [agent] : [...new Set(agent)]
+  const rows: CreateOne[] = ids.flatMap((one) => agents.map((owner) => ({ ...rest, ...(one === undefined ? {} : { id: one }), ...(owner === undefined ? {} : { agent: owner }) })))
+  if (input.kind !== "team" || members === undefined) return rows
+  return [
+    ...rows,
+    ...rows.flatMap((team) =>
+      members.map((member): CreateOne => ({
+        kind: "member",
+        ...(team.team === undefined ? {} : { team: team.team }),
+        ...(team.level === undefined ? {} : { level: team.level }),
+        ...(typeof member === "string" ? { id: member } : { id: member.id, ...(member.preset === undefined ? {} : { preset: member.preset }) }),
+      })),
+    ),
+  ]
+}
+
+function createLabel(row: CreateOne): string {
+  const name = row.id ?? row.name ?? row.team ?? (row.modelID === undefined ? undefined : `${row.providerID}/${row.modelID}`) ?? ""
+  return `create ${row.kind} ${name}${row.agent === undefined ? "" : ` for ${row.agent}`}${row.kind === "member" && row.team !== undefined ? ` in ${row.team}` : ""}`.trim()
 }
 
 function presetInputOrFail(
