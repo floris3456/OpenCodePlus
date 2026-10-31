@@ -90,6 +90,8 @@ export interface WorkspaceInput {
   readonly navCollapsed: ReadonlySet<string>
   /** Preferred owner row key; the first owner when missing. */
   readonly owner?: string
+  /** The sidebar's cursor row key: on a row that is not an owner (a group, a team), no owner is shown. */
+  readonly selected?: string
   /** Preferred category id of that owner; the first category when missing. */
   readonly category?: string
   /** List rows the user expanded / collapsed (any owner). */
@@ -231,6 +233,10 @@ function sliceOf(
   nav.forEach((row, index) => {
     if (row.expandable && row.expanded && (nav[index + 1]?.depth ?? -1) <= row.depth) nav[index] = { ...row, expandable: false }
   })
+  // The panes follow the sidebar's cursor: keeping the last owner's rows
+  // beside a group or a team reads as that row's own rows (d-04).
+  const cursor = nav.find((row) => row.key === input.selected)
+  if (cursor !== undefined && cursor.role !== "owner" && cursor.role !== "every") return { nav, categories: [], list: [] }
   const owners = nav.filter((row) => row.role === "owner" || row.role === "every")
   const owner = owners.find((row) => row.key === input.owner) ?? owners[0]
   if (owner === undefined) return { nav, categories: [], list: [] }
