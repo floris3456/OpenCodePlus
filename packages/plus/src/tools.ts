@@ -503,8 +503,9 @@ const BatchInput = Schema.Struct({
 ))
 
 const BatchDescription =
-  "Several different changes in one call: batch({ changes: [{ op: \"create\", kind: \"agent\", id: \"lead\" }, { op: \"set\", find: { agent: \"lead\", type: \"tool\", name: [\"edit\", \"write\"] }, state: \"off\" }] }).\n" +
-  "Applied in order to one store and written once (one revision, one log entry); a change that refuses does not stop the rest, and the answer names each one not done and why. dryRun shows what would change; files (new agents, teams, skills) are not previewed.\n" +
+  "Several different changes in one call, applied in order and written once.\n" +
+  "batch({ changes: [{ op: \"create\", kind: \"agent\", id: \"lead\" }, { op: \"set\", find: { agent: \"lead\", type: \"tool\", name: [\"edit\", \"write\"] }, state: \"off\" }] }).\n" +
+  "One store, one revision, one log entry; a change that refuses does not stop the rest, and the answer names each one not done and why. dryRun shows what would change; files (new agents, teams, skills) are not previewed.\n" +
   "The TUI's multi-select form: op, id (focused row), selected (roots) and input apply one op to the corresponding row under each root; it answers applied, skipped and failed ids."
 
 const UndoInput = Schema.Struct({

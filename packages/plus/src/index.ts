@@ -2024,10 +2024,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         records,
       })
       if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
+      const delta = deltaRows(current.records, records)
       for (const level of ["project", "global"] as const) {
         if (!saved.changed[level]) continue
         const revision = level === "project" ? saved.projectRevision : saved.globalRevision
-        const rows = canonical(deltaRows(current.records, records).filter((record) => (record.level === "project") === (level === "project")))
+        const rows = canonical(delta.filter((record) => (record.level === "project") === (level === "project")))
         await appendForLevel(directory, level, {
           ts: updated,
           actor,
@@ -2037,7 +2038,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           revision,
           ...rowsOf(rows),
         })
-        await journal(directory, level, { ts: updated, revision, actor, summary: input.status, before: current.records, after: records })
+        await journal(directory, level, { ts: updated, revision, actor, summary: input.status, before: current.records, after: records, delta })
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return {
@@ -5350,7 +5351,7 @@ async function logMutate(input: {
       revision: input.projectRevision,
       ...rowsOf(rows),
     })
-    await journal(input.directory, "project", { ts, revision: input.projectRevision, actor: input.actor, summary, before: input.before, after: input.after })
+    await journal(input.directory, "project", { ts, revision: input.projectRevision, actor: input.actor, summary, before: input.before, after: input.after, delta })
   }
   if (input.globalChanged) {
     const rows = canonical(delta.filter((record) => record.level !== "project"))
@@ -5364,7 +5365,7 @@ async function logMutate(input: {
       revision: input.globalRevision,
       ...rowsOf(rows),
     })
-    await journal(input.directory, "global", { ts, revision: input.globalRevision, actor: input.actor, summary, before: input.before, after: input.after })
+    await journal(input.directory, "global", { ts, revision: input.globalRevision, actor: input.actor, summary, before: input.before, after: input.after, delta })
   }
 }
 
@@ -5377,9 +5378,9 @@ function rowsOf(rows: readonly StoredRecord[]): { rows?: string[] } {
 async function journal(
   directory: string,
   store: "project" | "global",
-  input: { ts: string; revision: number; actor: Plus.Actor; summary: string; before: readonly StoredRecord[]; after: readonly StoredRecord[] },
+  input: { ts: string; revision: number; actor: Plus.Actor; summary: string; before: readonly StoredRecord[]; after: readonly StoredRecord[]; delta: readonly StoredRecord[] },
 ): Promise<void> {
-  const sides = changedSides(input.before, input.after, store)
+  const sides = changedSides(input.before, input.after, input.delta, store)
   if (sides === undefined) return
   await appendUndo(directory, { ts: input.ts, store, revision: input.revision, actor: { ...input.actor }, summary: input.summary.slice(0, 200), ...sides })
 }

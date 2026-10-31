@@ -36,23 +36,15 @@ export function undoPath(directory: string, store: "project" | "global"): string
   return path.join(path.dirname(store === "project" ? projectLogPath(directory) : globalLogPath()), "undo.jsonl")
 }
 
-/** The records a write changed in one store, before and after; undefined when it changed none there. */
+/** The records a write changed in one store (delta is deltaRows of the write), before and after; undefined when it changed none there. */
 export function changedSides(
   before: readonly StoredRecord[],
   after: readonly StoredRecord[],
+  delta: readonly StoredRecord[],
   store: "project" | "global",
 ): { before: StoredRecord[]; after: StoredRecord[] } | undefined {
   const inStore = (record: StoredRecord) => (record.level === "project") === (store === "project")
-  const contents = (records: readonly StoredRecord[]) => {
-    const groups = new Map<string, string[]>()
-    for (const record of records.filter(inStore)) groups.set(recordIdentity(record), [...(groups.get(recordIdentity(record)) ?? []), contentOf(record)])
-    return groups
-  }
-  const was = contents(before)
-  const now = contents(after)
-  const changed = new Set(
-    [...new Set([...was.keys(), ...now.keys()])].filter((key) => (was.get(key) ?? []).toSorted().join("\n") !== (now.get(key) ?? []).toSorted().join("\n")),
-  )
+  const changed = new Set(delta.filter(inStore).map(recordIdentity))
   if (changed.size === 0) return undefined
   const pick = (records: readonly StoredRecord[]) => records.filter((record) => inStore(record) && changed.has(recordIdentity(record)))
   return { before: pick(before), after: pick(after) }
