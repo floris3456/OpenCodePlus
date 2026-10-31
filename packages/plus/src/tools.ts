@@ -82,7 +82,7 @@ import {
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
-import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, TeamRef, ThreeWay } from "./instructions/model.js"
+import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
 import { buildTreeMemo, findLazy, lazyPath, materialize, tabLayout, type Lazy } from "./instructions/tree.js"
 import { badgeLabels } from "./instructions/from-label.js"
 import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"

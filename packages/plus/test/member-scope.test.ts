@@ -237,7 +237,7 @@ test("memberRowsPerTeam merges field by field under the team node, is idempotent
   const teams = [{ level: "project" as const, team: "aa", agents: ["scout", "hand"] }]
   const moved = memberRowsPerTeam(records, teams)
   expect(moved.migrated).toBe(true)
-  const atTeam = moved.records.filter((record) => "team" in record && record.team?.team === "aa")
+  const atTeam = moved.records.filter((record) => record.type !== "team" && "team" in record && typeof record.team === "object" && record.team.team === "aa")
   expect(atTeam).toEqual([
     { type: "customization", level: "project", agent: "scout", team, item: "tool:reader", section: null, state: "on", basedOn: "y", text: "Name text", updated: UPDATED },
     { type: "model", level: "project", agent: "scout", team, providerID: "acme", modelID: "nova", active: true, updated: UPDATED },
