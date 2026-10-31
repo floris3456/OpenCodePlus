@@ -102,7 +102,9 @@ async function revisions(project: string): Promise<number> {
 async function stateOf(api: PlusApi, agent: string, item: string): Promise<string | undefined> {
   const snapshot = await api.snapshot()
   if (!snapshot.ok) throw new Error("snapshot failed")
-  return snapshot.value.records.findLast((record) => record.type === "customization" && record.agent === agent && record.item === item && record.section === null)?.state
+  return snapshot.value.records
+    .filter((record) => record.type === "customization")
+    .findLast((record) => record.agent === agent && record.item === item && record.section === null)?.state
 }
 
 function rowIds(list: unknown): string[] {
