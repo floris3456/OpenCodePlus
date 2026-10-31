@@ -1067,6 +1067,13 @@ export type TeamRowEntity =
       readonly member: string
       readonly registered: boolean
     }
+  | {
+      /** A team's Special agent row: an OpenCode agent every team runs, addressed inside the team. */
+      readonly kind: "special"
+      readonly level: Level
+      readonly team: string
+      readonly agent: string
+    }
 
 export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity | undefined {
   if (node.kind !== "team") return undefined
@@ -1082,6 +1089,13 @@ export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity |
       members: [...exact.agents],
       ...(exact.overlay === undefined ? {} : { overlay: [...exact.overlay] }),
     }
+  const special = node.id.match(/^team:(project|global|defaults|preset):(.+):special:(.+)$/)
+  if (special !== null) {
+    const level = special[1] as Level
+    const team = teams.find((candidate) => candidate.level === level && candidate.team === special[2])
+    if (team === undefined) return undefined
+    return { kind: "special", level, team: team.team, agent: special[3] ?? "" }
+  }
   if (node.depth !== 3) return undefined
   const parent = teams.find((candidate) =>
     candidate.agents.some((member) => node.id === `team:${candidate.level}:${candidate.team}:${member}`),

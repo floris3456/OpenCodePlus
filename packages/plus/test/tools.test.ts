@@ -4673,3 +4673,30 @@ test("a model prompt is created with create kind system + models, re-aimed with 
   expect(await runOk(need(tools, "instructions_delete"), { id: output.id, confirm: true })).toMatchObject({ id: "model/opus" })
   expect((await snapshotOf(api)).items.some((item) => item.id === "system:model/opus")).toBe(false)
 })
+
+// c-09: a team's Special rows are listed by find --type agent, so `read` must
+// accept the same id instead of answering row.unknown.
+test("read renders a team's Special agent row", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream alpha"), agentInfo("title", "upstream title")],
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project" })
+  const id = "team:project:crew:special:title"
+  const listed = (await runOk(need(tools, "instructions_find"), { type: "agent", limit: 200 })) as { rows: readonly string[] }
+  expect(listed.rows.some((row) => row.startsWith(`${id} |`))).toBe(true)
+  expect(await runOk(need(tools, "instructions_read"), { id })).toMatchObject({
+    kind: "special",
+    level: "project",
+    team: "crew",
+    agent: "title",
+  })
+  expect(await runOk(need(tools, "instructions_read"), { id, view: "record" })).toMatchObject({
+    record: { kind: "special", level: "project", team: "crew", agent: "title" },
+  })
+})
