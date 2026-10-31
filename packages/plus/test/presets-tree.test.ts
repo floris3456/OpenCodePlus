@@ -448,6 +448,10 @@ test("an agent row names its preset link, not its Enabled setting", () => {
     from: { kind: "preset", id: "orchestrator", team: "basic", shipped: true },
     fromLabel: "from preset Basic › orchestrator",
   })
+  // Only where it comes from changes: the linked row keeps its on/off as the
+  // unlinked one does.
+  expect(row(nodes, "agent:project:alice").badges.state).toBe("on")
+  expect(row(nodes, "agent:project:alice").badges.state).toBe(row(nodes, "agent:project:bob").badges.state)
   // bob is linked to nothing: its Enabled setting falls through to the host.
   expect(row(nodes, "agent:project:bob").badges.fromLabel).toBe("upstream")
   // A Defaults entry agent names the entry's fallback, not a preset.

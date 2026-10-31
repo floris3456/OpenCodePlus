@@ -2283,12 +2283,12 @@ function withAgentControls(
 // level sets still reads "set here": the link only names what nothing closer
 // decides. Preset rows keep their own reading: a preset's link is its base,
 // and its content is what it ships.
-function linkedBadges(
+function linkedBadges<B extends Pick<TreeNodeBadges, "from" | "fromLabel">>(
   memo: Memo,
   owner: RowOwner | undefined,
   level: Level,
-  badges: Pick<TreeNodeBadges, "from" | "fromLabel">,
-): Pick<TreeNodeBadges, "from" | "fromLabel"> {
+  badges: B,
+): B {
   const link = owner?.link
   if (link === undefined || level === "preset" || badges.from?.kind === "level") return badges
   const from: From = {
@@ -2297,7 +2297,8 @@ function linkedBadges(
     ...(link.kind === "member" ? { team: link.team } : {}),
     shipped: (memo.ctx.listing.find((entry) => presetKey(entry.ref) === presetKey(link))?.origin ?? "user") !== "user",
   }
-  return { from, fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }) }
+  // Only where it comes from changes: its on/off and the other badges stay.
+  return { ...badges, from, fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }) }
 }
 
 // Models group, the first tab of each agent subtree and shared Defaults
