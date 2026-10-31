@@ -57,10 +57,12 @@ test("state toggles team members and member presets through their Enabled item r
     expect(node.enabledRow).toBeDefined()
     expect(await current.toggle(node)).toBe(true)
   }
+  // A member's own rows are stored with its team (phase 4, member-scope): the
+  // member's Enabled record is `build@crew`, not the stand-alone build's.
   expect(fixture.fake.mutateInputs[0].records).toContainEqual(expect.objectContaining({
-    level: "project", agent: "build", item: "setting:enabled", state: "off",
+    level: "project", agent: "build", item: "setting:enabled", state: "off", team: { level: "project", team: "crew" },
   }))
-  expect(fixture.fake.mutateInputs[0].records[0]).not.toHaveProperty("team")
+  expect(fixture.fake.mutateInputs[0].records.some((record) => record.type === "customization" && record.agent === "build" && record.item === "setting:enabled" && record.team === undefined)).toBe(false)
   expect(fixture.fake.mutateInputs[1].records).toContainEqual(expect.objectContaining({
     level: "preset", agent: "planner", item: "setting:enabled", team: { level: "preset", team: "basic" },
   }))

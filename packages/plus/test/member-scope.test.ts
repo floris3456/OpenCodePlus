@@ -46,7 +46,7 @@ async function home(): Promise<{ root: string; project: string; config: string }
   return { root, project, config }
 }
 
-async function plus(project: string): Promise<{ api: PlusApi; tools: Tools }> {
+async function plus(project: string): Promise<{ api: PlusApi; tools: Tools; ctx: Context }> {
   const ctx = fullContext({
     directory: project,
     agents: [agentInfo("build")],
@@ -59,7 +59,7 @@ async function plus(project: string): Promise<{ api: PlusApi; tools: Tools }> {
   })
   const api = createPlusApi(ctx, createState())
   await registerInstructionTools(ctx, api)
-  return { api, tools: await readTools(ctx) }
+  return { api, tools: await readTools(ctx), ctx }
 }
 
 async function readTools(ctx: Context): Promise<Tools> {
@@ -247,4 +247,16 @@ test("memberRowsPerTeam merges field by field under the team node, is idempotent
   expect(moved.records.filter((record) => !("team" in record) || record.team === undefined)).toHaveLength(3)
   expect(memberRowsPerTeam(moved.records, teams)).toMatchObject({ migrated: false })
   expect(memberRowsPerTeam(records.filter((record) => record.type === "link"), [{ level: "global", team: "aa", agents: ["scout"] }])).toMatchObject({ migrated: false })
+})
+
+test("a member's role edit through the tools reaches the running member; the agent of its name keeps its own", async () => {
+  const { project } = await home()
+  const { tools, ctx } = await plus(project)
+  await ok(tools, "create", { kind: "team", team: "crew", level: "project" })
+  await ok(tools, "create", { kind: "member", team: "crew", level: "project", id: "alpha" })
+  await ok(tools, "set", { id: "team:project:crew", state: "on" })
+  await ok(tools, "set", { id: "item:project:crew/:alpha:system:role", text: "Alpha, as a member of crew." })
+  const system = async () => (await Effect.runPromise(ctx.agent.list())).data.find((agent) => String(agent.id) === "alpha")?.system
+  expect(await system()).toBe("Alpha, as a member of crew.")
+  expect((await load(project)).records.filter((record) => record.type === "customization" && record.item === "system:role")).toMatchObject([{ agent: "alpha", team: { level: "project", team: "crew" } }])
 })
