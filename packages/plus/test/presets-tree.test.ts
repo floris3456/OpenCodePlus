@@ -438,3 +438,22 @@ test("query finds preset rows by level and keeps them out of other roots' walks"
   expect(teams).toContain("team:preset:basic:planner")
   expect(query(input(), { where: "catalogue:teams id:group:preset:basic/", fields: ["id"] }).total).toBeGreaterThan(0)
 })
+
+// L4 / b-05 / c-11: an agent row says where it comes from. A linked agent read
+// `upstream` because the row took the Enabled setting's own answer, which a
+// native agent inherits from the host; the link is what the row follows.
+test("an agent row names its preset link, not its Enabled setting", () => {
+  const nodes = all()
+  // alice is linked to the Basic orchestrator member preset.
+  expect(row(nodes, "agent:project:alice").badges).toMatchObject({
+    from: { kind: "preset", id: "orchestrator", team: "basic", shipped: true },
+    fromLabel: "from preset Basic › orchestrator",
+  })
+  // bob is linked to nothing: its Enabled setting falls through to the host.
+  expect(row(nodes, "agent:project:bob").badges.fromLabel).toBe("upstream")
+  // A Defaults entry agent names the entry's fallback, not a preset.
+  expect(row(nodes, "agent:defaults:reviewer").badges.fromLabel).toBe("from preset Basic › reviewer")
+  // An Enabled value the level sets itself still reads "set here".
+  const edited = expandedTree(input({ records: [...input().records, record("project", "alice", "setting:enabled", "on")] }))
+  expect(row(edited, "agent:project:alice").badges.fromLabel).toBe("set here")
+})

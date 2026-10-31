@@ -2266,12 +2266,36 @@ function withAgentControls(
       const { value, ...badges } = control.partial()
       return {
         ...row.partial(),
-        ...badges,
+        ...linkedBadges(memo, row.owner, level, badges),
         ...(hidden === undefined ? {} : { hidden: wholeOf(memo, level, owner, hidden, catalogue, teamRef).enabled }),
         ...(mode === undefined ? {} : { mode: wholeOf(memo, level, owner, mode, catalogue, teamRef).text }),
       }
     },
   }
+}
+
+// An agent, member or entry row says where it comes from: its preset link,
+// not the Enabled setting's own answer. A native agent's Enabled row falls
+// through to the host (upstream), so the control alone made a preset-linked
+// agent read like an unlinked built-in (L4, b-05, c-11). An Enabled value this
+// level sets still reads "set here": the link only names what nothing closer
+// decides. Preset rows keep their own reading: a preset's link is its base,
+// and its content is what it ships.
+function linkedBadges(
+  memo: Memo,
+  owner: RowOwner | undefined,
+  level: Level,
+  badges: Pick<TreeNodeBadges, "from" | "fromLabel">,
+): Pick<TreeNodeBadges, "from" | "fromLabel"> {
+  const link = owner?.link
+  if (link === undefined || level === "preset" || badges.from?.kind === "level") return badges
+  const from: From = {
+    kind: "preset",
+    id: link.id,
+    ...(link.kind === "member" ? { team: link.team } : {}),
+    shipped: (memo.ctx.listing.find((entry) => presetKey(entry.ref) === presetKey(link))?.origin ?? "user") !== "user",
+  }
+  return { from, fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }) }
 }
 
 // Models group, the first tab of each agent subtree and shared Defaults
