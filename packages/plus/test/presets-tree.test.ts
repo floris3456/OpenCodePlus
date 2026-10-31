@@ -12,7 +12,7 @@ import {
   type ModelRecord,
   type PresetRecord,
 } from "../src/instructions/model.js"
-import { fromLabel, reviewLabel } from "../src/instructions/from-label.js"
+import { badgeLabels as badgeLabelsFor, fromLabel, reviewLabel } from "../src/instructions/from-label.js"
 import { findRow, resetModelFieldRow, setModelFieldRow } from "../src/instructions/ops.js"
 import { nativePresetIds, plusTeamPresets, presetLabels, presetListing } from "../src/instructions/presets.js"
 import { query } from "../src/instructions/query.js"
@@ -457,3 +457,50 @@ test("an agent row names its preset link, not its Enabled setting", () => {
   const edited = expandedTree(input({ records: [...input().records, record("project", "alice", "setting:enabled", "on")] }))
   expect(row(edited, "agent:project:alice").badges.fromLabel).toBe("set here")
 })
+
+// L5 / c-12: an allow row reads `off` but allows nothing by that; its badge
+// must not let a reader take it for a refusing deny-list rule.
+test("an allow row says it opens rather than refuses", () => {
+  const allowRow = item("perm:shell:commands.pilotty", "pilotty\npilotty --help", {
+    kind: "perm",
+    group: "none",
+    title: "pilotty (driving terminal apps)",
+    permTool: "shell",
+    ruleId: "commands.pilotty",
+    category: "commands",
+    allow: true,
+    patterns: ["pilotty --help"],
+  })
+  const denyRow = item("perm:shell:git-push", "Git push\ngit push *", {
+    kind: "perm",
+    group: "none",
+    title: "Git push",
+    permTool: "shell",
+    ruleId: "git-push",
+    category: "commands",
+    patterns: ["git push *"],
+  })
+  const nodes = expandedTree(
+    input({
+      items: [...input().items, allowRow, denyRow],
+      records: [...input().records, record("project", "alice", "perm:shell:commands.pilotty", "on")],
+    }),
+  )
+  const allow = row(nodes, "item:project:alice:perm:shell:commands.pilotty")
+  expect(allow.badges).toMatchObject({ state: "on", allow: true })
+  expect(labelOf(allow)).toContain("allow row (opens its patterns)")
+  // Off, it opens nothing — and still refuses nothing. bob is unlinked, so
+  // nothing turns the row on for it.
+  const off = expandedTree(input({ items: [...input().items, allowRow, denyRow] }))
+  const closed = row(off, "item:project:bob:perm:shell:commands.pilotty")
+  expect(closed.badges).toMatchObject({ state: "off", allow: true })
+  expect(labelOf(closed)).toContain("allow row (opens nothing)")
+  // A deny-list rule says nothing about allowing.
+  const deny = row(nodes, "item:project:alice:perm:shell:git-push")
+  expect(deny.badges.allow).toBeUndefined()
+  expect(labelOf(deny)).not.toContain("allow row")
+})
+
+function labelOf(node: TreeNode): string {
+  return badgeLabelsFor(node).join(" ")
+}

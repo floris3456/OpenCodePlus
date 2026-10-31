@@ -222,6 +222,8 @@ export interface TreeNodeBadges {
   readonly disabled?: string
   /** The owner has execute off: its Code Mode tools cannot be called. "group" is the Code Mode row itself, "row" anything inside it. */
   readonly codeModeOff?: "group" | "row"
+  /** The row is an allow row (an allow-list's opening row): on, it lets its patterns through; off, it opens nothing. */
+  readonly allow?: boolean
   readonly modified?: boolean
   readonly review?: boolean
   readonly reviewCount?: number
@@ -4130,6 +4132,7 @@ function permBadges(
   return {
     ...(guidance.length === 0 ? {} : { guidance }),
     state: resolved.enabled ? "on" : "off",
+    ...(item.allow === true ? { allow: true } : {}),
     modified: resolved.modified,
     source: resolved.source,
     ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
