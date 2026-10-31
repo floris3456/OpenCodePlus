@@ -1624,6 +1624,17 @@ test("a subagent rule reports no scrub, and a tool rule previews its own cut lin
   expect(assembled.tools.find((entry) => entry.id === "shell")?.description).toBe("Run shell.\nInspect with git status.")
   expect(assembled.system).toContain("The runner takes the next step.\nRun git commit before you report.")
   expect(assembled.dropped).toEqual([{ where: "tool:shell", rule: "perm:shell:git-commit", line: "Use git commit to save." }])
+  // part reads one piece of the prompt (c-06): names answers which tools and
+  // skills the agent gets, without their texts.
+  const names = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled", part: "names" })) as Record<string, unknown>
+  expect(names).toMatchObject({ part: "names", agent: "alpha", tools: assembled.tools.map((tool) => tool.id), dropped: 1 })
+  expect((names.system as string[]).length).toBe(assembled.system.length)
+  expect(JSON.stringify(names)).not.toContain("Inspect with git status.")
+  const toolsPart = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled", part: "tools" })) as Record<string, unknown>
+  expect(toolsPart).toEqual({ id: agentRow.id, view: "assembled", part: "tools", agent: "alpha", tools: assembled.tools, dropped: assembled.dropped })
+  const systemPart = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled", part: "system" })) as Record<string, unknown>
+  expect(Object.keys(systemPart).toSorted()).toEqual(["agent", "id", "part", "system", "view"])
+  expect((await runFail(need(tools, "instructions_read"), { id: agentRow.id, part: "tools" })).message).toContain("part takes view assembled")
 })
 
 // Stored original and yours have no final newline; the live upstream keeps one (B41).
@@ -1682,10 +1693,14 @@ test("take on a heading-derived item follows upstream for the whole row", async 
   expect(shown.text).toBe(upstream.text.replace(/\n+$/, ""))
 })
 
-test("show diff proposes merge units with their kinds and defaults", async () => {
+// Each unit carries only the sides that differ from its base, and a both
+// unit's upstream id points at its unit instead of repeating its texts (c-06).
+// The merge text is no longer in the answer: it repeated the whole row once
+// more; the default merge is the included units, as set resolve merge saves.
+test("show diff proposes merge units with their kinds and defaults, each side once", async () => {
   const { tools, id } = await mergeFixture()
   const diff = (await runOk(need(tools, "instructions_read"), { id, view: "diff" })) as {
-    merge: { units: { id: string; kind: string; included: boolean; yours: string; upstream: string; base: string }[]; text: string }
+    merge: { units: { id: string; kind: string; included: boolean; yours?: string; upstream?: string; base?: string; of?: string }[]; text?: string }
   }
   expect(diff.merge.units.map((unit) => [unit.id, unit.kind, unit.included])).toEqual([
     ["m0", "yours", true],
@@ -1694,8 +1709,15 @@ test("show diff proposes merge units with their kinds and defaults", async () =>
     ["m2:upstream", "both", false],
     ["m3", "same", true],
   ])
-  expect(diff.merge.units[3]).toMatchObject({ yours: "Epsilon yours.\n", upstream: "Epsilon upstream.\n", base: "Epsilon five.\n" })
-  expect(diff.merge.text).toBe(mergeDefault)
+  expect(diff.merge.units[0]).toEqual({ id: "m0", kind: "yours", included: true, base: "Alpha one.\n", yours: "Alpha mine.\n" })
+  expect(diff.merge.units[1]).toEqual({ id: "m1", kind: "upstream", included: true, base: "Gamma three.\n", upstream: "Gamma upstream.\n" })
+  expect(diff.merge.units[2]).toEqual({ id: "m2", kind: "both", included: true, base: "Epsilon five.\n", yours: "Epsilon yours.\n", upstream: "Epsilon upstream.\n" })
+  expect(diff.merge.units[3]).toEqual({ id: "m2:upstream", kind: "both", included: false, of: "m2" })
+  expect(diff.merge.units[4]).toMatchObject({ id: "m3", kind: "same", yours: "Eta same." })
+  expect(diff.merge.units[4]?.upstream).toBeUndefined()
+  expect(diff.merge.text).toBeUndefined()
+  const json = JSON.stringify(diff.merge)
+  for (const line of ["Epsilon upstream.", "Epsilon yours.", "Epsilon five."]) expect(json.split(line).length - 1).toBe(1)
 })
 
 test("set resolve merge with the defaults saves the default render", async () => {
@@ -1756,6 +1778,21 @@ test("registered list and log tools return persisted rows and history", async ()
   }
   expect(logged.total).toBeGreaterThan(0)
   expect(logged.entries.some((entry) => entry.op === "mutate")).toBe(true)
+})
+
+// c-04: log without a limit returned the whole history (262k chars).
+test("log answers the newest 20 entries unless asked for more, with the total", async () => {
+  const { api, tools } = await freshFixture()
+  const id = await readerRowId(api)
+  const set = need(tools, "instructions_set")
+  for (let index = 0; index < 23; index++) await runOk(set, { id, text: `Reader text ${index}.` })
+  const log = need(tools, "instructions_log")
+  const newest = (await runOk(log, {})) as { entries: readonly { ts: string }[]; total: number }
+  expect(newest.entries).toHaveLength(20)
+  expect(newest.total).toBeGreaterThanOrEqual(23)
+  const all = (await runOk(log, { limit: 100 })) as { entries: readonly { ts: string }[]; total: number }
+  expect(all.entries).toHaveLength(newest.total)
+  expect(all.entries.slice(0, 20)).toEqual([...newest.entries])
 })
 
 test("find takes structured parameters and answers one row per thing", async () => {

@@ -136,46 +136,41 @@ const options = { namespace, codemode: true, permission: "instructions" } as con
 const maxRows = 200
 
 const FindDescription =
-  "Find instruction rows: one \"id | badges | from\" line per thing; every parameter given must match.\n" +
-  "Each row appears once, at its most specific level (what runs here). Without agent or team, agents' copies with the same on/off and text are one row, ending \"(+N agents)\"; agent \"*\" lists each. " +
-  "level, in, type section|preset and is (each level's own edits) show the rest. " +
-  "agent, team, level, type, name and is take lists (any of them). e.g. {agent:[\"build\",\"plan\"],type:\"tool\",state:\"off\"}, {is:\"review\"}. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
+  "Find instruction rows: one \"id | badges | from\" line per thing; every filter given must match.\n" +
+  "Lists match any: {agent:[\"build\",\"plan\"],type:\"tool\",name:[\"edit\",\"write\"]}. A row shows once, at its most specific level; without agent or team, agents' copies that agree are one row ending \"(+N agents)\" (agent \"*\" lists each). " +
+  "level, in, type section|preset and is show the rest. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
 
 const ReadDescription =
-  "Read one row: its text and where it comes from (view resolved, the default).\n" +
-  "On an agent, group or root, resolved lists the rows under it. assembled appears only when what reaches the model differs from text.\n" +
-  "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt; its dropped list names every line a rule cut, with the rule).\n" +
-  "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] }."
+  "Read one row: its text, on/off and where it comes from (view resolved, the default).\n" +
+  "On an agent, group or root it lists the rows under it. Views: upstream, mine, record, sections, diff (a review's diffs and merge units), " +
+  "assembled (an agent's whole prompt, large; part names|system|tools|skills gives one part).\n" +
+  "Several rows: id as a list, or find with find's filters; answers { total, failed, results: [{ id, output } or { id, error }] }."
 
 // What a write over several rows answers (eachStep).
 const ManyWrites =
-  "Several rows: id as a list, or find with find's filters (lists match any: name:[\"edit\",\"write\"]). They are written once (one revision, one log entry); the answer is { status, changed, already, notDone: [{ id, reason }] }, verbose adds each row's answer. dryRun writes nothing."
+  "Several rows: id as a list, or find with find's filters. Written once; answers { status, changed, already, notDone: [{ id, reason }] } (verbose adds each row's answer). dryRun writes nothing."
 
 const SetDescription =
   "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
-  "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
-  "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
-  "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
-  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldFirst (Compact cold chats first for this model, over the Settings switch), coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
-  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). like:\"<agent>\" (or \"<team>/<member>\") takes that agent's on/off and text for the same row. More in skill instructions-tools.\n" +
+  "text replaces the whole text (edit changes part of it). state on|off; a bare id toggles (models: activates); on a group, every row under it. " +
+  "mode primary|subagent|all (agents); active (models); resolve keep|take|edit|merge settles a review (merge takes include); preset links (\"<id>\" or \"<team>/<member>\"; null unlinks); rename; " +
+  "like:\"<agent>\" takes that agent's on/off and text for the same rows.\n" +
+  "setting:* and compaction:* rows take text (enabled and hidden: state; empty clears). Rule rows: message, label, patterns, keywords. System rows: requires; model prompts: models. Model and Defaults › Models rows: warming, interval, waiting, subagent, prompt, effort and the compaction and image fields (null inherits). Details: skill instructions-tools.\n" +
   ManyWrites
 
 const EditDescription =
   "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
-  "oldString must match the row's current text (read's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
-  "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }.\n" +
+  "oldString must match the row's current text (read's text) once, or pass replaceAll. Saves like set({ id, text }); models, rules, teams and groups change with set. Returns { id, status, replacements }.\n" +
   ManyWrites
 
 const MoveDescription =
   "Move a row, folder or section before or after a sibling, or a row or folder into a folder or a tab's top level.\n" +
-  "Rows move only inside their own tab; folders are display only. A section moves within its item (the item's text is rewritten).\n" +
-  "In a System list, moving a row reorders that part of the owner's system prompt (before/after only; a base prompt moves with Role/persona; OpenCode's parts move but are not edited).\n" +
+  "Rows stay in their tab; folders are display only; a section moves within its item. In a System list the order is the system prompt's (OpenCode's parts move but are not edited).\n" +
   "id takes a list: the rows move in that order to the same place, written once; dryRun writes nothing."
 
 const ResetDescription =
-  "Drop the override at this level only (TUI `r`).\n" +
-  "Agent and member rows reset their settings and compaction controls; model rows clear only this level's active flag; a Defaults › Models row clears its values.\n" +
+  "Drop the override at this level only (TUI `r`), so the row follows what it inherits again.\n" +
+  "Agent rows reset their settings and compaction; model rows only this level's active flag; a Defaults › Models row its values. undo takes back a whole call instead.\n" +
   ManyWrites
 
 const SplitDescription =
@@ -184,27 +179,25 @@ const SplitDescription =
 
 const CreateDescription =
   "Create an agent, team, member, Defaults entry, preset, skill, base, system, MCP, model, rule or folder row (TUI `a`).\n" +
-  "Returns {id, item}: pass id to read, set, edit and delete. Kinds and their fields: agent (id, scope project|global, preset); team (team, level, preset = a team preset; created disabled); " +
-  "member (team, level, id, preset; at level defaults a Teams entry, team and id are patterns); entry (catalogue agents|teams, name with * or %, team pattern, preset); " +
-  "preset, teamPreset, presetMember (id, from; presetMember also team); skill (name, body, scope); base (id, title, text); system (id, text, title; models makes a model prompt); mcp (name, config); " +
-  "model (providerID, modelID, variant, level, agent; it becomes the active one there); rule (tool, id, label, patterns as core wildcards not regex, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
-  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); without one an agent is unlinked and Defaults still apply. catalogue agents|teams picks where a shared Defaults model or rule lands.\n" +
-  "id and agent take lists (one create each, e.g. a rule for agent:[\"a\",\"b\"]); a team takes members:[\"<id>\" or {id,preset}]. Several are answered like set's several rows. dryRun previews record rows only, not new files."
+  "Returns {id, item}: pass id to read, set, edit and delete. Fields per kind: agent (id, scope project|global, preset); team (team, level, preset, members; created off); " +
+  "member (team, level, id, preset); entry (catalogue agents|teams, name pattern, preset); preset|teamPreset|presetMember (id, from; presetMember also team); skill (name, body, scope); " +
+  "base (id, title, text); system (id, text, title, models); mcp (name, config); model (providerID, modelID, variant, level, agent; becomes active); " +
+  "rule (tool, id, label, patterns as wildcards, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
+  "A preset is \"<id>\" or \"<team>/<member>\". id and agent take lists (one row each), answered like set's several rows; dryRun previews records, not new files."
 
 const DeleteDescription =
   "Delete a user-owned row: agent, team, member, file, Defaults entry, user preset, custom rule or folder.\n" +
-  "Needs confirm:true. A model row deletes its candidate at this level (the active model refuses: activate another first); a Defaults › Models row clears its values. A preset still linked is refused (preset.inUse names the rows); force:true overrides links only other projects hold.\n" +
+  "Needs confirm:true. A model row deletes its candidate here (not the active one); a Defaults › Models row clears its values; a preset still linked is refused (force:true overrides links only other projects hold).\n" +
   ManyWrites
 
 const LogDescription =
-  "Change history (who/what/when).\n" +
-  "Reads the change log newest-first with where/limit/offset filtering. A write of several rows lists them in rows; undo with its ts takes the whole write back."
+  "Change history (who/what/when), newest first.\n" +
+  "limit defaults to 20; where takes since:1d, target:<id prefix>, actor:tui|tool|cli, op:<text> or a word. An entry's rows lists what one write changed; undo with its ts takes it back."
 
 const LinkDescription =
   "Inspect or set a link between two rows of the same owner and level.\n" +
-  "Without target: list the row's links in and out. With target: store a link from id to target; type either (default: turning one on switches the other off), shownWhenOn or shownWhenOff (target is sent only while id is on / off; id must be a whole row).\n" +
-  "enabled:false masks the pair at this level, including an inherited link.\n" +
-  "id and target take lists: every id is linked to every target in one call (links are their own store: one write per pair); dryRun refuses them."
+  "Without target: the row's links. With target: type either (default: turning one on switches the other off), shownWhenOn or shownWhenOff (target is sent only while id is on / off). enabled:false masks the pair here.\n" +
+  "id and target take lists (every id to every target); dryRun refuses links."
 
 const Field = Schema.Union([
   Schema.Literal("id"),
@@ -242,29 +235,33 @@ const Sort = Schema.Union([
 // comma separates values too (agent:"build,plan"), as in where.
 const OneOrMore = <S extends Schema.Top>(value: S) => Schema.Union([value, Schema.Array(value)])
 
-const FindFilter = Schema.Struct({
-  agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate({
-    description: "An agent or team member by name, ignoring case; * stands for any text. A list (or a,b) matches any of them.",
-  }),
-  team: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "A team: its rows and its members' rows. A list matches any." }),
-  level: Schema.optionalKey(OneOrMore(Schema.Literals(["project", "global", "defaults", "preset"]))).annotate({
-    description: "Only this level (or these). Without it, each row at the most specific level it has (what runs here).",
-  }),
-  type: Schema.optionalKey(OneOrMore(Schema.Literals(rowTypes))),
-  name: Schema.optionalKey(OneOrMore(Schema.String)).annotate({
-    description: "A row's own name: tool, skill, rule, setting, section or agent name, ignoring case; * stands for any text. A list matches any.",
-  }),
-  in: Schema.optionalKey(Schema.String).annotate({ description: "Only rows under this row id, e.g. a tool's parameters and rules." }),
-  state: Schema.optionalKey(Schema.Literals(["on", "off"])),
-  text: Schema.optionalKey(Schema.String).annotate({ description: "Rows whose text contains this, ignoring case (taken whole)." }),
-  is: Schema.optionalKey(OneOrMore(Schema.Literals(namedFinds))).annotate({
-    description:
-      "Rows holding an edit: review (what it was based on changed since), changed (any; reset drops it), " +
-      "overruled (a more specific level sets it too, so it never applies), orphaned (its row is gone). " +
-      "held-back: rows and sections that are on, but the agent does not get them because their \"shown when\" does not hold.",
-  }),
-  where: Schema.optionalKey(Schema.String).annotate({ description: "More key:value terms (skill instructions-tools)." }),
-})
+// find's filters. The find tool describes each one and lists the values of
+// level, type and is; a write's `find` takes the same filters bare, since a
+// tool's schema is sent with every request (the query still refuses an unknown
+// value and names the valid ones).
+const findFilter = (
+  describe: (text: string) => { readonly description?: string },
+  values: <const L extends readonly string[]>(literals: L) => Schema.Literals<L> | Schema.String,
+) =>
+  Schema.Struct({
+    agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate(describe("An agent or team member by name, ignoring case; * stands for any text.")),
+    team: Schema.optionalKey(OneOrMore(Schema.String)).annotate(describe("A team: its rows and its members' rows.")),
+    level: Schema.optionalKey(OneOrMore(values(["project", "global", "defaults", "preset"]))).annotate(
+      describe("Only this level. Without it, each row at its most specific level (what runs here)."),
+    ),
+    type: Schema.optionalKey(OneOrMore(values(rowTypes))),
+    name: Schema.optionalKey(OneOrMore(Schema.String)).annotate(describe("A row's own name (tool, skill, rule, setting, section, agent), ignoring case; * stands for any text.")),
+    in: Schema.optionalKey(Schema.String).annotate(describe("Only rows under this row id, e.g. a tool's parameters and rules.")),
+    state: Schema.optionalKey(Schema.Literals(["on", "off"])),
+    text: Schema.optionalKey(Schema.String).annotate(describe("The text contains this, ignoring case.")),
+    is: Schema.optionalKey(OneOrMore(values(namedFinds))).annotate(
+      describe("Rows holding an edit: review (its base changed), changed, overruled (a more specific level sets it), orphaned; held-back: on, but its \"shown when\" fails."),
+    ),
+    where: Schema.optionalKey(Schema.String).annotate(describe("More key:value terms (skill instructions-tools).")),
+  })
+
+const FindFilter = findFilter((description) => ({ description }), (literals) => Schema.Literals(literals))
+const RowsFilter = findFilter(() => ({}), () => Schema.String)
 
 const FindInput = Schema.Struct({
   ...FindFilter.fields,
@@ -277,25 +274,17 @@ const FindInput = Schema.Struct({
 // The rows read, set, edit, reset and delete act on: one id, a list, or what a
 // find filter matches (eachRow).
 const Rows = {
-  id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({
-    description: "A row id, or a list of row ids (a write over a list is written once and answers counts and the rows not done).",
-  }),
-  find: Schema.optionalKey(FindFilter).annotate({
-    description:
-      "Instead of id: the rows find lists with these filters (every page; without agent or team, each agent's copy). " +
-      `At most ${maxRows} rows.`,
+  id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({ description: "A row id, or a list of them." }),
+  find: Schema.optionalKey(RowsFilter).annotate({
+    description: `Instead of id: find's filters (every page; without agent or team, each agent's copy; at most ${maxRows} rows).`,
   }),
 }
 
 // Every write takes these. Several rows are applied to one in-memory store and
 // written once: one store revision, one log entry, one publish.
 const WriteOptions = {
-  dryRun: Schema.optionalKey(Schema.Boolean).annotate({
-    description: "Answer what would change, in the same shape, and write nothing.",
-  }),
-  verbose: Schema.optionalKey(Schema.Boolean).annotate({
-    description: "Several rows: add each row's full answer (results).",
-  }),
+  dryRun: Schema.optionalKey(Schema.Boolean).annotate({ description: "Answer what would change; write nothing." }),
+  verbose: Schema.optionalKey(Schema.Boolean).annotate({ description: "Add each row's full answer." }),
 }
 // Exactly one of id and find names the rows.
 const oneSelection = Schema.makeFilter<{ readonly id?: unknown; readonly find?: unknown }>((input) =>
@@ -319,35 +308,33 @@ const ReadInput = Schema.Struct({
       Schema.Literal("assembled"),
     ]),
   ),
+  part: Schema.optionalKey(Schema.Literals(["names", "system", "tools", "skills"])).annotate({
+    description: "view assembled: one part (names: the tool and skill ids and each system part's first line).",
+  }),
 }).check(oneSelection)
 
 const SetInput = Schema.Struct({
   ...Rows,
   ...WriteOptions,
   like: Schema.optionalKey(Schema.String).annotate({
-    description:
-      "Each selected row takes the on/off (and text, where it has one) of the same row for this agent (\"<team>/<member>\" for a member), e.g. {find:{agent:\"lead\",type:\"skill\"},like:\"general\"}.",
+    description: "Take this agent's on/off and text for the same rows (\"<team>/<member>\" for a member).",
   }),
   mode: Schema.optionalKey(Schema.Literals(["primary", "subagent", "all"])),
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
   pin: Schema.optionalKey(Schema.Boolean),
   requires: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))).annotate({
-    description:
-      "System rows (not Role/persona as a whole) and their sections: send it only while these rows are on for the agent, " +
-      "e.g. [\"tool:question\"]; \"!perm:shell:git-push\" = while that row is off. [] = always; null = drop this level's " +
-      "condition (the level above, or the section's own <!-- requires --> line, decides). Shown as \"shown when\".",
+    description: "System rows and sections: sent only while these rows are on, e.g. [\"tool:question\"] (\"!perm:…\": while off). [] always; null drops this level's condition.",
   }),
   models: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description:
-      "Model prompt rows only: the models it is sent for. Each pattern is matched, ignoring case, against provider/model, the model id and its name; * or % stands for any text, e.g. [\"*opus-5-5*\", \"%qwen3.6%\"].",
+    description: "Model prompt rows: the models it is sent for, as patterns over provider/model, id and name (* or % any text).",
   }),
   active: Schema.optionalKey(Schema.Boolean),
   resolve: Schema.optionalKey(
     Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit"), Schema.Literal("merge")]),
   ),
   include: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "With resolve merge: the unit ids (read's merge.units) to include; omitted = the defaults.",
+    description: "resolve merge: unit ids from read's diff; omitted = the defaults.",
   }),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -373,25 +360,20 @@ const SetInput = Schema.Struct({
   compactionInput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   rename: Schema.optionalKey(Schema.String).annotate({
-    description:
-      "Rename this agent, on-disk team member or Project/Global team row to this new name/id, or a folder row to a new name. " +
-      "Everything that names it follows in one store revision; built-ins, shipped Defaults rows, " +
-      "ancestor-backed agents and Protected agents (tool actor) refuse.",
+    description: "New name of a user agent, member, team or folder; everything naming it follows. Built-ins and protected agents refuse.",
   }),
 }).check(oneSelection)
 
 const EditInput = Schema.Struct({
   ...Rows,
   ...WriteOptions,
-  oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (read's text)" }),
-  newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
-  replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
-    description: "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
-  }),
+  oldString: Schema.String.annotate({ description: "Exact text in the row's current text (read's text)" }),
+  newString: Schema.String.annotate({ description: "Its replacement (must differ)" }),
+  replaceAll: Schema.optionalKey(Schema.Boolean).annotate({ description: "Replace every match; otherwise oldString must match once." }),
 }).check(oneSelection)
 
 const MoveInput = Schema.Struct({
-  id: OneOrMore(Schema.String).annotate({ description: "A row id, or a list moved together in this order (each after the one before)." }),
+  id: OneOrMore(Schema.String).annotate({ description: "A row id, or a list moved together in this order." }),
   ...WriteOptions,
   into: Schema.optionalKey(Schema.String),
   before: Schema.optionalKey(Schema.String),
@@ -430,7 +412,7 @@ const CreateInput = Schema.Struct({
     Schema.Literal("presetMember"),
     Schema.Literal("folder"),
   ]),
-  id: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "A list creates one row per id (agents, members, presets, ...)." }),
+  id: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "A list creates one row per id." }),
   ...WriteOptions,
   scope: Schema.optionalKey(
     Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults"), Schema.Literal("preset")]),
@@ -442,7 +424,7 @@ const CreateInput = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   text: Schema.optionalKey(Schema.String),
   models: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "kind system: make it a model prompt sent only for these models (patterns; * or % stands for any text).",
+    description: "kind system: a model prompt for these model patterns.",
   }),
   config: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   team: Schema.optionalKey(Schema.String),
@@ -453,9 +435,9 @@ const CreateInput = Schema.Struct({
   providerID: Schema.optionalKey(Schema.String),
   modelID: Schema.optionalKey(Schema.String),
   variant: Schema.optionalKey(Schema.String),
-  agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "kind model|rule: the owner; a list creates it for each agent." }),
+  agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "kind model|rule: the owner; a list makes one each." }),
   members: Schema.optionalKey(Schema.Array(Schema.Union([Schema.String, Schema.Struct({ id: Schema.String, preset: Schema.optionalKey(PresetInput) })]))).annotate({
-    description: "kind team: members to add right after the team is made (ids, or {id, preset}).",
+    description: "kind team: members to add (ids, or {id, preset}).",
   }),
   tool: Schema.optionalKey(Schema.String),
   label: Schema.optionalKey(Schema.String),
@@ -478,8 +460,8 @@ const LogInput = Schema.Struct({
 })
 
 const LinkInput = Schema.Struct({
-  id: OneOrMore(Schema.String).annotate({ description: "The row (or rows) the link starts from." }),
-  target: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "The other row, or a list: every id is linked to every target." }),
+  id: OneOrMore(Schema.String).annotate({ description: "The row(s) the link starts from." }),
+  target: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "The other row(s): every id to every target." }),
   ...WriteOptions,
   type: Schema.optionalKey(
     Schema.Union([
@@ -495,13 +477,12 @@ const BatchOps = ["set", "edit", "reset", "split", "create", "delete", "move", "
 
 const BatchInput = Schema.Struct({
   changes: Schema.optionalKey(Schema.Array(Schema.Record(Schema.String, Schema.Unknown))).annotate({
-    description:
-      "Different changes in one call, applied in order to one store and written once: each is { op: set|edit|reset|delete|create|move|link|split, ...that op's fields }. A later change can name a row an earlier one created.",
+    description: "[{ op: set|edit|reset|delete|create|move|link|split, ...that op's fields }], applied in order.",
   }),
-  op: Schema.optionalKey(Schema.Literals(BatchOps)).annotate({ description: "TUI multi-select: the op for every selected row." }),
-  id: Schema.optionalKey(Schema.String).annotate({ description: "TUI multi-select: the focused row." }),
-  selected: Schema.optionalKey(Schema.Array(Schema.String)).annotate({ description: "TUI multi-select: the selected roots." }),
-  input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)).annotate({ description: "TUI multi-select: the op's fields except id." }),
+  op: Schema.optionalKey(Schema.Literals(BatchOps)).annotate({ description: "TUI multi-select only (with id, selected, input)." }),
+  id: Schema.optionalKey(Schema.String),
+  selected: Schema.optionalKey(Schema.Array(Schema.String)),
+  input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   ...WriteOptions,
 }).check(Schema.makeFilter<{ readonly changes?: unknown; readonly op?: unknown; readonly id?: unknown; readonly selected?: unknown; readonly input?: unknown }>((input) =>
   input.changes !== undefined
@@ -511,18 +492,18 @@ const BatchInput = Schema.Struct({
 
 const BatchDescription =
   "Several different changes in one call, applied in order and written once.\n" +
-  "batch({ changes: [{ op: \"create\", kind: \"agent\", id: \"lead\" }, { op: \"set\", find: { agent: \"lead\", type: \"tool\", name: [\"edit\", \"write\"] }, state: \"off\" }] }).\n" +
-  "One store, one revision, one log entry; a change that refuses does not stop the rest, and the answer names each one not done and why. dryRun shows what would change; files (new agents, teams, skills) are not previewed.\n" +
-  "The TUI's multi-select form: op, id (focused row), selected (roots) and input apply one op to the corresponding row under each root; it answers applied, skipped and failed ids."
+  "batch({ changes: [{ op: \"create\", kind: \"agent\", id: \"lead\" }, { op: \"set\", find: { agent: \"lead\", type: \"tool\", name: [\"edit\", \"write\"] }, state: \"off\" }] }): a later change sees what an earlier one created. " +
+  "One revision, one log entry; a change that refuses does not stop the rest, and the answer names each one not done and why. dryRun: files (new agents, teams, skills) are not previewed.\n" +
+  "op, id (focused row), selected (roots) and input are the TUI's multi-select form: one op on the corresponding row under each root."
 
 const UndoInput = Schema.Struct({
-  ts: Schema.optionalKey(Schema.String).annotate({ description: "The log entry's ts (log lists them); omitted = the newest change of records." }),
+  ts: Schema.optionalKey(Schema.String).annotate({ description: "The log entry's ts; omitted = the newest." }),
   dryRun: WriteOptions.dryRun,
 })
 
 const UndoDescription =
   "Take back one change log entry (one whole call) to the values before it; undo of an undo puts it back.\n" +
-  "Not the same as reset, which drops this level's change. Rows changed again after that entry are not undone: the answer names each with who changed it. Only record changes undo; files (agents, skills, teams) are deleted or created again by hand."
+  "Unlike reset, it restores an earlier own value. Rows changed again since are kept and named. Only records undo: files (agents, skills, teams) are not deleted or created again."
 
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
   const clipboards = new Map<string, Clipboard>()
@@ -722,7 +703,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const view = input.view ?? "resolved"
-            if (view === "assembled") return yield* showAssembled(api, input.id)
+            if (view === "assembled") return yield* showAssembled(api, input.id, input.part)
+            if (input.part !== undefined)
+              return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: part takes view assembled (got view ${view})` }))
             return yield* showRow(api, input.id, view)
           }),
           true,
@@ -970,7 +953,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const result = yield* Effect.promise(() =>
             api.log({
               ...(input.where === undefined ? {} : { where: input.where }),
-              ...(input.limit === undefined ? {} : { limit: input.limit }),
+              // The whole history is hundreds of thousands of characters (c-04).
+              limit: input.limit ?? 20,
               ...(input.offset === undefined ? {} : { offset: input.offset }),
             }),
           )
@@ -1084,7 +1068,7 @@ function holdsText(id: string, node: TreeNode): boolean {
 // A find filter as the terms the TUI and CLI type, each value quoted. A list,
 // or a comma in a string value of a key that names things, is alternatives
 // (`agent:"build","plan"`); in, state and text are taken whole.
-function findWhere(filter: typeof FindFilter.Type): string {
+function findWhere(filter: typeof RowsFilter.Type): string {
   const quote = (value: string) => `"${value.replace(/[\\"]/g, "\\$&")}"`
   return [
     ...(["agent", "team", "level", "type", "name", "in", "state", "is", "text"] as const).flatMap((key) => {
@@ -1104,7 +1088,7 @@ function findWhere(filter: typeof FindFilter.Type): string {
 // or the rows a find filter matches, runs the operation once per row in order
 // against one in-memory store and writes once (eachStep); read answers one
 // result per row.
-function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof FindFilter.Type; readonly dryRun?: boolean; readonly verbose?: boolean }>(
+function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof RowsFilter.Type; readonly dryRun?: boolean; readonly verbose?: boolean }>(
   api: PlusApi,
   input: Input,
   one: (input: Omit<Input, "id" | "find" | "dryRun" | "verbose"> & { readonly id: string }, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>,
@@ -1230,7 +1214,7 @@ function createdIdOf(output: unknown): string | undefined {
 // agent's copy rather than one row standing for them, and the shared Defaults
 // rows first. Each copy then stores the value as its own, as a set of that row
 // alone does.
-function foundRows(api: PlusApi, filter: typeof FindFilter.Type): Effect.Effect<string[], Tool.Error> {
+function foundRows(api: PlusApi, filter: typeof RowsFilter.Type): Effect.Effect<string[], Tool.Error> {
   return Effect.gen(function* () {
     const memo = memoFromSnapshot(yield* snapshotOrFail(api))
     const where = findWhere(filter)
@@ -2387,7 +2371,7 @@ function setGroup(
   })
 }
 
-function showAssembled(api: PlusApi, id: string): Effect.Effect<{ output: unknown }, Tool.Error> {
+function showAssembled(api: PlusApi, id: string, part?: "names" | "system" | "tools" | "skills"): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     // Presets and Defaults entries are not agents: nothing assembles for them.
     if (!/^agent:(project|global|defaults):/.test(id))
@@ -2398,7 +2382,25 @@ function showAssembled(api: PlusApi, id: string): Effect.Effect<{ output: unknow
     const result = yield* Effect.promise(() => api.assembled({ agent }))
     if (!result.ok)
       return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
-    return { output: { id, view: "assembled", ...result.value } }
+    const value = result.value
+    // A whole prompt is tens of thousands of characters; a part is what one
+    // question needs (c-06): names answers "which tools and skills".
+    if (part === undefined) return { output: { id, view: "assembled", ...value } }
+    const dropped = value.dropped === undefined ? {} : { dropped: value.dropped }
+    const shown =
+      part === "names"
+        ? {
+            system: value.system.map((text) => (text.split("\n").find((line) => line.trim() !== "") ?? "").slice(0, 120)),
+            tools: value.tools.map((tool) => tool.id),
+            skills: value.skills.map((skill) => skill.id),
+            ...(value.dropped === undefined ? {} : { dropped: value.dropped.length }),
+          }
+        : part === "system"
+          ? { system: value.system }
+          : part === "tools"
+            ? { tools: value.tools, ...dropped }
+            : { skills: value.skills }
+    return { output: { id, view: "assembled", part, agent: value.agent, ...shown } }
   })
 }
 
@@ -2686,21 +2688,29 @@ function mergeIds(entries: readonly MergeEntry[]): string[] {
   return entries.flatMap((entry) => (entry.type === "unchanged" ? [] : entry.upstreamId === undefined ? [entry.id] : [entry.id, entry.upstreamId]))
 }
 
+// Each unit carries only the sides that differ from its base, and a both
+// unit's upstream id points at its unit instead of repeating its texts: a
+// one-line edit of a long skill was 24k chars when every side was written out
+// (c-06). The default merge is the units marked included.
 function mergeOutput(entries: readonly MergeEntry[]) {
   const defaults = defaultInclude(entries)
-  const units = entries.flatMap((entry) =>
-    entry.type === "unchanged"
-      ? []
-      : mergeIds([entry]).map((id) => ({
-          id,
-          kind: entry.kind,
-          yours: entry.yours.join(""),
-          upstream: entry.upstream.join(""),
-          base: entry.base.join(""),
-          included: defaults.has(id),
-        })),
-  )
-  return { units, text: renderMerge(entries, defaults) }
+  const units = entries.flatMap((entry) => {
+    if (entry.type === "unchanged") return []
+    const base = entry.base.join("")
+    const yours = entry.yours.join("")
+    const upstream = entry.upstream.join("")
+    const unit = {
+      id: entry.id,
+      kind: entry.kind,
+      included: defaults.has(entry.id),
+      base,
+      ...(yours === base ? {} : { yours }),
+      ...(upstream === base || upstream === yours ? {} : { upstream }),
+    }
+    if (entry.upstreamId === undefined) return [unit]
+    return [unit, { id: entry.upstreamId, kind: entry.kind, included: defaults.has(entry.upstreamId), of: entry.id }]
+  })
+  return { units }
 }
 
 // `set` with resolve merge: the include set (default: the defaults) renders the
