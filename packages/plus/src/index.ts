@@ -64,7 +64,7 @@ import { append, appendForLevel, readBoth } from "./instructions/log.js"
 import { appendUndo, changedSides, planUndo, readUndo } from "./instructions/undo.js"
 import { ruleRecordFor } from "./instructions/rule-record.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
-import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
+import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type RowlinkRecord, type StoredRecord } from "./instructions/store.js"
 import { deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
 import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
@@ -4655,7 +4655,7 @@ function contextFor(
     agents,
     items,
     ...presetStateOf(records),
-    teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
+    teams: teams.map((team) => ({ level: team.level, team: team.team, agents: team.agents.map((agent) => agent.id) })),
   })
 }
 
@@ -4698,10 +4698,10 @@ async function removeRecordsAt(
 }
 
 // The record kinds addressed at one scope: links and the row records
-// (customizations, splits, models, rules). Team records, entries and presets
-// are owners, not rows of an owner.
-function isScopedRow(record: StoredRecord): record is LinkRecord | CustomizationRecord | SplitRecord | ModelRecord | RuleRecord {
-  return record.type === "link" || record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule"
+// (customizations, splits, models, rules, links between rows). Team records,
+// entries and presets are owners, not rows of an owner.
+function isScopedRow(record: StoredRecord): record is LinkRecord | CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord {
+  return record.type === "link" || record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule" || record.type === "rowlink"
 }
 
 // The rows a deleted team leaves behind: its own TeamRecord, the team's and
@@ -4820,23 +4820,11 @@ async function renameTeamMember(
   const source = { level: input.scope, agent: input.from, team: { level: input.scope, team: validatedTeam.team } }
   const delegateFrom = `perm:team_delegate:to.${input.from}`
   const delegateTo = `perm:team_delegate:to.${input.to}`
-  const memberIds = known.agents.map((agent) => agent.id)
   const moved = await updateRecords(directory, (current) =>
     current.map((record): StoredRecord => {
+      // A member's rows are stored with its team: the stand-alone agents of
+      // its teammates' names keep theirs.
       if (!isScopedRow(record)) return record
-      // The TUI stores per-member Delegate-to rows without a team, so match
-      // them by the owner still being a member of the renamed member's team.
-      if (
-        record.type === "customization" &&
-        record.item === delegateFrom &&
-        record.team === undefined &&
-        record.level === input.scope &&
-        record.agent !== null &&
-        memberIds.includes(record.agent)
-      ) {
-        const renamed = { ...record, item: delegateTo }
-        return record.agent === input.from ? { ...renamed, agent: input.to } : renamed
-      }
       if (!sameTeam(record.team, { level: input.scope, team: validatedTeam.team })) return record
       // A "Delegate to" row naming the member (owned by a peer in the same
       // team) follows the member id; the file name and the target both move.
@@ -5437,6 +5425,15 @@ async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeo
       summary: "migrate.splits: git merge and git worktree add rows took the state of the shell family they were split from",
       revision: migration.revision,
     })
+  if (migration.membersMoved)
+    await append(globalLogPath(), {
+      ts: new Date().toISOString(),
+      actor: { type: "tui" as const },
+      op: "migrate.members",
+      target: "root:teams",
+      summary: "migrate.members: each team member's own rows copied to its team (they were its name's, shared with the agent and every member of that name); the agent of that name keeps them",
+      revision: migration.revision,
+    })
   return migration.loaded
 }
 
@@ -5738,7 +5735,7 @@ async function discoverAll(
     ruleRecords: rulesOf(loaded.records),
     modelBaselines: state.modelBaselines,
     presetState: presetStateOf(loaded.records),
-    teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
+    teams: teams.map((team) => ({ level: team.level, team: team.team, agents: team.agents.map((agent) => agent.id) })),
     agentUpstream: state.agentUpstream,
     splits: splitsOf(loaded.records),
     knownMcpTools: state.knownMcpTools,

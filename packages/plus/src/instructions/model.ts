@@ -64,13 +64,6 @@ export interface Address {
   readonly section: string | null
   readonly team?: TeamRef
   readonly catalogue?: Catalogue
-  /**
-   * An ordinary team member's row (Teams → <team> → <member>): the team the
-   * row belongs to. The chain is the one apply runs for that member (`L/A@T`
-   * first, T's link, T's Teams entries); the address's own node — what an
-   * edit writes — stays the per-agent `L/A` its Agents row edits too.
-   */
-  readonly memberOf?: TeamRef
 }
 
 export type ItemKind = "tool" | "base" | "skill" | "system" | "mcp" | "model" | "perm" | "setting" | "compaction" | "param"
@@ -225,8 +218,10 @@ export interface PolicyEffects {
  * - `links`, `entries` absent mean none; `presets` absent means no preset
  *   exists (a link to one still reads its stored `preset/…` records).
  * - `memberTeams` names the teams a member belongs to when its address
- *   carries no team (the tree addresses members by id in the Teams catalogue);
- *   Teams entries match against these names.
+ *   carries no team; Teams entries match against these names.
+ * - `members` names every ordinary member of a project or Global team
+ *   (`memberKey`): its own node is `L/A@T`, stored with its team, so it never
+ *   reads the stand-alone agent of its name at its own level.
  */
 export interface ChainContext {
   /** Agent ids that have a Global row (Global agents and the native built-ins): a project agent then also reads `global/A`. */
@@ -240,6 +235,12 @@ export interface ChainContext {
   readonly entries?: readonly EntryRecord[]
   readonly presets?: PresetCatalog
   readonly memberTeams?: ReadonlyMap<string, readonly string[]>
+  readonly members?: ReadonlySet<string>
+}
+
+/** The `ChainContext.members` key of member `agent` of `team`. */
+export function memberKey(team: TeamRef, agent: string): string {
+  return `${team.level}\u0000${team.team}\u0000${agent}`
 }
 
 /** Kept as the name existing callers use. */
@@ -406,8 +407,6 @@ export interface ModelInput {
   readonly agent: string | null
   readonly team?: TeamRef
   readonly catalogue?: Catalogue
-  /** As Address.memberOf: resolve as a member of this team, own records stay per-agent. */
-  readonly memberOf?: TeamRef
   readonly upstream?: ModelRefLike
 }
 
@@ -504,7 +503,6 @@ function modelChain(input: ModelInput): ChainNode[] {
       section: null,
       ...(input.team !== undefined ? { team: input.team } : {}),
       ...(input.catalogue !== undefined ? { catalogue: input.catalogue } : {}),
-      ...(input.memberOf !== undefined ? { memberOf: input.memberOf } : {}),
     },
     input.scopes,
   )
@@ -684,7 +682,7 @@ export function addModelRecord(
 // choosing one must plant the level override rather than refuse.
 export function ensureActivateModel(
   models: readonly ModelRecord[],
-  address: RecordScope & { readonly memberOf?: TeamRef },
+  address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
   updated: string,
   context?: ModelContext,
@@ -697,7 +695,7 @@ export function ensureActivateModel(
 // active model above it now. No own active record returns an identical list.
 export function acknowledgeActiveModel(
   models: readonly ModelRecord[],
-  address: RecordScope & { readonly memberOf?: TeamRef },
+  address: RecordScope,
   context: ModelContext,
 ): ModelRecord[] {
   const active = models.find((record) => scopedTo(record, address) && record.active === true)
@@ -720,7 +718,7 @@ export function clearModelActive(models: readonly ModelRecord[], address: Record
 
 /** Durable switch-off: retain candidate and nearest saved settings, mask only
  * its active selection. A later activation of this same row clears the mask. */
-export function deactivateModel(models: readonly ModelRecord[], address: RecordScope & { readonly memberOf?: TeamRef }, target: ModelRefLike, updated: string, scopes: Scopes): ModelRecord[] {
+export function deactivateModel(models: readonly ModelRecord[], address: RecordScope, target: ModelRefLike, updated: string, scopes: Scopes): ModelRecord[] {
   const source = modelChain({ models, scopes, ...address }).flatMap((node) =>
     models.filter((record) => record.removed !== true && scopedTo(record, node) && sameModelCandidate(record, target)),
   )[0]
@@ -911,7 +909,7 @@ export function parsePermItemId(id: string): { tool: string; ruleId: string } | 
 // model the chain above resolves now, so a later change above raises review.
 export function activateModel(
   records: readonly ModelRecord[],
-  address: RecordScope & { readonly memberOf?: TeamRef },
+  address: RecordScope,
   target: { providerID: string; modelID: string; variant?: string },
   context?: ModelContext,
 ): ModelRecord[] {
@@ -930,7 +928,6 @@ export function activateModel(
           agent: address.agent,
           ...(address.team !== undefined ? { team: address.team } : {}),
           ...(address.catalogue !== undefined ? { catalogue: address.catalogue } : {}),
-          ...(address.memberOf !== undefined ? { memberOf: address.memberOf } : {}),
           ...(context.upstream !== undefined ? { upstream: context.upstream } : {}),
         })
   const stray = records.some((record) => record.removed !== true && scoped(record) && !wanted(record) && record.active === true)
@@ -1491,9 +1488,8 @@ export function scopeKey(scopes: Scopes | undefined | null): string {
 
 export function addressKey(address: Address): string {
   const team = address.team ? `${address.team.level}:${address.team.team}` : ""
-  const member = address.memberOf ? `${address.memberOf.level}:${address.memberOf.team}` : ""
   const cat = address.catalogue ?? ""
-  return `${address.level}:${address.agent ?? ""}:${address.item}:${address.section ?? ""}:${team}:${member}:${cat}`
+  return `${address.level}:${address.agent ?? ""}:${address.item}:${address.section ?? ""}:${team}:${cat}`
 }
 
 export interface ItemRecordsEntry {
@@ -1622,6 +1618,7 @@ export function scopesContentKey(scopes: Scopes): string {
     scopes.rowlinks ?? [],
     scopes.entries ?? [],
     scopes.memberTeams === undefined ? null : [...scopes.memberTeams].toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+    scopes.members === undefined ? null : [...scopes.members].toSorted(),
     scopes.presets === undefined ? null : (scopes.presets.contentKey ?? `identity:${identityKey(scopes.presets)}`),
   ])
   const key = `${content.length}.${Bun.hash(content).toString(36)}`
@@ -1994,8 +1991,8 @@ function fallbackKind(input: ChainInput): "native" | "upstream" | "off" {
  * says otherwise: neither OpenCode's upstream value nor a Native preset turns
  * it on. A team member's row (Teams catalogue) resolves as it always has.
  */
-export function standAloneTeamTool(address: Pick<Address, "item" | "team" | "memberOf" | "catalogue">): boolean {
-  return isTeamToolId(address.item) && address.team === undefined && address.memberOf === undefined && catalogueForAddress(address) === "agents"
+export function standAloneTeamTool(address: Pick<Address, "item" | "team" | "catalogue">): boolean {
+  return isTeamToolId(address.item) && address.team === undefined && catalogueForAddress(address) === "agents"
 }
 
 export function isTeamToolId(item: string): boolean {
@@ -2056,9 +2053,7 @@ function aboveSectionText(input: ChainInput, id: string): string {
   return slice(text, definition)
 }
 
-// The chain without the address's own node: what "above" reads. The own node
-// is first except for a member row (`memberOf`), whose team-scoped node
-// `L/A@T` comes before its own per-agent node.
+// The chain without the address's own node: what "above" reads.
 function aboveOwn(chain: readonly ChainNode[], address: Address): ChainNode[] {
   return chain.filter((node) => node.shipped !== undefined || !scopedTo(node, address))
 }
@@ -2252,25 +2247,10 @@ export interface ChainNode {
  * a preset seen once is not expanded again, which cuts cycles. The fallback
  * after the last node is the resolver's (fallbackOf).
  */
-function normalizedChainAddress(address: Address): Address {
-  if (address.memberOf !== undefined && address.team === undefined) {
-    return {
-      level: address.level,
-      agent: address.agent,
-      item: address.item,
-      section: address.section,
-      team: address.memberOf,
-      catalogue: address.catalogue ?? "teams",
-    }
-  }
-  return address
-}
-
 function chainAddressKey(address: Address): string {
-  const norm = normalizedChainAddress(address)
-  const team = norm.team ? `${norm.team.level}:${norm.team.team}` : ""
-  const cat = norm.catalogue ?? ""
-  return `${norm.level}:${norm.agent ?? ""}:${team}:${cat}`
+  const team = address.team ? `${address.team.level}:${address.team.team}` : ""
+  const cat = address.catalogue ?? ""
+  return `${address.level}:${address.agent ?? ""}:${team}:${cat}`
 }
 
 const resolutionChainCache = new WeakMap<Scopes, Map<string, ChainNode[]>>()
@@ -2290,20 +2270,6 @@ export function resolutionChain(address: Address, scopes: Scopes): ChainNode[] {
 }
 
 function computeResolutionChain(address: Address, scopes: Scopes): ChainNode[] {
-  // A member row reads exactly the chain apply runs for the member of that
-  // team; only what it writes (its own node, `L/A`) differs.
-  if (address.memberOf !== undefined && address.team === undefined)
-    return resolutionChain(
-      {
-        level: address.level,
-        agent: address.agent,
-        item: address.item,
-        section: address.section,
-        team: address.memberOf,
-        catalogue: address.catalogue ?? "teams",
-      },
-      scopes,
-    )
   const catalogue = catalogueForAddress(address)
   const visited = new Set<string>()
   const tail = address.level === "defaults" && address.agent === null ? [] : [everyone(catalogue)]
@@ -2425,6 +2391,14 @@ function ownNodes(address: Address, scopes: Scopes, catalogue: Catalogue): Chain
   // A Teams entry is its own node only: it never reads the Agents entry or
   // native Defaults node that shares its member name.
   if (teamsEntry(address, scopes)) return [scoped]
+  // An ordinary member's own records are its team's (`L/A@T`): the stand-alone
+  // agent of its name (`L/A`) and its teammates in other teams are other
+  // owners. A project member still reads the Global agent of its name, as a
+  // project agent does.
+  if (address.agent !== null && scopes.members?.has(memberKey(address.team, address.agent)) === true) {
+    if (address.level !== "project" || !scopes.global.has(address.agent)) return [scoped]
+    return [scoped, { level: "global", agent: address.agent, catalogue, from: { kind: "level", level: "global" } }]
+  }
   if (address.level !== "project" || address.agent === null || !scopes.global.has(address.agent)) return [scoped, own]
   return [scoped, own, { level: "global", agent: address.agent, catalogue, from: { kind: "level", level: "global" } }]
 }

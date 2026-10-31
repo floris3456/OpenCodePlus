@@ -97,7 +97,8 @@ test("threshold fields edit and reset on project/global/defaults agents, team me
     { type: "model", level: "project", agent: "alice", providerID: "test", modelID: "chat", updated: UPDATED },
     { type: "model", level: "global", agent: "build", providerID: "test", modelID: "chat", updated: UPDATED },
     { type: "model", level: "defaults", agent: null, providerID: "test", modelID: "chat", updated: UPDATED },
-    { type: "model", level: "project", agent: "lead", catalogue: "teams", providerID: "test", modelID: "chat", updated: UPDATED },
+    // A member's own record is stored with its team (phase 4, member-scope).
+    { type: "model", level: "project", agent: "lead", catalogue: "teams", team: { level: "project", team: "crew" }, providerID: "test", modelID: "chat", updated: UPDATED },
     { type: "model", level: "preset", agent: "mine", providerID: "test", modelID: "chat", updated: UPDATED },
     { type: "model", level: "preset", agent: "lead", catalogue: "teams", team: { level: "preset", team: "crew" }, providerID: "test", modelID: "chat", updated: UPDATED },
   ]

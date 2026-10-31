@@ -98,7 +98,6 @@ export function modelDetail(
     agent: address.agent,
     ...(address.team === undefined ? {} : { team: address.team }),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
     ...(upstream === undefined ? {} : { upstream }),
   }
   const candidate = modelCandidates(input).find((entry) => sameModelCandidate(entry, parsed))
@@ -110,7 +109,7 @@ export function modelDetail(
     level: address.level,
     owner: address.agent,
     ...(address.agent === null ? {} : { agentScope: derived.agents.find((entry) => entry.id === address.agent)?.scope }),
-    ...((address.memberOf ?? address.team) === undefined ? {} : { team: (address.memberOf ?? address.team)! }),
+    ...(address.team === undefined ? {} : { team: address.team }),
   })
   const active = resolveActiveModel({ ...input, level: runtime.level, scopes: runtime.scopes })
   const isActive = active !== undefined && sameModelCandidate(active, candidate)

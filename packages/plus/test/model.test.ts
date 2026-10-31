@@ -802,10 +802,12 @@ test("preset and team member field rows name their own level when set there", ()
   const presetModel = presetRows.find((row) => row.id === "item:preset:crew/:reader:modelfield:model:acme/nova")
   expect(presetModel?.badges.value).toBe("acme/nova")
 
+  // A member's own record is stored with its team (phase 4, member-scope).
   const teamRecord: ModelRecord = {
     type: "model",
     level: "global",
     agent: "Planner",
+    team: { level: "global", team: "Basic" },
     providerID: "acme",
     modelID: "nova",
     warming: "45m",
@@ -828,11 +830,11 @@ test("preset and team member field rows name their own level when set there", ()
   })
 })
 
-// team, so the tool activation writes a flat `global/Planner` record (no team
-// owner path, exactly what the log showed). That flat record must take effect
-// for the member's chain — both the runtime chain (level + team) and the
-// tree's memberOf chain — or the write is a silent no-op for the user.
-test("tool activation of a member-only agent's model row writes a flat record its member chain reads", () => {
+// team. A member's own rows are stored with its team (backlog
+// instructions-tools-fixes, phase 4), so the activation writes
+// `global/Planner@Basic`, and the runtime chain (level + team) and the tree's
+// row read it — or the write is a silent no-op for the user.
+test("tool activation of a member-only agent's model row writes a team-scoped record its member chain reads", () => {
   const candidate: ModelRecord = {
     type: "model",
     level: "defaults",
@@ -855,7 +857,7 @@ test("tool activation of a member-only agent's model row writes a flat record it
   if ("refusal" in op) throw new Error(`expected activation, got ${op.refusal}`)
   const written = op.models.find((record) => record.level === "global" && record.agent === "Planner")
   expect(written?.active).toBe(true)
-  expect(written?.team).toBeUndefined()
+  expect(written?.team).toEqual({ level: "global", team: "Basic" })
   const emptyScopes: Scopes = { global: new Set<string>(), defaults: new Set<string>() }
   const runtime = resolveActiveModel({
     models: op.models,
@@ -871,7 +873,8 @@ test("tool activation of a member-only agent's model row writes a flat record it
     scopes: emptyScopes,
     level: "global",
     agent: "Planner",
-    memberOf: { level: "global", team: "Basic" },
+    team: { level: "global", team: "Basic" },
+    catalogue: "teams",
   })
   expect(treeView?.modelID).toBe("base")
 })

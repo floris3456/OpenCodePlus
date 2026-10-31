@@ -36,9 +36,6 @@ export const Address = Schema.Struct({
   section: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
   catalogue: Schema.optionalKey(Catalogue),
-  // An ordinary team member's row: resolved as a member of this team, its own
-  // records per-agent (instructions/model.ts Address.memberOf).
-  memberOf: Schema.optionalKey(TeamOwner),
 }).annotate({ identifier: "Plus.Address" })
 
 export type ItemKind = typeof ItemKind.Type

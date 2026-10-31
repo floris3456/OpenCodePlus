@@ -139,6 +139,9 @@ async function owned(project: string, predicate: (record: StoredRecord) => boole
 const agentAt = (level: string, agent: string) => (record: StoredRecord) =>
   "agent" in record && record.agent === agent && record.level === level && (!("team" in record) || record.team === undefined)
 
+const memberAt = (level: string, team: string, agent: string) => (record: StoredRecord) =>
+  "agent" in record && record.agent === agent && record.level === level && "team" in record && record.team?.team === team
+
 test("a copy of a preset-linked agent follows the same preset, carries only the original's own records, and resolves row for row like it", async () => {
   const { api, tools, project } = await fixture()
   await ok(tools, "set", { id: "agent:project:alpha", preset: "build" })
@@ -219,13 +222,14 @@ test("a member's copy follows its member's preset and carries its own records; a
   await ok(tools, "set", { id: "item:project:crew/:lead:tool:reader", state: "off" })
   await ok(tools, "set", { id: "item:project:crew/:lead:tool:writer", text: "Lead writes tidy." })
   await ok(tools, "set", { id: "item:project:crew/:hand:tool:writer", state: "on" })
-  const own = (await owned(project, agentAt("project", "lead"))).length
+  const own = (await owned(project, memberAt("project", "crew", "lead"))).length
+  expect(own).toBeGreaterThan(0)
 
   const member = await ok(tools, "clipboard", { action: "duplicate", ids: ["team:project:crew:lead"] })
   expect(member).toEqual({ status: "Duplicated lead as lead-copy, following preset Build as lead does", rows: ["team:project:crew:lead-copy"] })
   expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "lead-copy").map((record) => record.type === "link" ? record.preset : undefined))
     .toEqual([{ kind: "agent", id: "build" }])
-  expect((await owned(project, agentAt("project", "lead-copy"))).length).toBe(own)
+  expect((await owned(project, memberAt("project", "crew", "lead-copy"))).length).toBe(own)
   expect(differing(await resolvedRows(api, "crew/:lead"), await resolvedRows(api, "crew/:lead-copy"))).toEqual([])
 
   const customizations = (await load(project)).records.filter((record) => record.type === "customization").length
@@ -234,10 +238,11 @@ test("a member's copy follows its member's preset and carries its own records; a
   expect(team.status).toContain('Duplicated team "crew" as "crew-copy": 3 of 3 members copied')
   for (const name of ["lead", "hand", "lead-copy"])
     expect(differing(await resolvedRows(api, `crew/:${name}`), await resolvedRows(api, `crew-copy/:${name}`)), name).toEqual([])
-  // Members keep their names, so their own rows are shared (stored per name):
-  // the team's copy adds no customization, only its members' links.
+  // A member's own rows are stored with its team (phase 4, member-scope): the
+  // team's copy carries each member's, so the customizations double.
   const after = (await load(project)).records
-  expect(after.filter((record) => record.type === "customization").length).toBe(customizations)
+  expect(after.filter((record) => record.type === "customization").length).toBe(customizations * 2)
+  expect(after.filter((record) => record.type === "customization" && record.team?.team === "crew-copy").length).toBe(customizations)
   expect(after.filter((record) => record.type === "link" && record.team?.team === "crew-copy").map((record) => record.type === "link" ? [record.agent, record.preset] : []).toSorted())
     .toEqual([["lead", { kind: "agent", id: "build" }], ["lead-copy", { kind: "agent", id: "build" }]])
 }, 60_000)

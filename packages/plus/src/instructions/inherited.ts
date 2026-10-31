@@ -27,8 +27,8 @@ type Field = "text" | "state" | "pin"
  * or other writes.
  *
  * Only records whose readers are known are looked at: an agent's own records
- * (read by that agent at its level and the more specific ones, alone and as a
- * team member) and a shared Defaults row's text and pin (the item's own text
+ * (read by that agent at its level and the more specific ones, and by the
+ * members of its name in teams of a more specific level) and a shared Defaults row's text and pin (the item's own text
  * and pin below it for every agent). A preset's, a team-scoped node's and a
  * pattern entry's records are read by agents not listed here, so they stay.
  */
@@ -92,7 +92,9 @@ function readersOf(input: InheritedInput, byId: ById, record: CustomizationRecor
   return {
     addresses: levels.flatMap((level) => [
       at(level),
-      ...teams.map((team) => ({ ...at(level), memberOf: { level: team.level, team: team.team } })),
+      // A member stores its own rows with its team: it reads an agent's
+      // record of its name only from a level above its team's.
+      ...teams.filter((team) => team.level === level && record.level !== level).map((team) => ({ ...at(level), team: { level: team.level, team: team.team } })),
       ...(member ? [{ ...at(level), catalogue: "teams" as const }] : []),
     ]),
     fields: ["text", "state", "pin"],
