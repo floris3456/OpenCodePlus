@@ -5,7 +5,7 @@ import { Effect, Option, Schema } from "effect"
 import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
 import { interactiveActor } from "./instructions-cli.js"
 import { captureRows, pasteRows, type Clipboard } from "./instructions/clipboard.js"
-import { copyLink, copyNameRefusal, duplicateName, duplicateSource, itemRecordsCopy, ownerLayoutCopy, ownerRecordsCopy, ownNodeCopies, systemCopyId, teamLayoutCopy, withoutCopyNodes, type DuplicateSource } from "./instructions/duplicate.js"
+import { copyActiveModelsRebased, copyLink, copyNameRefusal, duplicateName, duplicateSource, itemRecordsCopy, ownerLayoutCopy, ownerRecordsCopy, ownNodeCopies, systemCopyId, teamLayoutCopy, withoutCopyNodes, type DuplicateSource, type NodeCopy } from "./instructions/duplicate.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -82,7 +82,7 @@ import {
 import { curatedRuleMessage, scrubLines } from "./instructions/tool-permissions.js"
 import { isValueRow, limitOf } from "./instructions/permission-catalog.js"
 import { controlItemFor, isControl } from "./instructions/agent-controls.js"
-import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, ThreeWay } from "./instructions/model.js"
+import type { Address, CustomizationRecord, ModelRecord, RuleRecord, SplitRecord, TeamRef, ThreeWay } from "./instructions/model.js"
 import { buildTreeMemo, findLazy, lazyPath, materialize, tabLayout, type Lazy } from "./instructions/tree.js"
 import { badgeLabels } from "./instructions/from-label.js"
 import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
@@ -3012,7 +3012,7 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       const after = yield* snapshotOrFail(api)
       const current = memoFromSnapshot(after)
       const nodes = nodesFor(copy)
-      const records = [...withoutCopyNodes(current.records, nodes), ...ownerRecordsCopy(current.records, nodes, updated)]
+      const records = copyRecords(current, nodes, updated, team)
       const levels = [...new Set(source.kind === "agent" ? [source.scope, source.level] : [source.level])]
       const owner = (agent: string) => (level: string) => team === undefined ? `group:${level}:${agent}:` : `group:${level}:${team.team}/:${agent}:`
       const layout = levels.reduce((all, level) => ownerLayoutCopy(all, owner(source.agent)(level), owner(copy)(level), updated), layoutOf(after))
@@ -3059,7 +3059,7 @@ function duplicateTeam(api: PlusApi, tree: Memo, source: Extract<DuplicateSource
     const current = memoFromSnapshot(after)
     // A member keeps its name, so its own per-name rows are already shared.
     const nodes = [{ from: { level: source.level, team: from }, to: { level: source.level, team: to } }]
-    const records = [...withoutCopyNodes(current.records, nodes), ...ownerRecordsCopy(current.records, nodes, updated)]
+    const records = copyRecords(current, nodes, updated)
     const layout = copied.reduce(
       (all, member) => ownerLayoutCopy(all, `group:${source.level}:${source.team}/:${member}:`, `group:${source.level}:${label}/:${member}:`, updated),
       teamLayoutCopy(layoutOf(after), source.level, source.team, label, updated),
@@ -3103,7 +3103,7 @@ function duplicatePreset(api: PlusApi, tree: Memo, source: Extract<DuplicateSour
       const after = yield* snapshotOrFail(api)
       const current = memoFromSnapshot(after)
       const nodes = [{ from: { level: "preset" as const, team: from }, to: { level: "preset" as const, team: to } }]
-      const records = [...withoutCopyNodes(current.records, nodes), ...ownerRecordsCopy(current.records, nodes, updated)]
+      const records = copyRecords(current, nodes, updated)
       const layout = members.reduce((all, member) => ownerLayoutCopy(all, `group:preset:${ref.id}/:${member}:`, `group:preset:${team}/:${member}:`, updated), layoutOf(after))
       const status = `Duplicated team preset ${ref.id} as ${team}: ${members.length} member${members.length === 1 ? "" : "s"}${source.origin === "user" ? "" : `, following ${ref.id}`}${notes.length === 0 ? "" : `; not done: ${notes.join("; ")}`}`
       return yield* writeCopy(api, after, current, records, layout, `team:preset:${team}`, status, actor)
@@ -3119,7 +3119,7 @@ function duplicatePreset(api: PlusApi, tree: Memo, source: Extract<DuplicateSour
     const after = yield* snapshotOrFail(api)
     const current = memoFromSnapshot(after)
     const nodes = [{ from: owner(ref.id), to: owner(copy.id) }]
-    const records = [...withoutCopyNodes(current.records, nodes), ...ownerRecordsCopy(current.records, nodes, updated)]
+    const records = copyRecords(current, nodes, updated)
     const prefix = (agent: string) => ref.kind === "member" ? `group:preset:${ref.team}/:${agent}:` : `group:preset:${agent}:`
     const layout = ownerLayoutCopy(layoutOf(after), prefix(ref.id), prefix(copy.id), updated)
     const status = `Duplicated preset ${ref.id} as ${copy.id}${link === undefined ? "" : `, following preset ${presetLabelOf(tree, link)}`}`
@@ -3127,6 +3127,15 @@ function duplicatePreset(api: PlusApi, tree: Memo, source: Extract<DuplicateSour
       Effect.promise(() => api.deletePreset({ ref: copy, actor }).then(() => undefined)).pipe(Effect.andThen(Effect.fail(error))),
     ))
   })
+}
+
+// The store with a copy's nodes holding its original's own records, its
+// active models based on what the copy inherits (`current` holds the copy and
+// its link already). `memberOf`: a member copy's team.
+function copyRecords(current: MemoInput, nodes: readonly NodeCopy[], updated: string, memberOf?: TeamRef) {
+  const kept = withoutCopyNodes(current.records, nodes)
+  const copied = ownerRecordsCopy(current.records, nodes, updated)
+  return [...kept, ...copyActiveModelsRebased(copied, treeMemoOf(current), [...kept, ...copied], memberOf)]
 }
 
 function presetLabelOf(tree: Memo, ref: Plus.PresetRef): string {

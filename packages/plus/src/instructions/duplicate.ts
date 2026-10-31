@@ -10,7 +10,7 @@
 
 import { recordIdentity } from "./delta.js"
 import { folderSlug } from "./folders.js"
-import { modelKey, presetOrigin, sameTeam, type Level, type PresetOrigin, type PresetRef, type Scopes, type TeamRef } from "./model.js"
+import { aboveActiveModelKey, presetOrigin, sameTeam, type Level, type PresetOrigin, type PresetRef, type Scopes, type TeamRef } from "./model.js"
 import type { LayoutRecords } from "./ops.js"
 import { rowTeamOf, wholeOf } from "./resolve-memo.js"
 import { agentsMdItemId, isAgentsFile, isModelPrompt, toolsItemId } from "./system-order.js"
@@ -196,8 +196,6 @@ export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly 
   // `active`: the original node a model's active flag comes from, which a merge
   // can make another than the node of the record it lands on.
   const merged = new Map<string, { record: StoredRow; rank: number; active?: number }>()
-  // Every active model of the original's nodes, by the copy node it lands on.
-  const actives: { owner: string; rank: number; key: string; basedOn?: string }[] = []
   nodes.forEach((node, rank) => {
     if (sameNode(node.from, node.to)) return
     records.forEach((record) => {
@@ -206,8 +204,6 @@ export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly 
       const key = recordIdentity(next)
       const known = merged.get(key)
       const active = next.type === "model" && next.active === true ? rank : undefined
-      if (next.type === "model" && active !== undefined)
-        actives.push({ owner: ownerKey(next), rank, key: modelKey(next), ...(next.basedOn === undefined ? {} : { basedOn: next.basedOn }) })
       if (known === undefined) return void merged.set(key, { record: next, rank, ...(active === undefined ? {} : { active }) })
       // A second record at one address of the same node is one the chain never reads.
       if (known.rank === rank && next.type !== "model") return
@@ -221,21 +217,39 @@ export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly 
       const owner = ownerKey(entry.record)
       active.set(owner, Math.min(active.get(owner) ?? Infinity, entry.active))
     }
-  return [...merged.values()].map((entry) => {
-    if (entry.record.type !== "model" || entry.record.active !== true) return entry.record
-    if (active.get(ownerKey(entry.record)) !== entry.active) return withoutKeys(entry.record, ["active", "basedOn"])
-    return rebased(entry.record, actives.filter((other) => other.owner === ownerKey(entry.record) && other.rank > entry.active!).toSorted((a, b) => a.rank - b.rank))
-  })
+  return [...merged.values()].map((entry) =>
+    entry.record.type === "model" && entry.record.active === true && active.get(ownerKey(entry.record)) !== entry.active
+      ? withoutKeys(entry.record, ["active", "basedOn"])
+      : entry.record,
+  )
 }
 
-// The active model the copy keeps recorded the one active above it in the
-// original (`basedOn`). When that one was a node folded into the copy's (and
-// dropped), the copy's record is based on what that one was based on, down
-// the folded nodes: the active model the copy inherits.
-function rebased(record: Extract<StoredRow, { type: "model" }>, folded: readonly { key: string; basedOn?: string }[]): StoredRow {
-  const basedOn = folded.reduce<string | undefined>((current, other) => (current === other.key ? other.basedOn : current), record.basedOn)
-  if (basedOn === record.basedOn) return record
-  return basedOn === undefined ? withoutKeys(record, ["basedOn"]) : { ...record, basedOn }
+/**
+ * A copy's active models, based on what the copy inherits. An active model
+ * records the one active above it (`basedOn`) to ask for review once that
+ * changes; the original's records name what is above the original, and a
+ * copy can inherit another (a built-in's copy reads no Global node and
+ * follows the shipped preset). So each is based on what the chain above it
+ * resolves now, in `memo`, the store with the copy and its link in it, as
+ * activating it there would record.
+ */
+export function copyActiveModelsRebased(copied: readonly StoredRow[], memo: Memo, records: readonly StoredRow[], memberOf?: TeamRef): StoredRow[] {
+  const models = records.filter((record) => record.type === "model")
+  return copied.map((record) => {
+    if (record.type !== "model" || record.active !== true || record.basedOn === undefined) return record
+    const agents = memo.ctx.agents
+    const upstream = agents.find((entry) => entry.id === record.agent && entry.scope === record.level)?.model ?? agents.find((entry) => entry.id === record.agent)?.model
+    const basedOn = aboveActiveModelKey({
+      models,
+      scopes: memo.ctx.scopes,
+      level: record.level,
+      agent: record.agent,
+      ...(record.team === undefined ? (memberOf === undefined ? {} : { memberOf }) : { team: record.team }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      ...(upstream === undefined ? {} : { upstream }),
+    })
+    return basedOn === record.basedOn ? record : { ...record, basedOn }
+  })
 }
 
 /** The records without any a copy's node held before (an earlier agent of that name left them): the copy starts from its original's alone. */

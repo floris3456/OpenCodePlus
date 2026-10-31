@@ -184,6 +184,9 @@ test("a built-in agent's copy follows its shipped preset and folds the Global ed
 
 test("a built-in agent's copy keeps one active model: the project's, not a Global one folded onto a project record", async () => {
   const { api, tools, project } = await fixture()
+  // Defaults › build: what the original's Global edit was based on, which the copy (no Global node) does not read.
+  await ok(tools, "create", { kind: "model", providerID: "acme", modelID: "nova-2", level: "defaults", agent: "build" })
+  await ok(tools, "set", { id: "item:defaults:build:model:acme/nova-2", active: true })
   await ok(tools, "create", { kind: "model", providerID: "acme", modelID: "nova-3", level: "global", agent: "build" })
   await ok(tools, "set", { id: "item:global:build:model:acme/nova-3", active: true })
   await ok(tools, "create", { kind: "model", providerID: "acme", modelID: "nova-2", level: "project", agent: "build" })
