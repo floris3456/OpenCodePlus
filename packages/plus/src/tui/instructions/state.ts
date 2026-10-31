@@ -17,7 +17,7 @@ import type {
   SplitRecord,
 } from "../../instructions/model.js"
 import { withOwnerRoles, type PresetState } from "../../instructions/presets.js"
-import { deltaOf, keyIdentity, recordIdentity, snapshotRecordOf, type Delta } from "../../instructions/delta.js"
+import { contentOf, deltaOf, keyIdentity, recordIdentity, snapshotRecordOf, type Delta } from "../../instructions/delta.js"
 import type { StoredRecord } from "../../instructions/store.js"
 import { buildTreeMemo, controlChoices, findLazy, groupToggleRows, lazyPath, tabLayout, treeOf, withControlItems, type Lazy, type Memo, type MemoInput, type TeamInput, type TreeNode } from "../../instructions/tree.js"
 import {
@@ -798,7 +798,13 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const stored = storedRecords(memoInput(), [...nextCustomizations, ...nextSplits, ...preservedRules]).filter(
       (record): record is CustomizationRecord => record.type === "customization",
     )
-    const nextSnapshotRecords = [...toRpcRecords(stored, nextSplits, preserved, preservedRules), ...links]
+    const written = changedRows(
+      converted.filter((record): record is CustomizationRecord => record.type === "customization"),
+      treeMemo()?.ctx.customizations ?? [],
+      nextCustomizations,
+      stored,
+    )
+    const nextSnapshotRecords = [...toRpcRecords(written, nextSplits, preserved, preservedRules), ...links]
     setSnapshot({ ...current, records: nextSnapshotRecords })
 
     lastOpStatus = successStatus
@@ -2033,6 +2039,34 @@ export type InstructionsState = ReturnType<typeof createInstructionsState>
 
 function now(): string {
   return new Date().toISOString()
+}
+
+// The customizations a write sends: the stored ones as they are, except the
+// rows the op changed, which take their saved form. An op starts from the
+// tree's records (`base`, without what rows inherit) or from the stored ones
+// (`raw`); a row equal to either is one the op left alone. Sending the whole
+// set as the tree reads it would delete every other owner's records that
+// equal what they inherit (a copy's records, a paste's) with this write.
+function changedRows(
+  raw: readonly CustomizationRecord[],
+  base: readonly CustomizationRecord[],
+  next: readonly CustomizationRecord[],
+  stored: readonly CustomizationRecord[],
+): CustomizationRecord[] {
+  const contents = (records: readonly CustomizationRecord[]) => {
+    const groups = Map.groupBy(records, recordIdentity)
+    return new Map([...groups].map(([identity, group]) => [identity, group.map(contentOf).toSorted().join("\n")]))
+  }
+  const rawContents = contents(raw)
+  const baseContents = contents(base)
+  const nextContents = contents(next)
+  const changed = new Set(
+    [...new Set([...rawContents.keys(), ...baseContents.keys(), ...nextContents.keys()])].filter((identity) => {
+      const content = nextContents.get(identity) ?? ""
+      return content !== (rawContents.get(identity) ?? "") && content !== (baseContents.get(identity) ?? "")
+    }),
+  )
+  return [...raw.filter((record) => !changed.has(recordIdentity(record))), ...stored.filter((record) => changed.has(recordIdentity(record)))]
 }
 
 // The server rounds a warming time up to whole pings; say so when it did.
