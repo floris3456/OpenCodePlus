@@ -16,7 +16,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { createPlusApi, createState, type PlusApi } from "../src/index.js"
 import { formatMarkdown } from "../src/agents/files.js"
 import { memberRowsPerTeam } from "../src/instructions/owner-records.js"
-import { globalLogPath, globalRecordsPath } from "../src/instructions/paths.js"
+import { globalLogPath, globalRecordsPath, projectLogPath } from "../src/instructions/paths.js"
 import { load, type StoredRecord } from "../src/instructions/store.js"
 import { memoInputOf } from "../src/instructions/snapshot.js"
 import { expandedTree } from "../src/instructions/tree.js"
@@ -124,6 +124,18 @@ test("b-11: a renamed member keeps its rows, and so does a renamed team; nothing
   expect(await states(api, ["item:project:nm2/:scout2:tool:reader"])).toEqual(["off"])
   expect(await ok(tools, "find", { is: "orphaned" })).toMatchObject({ total: 0 })
   expect((await load(project)).records.filter((record) => record.type === "customization")).toMatchObject([{ agent: "scout2", team: { level: "project", team: "nm2" } }])
+})
+
+// The change log and undo name the member's row, not the stand-alone agent of
+// its name, whose row id the record's agent alone would give.
+test("the log and undo name a member's row with its team", async () => {
+  const { project } = await home()
+  const { tools } = await plus(project)
+  await teamWith(tools, "project", "aa", "scout")
+  await ok(tools, "set", { id: "item:project:aa/:scout:tool:reader", state: "off" })
+  const last = (await Bun.file(projectLogPath(project)).text()).trim().split("\n").at(-1)!
+  expect(JSON.parse(last)).toMatchObject({ op: "mutate", target: "item:project:aa/:scout:tool:reader" })
+  expect(await ok(tools, "undo", {})).toMatchObject({ undone: ["item:project:aa/:scout:tool:reader"] })
 })
 
 test("a deleted member's rows go with it, and the agent of its name keeps its own", async () => {

@@ -2,7 +2,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Option, Schema } from "effect"
 import { Actor, type Plus } from "../rpc.js"
-import { contentOf, recordIdentity, recordTarget } from "./delta.js"
+import { contentOf, recordIdentity, recordRow } from "./delta.js"
 import { globalLogPath, projectLogPath } from "./paths.js"
 import type { StoredRecord } from "./store.js"
 
@@ -88,7 +88,7 @@ export function planUndo(current: readonly StoredRecord[], entries: readonly Und
     left.map(contentOf).toSorted().join("\n") === right.map(contentOf).toSorted().join("\n")
   for (const entry of entries) {
     for (const key of new Set([...entry.before, ...entry.after].map(recordIdentity))) {
-      const name = recordTarget([...entry.after, ...entry.before].find((record) => recordIdentity(record) === key)!)
+      const name = recordRow([...entry.after, ...entry.before].find((record) => recordIdentity(record) === key)!)
       if (!same(group(current, key), group(entry.after, key))) {
         const by = later.findLast((other) => [...other.after, ...other.before].some((record) => recordIdentity(record) === key))
         kept.push({ id: name, reason: by === undefined ? "changed again since (by a write without undo data)" : `changed again at ${by.ts} by ${actorLabel(by.actor)} (${by.summary})` })

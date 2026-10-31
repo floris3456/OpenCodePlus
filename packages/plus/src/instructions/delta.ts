@@ -63,6 +63,21 @@ export function recordTarget(record: StoredRecord): string {
   return `item:${record.level}:${agent}:${record.item}`
 }
 
+// The row a stored record belongs to, as the tree names it: a team member's
+// records carry its owner path `<team>/:<member>` (model.ts
+// parseMemberOwnerPath), so the change log, its rows and undo name the member,
+// not the stand-alone agent of that name. recordTarget stays the identity's
+// part, which keyIdentity mirrors.
+export function recordRow(record: StoredRecord): string {
+  if (
+    (record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule" || record.type === "rowlink") &&
+    record.team !== undefined &&
+    record.agent !== null
+  )
+    return recordTarget({ ...record, agent: `${record.team.team}/:${record.agent}` })
+  return recordTarget(record)
+}
+
 // The structured key a client sends to remove one stored row. Its identity —
 // keyIdentity — is exactly recordIdentity's answer for the row it addresses.
 export function recordKeyOf(record: StoredRecord): Plus.RecordKey | undefined {

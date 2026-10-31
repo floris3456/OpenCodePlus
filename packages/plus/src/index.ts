@@ -65,7 +65,7 @@ import { appendUndo, changedSides, planUndo, readUndo } from "./instructions/und
 import { ruleRecordFor } from "./instructions/rule-record.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type RowlinkRecord, type StoredRecord } from "./instructions/store.js"
-import { deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
+import { deltaRows, keyIdentity, recordIdentity, recordRow, snapshotRecordOf } from "./instructions/delta.js"
 import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -5288,7 +5288,7 @@ function isToolActor(type: Plus.Actor["type"]): boolean {
 function mutateTarget(rows: readonly StoredRecord[]): string {
   const first = rows[0]
   if (first === undefined) return "records"
-  return recordTarget(first)
+  return recordRow(first)
 }
 
 function mutateSummary(changed: readonly StoredRecord[], level: string): string {
@@ -5296,8 +5296,8 @@ function mutateSummary(changed: readonly StoredRecord[], level: string): string 
   // A reported-changed store with an empty delta is the v1→v2 migration
   // rewrite: same logical rows, new serialization, both files rewritten.
   if (first === undefined) return `mutate (${level}, migrated records)`
-  if (changed.length === 1) return `mutate ${recordTarget(first)}`
-  return `mutate ${changed.length} rows (${level}): ${changed.map(recordTarget).join(", ")}`
+  if (changed.length === 1) return `mutate ${recordRow(first)}`
+  return `mutate ${changed.length} rows (${level}): ${changed.map(recordRow).join(", ")}`
 }
 
 // One log line per store actually changed, naming only the rows that changed
@@ -5352,7 +5352,7 @@ async function logMutate(input: {
 
 // A write of several rows lists every one (the summary is cut at 200 chars).
 function rowsOf(rows: readonly StoredRecord[]): { rows?: string[] } {
-  return rows.length > 1 ? { rows: [...new Set(rows.map(recordTarget))] } : {}
+  return rows.length > 1 ? { rows: [...new Set(rows.map(recordRow))] } : {}
 }
 
 // The undo data of one store write (undo.ts): the records it changed there.
