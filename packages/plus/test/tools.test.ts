@@ -4673,3 +4673,41 @@ test("a model prompt is created with create kind system + models, re-aimed with 
   expect(await runOk(need(tools, "instructions_delete"), { id: output.id, confirm: true })).toMatchObject({ id: "model/opus" })
   expect((await snapshotOf(api)).items.some((item) => item.id === "system:model/opus")).toBe(false)
 })
+
+// Team tools for every agent (2026-10-31): an agent linked to a member preset
+// has that preset's team tool rows, an agent with no preset has them off, a
+// member of a disabled team has its preset's role, and a member linked to an
+// agent preset hears that it got an agent's rows and no team role.
+test("team tool rows reach every agent, a disabled team's member keeps its role, and a member from an agent preset is told so", async () => {
+  const { api, tools } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "skill", description: "Load a skill", options: { codemode: false } },
+      { id: "delegate", description: "Delegate a Brief.", options: { codemode: false, namespace: "team", permission: "team.delegate" } },
+      { id: "check", description: "Run a check.", options: { codemode: false, namespace: "team", permission: "team.check" } },
+    ],
+  })
+  const create = need(tools, "instructions_create")
+  await runOk(create, { kind: "agent", id: "lead", scope: "project", preset: "basic/orchestrator" })
+  await runOk(create, { kind: "agent", id: "worker", scope: "project", preset: "basic/implementer" })
+  await runOk(create, { kind: "agent", id: "solo", scope: "project" })
+  await runOk(create, { kind: "team", team: "crew", level: "project" })
+  const hand = (await runOk(create, { kind: "member", team: "crew", level: "project", id: "hand", preset: "basic/implementer" })) as Record<string, unknown>
+  expect(hand.status).toBeUndefined()
+  const seat = (await runOk(create, { kind: "member", team: "crew", level: "project", id: "seat", preset: "build" })) as Record<string, unknown>
+  expect(seat.status).toBe(
+    `Linked member seat to the agent preset build, not a member preset: it takes build's rows (its tools, skills and role text), not a team member's role. For a team role pick a member preset ("<team>/<member>", e.g. "basic/implementer").`,
+  )
+  const nodes = expandedTree(memoInputOf(await snapshotOf(api)))
+  const state = (id: string) => nodes.find((node) => node.id === id)?.badges.state
+  expect(state("item:project:lead:tool:team_delegate")).toBe("on")
+  expect(state("item:project:lead:tool:team_check")).toBe("on")
+  expect(state("item:project:worker:tool:team_delegate")).toBe("off")
+  expect(state("item:project:worker:tool:team_check")).toBe("on")
+  expect(state("item:project:solo:tool:team_delegate")).toBe("off")
+  expect(state("item:defaults:alpha:tool:team_check")).toBe("off")
+  // The team is disabled (create leaves it so), yet the member has its role.
+  const role = nodes.find((node) => node.id === "item:project:crew/:hand:system:role")
+  expect(role?.badges.state).toBe("on")
+  expect(nodes.some((node) => node.id.startsWith("section:project:crew/:hand:system:role:"))).toBe(true)
+})
