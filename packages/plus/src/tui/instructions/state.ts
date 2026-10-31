@@ -1330,7 +1330,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const confirmed = approved || await context.ui.dialog.confirm({
       title: node.enabledRow === undefined ? `Reset "${node.label}"?` : `Reset controls for "${node.label}"?`,
       message: node.enabledRow === undefined
-        ? `Reset "${node.label}" to its default? This discards the override and cannot be undone.`
+        ? `Reset "${node.label}" to what it inherits? This drops its own value at this level.`
         : "Remove all Settings and Compaction overrides at this level, including retained local compaction values, and follow inherited values?",
     })
     if (!confirmed) {
