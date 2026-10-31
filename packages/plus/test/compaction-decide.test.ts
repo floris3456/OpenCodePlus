@@ -13,6 +13,7 @@ import { coldStateOf, decideCompaction, isCold, type ColdCompactionState } from 
 import { coldPlanOf } from "../src/compaction/cold-now.js"
 import { plusSettings } from "../src/plus-settings.js"
 import { armColdCompaction } from "../src/teams/cold-compaction.js"
+import { TEAM_CONTEXT_TOKENS } from "../src/teams/schema.js"
 import { createPlanSet } from "../src/instructions/cache-safe.js"
 import { compactionRowsOf } from "../src/compaction/rows.js"
 import { compactDefaultsOf, createHandlers, createState, decideCompactionFor, footerStatusFor, rebaseInstructionsFor, warmingStatusFor, type PlusState } from "../src/index.js"
@@ -305,6 +306,26 @@ test("compaction.window answers the input threshold the agent and model resolve,
   expect(await ask({ agent: "alpha", providerID: "anthropic", modelID: "claude" })).toEqual({ input: 90_000 })
   expect(await ask({ agent: "beta", providerID: "anthropic", modelID: "claude" })).toEqual({ input: 150_000 })
   expect(await ask({ agent: "alpha", providerID: "anthropic", modelID: "opus" })).toEqual({})
+})
+
+test("a team member's context % measures against the team default when no row sets a threshold", async () => {
+  const state: PlusState = {
+    ...createState(),
+    cachedAgents: [
+      { id: "implementer", scope: "project" as const, team: "opencodeplus-team" },
+      { id: "build", scope: "project" as const },
+    ],
+    cachedModelSettings: [settings({ providerID: "anthropic", modelID: "opus", compactionInput: "off" })],
+    cachedScopes: { global: new Set<string>(), defaults: new Set<string>() },
+  }
+  const window = createHandlers(fullContext({ directory: "/workspace" }), state, { builtins: [] })["compaction.window"]
+  const ask = (input: { agent: string; providerID: string; modelID: string }) =>
+    Effect.runPromise(window(input, { error: (type: string, message: string, data?: unknown): never => { throw { type, message, data } } }))
+  expect(await ask({ agent: "implementer", providerID: "anthropic", modelID: "claude" })).toEqual({ input: TEAM_CONTEXT_TOKENS })
+  // A row at any level still decides, and off still means no early threshold.
+  expect(await ask({ agent: "implementer", providerID: "anthropic", modelID: "opus" })).toEqual({})
+  // A non-team agent keeps today's answer: nothing without a row.
+  expect(await ask({ agent: "build", providerID: "anthropic", modelID: "claude" })).toEqual({})
 })
 
 test("compactionRowsOf resolves the agent model row down the store chain", () => {

@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import { fingerprint } from "../src/instructions/model.js"
 import type { Plus, Snapshot } from "../src/rpc.js"
-import { breadcrumb, dispatch, reach, selectedRow, sleep } from "./instructions-nav.js"
+import { breadcrumb, dispatch, reach, selectedRow, sleep, toSidebar } from "./instructions-nav.js"
 import { createSnapshot, createTestTheme, renderInstructionsRoute } from "./tui.js"
 
 const build = { id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }
@@ -279,6 +279,46 @@ test("sidebar owners and the Tools tab carry the switched-on count beside the ow
   // The sidebar is 30 columns at this width; the row's number is right-aligned.
   expect(selectedRow(frame).slice(0, 29).trimEnd().endsWith("3")).toBe(true)
   expect(frame).toContain("Tools 3")
+})
+
+// d-04: the list kept the last agent's tools beside "Project › Teams", so a key
+// meant for the row under the cursor reached that agent.
+test("moving the sidebar from an agent to Teams empties the list instead of keeping the agent's rows", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build], items: [toolItem("tool:shell", "shell", {})] })],
+    width: 130,
+    height: 40,
+  })
+  await reach(fixture, "item:project:build:tool:shell", "shell")
+  await toSidebar(fixture)
+  for (let step = 0; step < 20 && !breadcrumb(fixture.captureCharFrame()).includes("Teams"); step++) {
+    expect(dispatch(fixture, "down")).toBe(true)
+    await sleep(30)
+  }
+  const frame = await fixture.waitForFrame((next) => breadcrumb(next).includes("Project › Teams") && !next.includes("shell"))
+  expect(frame).toContain("Select an agent, member or preset")
+  expect(frame).not.toContain("build  primary")
+  // Back on the agent, its Tools come back.
+  for (let step = 0; step < 20 && !breadcrumb(fixture.captureCharFrame()).includes("build"); step++) {
+    expect(dispatch(fixture, "up")).toBe(true)
+    await sleep(30)
+  }
+  await fixture.waitForFrame((next) => next.includes("shell"))
+})
+
+// d-09: r on a row with no override was a silent no-op while the reset tool
+// answered "has no override to reset".
+test("r on a row with no override says so and writes nothing", async () => {
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [createSnapshot({ agents: [build], items: [toolItem("tool:shell", "shell", {})] })],
+    width: 130,
+    height: 40,
+  })
+  await reach(fixture, "item:project:build:tool:shell", "shell")
+  expect(dispatch(fixture, "r")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes('"shell" has no override to reset'))
+  expect(fixture.fake.mutateInputs).toEqual([])
+  expect(fixture.fake.dialogConfirms).toEqual([])
 })
 
 test("an owner with nothing switched on warns no tools and says how to turn some on", async () => {

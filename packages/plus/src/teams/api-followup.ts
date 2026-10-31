@@ -16,6 +16,7 @@ import { coldPlanOf } from "../compaction/cold-now.js"
 import type { PlusState } from "../index.js"
 import type { PermissionTable } from "../instructions/permission-enforce.js"
 import { bound, mayReach, relationOf, row } from "./reach.js"
+import { sessionContextTokens } from "./usage.js"
 import {
   attemptTransition,
   isAttemptTerminal,
@@ -31,8 +32,9 @@ import {
   type RunBudget,
   type RunRecord,
 } from "./run.js"
-import { FollowupInput, PATH_LIST_LIMIT, pathList, toolError, type ResolvedBrief } from "./schema.js"
+import { FollowupInput, PATH_LIST_LIMIT, TEAM_CONTEXT_TOKENS, pathList, toolError, type ResolvedBrief } from "./schema.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
+import { activeCooldown, cooldownRefusal, cooldownText, providerKeyOfRun } from "./cooldown.js"
 import { io } from "./io.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { NO_REPOSITORY_PROGRAMS, provision, slug } from "./worktree.js"
@@ -121,12 +123,16 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     )
 
   // Whether the child takes corrections is the child's own row (Briefs it
-  // accepts → Corrections by followup), read for the child, not the caller.
+  // accepts → Corrections by followup), read for the child, not the caller. A
+  // budget raise is no correction: only a followup that sends the child text
+  // (a prompt, a widened scope's note, a rebase's note) is held to the row, so
+  // budget alone reaches any child still working.
   const corrections = row(table, child.role, "get_context", "accepts.followup")
-  if (corrections === undefined || !corrections.on)
+  const sendsText = args.prompt !== undefined || args.paths !== undefined || args.rebase === true
+  if (sendsText && (corrections === undefined || !corrections.on))
     return fail(
       "E_NO_FOLLOWUP",
-      `${child.role} ${corrections?.item.message ?? "takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report"} (Briefs it accepts → Corrections by followup).`,
+      `${child.role} ${corrections?.item.message ?? "takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report"} (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.`,
       "delegate a fresh run",
     )
   // Landed is per worktree generation: a child reopened after its landing
@@ -136,6 +142,17 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
     (await queue(root, child.parent)).some((entry) => entry.childRun === child.id && entry.childBranch === child.branch && entry.state === "landed")
   if (args.prompt === undefined && args.budget === undefined && args.rebase !== true && !args.paths?.length)
     return fail("E_NO_CONTENT", "team_followup requires prompt, budget, paths, or rebase.", "prompt, budget, paths, or rebase")
+  // A prompt goes back into the same provider the child runs on: while its
+  // quota is out, the follow-up would only fail again. Budget and path changes
+  // touch no model, so they are allowed.
+  if (args.prompt !== undefined) {
+    const cooling = providerKeyOfRun(child)
+    const cooldown = cooling === undefined ? undefined : await activeCooldown(root, cooling, Date.now())
+    if (cooling !== undefined && cooldown !== undefined)
+      return fail("E_COOLDOWN", cooldownRefusal(child.role, cooling, cooldown, Date.now()), {
+        cooldown: { key: cooling, untilMs: cooldown.untilMs, text: cooldownText(cooldown, Date.now()) },
+      })
+  }
   const briefPath = path.join(root, "runs", child.id, "brief.json")
   const brief = args.paths === undefined ? undefined : await readJson<ResolvedBrief>(briefPath)
   if (args.paths !== undefined && brief === undefined)
@@ -168,6 +185,22 @@ async function followupLocked(ctx: Context, state: PlusState, args: FollowupInpu
       return fail("E_BUDGET_REASON", "Budget reason must be at most 300 characters.", "provide a reason")
   }
   await requireSession(ctx, child)
+  // A child above the team's context limit takes no more corrections: its next
+  // turn would condense at once, and the report it already owes is what a fresh
+  // run needs. Only a call that sends the child text is refused; a budget change
+  // alone is not (the same calls that compute a `prompt` below).
+  if (sendsText) {
+    // A member with no preset has every row off by default, so the team
+    // default applies whenever the row gives no number; the row raises it.
+    const limit = bound(table, caller.agent, "followup", "limits.context") ?? TEAM_CONTEXT_TOKENS
+    const tokens = await sessionContextTokens(ctx, child)
+    if (tokens !== undefined && tokens > limit)
+      return fail(
+        "E_CONTEXT",
+        `${child.id} holds ${tokens} tokens of context (limit ${limit}, team_followup limits.context). Start a fresh run with team_delegate instead: give it this run's report and branch ${child.branch} (or its commit) in the Brief.`,
+        "team_delegate a fresh run",
+      )
+  }
   if (child.state === "stopped") {
     const warm = child.sessionID ? await isSessionWarm(child.sessionID) : false
     if (!warm) {

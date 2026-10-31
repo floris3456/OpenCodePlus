@@ -65,6 +65,18 @@ The bundled code stays in the executable when removed from the enabled plugins.
   handling) keeps retrying too once Core's own retries are used up, for up to
   6 minutes from the first failure, at 15 s, 30 s, then 60 s between tries, so a
   backend having a bad few minutes does not fail a team run after 84 s.
+- **Quota answers** (`src/quota-reset.ts`): a 429 (or `provider.quota`) whose text
+  or body says quota, usage limit, limit reached, exhausted or resets is not a
+  throttle. `quotaReset(error, now)` reads its reset — `resets in 3h12m`,
+  `try again in 90 seconds`, `in 1h 5m 3s`, `resets at <ISO>`, `"resets_at": <unix s
+  or ms>`, `retry after <s>` — and returns `{ untilMs, text }` with the
+  `<HH:MM> UTC (in <h> h <m> min)` line; with nothing readable it assumes 15
+  minutes and says the reset time is unknown. `src/outage.ts` uses that parser:
+  when the reset is more than 2 minutes out it ends the step (`retry: false`)
+  even if Core said retry, so a step does not burn its attempts into a quota
+  that resets in hours. A reset inside that window keeps Core's decision, and a
+  plain throttle without a quota word is left exactly as it was. Plus imports
+  the same parser for team cooldowns, so the two plugins never disagree.
 - One prompt cache key per chat: requests to the `cliproxyapi` provider carry
   `prompt_cache_key` set to the chat's own session ID (a fork: the session it was
   forked from, whose history it starts with), on Chat Completions as well as

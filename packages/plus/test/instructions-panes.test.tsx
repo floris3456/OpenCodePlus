@@ -486,9 +486,14 @@ test("an agent's model row expands into its field rows", () => {
   expect(row).toBeDefined()
   expect(isExpandableRow(row!, true, new Set())).toBe(true)
   const fields = nodes.filter((node) => node.id.startsWith("item:project:Implementer:modelfield:"))
+  // Model, Effort, Warming's fields (…, Compact before cold, Compact cold
+  // chats first), Compaction's (Strategy, Input/Output token threshold, Model,
+  // Instructions) and Images' rows: the thresholds came with 8baab5d111, the
+  // image rows with a81272d051 and Compact cold chats first with 702a7b69a6.
   expect(fields.map((node) => node.label)).toEqual([
     "Model", "Effort", "Warming", "Ping every", "Warm while waiting", "Warm as subagent", "Keep-alive prompt",
-    "Compact before cold", "Compact cold chats first", "Strategy", "Model", "Instructions",
+    "Compact before cold", "Compact cold chats first", "Strategy", "Input token threshold", "Output token threshold",
+    "Model", "Instructions", "Convert large image", "Shrink large image", "When image context is full",
   ])
   expect(fields.every((node) => isExpandableRow(node, false, new Set([node.id])) === false)).toBe(true)
 })

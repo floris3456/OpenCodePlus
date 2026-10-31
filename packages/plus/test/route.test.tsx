@@ -1010,8 +1010,11 @@ test("key availability follows the selected row", async () => {
     expect(rootBinds).toContain("d")
     expect(rootBinds).toContain("space")
     expect(footer(fixture.captureCharFrame())).toContain("space toggle")
-    expect(rootBinds).not.toContain("r")
     expect(rootBinds).not.toContain("s")
+    // r has nothing to reset on a group and says so instead of doing nothing (d-09).
+    expect(footer(fixture.captureCharFrame())).not.toContain("r reset")
+    expect(dispatch(fixture, "r")).toBe(true)
+    await fixture.waitForFrame((frame) => frame.includes('"Agents" cannot be reset'))
     // Agent row: Space toggles Enabled; ctrl+space selects without a write.
     await goto(fixture, "agent:project:Implementer", "Implementer")
     const agentBinds = binds(fixture)

@@ -1,6 +1,7 @@
 import { fromLabel } from "./from-label.js"
 import { booleanControl, controlIds, controlItemFor, isControl } from "./agent-controls.js"
 import { upstreamFor } from "./inherited.js"
+import { ruleItem } from "./rules.js"
 import {
   COLD_SWITCH_MOVED,
   coldModelItemId,
@@ -61,7 +62,6 @@ import {
   setModelWarming,
   shadowOf,
   tombstoneModelRecord,
-  upstreamForEdit,
 } from "./model.js"
 import type {
   Address,
@@ -129,7 +129,9 @@ export interface MoveTarget {
   readonly after?: string | undefined
 }
 
-export type LayoutChange = { readonly target: string; readonly status: string; readonly layout: LayoutRecords } | { readonly refusal: string }
+export type LayoutChange =
+  | { readonly target: string; readonly status: string; readonly layout: LayoutRecords; /** The tree row id of the folder this change created. */ readonly row?: string }
+  | { readonly refusal: string }
 
 export type LayoutPlan = LayoutRecords | { readonly refusal: string }
 
@@ -677,7 +679,14 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   if (folder === undefined) return { refusal: "the folder was not created" }
   const orders =
     parent === undefined ? setOrder(created.orders, tab, [...container.children().flatMap((row) => { const token = rowToken(row); return token === undefined ? [] : [local.token(token)] }), folderRef(folder.id)], updated) : created.orders
-  return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: local.finish({ folders: created.folders, orders }, updated) }
+  return {
+    target: folderRef(folder.id),
+    // The row create answers with is the folder row read, moved, renamed and
+    // deleted: `folder:` alone is a layout ref no tree op finds (a-22).
+    row: `${owner}${FOLDER_MARK}${folder.id}`,
+    status: `Created folder "${folder.name}" in ${tab}`,
+    layout: local.finish({ folders: created.folders, orders }, updated),
+  }
 }
 
 // `owner` is the tab the folder shows in; `from` the tab its layout comes from
@@ -897,7 +906,7 @@ function controlRow(memo: Memo, id: string): TreeNode | undefined {
   const team = member === null ? undefined : { level, team: member[1] }
   const address: Address = {
     level, agent: shared ? null : member?.[3] ?? owner, item, section: null,
-    ...(team === undefined ? {} : level === "preset" || member?.[2] !== undefined || parent?.owner?.entry !== undefined ? { team } : { memberOf: team }),
+    ...(team === undefined ? {} : { team }),
     ...(member !== null || owner === "/teams" ? { catalogue: "teams" as const } : {}),
   }
   const upstream = controlItemFor(memo.ctx.items, address)
@@ -988,7 +997,6 @@ export interface CreatedItemAddress {
   readonly item: string
   readonly catalogue?: Catalogue
   readonly team?: TeamRef
-  readonly memberOf?: TeamRef
 }
 
 // Only the root of the written level is walked: the row lives under it, and
@@ -1001,7 +1009,6 @@ export function createdItemRow(input: MemoInput, address: CreatedItemAddress): C
       candidate.address.level === address.level &&
       candidate.address.agent === address.agent &&
       sameTeam(candidate.address.team, address.team) &&
-      (address.memberOf === undefined || sameTeam(candidate.address.memberOf, address.memberOf)) &&
       candidate.address.item === address.item &&
       candidate.address.section === null &&
       catalogueOf(candidate.address.catalogue) === catalogueOf(address.catalogue),
@@ -1067,6 +1074,13 @@ export type TeamRowEntity =
       readonly member: string
       readonly registered: boolean
     }
+  | {
+      /** A team's Special agent row: an OpenCode agent every team runs, addressed inside the team. */
+      readonly kind: "special"
+      readonly level: Level
+      readonly team: string
+      readonly agent: string
+    }
 
 export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity | undefined {
   if (node.kind !== "team") return undefined
@@ -1082,6 +1096,13 @@ export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity |
       members: [...exact.agents],
       ...(exact.overlay === undefined ? {} : { overlay: [...exact.overlay] }),
     }
+  const special = node.id.match(/^team:(project|global|defaults|preset):(.+):special:(.+)$/)
+  if (special !== null) {
+    const level = special[1] as Level
+    const team = teams.find((candidate) => candidate.level === level && candidate.team === special[2])
+    if (team === undefined) return undefined
+    return { kind: "special", level, team: team.team, agent: special[3] ?? "" }
+  }
   if (node.depth !== 3) return undefined
   const parent = teams.find((candidate) =>
     candidate.agents.some((member) => node.id === `team:${candidate.level}:${candidate.team}:${member}`),
@@ -1104,7 +1125,7 @@ function chainFor(
   | undefined {
   const address = node.address
   if (!address) return undefined
-  const found = upstreamFor(memo.ctx.items, address)
+  const found = upstreamAt(memo, address)
   if (!found) return undefined
   return {
     address,
@@ -1112,6 +1133,16 @@ function chainFor(
     customizations: [...memo.ctx.customizations],
     splits: [...memo.ctx.splits],
   }
+}
+
+// A whole perm row's upstream is the rule its owner stores, exactly as the
+// tree (resolve-memo `wholeOf`) and apply read it: the discovered item is the
+// row's shape, its label, patterns, refusal text and upstream on/off come from
+// the owner's rule. Reading the raw item instead loses them.
+function upstreamAt(memo: Memo, address: Address): Item | undefined {
+  const item = upstreamFor(memo.ctx.items, address)
+  if (item === undefined || address.section !== null || item.kind !== "perm") return item
+  return ruleItem(item, memo.ctx.rules, memo.ctx.scopes, address) ?? item
 }
 
 function resolvedTextOf(memo: Memo, chain: { address: Address; upstream: Item; customizations: CustomizationRecord[]; splits: SplitRecord[] }): string {
@@ -1243,7 +1274,7 @@ function applySwitches(
       disabled.push(endpoint.item)
       continue
     }
-    const upstream = upstreamFor(memo.ctx.items, address)
+    const upstream = upstreamAt(memo, address)
     if (upstream === undefined) return { refusal: `Linked row "${endpoint.item}" cannot be switched` }
     // Already off (by inheritance or an earlier row): writing an off record
     // would be noise, and an off toggle never writes a linked row at all.
@@ -1416,7 +1447,7 @@ export function toggleGroup(
       skipped.push(`"${row.label}" — ${refusal}`)
       continue
     }
-    const upstream = upstreamFor(memo.ctx.items, address)
+    const upstream = upstreamAt(memo, address)
     if (upstream === undefined) {
       skipped.push(`"${row.label}" — Item not found for "${row.label}"`)
       continue
@@ -1672,20 +1703,9 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         const newSecText = slice(text, sec)
         const prevSec = currentSplit.sections.find((s) => s.id === sec.id)
         const prevSecText = prevSec !== undefined ? slice(currentText, prevSec) : undefined
-        if (prevSecText === undefined || newSecText.trimEnd() !== prevSecText.trimEnd()) {
-          const upstreamSecText = upstreamForEdit({
-            upstream: chain.upstream,
-            records: customizations,
-            splits: chain.splits,
-            scopes: memo.ctx.scopes,
-            address: { ...chain.address, section: sec.id },
-          })
-          if (newSecText.trimEnd() === upstreamSecText.trimEnd()) {
-            customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
-          } else {
-            customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: newSecText }, chain.upstream, memo.ctx.scopes, chain.splits)
-          }
-        }
+        // A section changed back to what it inherits is an own value too; reset follows again.
+        if (prevSecText === undefined || newSecText.trimEnd() !== prevSecText.trimEnd())
+          customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: newSecText }, chain.upstream, memo.ctx.scopes, chain.splits)
       }
 
       for (const prevSec of currentSplit.sections) {
@@ -1836,11 +1856,15 @@ export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRes
     (link.link === "shownWhenOn" || link.link === "shownWhenOff" || link.link === "shownAlways") &&
     link.target === chain.address.item &&
     link.targetSection === chain.address.section
+  // Say what the row follows now, from this one row's chain (no tree rebuild).
+  const after = resolve({ upstream: chain.upstream, records: next, splits: chain.splits, scopes: memo.ctx.scopes, address: chain.address })
+  const own = presetOfAddress(memo.ctx.listing, chain.address)
+  const from = fromLabel(after.from, { labels: memo.ctx.labels, level: chain.address.level, ...(own === undefined ? {} : { own }) })
   return {
     records: next,
     splits: chain.splits,
     rowlinks: (memo.ctx.scopes.rowlinks ?? []).filter((link) => !localGate(link)),
-    status: `Reset "${node.label}" to default`,
+    status: `Reset "${node.label}": it follows what it inherits again (${after.enabled ? "on" : "off"}, ${from})`,
     retryHint: `reset "${node.label}" against a stale revision; retry to apply`,
   }
 }
@@ -2192,7 +2216,6 @@ export function modelReviewChoice(input: MemoInput, rowId: string, sharedMemo?: 
     agent: address.agent,
     ...(address.team === undefined ? {} : { team: address.team }),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
     ...(upstream === undefined ? {} : { upstream }),
   })
   if (above === undefined) return { mine: found.node.label }
@@ -2255,7 +2278,7 @@ function modelUpstreamOf(memo: Memo, address: Address) {
 function runtimeModelInput(memo: Memo, address: Address, models: readonly ModelRecord[]): ModelInput {
   const owner = address.agent
   const agentScope = owner === null ? undefined : memo.ctx.agents.find((entry) => entry.id === owner)?.scope
-  const team = address.memberOf ?? address.team
+  const team = address.team
   const runtime = modelRuntimeScope({
     scopes: memo.ctx.scopes,
     level: address.level,
@@ -2271,7 +2294,6 @@ function runtimeModelInput(memo: Memo, address: Address, models: readonly ModelR
     agent: owner,
     ...(address.team === undefined ? {} : { team: address.team }),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
     ...(upstream === undefined ? {} : { upstream }),
   }
 }
@@ -2543,15 +2565,14 @@ function modelTargetOf(address: Address): { providerID: string; modelID: string;
   return parseModelItemId(address.item)
 }
 
-// The row's own node (a member row's is per-agent) plus the team it resolves
-// with, which activation reads for the active model above.
-function modelScopeOf(address: Address): RecordScope & { readonly memberOf?: TeamRef } {
+// The row's own node (a member row's is its team's), which activation also
+// reads for the active model above.
+function modelScopeOf(address: Address): RecordScope {
   return {
     level: address.level,
     agent: address.agent,
     ...(address.team !== undefined ? { team: address.team } : {}),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
   }
 }
 
@@ -2656,38 +2677,28 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
   const upstream =
     agents.find((entry) => entry.id === pick.agent && entry.scope === owner.level)?.model ??
     agents.find((entry) => entry.id === pick.agent)?.model
-  const memberOf = owner.kind === "member" ? { level: owner.level, team: owner.team } : undefined
+  const team = owner.kind === "member" ? { level: owner.level, team: owner.team } : undefined
   const catalogue = owner.kind === "member" ? ("teams" as const) : undefined
   // Resolve the effective model exactly as buildActiveModels does.
   const runtime = modelRuntimeScope({
     scopes: ctx.scopes,
     level: owner.level,
     owner: pick.agent,
-    ...(memberOf === undefined ? {} : { team: memberOf }),
+    ...(team === undefined ? {} : { team }),
   })
   const effective = resolveActiveModel({
     models: ctx.models,
     scopes: runtime.scopes,
     level: runtime.level,
     agent: pick.agent,
-    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(team === undefined ? {} : { team }),
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   })
   // Write level: for an agent (not a team member), always the chat's Project
-  // level so other projects are never affected. For a team member, keep the
-  // level that supplies the model, else Global, else the team's tier,
-  // because member resolution and tree rows sit at the team's definition
-  // level and cannot resolve a Project-level member row.
-  const winnerSource = effective?.source
-  const writeLevel: Level =
-    owner.kind === "agent"
-      ? "project"
-      : winnerSource === "project" || winnerSource === "global"
-        ? winnerSource
-        : runtime.scopes.global.has(pick.agent)
-          ? "global"
-          : owner.level
+  // level so other projects are never affected. For a team member, its team's
+  // level: its own rows are stored with its team (`L/A@T`).
+  const writeLevel: Level = owner.kind === "agent" ? "project" : owner.level
   const ownerPath = owner.kind === "member" ? `${owner.team}/:${pick.agent}` : pick.agent
   const rowId = `item:${writeLevel}:${ownerPath}:${modelItemId(target)}`
   // The rows shown at the write level: the union down the chain from there.
@@ -2696,7 +2707,7 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
     scopes: ctx.scopes,
     level: writeLevel,
     agent: pick.agent,
-    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(team === undefined ? {} : { team }),
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   })
@@ -2750,7 +2761,7 @@ export function pickModelRow(input: MemoInput, pick: ModelPick, sharedMemo?: Mem
   const scope = {
     level: writeLevel,
     agent: pick.agent,
-    ...(memberOf === undefined ? {} : { memberOf }),
+    ...(team === undefined ? {} : { team }),
     ...(catalogue === undefined ? {} : { catalogue }),
   }
   const next = ensureActivateModel(ctx.models, scope, target, now(), {

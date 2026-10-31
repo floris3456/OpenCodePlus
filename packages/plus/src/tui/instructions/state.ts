@@ -81,7 +81,6 @@ import {
 } from "../../instructions/ops.js"
 import { folderIdOfRef } from "../../instructions/folders.js"
 import { matchedTree, query } from "../../instructions/query.js"
-import { storedRecords } from "../../instructions/resolve-memo.js"
 import { advanceMove, startMove, type MoveState, type MoveStep } from "./move.js"
 import { Definition, InstructionsBatchOutput, InstructionsClipboardOutput, type Plus, type Snapshot, type SnapshotRecord } from "../../rpc.js"
 import { createSnapshotCache, type SnapshotCache } from "../snapshot-cache.js"
@@ -251,13 +250,15 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     await awaitDrain()
     const previous = clipboard()
     // A paste carries every row's configuration and can take a while (a whole agent).
-    if (action === "paste" && previous !== undefined) setStatus(`Pasting ${previous.rows.length} row(s)…`)
+    const label = action === "paste" && previous !== undefined ? `Pasting ${previous.rows.length} row(s) onto "${node.label}"` : undefined
+    const started = Date.now()
     try {
-      const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
+      const request = plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
         action,
         ...(previous === undefined ? {} : { clipboard: previous.id }),
         ...(action === "paste" ? { into: node.id } : { ids: selectionContains(node) ? [...selection()] : [node.id] }),
       } }, { location: context.location })
+      const result = label === undefined ? await request : await running(label, request)
       const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsClipboardOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
       if (disposed) {
         if (Option.isSome(decoded) && !("error" in decoded.value) && decoded.value.clipboard !== undefined)
@@ -279,7 +280,8 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       setStatus(decoded.value.status)
       return true
     } catch (error) {
-      setStatus(errorMessage(error))
+      if (label === undefined) setStatus(errorMessage(error))
+      else failed(label, started, error)
       return false
     }
   }
@@ -288,11 +290,14 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   // becomes the cursor row. `name` names the copy of a single row.
   async function duplicateRows(ids: readonly string[], name?: string): Promise<boolean> {
     await awaitDrain()
-    setStatus(ids.length === 1 ? "Duplicating…" : `Duplicating ${ids.length} rows…`)
+    const only = ids.length === 1 ? treeMemo() : undefined
+    const first = only === undefined ? undefined : findLazy(only, ids[0]!)
+    const label = first === undefined ? `Duplicating ${ids.length} row(s)` : `Duplicating "${first.label}"`
+    const started = Date.now()
     try {
-      const result = await plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
+      const result = await running(label, plus["instructions.run"]({ op: "clipboard", actor: { type: "tui" }, input: {
         action: "duplicate", ids: [...ids], ...(name === undefined ? {} : { name }),
-      } }, { location: context.location })
+      } }, { location: context.location }))
       if (disposed) return false
       const decoded = Schema.decodeUnknownOption(Schema.Union([InstructionsClipboardOutput, Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })]))(result)
       if (Option.isNone(decoded)) { setStatus("Unexpected duplicate response"); return false }
@@ -308,9 +313,41 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       context.ui.toast.show({ variant: "success", message: decoded.value.status })
       return true
     } catch (error) {
-      setStatus(errorMessage(error))
+      failed(label, started, error)
       return false
     }
+  }
+
+  // A long op (a team copy can take minutes) shows that it runs and for how
+  // long, in a line a reload does not clear (load() empties the status).
+  const [busy, setBusy] = createSignal<{ readonly label: string; readonly started: number }>()
+  const [clock, setClock] = createSignal(Date.now())
+  async function running<T>(label: string, request: Promise<T>): Promise<T> {
+    setBusy({ label, started: Date.now() })
+    setClock(Date.now())
+    const timer = setInterval(() => setClock(Date.now()), 1000)
+    try {
+      return await request
+    } finally {
+      clearInterval(timer)
+      setBusy(undefined)
+    }
+  }
+
+  function progress(): string | undefined {
+    const current = busy()
+    if (current === undefined) return undefined
+    const elapsed = clock() - current.started
+    if (elapsed < BUSY_NOTE_MS) return `${current.label}… ${formatDuration(elapsed)}`
+    return `${current.label}… ${formatDuration(elapsed)} · still running on the server, wait for its answer`
+  }
+
+  // The status line can be emptied by a reload when the server comes back:
+  // the toast keeps the failure in sight.
+  function failed(label: string, started: number, error: unknown) {
+    const message = longOpFailure(label, Date.now() - started, error)
+    setStatus(message)
+    context.ui.toast.show({ variant: "error", message })
   }
 
   function cancelClipboard(): boolean {
@@ -440,7 +477,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     confirmedRecords = recordsOf(cached.snapshot.records)
   }
 
-  // Presets and Defaults entries get the Role/persona row every agent has.
+  // Presets, Defaults entries and team members get the Role/persona row every agent has.
   // An optimistic edit replaces the records and keeps the items array, so the
   // converted items (with control and role rows) are reused unless the items or
   // the preset state (links, entries, presets: records) changed.
@@ -448,7 +485,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
   const itemsForTree = createMemo<Item[]>(() => {
     const current = snapshot()
     if (!current) return []
-    const presetState = presetStateOfSnapshot(current)
+    const presetState = { ...presetStateOfSnapshot(current), teams: (current.teams ?? []).map((team) => ({ agents: team.agents })) }
     const presets = JSON.stringify(presetState)
     if (itemsReuse !== undefined && itemsReuse.items === current.items && itemsReuse.presets === presets) return itemsReuse.value
     const value = withOwnerRoles(withControlItems(current.items.map(itemOf)), presetState)
@@ -794,11 +831,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
       nextRules ?? converted.filter((record): record is RuleRecord => record.type === "rule")
 
     const links = nextRowlinks === undefined ? current.records.filter((record) => record.type === "rowlink") : nextRowlinks.map(snapshotRecordOf).filter((record): record is SnapshotRecord => record !== undefined)
-    // Saved as the tree reads them: no edit equal to what its row inherits (inherited.ts).
-    const stored = storedRecords(memoInput(), [...nextCustomizations, ...nextSplits, ...preservedRules]).filter(
-      (record): record is CustomizationRecord => record.type === "customization",
-    )
-    const nextSnapshotRecords = [...toRpcRecords(stored, nextSplits, preserved, preservedRules), ...links]
+    const nextSnapshotRecords = [...toRpcRecords(nextCustomizations, nextSplits, preserved, preservedRules), ...links]
     setSnapshot({ ...current, records: nextSnapshotRecords })
 
     lastOpStatus = successStatus
@@ -1297,7 +1330,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     const confirmed = approved || await context.ui.dialog.confirm({
       title: node.enabledRow === undefined ? `Reset "${node.label}"?` : `Reset controls for "${node.label}"?`,
       message: node.enabledRow === undefined
-        ? `Reset "${node.label}" to its default? This discards the override and cannot be undone.`
+        ? `Reset "${node.label}" to what it inherits? This drops its own value at this level.`
         : "Remove all Settings and Compaction overrides at this level, including retained local compaction values, and follow inherited values?",
     })
     if (!confirmed) {
@@ -1983,6 +2016,7 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     setFilter,
     status,
     setStatus,
+    progress,
     loading,
     toggle: toggleSelected,
     cycle: cycleRow,
@@ -1996,6 +2030,11 @@ export function createInstructionsState(context: Plugin.Context, cache: Snapshot
     },
     saveText: reflect(saveTextRow, "Description"),
     reset: (node: TreeNode) => confirmSelection(node, "Reset", resetNode),
+    // Why r does nothing on a row: the op's own refusal, as the reset tool answers.
+    resetRefusal: (node: TreeNode) => {
+      const result = reset(memoInput(), node.id, treeMemo())
+      return "refusal" in result ? result.refusal : `"${node.label}" has no override to reset`
+    },
     saveSplit: reflect(saveSplitRow, "Split"),
     addSection: reflect(addSectionRow, "Added section"),
     createTeam,
@@ -2061,6 +2100,17 @@ function defaultsStatus(label: string, record: Plus.SnapshotModelSettingsRecord 
     ...(record.effort === undefined ? [] : [`effort ${record.effort}`]),
   ]
   return `Defaults › Models "${label}": ${set.join(", ")}`
+}
+
+const BUSY_NOTE_MS = 10_000
+
+// A transport failure says what it means for the op: the server closed the
+// connection or stopped, and the op may have written part of its rows.
+function longOpFailure(label: string, elapsed: number, error: unknown): string {
+  const after = formatDuration(elapsed)
+  if (typeof error === "object" && error !== null && "reason" in error && error.reason === "Transport")
+    return `${label} got no answer after ${after}: the server closed the connection or stopped (${errorMessage(error)}). Part of it may be written; the list reloads when the server is back.`
+  return `${label} failed after ${after}: ${errorMessage(error)}`
 }
 
 function errorMessage(error: unknown): string {

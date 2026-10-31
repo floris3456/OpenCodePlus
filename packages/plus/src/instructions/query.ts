@@ -194,22 +194,36 @@ function isDescriptionAlias(candidate: Candidate): boolean {
 // text fold into one: the shared Defaults row when it is one of them (the
 // Teams catalogue's shared row with it), else the first. Answers each kept
 // row and how many agents' copies it stands for.
+//
+// A row holding its own edit never folds into another: a fold's representative
+// would then be the shared Defaults row for a row somebody changed, so a plain
+// find after a write showed "off by default" and hid the edit (c-14). The
+// edited row keeps its own line reading "set here", and the copies that still
+// agree with each other fold as before.
 function foldCopies(state: QueryState, candidates: readonly Candidate[]): Map<Candidate, number> {
   const groups = new Map<string, Candidate[]>()
+  // A row holding its own edit stands alone: it is its own representative.
+  const own = new Set<Candidate>()
   for (const candidate of candidates) {
     const address = candidate.address
     if (address === undefined) continue
+    if (actionsOf(state, candidate).reset) {
+      own.add(candidate)
+      continue
+    }
     const key = JSON.stringify([address.item, address.section, nodeOf(state, candidate)?.badges.state ?? null, resolvedTextOf(state, candidate)])
     const group = groups.get(key)
     if (group === undefined) groups.set(key, [candidate])
     else group.push(candidate)
   }
-  return new Map(
+  const kept = new Map<Candidate, number>(
     [...groups.values()].map((group) => {
-      const kept = group.find((candidate) => candidate.address?.agent === null) ?? group[0]!
-      return [kept, group.filter((candidate) => candidate !== kept && candidate.address?.agent !== null).length]
+      const winner = group.find((candidate) => candidate.address?.agent === null) ?? group[0]!
+      return [winner, group.filter((candidate) => candidate !== winner && candidate.address?.agent !== null).length]
     }),
   )
+  for (const candidate of own) kept.set(candidate, 0)
+  return kept
 }
 
 // The same row at project, global and defaults (its id differs only in the
@@ -217,13 +231,19 @@ function foldCopies(state: QueryState, candidates: readonly Candidate[]): Map<Ca
 // their own things.
 function mostSpecific(candidates: readonly Candidate[]): Candidate[] {
   const rank = { project: 3, global: 2, defaults: 1 } as Record<string, number>
-  const thing = (candidate: Candidate) => candidate.id.split(":").map((part, index) => (index === 1 ? "*" : part)).join(":")
+  const thing = (candidate: Candidate) => {
+    const first = candidate.id.indexOf(":")
+    if (first === -1) return candidate.id
+    const second = candidate.id.indexOf(":", first + 1)
+    return second === -1 ? `${candidate.id.slice(0, first)}:*` : `${candidate.id.slice(0, first)}:*${candidate.id.slice(second)}`
+  }
   const best = new Map<string, Candidate>()
   for (const candidate of candidates) {
     const level = rank[levelOf(candidate) ?? ""]
     if (level === undefined) continue
-    const current = best.get(thing(candidate))
-    if (current === undefined || level > (rank[levelOf(current) ?? ""] ?? 0)) best.set(thing(candidate), candidate)
+    const key = thing(candidate)
+    const current = best.get(key)
+    if (current === undefined || level > (rank[levelOf(current) ?? ""] ?? 0)) best.set(key, candidate)
   }
   const kept = new Set(best.values())
   return candidates.filter((candidate) => kept.has(candidate) || rank[levelOf(candidate) ?? ""] === undefined)
@@ -337,6 +357,14 @@ interface Filter {
   /** `kind:group`: a tool's Description group only exists once its sections are known. */
   readonly mentionsGroups?: boolean
   readonly propagating: boolean
+  /**
+   * A positive `level:` or `agent:` term (without `_`): an item row's tool
+   * groups, parameters, rules and model fields share its owner, so when the
+   * item row fails it, every one of them does.
+   */
+  readonly ownerScoped?: boolean
+  /** A positive `type:` term naming only owner rows (agent, team, …): no item row or row below one matches it. */
+  readonly ownersOnly?: boolean
   /** Positive `level:`/`id:` terms: the only root levels whose rows can match. */
   readonly roots?: ReadonlySet<string>
   /** Positive `id:` terms: the lowercased prefixes a matching id starts with. */
@@ -416,7 +444,7 @@ function splitOfAddress(state: QueryState, address: Address): SplitRecord | unde
   return state.splits.get(JSON.stringify([address.level, address.agent, address.item, catalogueForAddress(address)]))?.[0]
 }
 
-function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "memberOf" | "level" | "catalogue">): Item | undefined {
+function lookupItem(state: QueryState, itemId: string, owner: string | null, context?: Pick<Address, "team" | "level" | "catalogue">): Item | undefined {
   if (isControl(itemId)) return controlItemFor(state.memo.ctx.items, { item: itemId, agent: owner, ...context })
   const matches = state.items.get(itemId) ?? []
   const item = (owner === null ? undefined : matches.find((entry) => applies(entry, owner))) ?? matches[0]
@@ -460,8 +488,11 @@ function collectCandidates(state: QueryState, parsed: Parsed, chains = false, co
   const needIds = !skipRows || parsed.filters.some((filter) => filter.mentionsSections)
   const visit = (lazy: Lazy) => {
     if (lazy.kind === "item" && lazy.address !== undefined) {
-      const enumerated = !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
+      // Another owner's row, or a find for owners only: no row below it can match either.
+      const below = missesBelow(parsed, lazy)
+      const enumerated = below || !needIds || failsPropagating(parsed, lazy) || missesById(parsed, lazy.id) ? [] : sectionsFor(lazy)
       push({ id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: enumerated.map((section) => section.id) })
+      if (below) return
       for (const section of enumerated) {
         if (!skipRows)
           push({ id: section.id, kind: "section", label: section.label, depth: section.depth, orphan: false, lazy: section.row, parent: section.parent ?? lazy, address: section.address, sectionIds: [] })
@@ -549,8 +580,21 @@ function missesById(parsed: Parsed, itemId: string): boolean {
 }
 
 function failsPropagating(parsed: Parsed, lazy: Lazy): boolean {
-  const probe: Candidate = { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
+  const probe = probeOf(lazy)
   return parsed.filters.some((filter) => filter.propagating && !filter.test(probe))
+}
+
+const ownerTypes = new Set(["agent", "team", "member", "preset", "entry"])
+
+function missesBelow(parsed: Parsed, lazy: Lazy): boolean {
+  if (parsed.filters.some((filter) => filter.ownersOnly === true)) return true
+  if (!parsed.filters.some((filter) => filter.ownerScoped === true)) return false
+  const probe = probeOf(lazy)
+  return parsed.filters.some((filter) => filter.ownerScoped === true && !filter.test(probe))
+}
+
+function probeOf(lazy: Lazy): Candidate {
+  return { id: lazy.id, kind: lazy.kind, label: lazy.label, depth: lazy.depth, index: -1, orphan: false, lazy, parent: undefined, address: lazy.address, sectionIds: [], node: undefined, resolvedText: undefined, upstreamText: undefined }
 }
 
 interface SectionRow {
@@ -592,31 +636,32 @@ function pushOrphans(
 ): void {
   const seen = new Set<string>()
   for (const record of state.memo.ctx.customizations) {
-    const key = JSON.stringify([record.level, record.agent, record.item, record.section, catalogueOf(record.catalogue)])
+    const key = JSON.stringify([record.level, record.agent, record.item, record.section, catalogueOf(record.catalogue), record.team ?? null])
     if (seen.has(key)) continue
     seen.add(key)
     if (record.section !== null && skipSections) continue
-    if (!isOrphan(state, record.level, record.agent, record.item, record.section, record.catalogue)) continue
+    if (!isOrphan(state, record.level, record.agent, record.item, record.section, record.catalogue, record.team)) continue
     const address: Address = {
       level: record.level,
       agent: record.agent,
       item: record.item,
       section: record.section,
+      ...(record.team === undefined ? {} : { team: record.team }),
       ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
     }
-    const owner = ownerSegmentOf(record.agent, record.catalogue)
+    const owner = record.team !== undefined && record.agent !== null ? `${record.team.team}/:${record.agent}` : ownerSegmentOf(record.agent, record.catalogue)
     if (record.section === null)
       push({ id: `item:${record.level}:${owner}:${record.item}`, kind: "item", label: record.item, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
     else
       push({ id: `section:${record.level}:${owner}:${record.item}:${record.section}`, kind: "section", label: record.section, depth: 0, orphan: true, lazy: undefined, parent: undefined, address, sectionIds: [] })
   }
   for (const split of state.memo.ctx.splits) {
-    const key = JSON.stringify([split.level, split.agent, split.item, null, catalogueOf(split.catalogue)])
+    const key = JSON.stringify([split.level, split.agent, split.item, null, catalogueOf(split.catalogue), split.team ?? null])
     if (seen.has(key)) continue
     seen.add(key)
-    if (!isOrphan(state, split.level, split.agent, split.item, null, split.catalogue)) continue
+    if (!isOrphan(state, split.level, split.agent, split.item, null, split.catalogue, split.team)) continue
     push({
-      id: `item:${split.level}:${ownerSegmentOf(split.agent, split.catalogue)}:${split.item}`,
+      id: `item:${split.level}:${split.team !== undefined && split.agent !== null ? `${split.team.team}/:${split.agent}` : ownerSegmentOf(split.agent, split.catalogue)}:${split.item}`,
       kind: "item",
       label: split.item,
       depth: 0,
@@ -628,6 +673,7 @@ function pushOrphans(
         agent: split.agent,
         item: split.item,
         section: null,
+        ...(split.team === undefined ? {} : { team: split.team }),
         ...(split.catalogue === undefined ? {} : { catalogue: split.catalogue }),
       },
       sectionIds: [],
@@ -647,14 +693,24 @@ function isOrphan(
   itemId: string,
   section: string | null,
   catalogue?: Catalogue,
+  team?: TeamRef,
 ): boolean {
   const item = lookupItem(state, itemId, agent)
   if (item === undefined && !state.memo.ctx.items.some((row) => row.permissionSource === itemId)) return true
-  // Presets and Defaults entries own records too, without being agents.
-  if (agent !== null && !state.agents.has(agent) && !ownsRecords(state, level, agent)) return true
+  if (agent !== null && !knownOwner(state, level, agent, team)) return true
   if (section === null) return false
   if (item === undefined) return true
-  return !splitOf(state.memo, level, agent, item, catalogue).sections.some((entry) => entry.id === section)
+  return !splitOf(state.memo, level, agent, item, catalogue, team).sections.some((entry) => entry.id === section)
+}
+
+// A member's rows are stored with its team: they belong to a member of that
+// team (or a team's Special agent), not to whatever agent has the name.
+// Presets and Defaults entries own records too, without being agents.
+function knownOwner(state: QueryState, level: Level, agent: string, team: TeamRef | undefined): boolean {
+  if (team !== undefined && (team.level === "project" || team.level === "global"))
+    return state.memo.ctx.teams.some((entry) => entry.level === team.level && entry.team === team.team && entry.agents.includes(agent)) ||
+      state.agents.get(agent)?.origin === "special"
+  return state.agents.has(agent) || ownsRecords(state, level, agent)
 }
 
 function ownsRecords(state: QueryState, level: Level, agent: string): boolean {
@@ -873,7 +929,7 @@ function isOf(state: QueryState, candidate: Candidate, what: string): boolean {
 }
 
 function teamNamesOf(state: QueryState, candidate: Candidate): string[] {
-  const team = candidate.address?.memberOf ?? candidate.address?.team
+  const team = candidate.address?.team
   if (team !== undefined) return [team.team]
   // Team presets, member presets and Teams entries name their team on the row.
   const ownerTeam = candidate.lazy?.owner?.team
@@ -1040,7 +1096,7 @@ function parseTerm(raw: string, state: QueryState): TermOut | undefined {
   const roots = rootsFor(key, alts, negate)
   const idPrefixes = !negate && key === "id" ? alts.map(lower) : undefined
   const wantsOrphans = (key === "orphan" && wantsTrue(alts, negate)) || (key === "is" && !negate && alts.some((alt) => lower(alt) === "orphaned"))
-  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
+  return { negate, rank: rankFor(key, raw), excludesSections: excludesSections(key, alts, negate), mentionsSections: (key === "has" && alts.some((alt) => lower(alt) === "sections")) || (key === "type" && alts.some((alt) => lower(alt) === "section")), mentionsGroups: !negate && (key === "kind" || key === "type") && alts.some((alt) => lower(alt) === "group"), propagating: !negate && propagatingKeys.has(key), ownerScoped: !negate && (key === "level" || (key === "agent" && !alts.includes("_"))), ownersOnly: !negate && key === "type" && alts.every((alt) => ownerTypes.has(lower(alt))), ...(roots === undefined ? {} : { roots }), ...(idPrefixes === undefined ? {} : { idPrefixes }), test: testFor(key, alts, raw, state), wantsOrphans, wantsChains: key === "in" }
 }
 
 // The roots a positive `level:` or `id:` term can match under: every row id

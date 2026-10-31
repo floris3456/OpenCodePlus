@@ -152,7 +152,7 @@ Reads never refuse for protection (`packages/plus/src/tools.ts:66`).
 
 Agent/member rows also accept `state` and `mode` edits. Their `setting:*` and
 `compaction:*` rows reuse scoped customization records; resetting the entity
-clears only those nine controls. See [Agent controls](agent-controls.md) for
+clears only those ten controls. See [Agent controls](agent-controls.md) for
 scope, inheritance, remote-compaction behavior, and examples. The canonical
 control IDs and validation live in
 `packages/plus/src/instructions/agent-controls.ts`.
@@ -650,7 +650,7 @@ resolves disabled (`packages/plus/src/instructions/apply.ts:408`–
 | Action | Governs | Source |
 | --- | --- | --- |
 | `instructions` | The `instructions` namespace | `packages/plus/src/tools.ts:62` |
-| `team.<name>` | One team tool; non-members get one `team.*` deny | `packages/plus/src/teams/tools.ts:484`, `packages/plus/src/instructions/apply.ts:434` |
+| `team.<name>` | One team tool; every agent whose `tool:team_<name>` row is off gets a `team.<name>` deny | `packages/plus/src/teams/tools.ts:484`, `packages/plus/src/instructions/apply.ts:1312` |
 | `shell`, `read`, `edit`, `write`, `webfetch` (tool `web_opencode_fetch`), `glob`, `grep` | Curated tool rules carried by perm items | `packages/plus/src/instructions/tool-permissions.ts:110`–`packages/plus/src/instructions/tool-permissions.ts:211` |
 | `subagent`, `skill` | Id rules populated from discovered agents and skills | `packages/plus/src/instructions/tool-permissions.ts:226`–`packages/plus/src/instructions/tool-permissions.ts:234` |
 | `question`, `task`, `shell`, `external_directory`, `read`, `subagent` | Role-native answers installed by team policy rows | `packages/plus/src/teams/policy.ts:98`–`packages/plus/src/teams/policy.ts:113` |

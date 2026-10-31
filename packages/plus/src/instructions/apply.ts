@@ -60,7 +60,8 @@ import { guidanceItemId, guidancePath, isModelPromptFile, teachingFilePath, teac
 import { matchesModel, type ModelTarget } from "./model-patterns.js"
 import { gateOf } from "./requires.js"
 import { editInputSchema, type ParamPlan } from "./parameters.js"
-import { booleanControl, controlItemFor, isControl } from "./agent-controls.js"
+import { booleanControl, controlItemFor, isControl, LFS_POINTERS } from "./agent-controls.js"
+import { installToolOutputCap, toolOutputCap } from "./tool-output-cap.js"
 import { isAttentionRow, type AttentionRow } from "../attention-settings.js"
 import { runPublish } from "./publish-runtime.js"
 import type { OrderRecord } from "./folders.js"
@@ -229,7 +230,7 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     input.records.length === 0 &&
     models.length === 0 &&
     !teamRules &&
-    teamNamespaceDenials(input).length === 0 &&
+    teamToolDenials(input).length === 0 &&
     input.agents.every((agent) => plain(input.scopes, agent.id)) &&
     systemOrders(input).length === 0
   )
@@ -271,6 +272,12 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     const mcPlans = mcpPlans(input)
     if (mcPlans.length > 0) {
       const reg = await applyMcpWithUpdates(ctx, mcPlans)
+      if (reg !== undefined) installed.push(reg)
+    }
+
+    const toolCaps = toolOutputCapsOf(input)
+    if (toolCaps.size > 0) {
+      const reg = await installToolOutputCap(ctx, toolCaps)
       if (reg !== undefined) installed.push(reg)
     }
 
@@ -455,7 +462,16 @@ export async function applyPublishParts(
     agentReload = true
   }
 
-  // 8. teamFiles
+  // 8. tool-result cap
+  const toolCaps = toolOutputCapsOf(input.applyInput)
+  const toolCapsFp = JSON.stringify([...toolCaps].sort((left, right) => (left[0] < right[0] ? -1 : 1)))
+  if (toolCapsFp !== state.appliedParts.get("toolOutput")?.fingerprint) {
+    toDispose.push(...(state.appliedParts.get("toolOutput")?.registrations ?? []))
+    const reg = toolCaps.size === 0 ? undefined : await installToolOutputCap(ctx, toolCaps)
+    state.appliedParts.set("toolOutput", { fingerprint: toolCapsFp, registrations: reg === undefined ? [] : [reg] })
+  }
+
+  // 9. teamFiles
   const filePlans = await teamFilePlans(input.fileAgents ?? [], input.teamRoleOverrides, input.specialRoleOverrides)
   const fileFp = JSON.stringify(filePlans)
   const installedFileIds: string[] = filePlans.agents.map((a: { id: string }) => a.id)
@@ -473,7 +489,7 @@ export async function applyPublishParts(
     agentReload = true
   }
 
-  // 9. teamBuiltin
+  // 10. teamBuiltin
   const builtinPlans = teamBuiltinPlans(input.builtinWinners ?? [], input.builtins ?? [], input.teamRoleOverrides)
   const builtinFp = JSON.stringify(builtinPlans)
   const installedBuiltinIds: string[] = builtinPlans.map((a: { id: string }) => a.id)
@@ -508,7 +524,8 @@ export async function applyPublishParts(
 export function controlPlans(input: ApplyInput): readonly { agent: string; rows: readonly { id: string; text: string; enabled: boolean }[] }[] {
   return input.agents.flatMap((agent) => {
     // Notification rows change no agent field: Plus reads them itself (attentionRowsOf).
-    const rows = input.items.filter((item) => isControl(item.id) && !isAttentionRow(item.id) && applies(item, agent.id))
+    // The tool-result cap is Plus's too (toolOutputCapsOf): no agent field carries it.
+    const rows = input.items.filter((item) => isControl(item.id) && !isAttentionRow(item.id) && item.id !== "setting:tool-output" && applies(item, agent.id))
     const unique = [...new Set(rows.map((item) => item.id))].flatMap((id) => {
       const item = controlItemFor(rows, { agent: agent.id, item: id, team: agent.team })
       if (item === undefined) return []
@@ -539,6 +556,35 @@ export function attentionRowsOf(input: ApplyInput): ReadonlyMap<string, Readonly
       return [agent.id, Object.fromEntries(texts)] as const
     }),
   )
+}
+
+/**
+ * Every agent's resolved tool-result cap in tokens, absent when it has none.
+ * Like attention rows this changes no agent field: Plus's own hook reads it
+ * (tool-output-cap.ts). A team member with an empty row takes the member
+ * default; any other agent with an empty row has no cap.
+ */
+export function toolOutputCapsOf(input: ApplyInput): ReadonlyMap<string, number> {
+  return new Map(
+    input.agents.flatMap((agent) => {
+      const rows = input.items.filter((item) => item.id === "setting:tool-output" && applies(item, agent.id))
+      const item = controlItemFor(rows, { agent: agent.id, item: "setting:tool-output", team: agent.team })
+      if (item === undefined) return []
+      const cap = toolOutputCap(resolvedFor(item, agent, input, gateFor(input, agent)).assembled, agent.team !== undefined)
+      return cap === undefined ? [] : [[agent.id, cap] as const]
+    }),
+  )
+}
+
+/** Members whose `setting:lfs` resolves to `pointers`; every other member's worktree keeps full LFS content. */
+export function lfsRowsOf(input: ApplyInput): ReadonlyMap<string, "pointers"> {
+  const found = input.agents.flatMap((agent) => {
+    const rows = input.items.filter((item) => item.id === "setting:lfs" && applies(item, agent.id))
+    const item = controlItemFor(rows, { agent: agent.id, item: "setting:lfs", team: agent.team })
+    if (item === undefined) return []
+    return resolvedFor(item, agent, input).assembled === LFS_POINTERS ? [[agent.id, "pointers" as const] as const] : []
+  })
+  return new Map(found)
 }
 
 export async function applyControlsWithPlans(
@@ -1196,7 +1242,7 @@ interface Rule {
   readonly resource: string
   readonly effect: PolicyRule["effect"]
   readonly message?: string
-  /** A row's own refusal (a rule row that is off, the non-member namespace deny): always lands last. */
+  /** A row's own refusal (a rule row or a team tool row that is off): always lands last. */
   readonly refusal?: boolean
   /** An allow-list (shellAllowList, externalAllowList): its closing deny, then what its allow rows open, both before the refusals. */
   readonly allowList?: "closing" | "opening"
@@ -1250,39 +1296,29 @@ function policyRules(input: ApplyInput): { agent: string; action: string; resour
   )
 }
 
-// What hides the team namespace from everyone else (item 4): an agent that is
-// not a member of an enabled team gets one wildcard deny on the namespace's
-// permission action, which is exactly the shape core drops a tool for
-// (`packages/core/src/tool.ts` whollyDisabled matches the action by wildcard
-// against `options.permission`). Nothing is emitted when the namespace is not
-// registered at all, so an inventory without team tools installs nothing.
-function teamNamespaceDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
-  const registered = input.items.some(
-    (item) => item.kind === "tool" && (item.namespace === teamNamespace || item.id.startsWith(`tool:${teamNamespace}_`)),
-  )
-  if (!registered) return []
-  const members = new Set(input.teamAgents ?? [])
-  return input.agents
-    .filter((agent) => !members.has(agent.id))
-    .map((agent) => ({ agent: agent.id, action: `${teamNamespace}.*`, resource: "*", effect: "deny" as const, refusal: true }))
-}
-
-const teamNamespace = "team"
+const teamToolPrefix = "tool:team_"
 
 // A `tool:team_<name>` row that resolves off refuses the call itself: one
 // core deny on the tool's own permission (`team.<name>`, teams/tools.ts
-// teamOptions), for direct and Code Mode team tools alike. Hiding a direct
-// tool from the model is not a refusal, and the Code Mode denial keyed on the
-// registry id never matches `team.<name>`; the old per-kind team tool ceiling
-// installed exactly this deny. A non-member already has the whole namespace
-// denied (teamNamespaceDenials).
-function teamToolDenials(candidates: readonly ToolCandidate[], members: readonly string[] = []): Rule[] {
-  const prefix = `tool:${teamNamespace}_`
-  return candidates.flatMap((candidate): Rule[] => {
-    if (candidate.enabled || !candidate.item.id.startsWith(prefix) || !members.includes(candidate.agent)) return []
-    const action = `${teamNamespace}.${candidate.item.id.slice(prefix.length)}`
-    return [{ agent: candidate.agent, action, resource: "*", effect: "deny", refusal: true }]
-  })
+// teamOptions), for direct and Code Mode team tools alike, and for every agent
+// (a stand-alone agent's team tool rows are off until something turns them
+// on, model.ts standAloneTeamTool). The deny is also the shape core drops a
+// direct tool for (`packages/core/src/tool.ts` whollyDisabled), so the model
+// never sees a team tool it may not call. Hiding a direct tool from the model
+// is not a refusal, and the Code Mode denial keyed on the registry id never
+// matches `team.<name>`.
+// A team's Special agent (title, summary, compaction) runs under its team's
+// chain but is no member: its team tool rows answer as a stand-alone agent's.
+function teamToolDenials(input: ApplyInput): Rule[] {
+  const tools = input.items.filter((item) => item.kind === "tool" && item.id.startsWith(teamToolPrefix))
+  const members = new Set(input.teamAgents ?? [])
+  return input.agents.flatMap((agent) =>
+    tools.flatMap((item): Rule[] => {
+      const caller = members.has(agent.id) ? agent : { id: agent.id, level: agent.level }
+      if (!applies(item, agent.id) || resolvedFor(item, caller, input).enabled) return []
+      return [{ agent: agent.id, action: `team.${item.id.slice(teamToolPrefix.length)}`, resource: "*", effect: "deny", refusal: true }]
+    }),
+  )
 }
 
 // Disabled-rule scrub keywords per agent: the union of keywords from every
@@ -1294,6 +1330,10 @@ function scrubKeywordsByAgent(input: ApplyInput): Map<string, string[]> {
     const keywords = input.items.flatMap((upstream) => {
       const item = runtimeRule(upstream, agent, input)
       if (item === undefined || item.kind !== "perm") return []
+      // A subagent row never scrubs, whatever keywords a stored record holds:
+      // Core already lists only the subagents an agent may run, so a keyword
+      // would only cut prose that names an agent (tool-permissions.ts idRules).
+      if (item.permTool === "subagent") return []
       // An allow row that is off opens nothing; scrubbing its keywords would
       // only delete prompt lines for a refusal it never makes.
       if (item.allow === true) return []
@@ -1343,10 +1383,12 @@ function describeChecks(
 const CHECKS_NOTE_KEY = JSON.stringify(["projectChecksNote"])
 
 // Scrub the session prompt: drop whole lines containing disabled keywords
-// from every tool description and every system part (base plus instructions).
-// Runs inside the existing session.context hook, after the text plans.
-// Preservation discipline (mirroring spliceToolGuidance): if scrubbing would
-// empty a description or system text entirely, leave the original text rather
+// from every tool description. Runs inside the existing session.context hook,
+// after the text plans. System parts (role rows, user system rows, base
+// prompts, Core's own parts such as the skill list) are author or host text
+// and are never cut: a denied action is enforced by its permission rule, not
+// by hiding prose. Preservation discipline (mirroring spliceToolGuidance): if
+// scrubbing would empty a description entirely, leave the original text rather
 // than installing nothing.
 function applyRuleScrub(event: SessionContext, keywords: readonly string[]): void {
   if (keywords.length === 0) return
@@ -1354,13 +1396,6 @@ function applyRuleScrub(event: SessionContext, keywords: readonly string[]): voi
     const scrubbed = scrubLines(tool.description, keywords).text
     if (scrubbed.trim().length === 0) continue
     tool.description = scrubbed
-  }
-  for (let index = 0; index < event.system.length; index++) {
-    const part = event.system[index]
-    if (part === undefined || typeof part.text !== "string") continue
-    const scrubbed = scrubLines(part.text, keywords).text
-    if (scrubbed.trim().length === 0) continue
-    if (scrubbed !== part.text) event.system[index] = { ...part, text: scrubbed }
   }
 }
 
@@ -1667,8 +1702,7 @@ export function sessionPlans(
     ...shellAllowList(input),
     ...externalAllowList(input),
     ...policyRules(input),
-    ...teamNamespaceDenials(input),
-    ...teamToolDenials(candidates, input.teamAgents),
+    ...teamToolDenials(input),
   ]).map((rule) => ({
     agent: rule.agent,
     action: rule.action,

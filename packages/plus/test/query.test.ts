@@ -13,7 +13,7 @@ import { buildMemo, type TeamInput } from "../src/instructions/resolve-memo.js"
 import { findCollapse, matchedTree, query } from "../src/instructions/query.js"
 import { itemOf } from "../src/instructions/snapshot.js"
 import { policyMembersOf, teamPolicyItems } from "../src/instructions/team-policy-rows.js"
-import { expandedTree, type TreeNode } from "../src/instructions/tree.js"
+import { buildTreeMemo, expandedTree, type TreeNode } from "../src/instructions/tree.js"
 import { parentsOf } from "../src/tui/instructions/workspace.js"
 import { Plus } from "../src/rpc.js"
 import { badgeLabels } from "../src/tui/instructions/tree-pane.js"
@@ -413,12 +413,12 @@ test("excluded follows section state, own or inherited", () => {
 })
 
 test("identical pins a byte-identical override", () => {
-  // An agent's copy of the text it inherits is no edit at all (inherited.ts);
-  // a preset's copy is kept, since agents linked to it read it too.
-  expect(ids("identical:true")).not.toContain("item:project:Implementer:base:custom")
+  // An agent's copy of the text it inherits is an own value, and found here;
+  // so is a preset's.
+  expect(ids("identical:true")).toContain("item:project:Implementer:base:custom")
   const preset = makeRecord({ level: "preset", agent: "build", item: "base:custom", text: "custom base", basedOn: fingerprint("custom base") })
   const found = query(input({ records: [...records(), preset] }), { where: "identical:true", withoutAliases: true }).rows.map((row) => row.id)
-  expect(found).toEqual(["item:preset:build:base:custom"])
+  expect(found).toEqual(["item:project:Implementer:base:custom", "item:preset:build:base:custom"])
   expect(ids("identical:true")).not.toContain(bash)
   expect(ids("identical:false")).toContain(bash)
 })
@@ -1056,4 +1056,36 @@ test("matchedTree scopes a level: filter to its root and keeps the root as an an
   const match = result.rows.find((node) => result.matched.has(node.id))
   expect(match).toBeDefined()
   expect(result.rows.some((node) => node.id === "root:project")).toBe(true)
+})
+
+// c-14: after an agent's own edit, a plain find folded that copy into the
+// shared Defaults row, so the only line read "off by default" and the edit
+// looked lost. A row holding its own edit keeps its own line.
+test("an agent's own edit never folds into the shared Defaults row", () => {
+  const updated = "2026-01-01T00:00:00.000Z"
+  const shell = makeItem({ id: "tool:shell", kind: "tool", group: "native", title: "shell", text: "run commands" })
+  const rule = makeItem({ id: "perm:shell:git-push", kind: "perm", group: "none", title: "Git push", permTool: "shell", text: "Git push\ngit push *" })
+  const fixture = {
+    items: [shell, rule],
+    agents: [
+      // alpha follows the native build preset, so it inherits this rule on;
+      // beta inherits nothing and reads the shared row's off.
+      { id: "alpha", scope: "project" as const, origin: "user" as const },
+      { id: "beta", scope: "project" as const, origin: "user" as const },
+    ],
+    links: [{ type: "link" as const, level: "project" as const, agent: "alpha", preset: { kind: "agent" as const, id: "build" }, updated }],
+    teams: [],
+  }
+  const shared: CustomizationRecord = { type: "customization", level: "defaults", agent: null, item: rule.id, section: null, state: "off", basedOn: "", updated }
+  const where = 'name:"git-push"'
+  const rows = (records: CustomizationRecord[]) =>
+    query({ ...fixture, records }, { where, fields: ["id", "from"], collapse: findCollapse(where) }).rows
+  // alpha's own off is an edit (it inherits on): its line stays and says
+  // where the value came from. beta still folds into the shared Defaults row.
+  const edited = rows([shared, { ...shared, level: "project", agent: "alpha" }])
+  expect(edited).toContainEqual({ id: "item:project:alpha:perm:shell:git-push", from: "set here" })
+  // The Agents catalogue's shared row no longer counts alpha among its copies.
+  expect(edited.some((row) => row.id === "item:defaults::perm:shell:git-push")).toBe(true)
+  // Without the edit the two agents' copies are the shared row's, folded.
+  expect(rows([shared])).not.toContainEqual({ id: "item:project:alpha:perm:shell:git-push", from: "set here" })
 })

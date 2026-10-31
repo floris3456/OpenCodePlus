@@ -378,7 +378,7 @@ test("team member rows expand to full agent subtrees with team-prefixed groups",
   expect(base?.address?.catalogue).toBe("teams")
 })
 
-test("a team member's own rows list under the tools they govern, rows for absent tools under Other permissions, and team tools never reach the Agents catalogue", () => {
+test("a team member's own rows list under the tools they govern, rows for absent tools under Other permissions, and the Agents catalogue lists team tools off", () => {
   const member = "gemini-implementer"
   const peer = "sol-orchestrator"
   const run = { id: "w-0000000000000001", role: member, paths: ["src/*"] }
@@ -408,7 +408,7 @@ test("a team member's own rows list under the tools they govern, rows for absent
   expect(rows[1]?.label).toBe(peer)
   expect(rows[1]?.badges.state).toBe("off")
   expect(rows[1]?.actions?.toggle).toBe(true)
-  expect(rows[1]?.address).toEqual({ level: "project", agent: member, item: `perm:team_delegate:to.${peer}`, section: null, catalogue: "teams", memberOf: { level: "project", team: "crew" } })
+  expect(rows[1]?.address).toEqual({ level: "project", agent: member, item: `perm:team_delegate:to.${peer}`, section: null, catalogue: "teams", team: { level: "project", team: "crew" } })
   // A row whose tool this inventory lacks (edit, for the run's edit scope)
   // stays reachable in one Other permissions group.
   const other = `group:project:crew/:${member}:tools:policy`
@@ -416,13 +416,15 @@ test("a team member's own rows list under the tools they govern, rows for absent
   const orphans = childrenOf(nodes, other).map((node) => node.id)
   expect(orphans).toContain(`item:project:crew/:${member}:perm:edit:run:${run.id}`)
   expect(orphans).not.toContain(`item:project:crew/:${member}:perm:team_delegate:to.${peer}`)
-  // One copy per owner. The member's stand-alone Agents-catalogue row reads
-  // the same records, so it carries its own single copy.
+  // One copy per owner. The member's own rows are its team's; the stand-alone
+  // Agents-catalogue row of its name is another owner with its own copy.
   expect(nodes.filter((node) => node.id === `item:project:crew/:${member}:perm:team_delegate:to.${peer}`)).toHaveLength(1)
-  // The Agents catalogue lists no team tool, for the member or for anyone else.
-  expect(nodes.some((node) => node.id === `item:project:${member}:tool:team_delegate`)).toBe(false)
-  expect(nodes.some((node) => node.id === "item:project:Implementer:tool:team_delegate")).toBe(false)
-  expect(nodes.some((node) => node.id === "item:defaults::tool:team_delegate")).toBe(false)
+  // The Agents catalogue lists team tools for every owner too (any agent may
+  // be given one); a stand-alone agent's row is off until something turns it on.
+  const shown = (id: string) => nodes.find((node) => node.id === id)?.badges
+  expect(shown(`item:project:${member}:tool:team_delegate`)).toMatchObject({ state: "off", fromLabel: "off by default" })
+  expect(shown("item:project:Implementer:tool:team_delegate")).toMatchObject({ state: "off", fromLabel: "off by default" })
+  expect(shown("item:defaults::tool:team_delegate")).toMatchObject({ state: "off" })
   expect(nodes.some((node) => node.id === `item:project:crew/:${member}:tool:team_delegate`)).toBe(true)
 })
 
@@ -507,10 +509,10 @@ test("registered team member yields its Role/persona under System", () => {
     item: "system:role",
     section: null,
     catalogue: "teams",
-    // Resolved as a member of crew; its own record stays `project/CrewMate`.
-    memberOf: { level: "project", team: "crew" },
+    // Resolved as a member of crew; its own record is `project/CrewMate@crew`.
+    team: { level: "project", team: "crew" },
   })
-  // The stand-alone row addresses the same record through the Agents chain.
+  // The stand-alone row addresses the agent's own record, `project/CrewMate`.
   expect(nodes.find((node) => node.id === "item:project:CrewMate:system:role")?.address).toEqual({
     level: "project",
     agent: "CrewMate",

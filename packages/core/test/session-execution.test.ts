@@ -1,7 +1,10 @@
 import type { FileSystem } from "@opencode/core/filesystem"
 import { describe, expect, test } from "bun:test"
 import { AIError, TransportError } from "@opencode/ai"
+import { Agent } from "@opencode/core/agent"
 import { Database } from "@opencode/core/database/database"
+import { Model } from "@opencode/core/model"
+import { Provider } from "@opencode/core/provider"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
@@ -20,9 +23,9 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
-import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
+import { SessionInboxTable, SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Scope } from "effect"
+import { Cause, Context, DateTime, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Schema, Scope } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
@@ -866,6 +869,129 @@ describe("SessionRestart background recovery", () => {
     }),
   )
 
+  // Regression cover for a background subagent that is mid-step when a graceful shutdown
+  // closes the scope owning execution and jobs: its durable record must stay `running`, so
+  // the next boot resumes the child instead of reporting it cancelled to the parent.
+  it.effect("keeps a running background subagent resumable through a graceful shutdown", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const parent = Session.ID.make("ses_shutdown_subagent_parent")
+      const child = Session.ID.make("ses_shutdown_subagent_child")
+      yield* seedSessions(database, [parent], { time_suspended: Date.now() })
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now() })
+
+      const childDraining = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      const jobs = yield* Job.make.pipe(Scope.provide(scope))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          sessionID === child
+            ? Deferred.succeed(childDraining, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.never,
+        undefined,
+        jobs,
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      // Launch the background subagent the way SubagentJob does: the job's run effect drains
+      // the child, so interrupting that fiber during shutdown must not cancel the job.
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Long inspection",
+        },
+        run: execution.resume(child).pipe(Effect.as("done")),
+      })
+      yield* jobs.background(child)
+      yield* Deferred.await(childDraining)
+      expect(yield* jobs.pendingBackground).toMatchObject([{ id: child, status: "running" }])
+
+      // A graceful shutdown: the server closes the scope owning execution and jobs.
+      yield* Scope.close(scope, Exit.void)
+
+      const restartedScope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(restartedScope, Exit.void))
+      const restartedJobs = yield* Job.make.pipe(Scope.provide(restartedScope))
+      const drained: Session.ID[] = []
+      const restarted = yield* buildExecution(
+        restartedScope,
+        ({ sessionID }) => Effect.sync(() => void drained.push(sessionID)),
+        undefined,
+        restartedJobs,
+      )
+      yield* Context.get(restarted, SessionRestart.Service).resumeSuspendedSessions
+      const restartedExecution = Context.get(restarted, SessionExecution.Service)
+      yield* Effect.forEach([parent, child], restartedExecution.awaitIdle, { discard: true })
+
+      // The child ran again, and the parent's notice is its completion, never a cancellation.
+      expect(drained).toContain(child)
+      expect(
+        (yield* SessionInbox.list(database.db, parent)).filter(
+          (item) => synthetic(item.payload).metadata?.state === "cancelled",
+        ),
+      ).toEqual([])
+    }),
+  )
+
+  // theorysnap 2026-10-28: a restart left running background subagents recorded as cancelled,
+  // and recovery only told the parent "Subagent cancelled". A child that still holds its
+  // execution claim was cut by the shutdown (a deliberate stop releases it), so it resumes.
+  for (const [claimed, last] of [[true, undefined], [false, undefined], [false, "assistant"], [false, "idle"]] as const)
+    it.effect(`a cancelled background subagent record whose child ${claimed ? "holds its claim" : "released its claim"}${last === undefined ? "" : ` and ends in ${last === "idle" ? "an idle marker" : "a cut step"}`} is ${claimed || last === "assistant" ? "resumed" : "reported cancelled"}`, () =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const jobs = yield* Job.Service
+        const parent = Session.ID.make(`ses_cancelled_subagent_parent_${claimed}_${last}`)
+        const child = Session.ID.make(`ses_cancelled_subagent_child_${claimed}_${last}`)
+        yield* seedSessions(database, [parent])
+        yield* seedSessions(database, [child], { parent_id: parent, ...(claimed ? { time_suspended: Date.now() } : {}) })
+        if (last !== undefined) yield* seedLastMessage(database, child, last)
+        yield* jobs.start({
+          id: child,
+          type: "subagent",
+          recovery: { kind: "subagent", parentSessionID: parent, childSessionID: child, agent: "explore", description: "Trees round 4" },
+          run: Effect.never,
+        })
+        yield* jobs.background(child)
+        yield* jobs.cancel(child)
+        expect(yield* jobs.pendingBackground).toMatchObject([{ id: child, status: "cancelled" }])
+
+        const drained: Session.ID[] = []
+        const childDrained = yield* Deferred.make<void>()
+        const scope = yield* Scope.make()
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+        const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+        const context = yield* buildExecution(
+          scope,
+          ({ sessionID }) =>
+            Effect.sync(() => void drained.push(sessionID)).pipe(
+              Effect.andThen(sessionID === child ? Deferred.succeed(childDrained, undefined) : Effect.void),
+            ),
+          undefined,
+          restarted,
+        )
+        yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+        const execution = Context.get(context, SessionExecution.Service)
+        const resumes = claimed || last === "assistant"
+        if (resumes) yield* Deferred.await(childDrained)
+        yield* Effect.forEach([child, parent], execution.awaitIdle, { discard: true })
+
+        const notices = (yield* SessionInbox.list(database.db, parent)).map((item) => synthetic(item.payload).metadata?.state)
+        if (resumes) {
+          expect(drained).toContain(child)
+          expect(notices).not.toContain("cancelled")
+          return
+        }
+        expect(drained).not.toContain(child)
+        expect(notices).toEqual(["cancelled"])
+      }),
+    )
+
   it.effect("delivers a subagent result persisted before restart without rerunning the child", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -1086,6 +1212,89 @@ describe("SessionRestart background recovery", () => {
           },
         },
       ])
+      expect(yield* restarted.pendingBackground).toEqual([])
+    }),
+  )
+
+  it.effect("tells the parent why a subagent it could not resume was not resumed", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_subagent_reason_parent")
+      const child = Session.ID.make("ses_subagent_reason_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent, time_suspended: Date.now(), resume_attempts: 2 })
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Out of budget",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+
+      const parentWoken = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(
+        scope,
+        () => Deferred.succeed(parentWoken, undefined),
+        { maxAttempts: 2 },
+        restarted,
+      )
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      yield* Deferred.await(parentWoken)
+
+      const notices = (yield* SessionInbox.list(database.db, parent)).filter(
+        (item) => synthetic(item.payload).metadata?.source === "subagent",
+      )
+      expect(notices).toHaveLength(1)
+      const text = synthetic(notices[0]?.payload).text ?? ""
+      expect(text).toContain("Subagent stopped; it was not resumed after the server restart")
+      expect(text).toContain("it used up its automatic resume budget")
+      expect(text).toContain(`subagent({ sessionID: "${child}"`)
+      expect(synthetic(notices[0]?.payload).metadata).toMatchObject({ state: "error", childID: child })
+    }),
+  )
+
+  it.effect("tells the parent when a background subagent's child session is gone", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_subagent_missing_child_parent")
+      const child = Session.ID.make("ses_subagent_missing_child")
+      yield* seedSessions(database, [parent])
+      // The durable record outlives the child row: recovery cannot resume what is gone.
+      yield* seedSessions(database, [child], { parent_id: parent })
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: { kind: "subagent", parentSessionID: parent, childSessionID: child, agent: "explore", description: "Deleted child" },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+      yield* database.db.delete(SessionTable).where(eq(SessionTable.id, child)).run().pipe(Effect.orDie)
+
+      const parentWoken = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(scope, () => Deferred.succeed(parentWoken, undefined), undefined, restarted)
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      yield* Deferred.await(parentWoken)
+
+      const notices = (yield* SessionInbox.list(database.db, parent)).filter(
+        (item) => synthetic(item.payload).metadata?.source === "subagent",
+      )
+      expect(notices).toHaveLength(1)
+      expect(synthetic(notices[0]?.payload).text).toContain("its child session is gone")
+      expect(synthetic(notices[0]?.payload).metadata).toMatchObject({ state: "cancelled", childID: child })
       expect(yield* restarted.pendingBackground).toEqual([])
     }),
   )
@@ -1391,4 +1600,32 @@ function buildExecution(
       scope,
     )
   })
+}
+
+// A synthetic inbox payload's text and metadata; other payload kinds read as empty.
+function synthetic(payload: unknown) {
+  return (payload ?? {}) as { readonly text?: string; readonly metadata?: Readonly<Record<string, unknown>> }
+}
+
+// The child's latest history row: a step cut mid-way (assistant) or a finished turn's idle marker.
+function seedLastMessage(database: Database.Service["Service"], sessionID: Session.ID, kind: "assistant" | "idle") {
+  const id = SessionMessage.ID.make(`msg_last_${sessionID}`)
+  const created = DateTime.makeUnsafe(Date.now())
+  const message =
+    kind === "assistant"
+      ? SessionMessage.Assistant.make({
+          id,
+          type: "assistant",
+          agent: Agent.defaultID,
+          model: { id: Model.ID.make("model"), providerID: Provider.ID.make("provider") },
+          content: [],
+          time: { created },
+        })
+      : SessionMessage.Idle.make({ id, type: "idle", outcome: "interrupted", time: { created } })
+  const { id: _, type, ...data } = Schema.encodeSync(SessionMessage.Info)(message)
+  return database.db
+    .insert(SessionMessageTable)
+    .values({ id, session_id: sessionID, type, seq: 1, time_created: DateTime.toEpochMillis(created), data })
+    .run()
+    .pipe(Effect.orDie, Effect.asVoid)
 }

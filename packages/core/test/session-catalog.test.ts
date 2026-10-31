@@ -69,6 +69,7 @@ const generateLayer = Layer.succeed(Generate.Service, Generate.Service.of({ text
 const permissionLayer = Layer.succeed(
   Permission.Service,
   Permission.Service.of({
+    rules: () => Effect.succeed([]),
     ask: (input) => Effect.succeed({ id: input.id ?? Permission.ID.create(), effect: "ask" }),
     assert: () => Effect.void,
     reply: () => Effect.void,

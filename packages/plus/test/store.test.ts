@@ -59,6 +59,8 @@ test("load returns empty when both stores are absent", async () => {
     splitsMigrated: false,
     wholeRowsMigrated: false,
     rowlinksMigrated: false,
+    membersMigrated: false,
+    membersMoved: false,
   })
 })
 

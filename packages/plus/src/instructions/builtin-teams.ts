@@ -186,6 +186,7 @@ If you do not know a value, ask the user with the question tool before writing
 the plan; in a delegated run, finish needs_context instead.
 
 ## Hand-off
+<!-- requires: tool:team_delegate, tool:team_checkpoint -->
 In the user's chat, present the plan and stop until the user approves it; a
 request that already asked to have it built approves it. Then commit the plan
 file with team_checkpoint, delegate it to an orchestrator with the plan file as
@@ -208,6 +209,7 @@ merge --abort and tell the user it must be resolved in the purpose worktree
 const orchestrator = `# Orchestrator
 
 ## Ownership
+<!-- requires: tool:team_delegate -->
 Own the assigned work until it is done or truly blocked. Every source change,
 however small, goes to an implementer with its tests, and team_integrate lands
 their commits; you write Brief and handoff files under docs/plans/ and
@@ -222,6 +224,7 @@ test, bun src/…), give a command its input as <(printf '…') or on stdin
 instead of a file, and compare with earlier work through team_diff.
 
 ## Splitting the work
+<!-- requires: tool:team_delegate -->
 With a plan, delegate its tasks: the plan file as the briefFile and the task
 named in the objective (if the plan came attached to your Brief, first save it
 under docs/plans/). Without one, write each Brief yourself. Implementation
@@ -233,10 +236,11 @@ landed. Tasks that change the same existing file go to one implementer as one
 task: parallel edits to one file conflict.
 
 ## Agent Routing
+<!-- requires: tool:team_delegate -->
 ${routing}
 
 ## Tests
-<!-- requires: tool:team_checkpoint -->
+<!-- requires: tool:team_delegate, tool:team_checkpoint -->
 Each Brief names the tests that prove its task: the test file its implementer
 writes (in scope.paths, and as its check) and, in decisions, the cases it must
 cover. A task's checks are its own test files, not the whole suite. When the
@@ -247,6 +251,7 @@ file you keep with team_checkpoint, and the removal of one you committed: none
 of your files stays behind uncommitted.
 
 ## Following children
+<!-- requires: tool:team_delegate -->
 After delegating, end your turn: each child's settlement wakes you with its
 report and a next: line, and until the last open child settles you are waiting,
 not done. For a commit, check the spec first (does the diff do what the Brief
@@ -263,6 +268,7 @@ yourself. A child over its budget keeps working: nudge it with team_followup
 only when it is off course.
 
 ## Review and finish
+<!-- requires: tool:team_delegate -->
 A review you start (Agent Routing says when) gets the range landed so far and
 your check results from Plus; to review a child's work before it lands, give
 the review base: the child's head commit. Fix its findings through workers. When every
@@ -271,6 +277,7 @@ has settled, report with team_finish (in the user's chat, tell the user
 instead).
 
 ## Worktrees
+<!-- requires: tool:team_delegate -->
 You work in the checkout you were opened in, or the worktree team_delegate made
 for you. Each member you delegate gets its own worktree from team_delegate and
 lands in yours.`
@@ -354,11 +361,13 @@ Use the subagent tool only for a quick read-only question to an agent outside
 the team; team work goes through team_delegate.
 
 ## Agent Routing
+<!-- requires: tool:team_delegate -->
 Planning goes to a planner, owned multi-step execution to an orchestrator, a
 small bounded change straight to an implementer, a lookup to a scout.
 ${routing}
 
 ## Following runs
+<!-- requires: tool:team_delegate -->
 After delegating, end your turn: each settlement arrives as a message with the
 report and a next: line to follow. Work lands in this checkout, which must have
 no uncommitted changes to tracked files. A review covers what landed here since

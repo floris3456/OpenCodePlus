@@ -46,7 +46,7 @@ Hidden is a visibility setting, not an origin: `general` and `explore` stay ordi
 
 ```
 <Agent>
-  Settings                   Enabled · Mode · Description · Hidden · Color · Steps
+  Settings                   Enabled · Mode · Description · Hidden · Color · Steps · Tool result cap · LFS files in its worktrees
   Models                     union down the chain plus the agent's upstream model (`source` badge, the effective row `active`)
     <provider>               one built-in group per provider (`…:models:provider=<provider>`), by id
       <lab>                  one per AI lab (`…:provider=<provider>:lab=<lab>`): Claude, ChatGPT, Gemini, … , Other last
@@ -86,6 +86,22 @@ for inheritance, reset behavior, and Instructions Tool examples.
   eligible primary agent. Disabled agents stay editable in Instructions.
 - **Enter** on Mode cycles **Primary → Subagent → All**. Description, Hidden,
   Color, and Steps use OpenCode's existing agent fields.
+- **Tool result cap** is Plus's own setting, not an agent field: a tool result
+  above that many tokens (estimated at 2.5 characters per token) is written to
+  `<tmp>/tool-output/<session>/<tool>-<call>.txt`, and the model gets its head
+  plus a notice naming the file. Text is measured; images and PDFs are kept
+  whole. A `read` result is not saved again: it keeps a head and the `offset`
+  that continues it. Skills, `team_*` and `instructions_*` results always arrive
+  whole. Empty means 10 000 for a team member and no cap for any other agent;
+  `off` means no cap.
+- **LFS files in its worktrees** (`pointers` or empty/`full`, team members):
+  `pointers` makes `team_delegate` create that member's worktree with pointer
+  files instead of LFS content — faster, less disk — for a member that never
+  opens one. The worktree stays clean (`git status` empty) and a checkpoint
+  commits normally; `git lfs pull --include <path>` in it fetches a file when
+  needed, and the Brief says so. Empty (or `full`) is the default and
+  materialises every LFS file. Landing and merge worktrees are unaffected, and
+  a landed child reopened by `team_followup` gets an ordinary full worktree.
 - Compaction supports **Auto**, **Local**, and **Remote**, with per-agent model
   and instruction overrides. Remote grays and locks the local fields without
   discarding their values. Unsupported provider compaction fails explicitly.
@@ -107,7 +123,7 @@ The active model reaches the host through `ctx.agent.transform` (`applyModels` s
 
 Editing a model row's **Model** or **Effort** replaces that row in place and carries its active flag and keep-alive fields. If the old candidate is inherited, Plus hides it at the edited level, so one row never becomes two. Re-adding that old candidate later restores it (and activates it like any added model).
 
-An agent that exists only as a team member has no stand-alone Agents row, so a flat owner model id names nothing: the row grammar `item:<level>:<member>:model:…` and the legacy log target `model:<level>:<member>:<provider>/<model>` both resolve to no row. A tool call on either (`set`, `read`, `reset`, `delete`) refuses with `row.unknown` and names the member row to use instead (`item:<level>:<team>/:<member>:model:…`), the id the tree shows under the team; when the same member id is in several teams every matching row is listed rather than one being chosen. Creating a model for such an agent needs its `team` (otherwise `model.invalid: unknown model owner`), and the write is the member's own per-agent record, which its member chain reads.
+An agent that exists only as a team member has no stand-alone Agents row, so a flat owner model id names nothing: the row grammar `item:<level>:<member>:model:…` and the legacy log target `model:<level>:<member>:<provider>/<model>` both resolve to no row. A tool call on either (`set`, `read`, `reset`, `delete`) refuses with `row.unknown` and names the member row to use instead (`item:<level>:<team>/:<member>:model:…`), the id the tree shows under the team; when the same member id is in several teams every matching row is listed rather than one being chosen. Creating a model for such an agent needs its `team` (otherwise `model.invalid: unknown model owner`), and the write is the member's own record, stored with its team (`team` on the record), which its member chain reads; a member's own rows are its team's, so an edit of one member never changes the member of that name in another team or the stand-alone agent of that name.
 
 ## Permissions
 
@@ -128,7 +144,7 @@ The kinds of row:
 
 Rows come from the per-tool catalog (every tool's categories), the curated rules, your own rules, and a team member's own rows (see **Team rules are rows**). `edit`'s `Protected files` and `Where` also list under `write` and `patch`, which change files through the same permission; it is one row and one record whichever tool you change it under, and it keeps edit's label there. `SPEC.md` (Permission rules) lists every tool's categories.
 
-`a` on an OpenCode or OpenCodePlus tool row that is neither Code Mode nor `execute` offers Section or Permission rule (other rows keep their direct add); a new rule lists in its tool's category (`Commands`, `Files`, `Sites`, `Search patterns`, `Agents`), else under `Rules`, and scope and tool derive from the tool or rule row address. `enter` on a rule row opens the rule editor (label → patterns → keywords → message, each prefilled; blank keywords derive server-side via `keywordsForPattern`, blank message clears it); saving upserts a `RuleRecord` by tool+id through `rule.update`, so editing a curated or catalog row materialises a custom override of the same identity (a catalog row keeps what it is — its category, how it is enforced, its Everything else or allow role — and takes your label, patterns, keywords and message): a first write lands in the addressed row's catalogue (a Teams row makes a Teams rule; an agent-qualified row stays keyless), while a matched record keeps its stored catalogue and team, so editing a Teams rule's message never moves it into the Agents catalogue. Curated-identity policy: a stored `RuleRecord` whose `tool` + `id` matches a curated rule is treated as an override of that curated rule. This is accepted reserved-identity semantics, not an unconditional compatibility guarantee. Turning a rule OFF installs one core deny per pattern (`{ action, resource, effect: "deny" }`) for that agent and scrubs lines matching its keywords from tool descriptions, system parts, and catalog descriptions (catalog rows ship no keywords, so turning one off scrubs nothing; saving one in the rule editor derives keywords like any rule's). Every Plus rule lands in one order — a team role's defaults, then what the role lets through, then the role's refusals, and last every row that is off (even one whose pattern is `*`) — and core evaluates last-match-wins, so an off row always refuses what it matches: a team role's `allow shell *` can no longer undo a `git push` row that is off, as it could before. Rows that are not core rules (tool-input checks, limits, approvals, environment, team rows) are applied by Plus's tool hooks instead; their `enforced by` line says which. Every curated rule ships a short one-line refusal message, and a user `RuleRecord` may carry its own `message`; the deny installs it as core's `Permission.Rule.message`, so the model reads that text instead of `Permission denied: <action>`. A user rule's message wins for a custom row, a curated or catalog row falls back to the shipped one, and a subagent row with no message keeps the generic refusal. `read` on a perm row returns the message and the TUI inspector prints it as `message`. A state-only write (`set` with `state` alone) resubmits the whole record set through the tool serializer, and every TUI write resubmits it through `toRpcRecords` (`tui/instructions/state.ts`); both preserve every rule's `message` and the `catalogue` of shared Defaults records, so toggling one row leaves unrelated rules and their catalogue identity intact. Patterns are CORE RESOURCE WILDCARDS, not regex (`*` spans any run, `?` one character); for shell the resource is the parsed command text, so `git *` also matches a bare `git`. The action comes from the per-rule `permAction` carried on the perm item by discovery (the tool's own `options.permission`), falling back to the tool id map (`edit`/`write`/`patch` share core's `edit` action, everything else uses its own id). `patch` gets no operation-scoped core rules: core's permission resource for patch is the file path only (core/src/tool/plugin/patch.ts asserts `action: "edit"`), and the hunk type never reaches the permission layer. Carrying it as an extra resource or an extra action both change decisions for existing configurations that never enabled Plus, and a targeted opt-in cannot be defined reliably against the wildcard matcher. The `edit`-action path rules still apply to patch, and patch's `Operations` rows (add, delete, move) read the patch text at the tool hook instead. Scrub keywords come only from the single `keywordsForPattern` (head plus subcommands, stopping at wildcards/flags, so `git push *` scrubs `git push` lines, not every `git` line). No rule is generated from prompt text any more: up to plus-1.3.26 Plus listed rules for the commands, paths and sites the prompts mentioned (`Mentioned in instructions`), mostly examples, rows that could never match, or copies of shipped rules. A generated rule you had switched off is stored once, the first time a release without them starts, as your own rule with the same id and patterns, so it keeps refusing. Curated and catalog rows are view-time only: never persisted and never part of the publish fingerprint (only a stored state, a number or a `RuleRecord` enters it via `records`).
+`a` on an OpenCode or OpenCodePlus tool row that is neither Code Mode nor `execute` offers Section or Permission rule (other rows keep their direct add); a new rule lists in its tool's category (`Commands`, `Files`, `Sites`, `Search patterns`, `Agents`), else under `Rules`, and scope and tool derive from the tool or rule row address. `enter` on a rule row opens the rule editor (label → patterns → keywords → message, each prefilled; blank keywords derive server-side via `keywordsForPattern`, blank message clears it); saving upserts a `RuleRecord` by tool+id through `rule.update`, so editing a curated or catalog row materialises a custom override of the same identity (a catalog row keeps what it is — its category, how it is enforced, its Everything else or allow role — and takes your label, patterns, keywords and message): a first write lands in the addressed row's catalogue (a Teams row makes a Teams rule; an agent-qualified row stays keyless), while a matched record keeps its stored catalogue and team, so editing a Teams rule's message never moves it into the Agents catalogue. Curated-identity policy: a stored `RuleRecord` whose `tool` + `id` matches a curated rule is treated as an override of that curated rule. This is accepted reserved-identity semantics, not an unconditional compatibility guarantee. Turning a rule OFF installs one core deny per pattern (`{ action, resource, effect: "deny" }`) for that agent and drops lines matching its keywords from tool and catalog descriptions only — never from system text (role rows, user System rows, base prompts, Core's own parts such as the skill list) or from skills, which are author or host text: a denied action is enforced by its permission rule, not by hiding prose (catalog rows ship no keywords, so turning one off drops nothing; saving one in the rule editor derives keywords like any rule's). Every Plus rule lands in one order — a team role's defaults, then what the role lets through, then the role's refusals, and last every row that is off (even one whose pattern is `*`) — and core evaluates last-match-wins, so an off row always refuses what it matches: a team role's `allow shell *` can no longer undo a `git push` row that is off, as it could before. Rows that are not core rules (tool-input checks, limits, approvals, environment, team rows) are applied by Plus's tool hooks instead; their `enforced by` line says which. Every curated rule ships a short one-line refusal message, and a user `RuleRecord` may carry its own `message`; the deny installs it as core's `Permission.Rule.message`, so the model reads that text instead of `Permission denied: <action>`. A user rule's message wins for a custom row, a curated or catalog row falls back to the shipped one, and a subagent row with no message keeps the generic refusal. `read` on a perm row returns the message and the TUI inspector prints it as `message`. A state-only write (`set` with `state` alone) resubmits the whole record set through the tool serializer, and every TUI write resubmits it through `toRpcRecords` (`tui/instructions/state.ts`); both preserve every rule's `message` and the `catalogue` of shared Defaults records, so toggling one row leaves unrelated rules and their catalogue identity intact. Patterns are CORE RESOURCE WILDCARDS, not regex (`*` spans any run, `?` one character); for shell the resource is the parsed command text, so `git *` also matches a bare `git`. The action comes from the per-rule `permAction` carried on the perm item by discovery (the tool's own `options.permission`), falling back to the tool id map (`edit`/`write`/`patch` share core's `edit` action, everything else uses its own id). `patch` gets no operation-scoped core rules: core's permission resource for patch is the file path only (core/src/tool/plugin/patch.ts asserts `action: "edit"`), and the hunk type never reaches the permission layer. Carrying it as an extra resource or an extra action both change decisions for existing configurations that never enabled Plus, and a targeted opt-in cannot be defined reliably against the wildcard matcher. The `edit`-action path rules still apply to patch, and patch's `Operations` rows (add, delete, move) read the patch text at the tool hook instead. Scrub keywords come only from the single `keywordsForPattern` (head plus subcommands, stopping at wildcards/flags, so `git push *` drops `git push` lines, not every `git` line); a subagent row carries none, since Core already lists only the subagents an agent may run, so it drops nothing. `read({ view: "assembled" })` lists every dropped line with its rule. No rule is generated from prompt text any more: up to plus-1.3.26 Plus listed rules for the commands, paths and sites the prompts mentioned (`Mentioned in instructions`), mostly examples, rows that could never match, or copies of shipped rules. A generated rule you had switched off is stored once, the first time a release without them starts, as your own rule with the same id and patterns, so it keeps refusing. Curated and catalog rows are view-time only: never persisted and never part of the publish fingerprint (only a stored state, a number or a `RuleRecord` enters it via `records`).
 
 A host built-in agent (`build`, `plan`, `explore`, …) has Defaults scope but shows its rows under Project, Global and Defaults alike, and turning a rule off writes at the row you pressed — so the saved record carries that row's level. Every row of such an agent — tools, skills, base, system, permissions — and its active model therefore resolve at runtime the way its Project row shows them, `project → global → preset link → Defaults entries → defaults → shared`, rather than from Defaults alone: a rule turned off from the Project view installs a real host deny and its refusal message, and a Defaults entry `*` that turns shell off shows off and removes shell alike. A host agent listed under Defaults only resolves at Defaults, and an agent launched as a team member keeps its own chain and the Teams catalogue.
 
@@ -179,18 +195,18 @@ Agent-facing Code Mode namespace `instructions` (`src/instructions/teaching.ts` 
 | tool | input |
 | --- | --- |
 | `find` | `{ agent?, team?, level?, type?, name?, in?, state?, text?, is?, where?, fields?, sort?, limit?, offset? }` → `{ total, columns, rows }`, one `id \| badges \| from` line per thing (`limit` defaults to 40). The parameters are the TUI filter's `key:value` terms (`where` adds more); `is` is `review`, `changed`, `hidden` or `orphaned`. Each row shows once at its most specific level; without `agent`/`team`, agents' copies with the same value are one row ending `(+N agents)`; sections need `type: "section"`, `name` or `in`, preset rows `level`/`type` `preset` (`docs/TOOLS.md` §2) |
-| `read` | `{ id, view? }` (`view` defaults to `resolved`; on a perm row every view but `record` returns `patterns`, `keywords`, `category`, `kind` (how the row is enforced: `rule`, `input`, `value`, `param`, `limit`, `approval`, `env` or `team`), `field` and `value` when the row has them, `limit` (its number) on a limit or bound row, `message` when the rule carries one, and a scrub preview; on a team or member row `resolved` returns the entity — `kind`, `level`, `team`, `enabled` + `members` for a team, or `member` + `registered` for a member — and `record` nests that entity under `record`, while every other view is refused with `view.unsupported`) |
+| `read` | `{ id, view? }` (`view` defaults to `resolved`; on a perm row every view but `record` returns `patterns`, `keywords`, `category`, `kind` (how the row is enforced: `rule`, `input`, `value`, `param`, `limit`, `approval`, `env` or `team`), `field` and `value` when the row has them, `limit` (its number) on a limit or bound row, `message` when the rule carries one, and a scrub preview (`hidden` lines the rule really drops from its own tool description; `0` for a subagent rule); on a team or member row `resolved` returns the entity — `kind`, `level`, `team`, `enabled` + `members` for a team, or `member` + `registered` for a member — and `record` nests that entity under `record`, while every other view is refused with `view.unsupported`) |
 | `set` | `{ id, text?, state?, resolve?, pin?, active?, label?, patterns?, keywords?, message?, warming? }` (`state` is `on`\|`off`; `resolve` is `keep`\|`take`\|`edit`; `pin` keeps the tool's full listing inline in the catalog; `active: true` activates a model row exclusively at that level — a bare `set` on a model row activates too; on a model row `text` replaces the candidate as `provider/model` or `provider/model#variant` (the enter editor) and `warming` sets cache warming: `off`, `on`, a total time like `45m`, or empty to inherit, while `interval`, `prompt` and `effort` set the other keep-alive fields on a model row — a Defaults › Models row (`item:defaults:/models:modeldefault:*` or `…:<provider>/<model>`) accepts all four plus `state` as its warming switch; an agent/member/preset model field row (`item:<level>:<owner>:modelfield:<field>:<provider>/<model>[@variant]`) takes `text` as that one field's value, empty inherits; perm rows accept `state`, or `label` + `patterns` (`keywords` optional) or `message` alone to update the rule through `rule.update` — a first override lands in the row's catalogue and a matched record keeps its stored catalogue and team — and a limit or bound row takes `text` as its number: `set({ id, text: "8" })`; text without a number is refused) |
 | `edit` | `{ id, oldString, newString, replaceAll? }` → `{ id, status, replacements }`: replaces part of the row's current text like the file edit tool (`oldString` must match once unless `replaceAll`), then saves like `set({ id, text })` under `set`'s permission rows |
 | `reset` | `{ id }` (deletes the override at that row; on a model row clears only that level's active flag; on a model field row clears that field at that level — resetting Model restores the candidate this row replaced with compatible local effort and keep-alive fields preserved, resetting Effort restores the original inherited effort variant, and repeated reset of an un-overridden field refuses without writes) |
 | `split` | `{ id, boundaries?, add? }` (`boundaries` is `[{ id, name, start }]` with character offsets; `add: { name, text }` appends a trailing section; perm and model rows cannot be split) |
 | `create` | `{ kind, ...fields }`, one row per call, returns `{ id, item, ...fields }` where `id` is the row id `read`/`set`/`edit`/`delete` accept and `item` is the created thing's own id (`skill:…`, `model:…`, `perm:…`, or the agent/team/member id). Agent needs `id` + `prompt` (optional `scope`, `template`, `fields`); skill needs `name` + `body`; base needs `id` + `title` + `text`; instruction is refused pending the Context catalogue (`instruction.disabled`); mcp needs `name` + `config`; team needs `team` + `level` (optional `template` seeds members from a Defaults team); member needs `team` + `level` + `id` + `prompt` (optional `template`, `fields` — the agent fields `kind:"agent"` takes; the team name is trimmed like `team.addAgent`; `level: "defaults"` writes the Defaults overlay the TUI writes); model needs `providerID` + `modelID` (optional `variant`, `level`/`agent`; `level` defaults to `project` and project/global need an `agent`, while `level: "defaults"` with no agent is the shared Defaults row); rule needs `tool` + `id` + `label` + `patterns` (optional `keywords`, `message` — the refusal text the model reads — `level`/`agent`; `level` defaults to `project` and a rule with no `agent` is stored at that requested level but resolves through its canonical shared Defaults row). Optional `catalogue` (`agents|teams`, default `agents`) picks which catalogue a shared `model`/`rule` lands in; `base`/`mcp`/`skill` write one file both catalogues list. A project/global create returns that level's own row, never the identical Defaults row. A create whose written row cannot be found in the tree fails with `create.failed` instead of inventing an id. A skill body may begin with its own frontmatter (merged into the one block, its `name` must equal the skill's), and a project skill's row is in the tree as soon as the create returns |
 | `delete` | `{ id, confirm: true }` (refused without `confirm: true`; on a model row deletes the candidate at that level — a local record is removed, an inherited or upstream row is hidden with a tombstone, and the effective model refuses with `activate another model first`; only user-created rules can be deleted) |
-| `log` | `{ where?, limit?, offset? }` → `{ entries, total }`, both log files merged newest-first |
+| `log` | `{ where?, limit?, offset? }` → `{ entries, total }`, both log files merged newest-first; the tool (and the CLI) answers the newest 20 unless `limit` says otherwise, the `instructions.log` RPC keeps no default |
 
-`read`, `set`, `edit`, `reset` and `delete` also take several rows: `id` as a list (`set({ id: [a, b], state: "off" })`), or `find` with `find`'s filters instead of `id` (`set({ find: { agent: "alpha", type: "rule", where: "tool:edit" }, state: "off" })`). They then answer `{ total, failed, results }`, one `{ id, output }` or `{ id, error }` per row, and every row that succeeded stays saved. Without `agent` or `team`, `find` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
+`read`, `set`, `edit`, `reset` and `delete` also take several rows: `id` as a list (`set({ id: [a, b], state: "off" })`), or `find` with `find`'s filters instead of `id` (`set({ find: { agent: "alpha", type: "rule", where: "tool:edit" }, state: "off" })`). Filters take lists (`name: ["edit", "write"]`). A write over several rows is written once (one revision, one log entry) and answers `{ status, changed, already, notDone }`, each row not done with its reason (`verbose` adds each row's answer); `read` answers `{ total, failed, results }`. `batch({ changes: [...] })` applies different changes in order and writes once, every write takes `dryRun`, `set({ id, like: "<agent>" })` copies another agent's choice, and `undo({ ts })` takes back one logged write. Without `agent` or `team`, `find` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
 
-`read` views: `resolved` (default), `upstream` (text above the override), `mine` (stored text), `record` (raw override), `sections` (section ids), `diff` (original→mine and original→upstream unified diffs plus a one-line summary), `assembled` (full effective prompt, agent row ids only). `set` with `resolve: "keep"` acks upstream keeping text, `"take"` drops stored text and follows upstream, `"edit"` stores `text` against current upstream.
+`read` views: `resolved` (default), `upstream` (text above the override), `mine` (stored text), `record` (raw override), `sections` (section ids), `diff` (original→mine and original→upstream unified diffs, a one-line summary and `merge.units`, each unit with only the sides that differ from its base; a `both` unit's `<id>:upstream` names its unit in `of`), `assembled` (full effective prompt, agent row ids only; `part: "names"` gives the tool and skill ids and each system part's first line, `"system"`, `"tools"` or `"skills"` one part). `set` with `resolve: "keep"` acks upstream keeping text, `"take"` drops stored text and follows upstream, `"edit"` stores `text` against current upstream.
 
 Row ids name one row everywhere: the TUI filter, tool calls, log targets, and error messages all use the same string:
 
@@ -390,7 +406,9 @@ shipped Basic roles keep their old answers (a planner's target accepts plan
 files only, an orchestrator's target needs a reason, and so on).
 
 Every agent also has `team_delegate` bounds that ship on — 4 children working
-at once, depth 3, briefs of up to 6000 characters, 12 live team runs; in a
+at once, depth 3, briefs of up to 6000 characters, 12 live team runs, and a
+wall per delegation of at most 480 minutes (`wall: "2.5h"` sets the child's
+budget directly; over the row, `E_TOO_LONG` names `limits.wall`); in a
 delegated run, which nobody watches, questions and approvals are refused
 rather than left waiting. Each delegated Session's edits and checkpoints are
 limited to its saved brief's `scope.paths`; `scope.forbidden` wins. A member
@@ -422,13 +440,8 @@ wakes the caller with its report. `team_followup` returns `{ attempt, state, nex
 with `next: "End your turn: its settlement wakes you."`. Session, worktree,
 Brief, budget and model provenance remain in the saved run data.
 
-`team_status` or `team_list` while children still work and no settlement
-waits is a wait: it ends the turn, unbounded or naming only working runs with
-a short answer. It is a plain look instead in the first step after a
-compaction and in a step that answers a person's message rather than a
-settlement (Plus marks settlement prompts with `metadata["plus.team"]:
-"inbox"`). A wait ends the turn only when every call of its step asks to
-(`endTurn: "alone"`), so the model still reads its other calls' results.
+`team_status` and `team_list` are looks: they always answer in full and never
+end the caller's turn; whether to wait for a settlement is the caller's decision.
 
 **Changing who may delegate to whom.** Open a member of an enabled team under
 `Teams → <team> → <member> → Tools → OpenCodePlus → team_delegate →
@@ -541,8 +554,10 @@ Delegation and followup capacity counts only slot-holding team member runs,
 never users' `main` chat runs. The total remains install-wide across projects.
 `E_BOUNDS` names the in-flight or total limit, its number and the counted run ids.
 A `commit` Brief requires the target member's `team_checkpoint` tool to be on;
-otherwise `E_ROLE` names the reachable members that can commit. Every report
-summary, including a commit deliverable's, may contain up to 40 lines.
+otherwise `E_ROLE` names the reachable members that can commit. Every member's
+report summary has its own line limit (`team_finish` → Limits → Report summary,
+15 lines shipped, 20 for a scout), and `team_finish` refuses a longer one naming
+the limit and the row rather than trusting a prompt.
 
 A run's state follows its host session rather than the
 agent's good manners: `index.ts` subscribes to `session.execution.succeeded`,
@@ -566,6 +581,27 @@ first one was scheduled, how many, and the last error), and its settlement
 says so: `The host retried it 5 times over 5 min 40 s (from 10:00 UTC) before
 the step failed.` after the `Error:` line, or `Provider errors: the host
 retried … (last: …)` before `next:` when the run recovered.
+
+A quota answer is not a broken run. When a step fails on one and the answer
+names a reset (`packages/cliproxyapi/src/quota-reset.ts` — `resets in 3h12m`,
+`resets at <ISO>`, `"resets_at"`, `retry after <s>`, else 15 minutes with
+"reset time unknown"), `settleAttempt` records `blockedUntil` on the attempt,
+writes the provider's cooldown to `<teams root>/cooldowns.json`
+(`{ [key]: { untilMs, text, error, at, run } }`, expired entries dropped on the
+next write) and the settlement reads `settled: blocked — <key> quota; resets at
+<HH:MM> UTC (in <h> h <m> min). Not retried.` with the usual `Error:` line and
+`next: delegate the Brief to a member on another provider, or follow up after
+the reset.` The provider key is the run's `loadedModel ?? requestedModel` as
+`provider/model`, or `provider/vendor` when the model id names a vendor first
+(`cliproxyapi/commandcode/deepseek/deepseek-v4.1-flash` →
+`cliproxyapi/commandcode`): a CPA account's quota is not one model's.
+`team_delegate` refuses a member whose active model is on a cooling provider
+with `E_COOLDOWN`: `<role> runs on <key>, which is out of quota until <text>
+(cooldown from run <run>). Delegate to a member on another provider, or wait.`,
+as does `team_followup` when the call would prompt that child (a budget or
+paths change alone is not refused). `team_status` shows the run's active
+`cooldown` and its `blockedUntil`. Outside teams, a quota that resets hours out
+ends the step at once (the cliproxyapi retry hook) instead of retrying.
 
 - A child whose model turn ends is `idle` whether or not it called
   `team_finish`. Without a report, its attempt is `no_report` — unless the run
@@ -624,9 +660,35 @@ retried … (last: …)` before `next:` when the run recovered.
   (`notified` on the attempt). An idle parent is prompted with it now; a
   working parent gets it through its own idle handoff. When that parent itself
   stopped the child, the no-report settlement says nothing is needed and
-  `team_followup` resumes it with its context.
+  `team_followup` resumes it with its context. `notified` is written only after
+  the item is in the parent's inbox: a failed write leaves the attempt open so
+  the next idle retries, and a dead or terminal parent records `notifyError`
+  (`parent <id> is <state>`) on the attempt, which `team_status` shows.
+- An attempt that settles without a report (`no_report`, `failed`, `interrupted`,
+  or a session that does not come back) saves its worktree's uncommitted work
+  first: `<root>/runs/<run>/uncommitted-<n>.patch` holds `git diff --binary HEAD`
+  plus one `--no-index` diff per untracked file (skipping `node_modules/`, files
+  over 5 MB, and everything past a 50 MB cap, each listed as skipped). The
+  settlement ends with `Uncommitted work saved: <file> (<n> files, <bytes> bytes)`,
+  the same object is `patch` on `team_status`, and the worktree and index are
+  read, never changed: apply it in a worktree with `git apply --index <file>`.
+  A clean worktree saves nothing and says nothing.
+- One message may carry several inbox items. Settlements come first, in the
+  order they arrived, then budget notices and prompts; when it holds more than
+  one item it opens with `[team] <k> items:` and one summary per item, so a
+  settlement is never hidden behind a notice.
+- Inbox items left pending by a restart are delivered by the first sweep pass
+  after the plugin starts, for every non-terminal run that has some; the usual
+  guards still apply (a busy parent gets them at its next idle).
+- A `team_followup` that carries only `budget` (with its `reason`) is not a
+  correction: any child still working takes it and Plus records the new budget
+  without prompting it, even while its Corrections by followup row is off. A
+  call that carries text to such a child is refused, and the refusal says a
+  budget raise alone is accepted.
 - The Brief a child receives (`brief.ts`) has no empty sections; says what
-  done means for its deliverable; marks a read-only task as such; states the
+  done means for its deliverable; marks a read-only task as such; names the
+  worktree the child works in under Environment (with one line when its LFS
+  files are pointers: `git lfs pull --include <path>` fetches one); states the
   budget as a guide, not a limit (tokens and time; Plus never stops a run over
   budget); and attaches a `briefFile` inline up to the member's "Attached brief
   file" limit (a larger one is named by path so the child reads only what it
@@ -767,7 +829,7 @@ Only what is provably impossible, with what was tried:
 - **Never send an optional key whose value is `undefined` across the RPC boundary.** Results are validated as JSON, so the whole call fails with HTTP 400. Omit the key instead. `expectRpcBody` in `test/rpc.test.ts` guards this.
 - **Upstream permission denials are invisible.** `ctx.skill.list()` and the tool editor list return the full inventory without agent permission evaluation (core filters later in `packages/core/src/skill.ts` and `packages/core/src/tool.ts`), and `Item.available` is one boolean per item, not per agent. A denied row shows `[enabled]` and toggling it is a no-op upstream. Threading per-agent availability through discover, model, tree, and RPC was cut as disproportionate. No test currently pins this.
 - **Async MCP tools regain customizations at the next publish, not on reappearance.** Core reconciles MCP tools behind a 100 ms debounce plus `tools.reload()` (`packages/core/src/tool/mcp.ts`), which emits none of the events Plus watches (`agent.updated`, `skill.updated`, `config.updated`). Closing it needs a public post-reconciliation inventory notification.
-- **Custom rules are globally unique by tool+id, not per level/agent.** `rule.add`/`rule.remove`/`rule.update` match existing records by `(tool, id)` only, so a second level or agent cannot define its own rule with the same tool+id.
+- **Custom rules belong to their owner.** A rule's identity is `(tool, id)` within its owner (level, agent, team, catalogue), so several levels or agents can each define a rule with the same tool+id; `rule.remove` removes the addressed owner's definition, and only removing the last one deletes the item and every owner's customizations of it.
 - **The TUI add-rule flow prompts for scope.** `a` on an eligible tool row or a permission row defaults to that row's level/agent and otherwise prompts for level then agent (mirroring add-model); the dialog calls `rule.add` with the chosen scope, shared (`agent: null`) or per-agent.
 - **A rule's message is the model-visible refusal.** Curated rules ship one; user rules may set one through `rule.add`/`rule.update`, `create kind:"rule"`, or `set` with `message`. `apply.ts` installs it on the core deny, so the model reads it instead of `Permission denied: <action>`; blank clears it, and a `rule.update` that omits `message` preserves the stored text.
 - **MCP and Code Mode tools take no user rules.** An MCP tool's resource is always `"*"` and a Code Mode deny is whole-tool, so a per-resource core rule would never match; `a` offers no Permission rule there. Their Permissions list the catalog's rows, which Plus's tool hook checks against each call's input, and the row toggle still turns the whole tool off.
@@ -846,6 +908,10 @@ These model rows are the only place thresholds are set; there is no per-chat ove
 - The normal context-safety threshold remains in place. `compaction.auto: false` still disables automatic compaction, including these triggers; manual and overflow behavior is unchanged.
 - After a completed text or native checkpoint, early triggers wait for new primary assistant history before firing again. A low input threshold cannot repeatedly compact the fresh checkpoint before the model resumes; new user input alone does not rearm it.
 - Setting or clearing a threshold sends no agent message and resets no output counter. Only actual completed compaction changes the checkpoint/history epoch. Strategy, model routing, maximum output, quota handling and warming defaults are unchanged.
+
+A team member — the lead included — condenses at **400 000** tokens of context when none of its rows sets an Input threshold (`TEAM_CONTEXT_TOKENS`). An explicit row at any level still wins, and `off` still means no early trigger; non-team agents are unchanged. The footer's context % measures a member against it too.
+
+After a compaction completes in a delegated run's chat, Plus sends that run's Brief again whole, as one steer (`teams/brief-resend.ts`): the summary would otherwise be its only memory of the task. It happens once per compaction, only while the run is working (or idle with its attempt still open), never for the lead's own run, and the steer's message id is derived from the run and the compaction, so a replay sends nothing twice. `team_followup` refuses a prompt, `paths` or `rebase` to a child above the member's **Child context limit (tokens)** row (Limits, default 400 000) with `E_CONTEXT`, naming the run, its size, the limit and `team_delegate` of a fresh run with the report and branch; a budget-only call still applies.
 
 ## Monitor
 

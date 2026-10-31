@@ -108,11 +108,14 @@ function sessionEvent(agentID: string): SessionHooks["context"] {
   }
 }
 
+// A stand-alone agent's team tool rows are off until something turns them on
+// (model.ts standAloneTeamTool): Defaults turn team_check on for every agent.
+const teamCheckForEveryone: CustomizationRecord = { type: "customization", level: "defaults", agent: null, item: "tool:team_check", section: null, state: "on", basedOn: "", updated: UPDATED }
 function input(items: readonly Item[], records: readonly CustomizationRecord[], agents: readonly string[]): ApplyInput {
   const sources = agents.map((id) => ({ id, scope: "project" as const, origin: "user" as const }))
   return {
     items,
-    records,
+    records: [teamCheckForEveryone, ...records],
     splits: [],
     agents: agents.map((id) => ({ id, level: "project" as Level })),
     scopes: chainContext({

@@ -67,10 +67,19 @@ const removedNames = [
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat.`
 
+// A chat that is no team run: what the tool needs, then why this caller has
+// none. A call that names a run says it does not own that run instead.
+const noRun = (tool: string, id?: string): string =>
+  id === undefined ? `E_NOT_ACTOR: ${tool} acts on a team run, and this chat is not one.` : notActor(id)
+
 // A member whose "Start a team run from a chat" row is off (the implementer
-// preset's) hears the same refusal plus the row's own words.
-const noChatRun = (id: string): string =>
-  `${notActor(id)} You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`
+// preset's) hears the row's own words.
+const noChatRun = (tool: string, id?: string): string =>
+  `${noRun(tool, id)} You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`
+
+// An agent of no enabled team (team tools can be on for any agent) hears that.
+const notMember = (tool: string, agent: string): string =>
+  `${noRun(tool)} ${agent} is not a member of an enabled team, so it cannot start one: a team run starts in the chat of a member of an enabled team (its team_get_context → Team runs → Start a team run from a chat row on), or through that member's team_delegate.`
 
 interface TestToolHarness {
   readonly ctx: Context
@@ -258,59 +267,11 @@ test("every team tool registers direct under namespace team with its permission"
   }
 })
 
-// Live b9-s12, b13-s13, b15-s12: a lead said it was waiting, then called team_status
-// for a child still working. Such a call gets a short answer and ends the turn.
-test("team_status and team_list answer briefly and end the turn while a child works and no news waits; otherwise they do not", async () => {
-  await withIsolatedTeamsRoot(async (root) => {
-    const directory = path.join(root, "repo")
-    await fs.mkdir(directory, { recursive: true })
-    await initRepo(directory)
-    const head = await git(directory, ["rev-parse", "HEAD"])
-    const parent: RunRecord = { ...makeRun("main-0123456789abcdef", "orchestrator", "ses_wait_parent"), kind: "main", directory, base: head, head, state: "working", children: ["w-0123456789abcdef"] }
-    const child: RunRecord = { ...makeRun("w-0123456789abcdef", "implementer", "ses_wait_child"), parent: parent.id, directory, base: head, head, state: "working" }
-    await saveRun(root, parent)
-    await saveRun(root, child)
-    // This step answers a settlement: the step before it, then the inbox delivery.
-    const created = testToolContext({ session: { context: () => Effect.succeed(history(["assistant", "inbox", "current"])) } })
-    const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState()), shippedTable)
-    try {
-      const caller = toolContext("ses_wait_parent", "orchestrator")
-      const call = async (name: string) => (await Effect.runPromise(need(created.tools, name).execute({}, caller))).endTurn
-      const brief = {
-        output: { waiting: [child.id], next: "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report." },
-        endTurn: "alone" as const,
-      }
-      for (const name of ["team_status", "team_list"])
-        expect(await Effect.runPromise(need(created.tools, name).execute({}, caller))).toEqual(brief)
-      // A status that names only runs still working is the same wait.
-      expect(await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))).toEqual(brief)
-      // One that names another run gets what it asked for, and is still a wait.
-      const named = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [parent.id, child.id] }, caller))
-      expect(named.endTurn).toBe("alone")
-      expect((named.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[parent.id, "working"], [child.id, "working"]])
-      await put(root, parent.id, { kind: "child.settled", from: child.id, text: "[team] settled" })
-      expect(await call("team_list")).toBeUndefined()
-      await take(root, parent.id, (await peek(root, parent.id)).map((item) => item.id))
-      const now = new Date().toISOString()
-      await saveRun(root, { ...child, state: "idle", attempts: [{ n: 1, state: "succeeded", trigger: "delegate", startedAt: now, endedAt: now }] })
-      expect(await call("team_status")).toBeUndefined()
-    } finally {
-      await Effect.runPromise(registration.dispose)
-    }
-  })
-})
-
-// Live theorysnap lead: after a compaction its first step called team_status
-// (and shell); the wait ended the turn and the owner's message went unanswered
-// until a child settled. A status call is a look in the first step after a
-// compaction and in a step that answers a person, a wait only after a settlement.
-for (const [label, kinds, wait] of [
-  ["the first step after a compaction", ["compaction", "current"], false],
-  ["a step that answers a person after a compaction", ["compaction", "assistant", "user", "current"], false],
-  ["a step that answers a settlement after a compaction", ["compaction", "assistant", "inbox", "current"], true],
-  ["a later step of the same turn", ["compaction", "user", "assistant", "current"], true],
-] as const) {
-  test(`team_status in ${label} is ${wait ? "a wait" : "a look"}`, async () => {
+// Owner, 2026-10-28: team_status and team_list never end the caller's turn,
+// whatever its children are doing and whatever the step answers; waiting is
+// the agent's own decision.
+for (const kinds of [["assistant", "inbox", "current"], ["compaction", "current"], ["compaction", "user", "assistant", "current"]] as const) {
+  test(`team_status and team_list answer in full and never end the turn (${kinds.join(", ")})`, async () => {
     await withIsolatedTeamsRoot(async (root) => {
       const directory = path.join(root, "repo")
       await fs.mkdir(directory, { recursive: true })
@@ -323,11 +284,14 @@ for (const [label, kinds, wait] of [
       const created = testToolContext({ session: { context: () => Effect.succeed(history(kinds)) } })
       const registration = await registerTeamTools(created.ctx, createTeamApi(created.ctx, teamState()), shippedTable)
       try {
-        const result = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, toolContext("ses_look_parent", "orchestrator")))
-        if (wait) expect(result).toMatchObject({ output: { waiting: [child.id] }, endTurn: "alone" })
-        if (!wait) {
+        const caller = toolContext("ses_look_parent", "orchestrator")
+        const status = await Effect.runPromise(need(created.tools, "team_status").execute({ runs: [child.id] }, caller))
+        expect(status.endTurn).toBeUndefined()
+        expect((status.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[child.id, "working"]])
+        for (const name of ["team_status", "team_list"]) {
+          const result = await Effect.runPromise(need(created.tools, name).execute({}, caller))
           expect(result.endTurn).toBeUndefined()
-          expect((result.output as Array<{ run: string; state: string }>).map((entry) => [entry.run, entry.state])).toEqual([[child.id, "working"]])
+          expect(result.output).not.toHaveProperty("waiting")
         }
       } finally {
         await Effect.runPromise(registration.dispose)
@@ -467,10 +431,11 @@ test("a session with no run fails E_NOT_ACTOR with the exact message", async () 
     const ctx = toolContext("ses_team_none", "implementer")
     for (const name of teamNames) {
       const message = await runMessage(need(tools, `team_${name}`), {}, ctx)
-      expect(message).toBe(noChatRun("unknown"))
+      expect(message).toBe(noChatRun(`team_${name}`))
     }
-    // An agent that is no team member keeps the byte-exact message.
-    expect(await runMessage(need(tools, "team_status"), {}, toolContext("ses_team_none_outsider", "build"))).toBe(notActor("unknown"))
+    // An agent that is no team member hears that it is none, for every tool.
+    for (const name of teamNames)
+      expect(await runMessage(need(tools, `team_${name}`), {}, toolContext("ses_team_none_outsider", "build"))).toBe(notMember(`team_${name}`, "build"))
   })
 })
 
@@ -479,7 +444,7 @@ test("a session with no run names the input run id in E_NOT_ACTOR", async () => 
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_none_named", "implementer")
     const message = await runMessage(need(tools, "team_followup"), { run: "w-aaaaaaaaaaaaaaaa", requestID: "r1", prompt: "again" }, ctx)
-    expect(message).toBe(noChatRun("w-aaaaaaaaaaaaaaaa"))
+    expect(message).toBe(noChatRun("team_followup", "w-aaaaaaaaaaaaaaaa"))
   })
 })
 
@@ -641,7 +606,7 @@ test("team_status from a no-run implementer session still fails E_NOT_ACTOR", as
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_prep_impl", "implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
-    expect(message).toBe(noChatRun("unknown"))
+    expect(message).toBe(noChatRun("team_status"))
   })
 })
 
@@ -768,6 +733,7 @@ test("the instructions namespace still registers alongside team", async () => {
     "instructions_reset",
     "instructions_set",
     "instructions_split",
+    "instructions_undo",
   ])
   expect([...created.tools.keys()].filter((id) => id.startsWith("team_"))).toHaveLength(11)
 })
@@ -809,7 +775,7 @@ test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async 
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_audit_refuse", "implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
-    expect(message).toBe(noChatRun("unknown"))
+    expect(message).toBe(noChatRun("team_status"))
     const lines = await auditLines(root)
     expect(lines).toHaveLength(1)
     const line = lines[0] as Record<string, unknown>
@@ -835,7 +801,7 @@ test("successful gated call writes tool.call with run id and chain verifies acro
       const tools = await registeredTools()
       const refuseCtx = toolContext("ses_team_audit_none", "implementer")
       const refused = await runMessage(need(tools, "team_status"), {}, refuseCtx)
-      expect(refused).toBe(noChatRun("unknown"))
+      expect(refused).toBe(noChatRun("team_status"))
       const okCtx = toolContext(session, "implementer")
       const output = await runSuccess(need(tools, "team_status"), {}, okCtx)
       expect(output).toBeDefined()
@@ -988,7 +954,7 @@ test("refusal carries accepted line verbatim for E_PATHS, E_ROLE, E_CHECKS, E_SU
         implCtx,
       )
       expect(summaryMsg).toBe(
-        `E_SUMMARY: summary is 41 lines (max 40). Detail goes to the report file automatically; keep the summary to what the parent must act on.\naccepted: "a summary of ≤40 lines"`,
+        `E_SUMMARY: summary is 41 lines (max 15 for implementer, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.\naccepted: "a summary of ≤15 lines"`,
       )
 
     } finally {
@@ -1075,6 +1041,9 @@ function makeTestPermissionService(
   const service: Permission.Interface = {
     ask: () => Effect.die("unused ask"),
     close: Effect.void,
+    // The rules an agent's calls are evaluated against: this fixture's one
+    // ruleset, which is what a Session's merged agent rules amount to here.
+    rules: () => Effect.succeed(rules),
     assert: (input) =>
       Effect.gen(function* () {
         const winningRule = rules

@@ -115,3 +115,30 @@ test("service options only require a matching version when requested", async () 
     await fs.rm(root, { recursive: true, force: true })
   }
 })
+
+test("an explicit server that does not answer in 5 s is busy, one that refuses is not reachable", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-server-busy-"))
+  const layer = Global.layerWith({ config: path.join(root, "config"), state: path.join(root, "state") })
+  const failure = (effect: Effect.Effect<unknown, unknown, Global.Service | FileSystem.FileSystem | Scope.Scope>) =>
+    Effect.runPromise(effect.pipe(Effect.flip, Effect.provide(layer), Effect.provide(NodeFileSystem.layer), Effect.scoped))
+  const server = Bun.serve({
+    port: 0,
+    async fetch() {
+      await Bun.sleep(7_000)
+      return Response.json({ version: OPENCODE_VERSION, pid: process.pid, urls: [] })
+    },
+  })
+  const closed = Bun.serve({ port: 0, fetch: () => new Response(null) })
+  const refused = closed.url.toString()
+  await closed.stop(true)
+  try {
+    const busy = await failure(ServerConnection.resolve({ server: server.url.toString() }))
+    expect(String(busy)).toContain(`Server at ${server.url.toString()} is busy: it did not answer within 5 s, so this command was not sent.`)
+    expect(String(busy)).not.toContain("Could not reach")
+    const gone = await failure(ServerConnection.resolve({ server: refused }))
+    expect(String(gone)).toContain(`Could not reach server at ${refused}`)
+  } finally {
+    await server.stop(true)
+    await fs.rm(root, { recursive: true, force: true })
+  }
+}, 20_000)

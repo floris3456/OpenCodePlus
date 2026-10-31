@@ -21,6 +21,8 @@ export interface UserSystemRow {
   readonly text: string
   /** Model prompts only: the models the row is sent for (model-patterns.ts). */
   readonly models?: readonly string[]
+  /** The row starts off for every agent (a duplicate's copy, so its text is not sent twice). */
+  readonly off?: true
 }
 
 // A model prompt is a System row id `model/<slug>`: its file sits in the model
@@ -41,8 +43,8 @@ export function validateSystemId(raw: string): { ok: true; id: string } | { ok: 
   return { ok: true, id }
 }
 
-export async function createSystemRow(id: string, title: string, text: string, models?: readonly string[]): Promise<SystemRowResult> {
-  if (models !== undefined) return createModelPrompt(id, title, text, models)
+export async function createSystemRow(id: string, title: string, text: string, models?: readonly string[], off = false): Promise<SystemRowResult> {
+  if (models !== undefined) return createModelPrompt(id, title, text, models, off)
   const validated = validateSystemId(id)
   if (!validated.ok) return { ok: false, reason: "invalid", id, message: validated.reason }
   const target = userSystemFile(validated.id)
@@ -50,6 +52,7 @@ export async function createSystemRow(id: string, title: string, text: string, m
   await fs.mkdir(path.dirname(target), { recursive: true })
   await Bun.write(target, text)
   await writeIndexEntry(userSystemDir(), validated.id, title.trim().length === 0 ? validated.id : title.trim())
+  if (off) await writeOffEntry(userSystemDir(), validated.id, true)
   return { ok: true, id: validated.id }
 }
 
@@ -61,6 +64,7 @@ export async function deleteSystemRow(id: string): Promise<SystemRowDeleteResult
   if (!(await Bun.file(target).exists())) return { ok: false, reason: "missing", id: validated.id }
   await fs.rm(target, { force: true })
   await removeIndexEntry(userSystemDir(), validated.id)
+  await writeOffEntry(userSystemDir(), validated.id, false)
   return { ok: true, id: validated.id }
 }
 
@@ -80,21 +84,24 @@ export async function setModelPromptModels(id: string, models: readonly string[]
 // the System rows.
 export function readUserSystemRowsSync(): UserSystemRow[] {
   const dir = userSystemDir()
-  const rows = markdownIds(dir).map((id) => ({ id, text: readUserBaseTextSync(path.join(dir, `${id}.md`)), title: readUserBaseTitleSync(path.join(dir, "index.json"), id, id) }))
+  const off = readOffSync(dir)
+  const rows = markdownIds(dir).map((id) => ({ id, text: readUserBaseTextSync(path.join(dir, `${id}.md`)), title: readUserBaseTitleSync(path.join(dir, "index.json"), id, id), ...(off.has(id) ? { off: true as const } : {}) }))
   const models = modelPromptDir()
   const patterns = readModelsIndexSync()
+  const offPrompts = readOffSync(models)
   const prompts = markdownIds(models).map((id) => ({
     id: `${modelPrefix}${id}`,
     text: readUserBaseTextSync(path.join(models, `${id}.md`)),
     title: readUserBaseTitleSync(path.join(models, "index.json"), id, id),
     models: patterns[id] ?? [],
+    ...(offPrompts.has(id) ? { off: true as const } : {}),
   }))
   return [...rows, ...prompts].flatMap((row) => (row.text === undefined ? [] : [{ ...row, text: row.text }]))
 }
 
 const noModelsMessage = "A model prompt needs at least one model, e.g. *opus-5-5* or cliproxyapi/claude-opus-5-5"
 
-async function createModelPrompt(id: string, title: string, text: string, models: readonly string[]): Promise<SystemRowResult> {
+async function createModelPrompt(id: string, title: string, text: string, models: readonly string[], off: boolean): Promise<SystemRowResult> {
   const slug = modelSlugOf(id)
   if (!slug.ok) return { ok: false, reason: "invalid", id, message: slug.reason }
   const patterns = parseModelPatterns(models.join(","))
@@ -105,6 +112,7 @@ async function createModelPrompt(id: string, title: string, text: string, models
   await Bun.write(target, text)
   await writeIndexEntry(modelPromptDir(), slug.id, title.trim().length === 0 ? slug.id : title.trim())
   await writeModelsEntry(slug.id, patterns)
+  if (off) await writeOffEntry(modelPromptDir(), slug.id, true)
   return { ok: true, id: `${modelPrefix}${slug.id}` }
 }
 
@@ -116,6 +124,7 @@ async function deleteModelPrompt(id: string): Promise<SystemRowDeleteResult> {
   await fs.rm(target, { force: true })
   await removeIndexEntry(modelPromptDir(), slug.id)
   await writeModelsEntry(slug.id, undefined)
+  await writeOffEntry(modelPromptDir(), slug.id, false)
   return { ok: true, id: `${modelPrefix}${slug.id}` }
 }
 
@@ -165,4 +174,22 @@ async function writeModelsEntry(slug: string, patterns: readonly string[] | unde
   if (patterns !== undefined) current[slug] = patterns
   await fs.mkdir(modelPromptDir(), { recursive: true })
   await Bun.write(path.join(modelPromptDir(), "models.json"), `${JSON.stringify(current, undefined, 2)}\n`)
+}
+
+// `off.json` next to the files: the ids of rows that start off for every
+// agent. Absent or unreadable means none.
+function readOffSync(dir: string): ReadonlySet<string> {
+  try {
+    const parsed: unknown = JSON.parse(fsSync.readFileSync(path.join(dir, "off.json"), "utf8"))
+    return new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [])
+  } catch {
+    return new Set()
+  }
+}
+
+async function writeOffEntry(dir: string, id: string, off: boolean): Promise<void> {
+  const current = readOffSync(dir)
+  if (current.has(id) === off) return
+  const next = off ? [...current, id] : [...current].filter((entry) => entry !== id)
+  await Bun.write(path.join(dir, "off.json"), `${JSON.stringify(next.toSorted(), undefined, 2)}\n`)
 }

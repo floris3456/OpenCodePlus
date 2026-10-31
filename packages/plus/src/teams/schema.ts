@@ -208,6 +208,11 @@ function field<S extends Schema.Constraint>(
   return Schema.withDecodingDefaultTypeKey<S, never>(Effect.sync(def))(schema)
 }
 
+// A team member's context at which it condenses or starts fresh, unless an
+// Instructions row sets Compaction › Input token threshold for it. Read by the
+// compaction decision and by team_followup's own context limit.
+export const TEAM_CONTEXT_TOKENS = 400_000
+
 // Identity primitives.
 export const Head = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/))
 export type Head = typeof Head.Type
@@ -405,6 +410,9 @@ export const Brief = Schema.Struct({
     }),
     () => "medium" as const,
   ),
+  wall: Schema.optionalKey(Schema.String).annotate({
+    description: "Time budget of the run (wall clock inside attempts), e.g. 2.5h; default from effort.",
+  }),
   repo: Schema.optionalKey(Schema.String).annotate({ description: "Another configured repository; omit for yours." }),
   base: Schema.optionalKey(Schema.String).annotate({ description: "Commit or branch the child starts from; omit for your HEAD." }),
   prompt: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4000))).annotate({
@@ -432,16 +440,17 @@ export const Finding = Schema.Struct({
 })
 export type Finding = typeof Finding.Type
 
-// Every deliverable gets the same summary budget; located items still belong
-// in findings, which the parent receives as well.
-export function validateSummary(summary: string, deliverable: Deliverable["kind"] | undefined): void {
+// The line limit is the member's own (team_finish Limits → Report summary):
+// the handler reads it and passes it here, so the refusal names the number and
+// the row. Located items still belong in findings, which the parent receives
+// as well.
+export function validateSummary(summary: string, role: string, limit: number): void {
   const lines = summary.split("\n").length
-  const max = 40
-  if (lines > max) {
+  if (lines > limit) {
     throw toolError(
       "E_SUMMARY",
-      `summary is ${lines} lines (max ${max}). Detail goes to the report file automatically; keep the summary to what the parent must act on${deliverable !== undefined && deliverable !== "commit" ? ", and put each located item in findings instead" : ""}.`,
-      `a summary of ≤${max} lines`,
+      `summary is ${lines} lines (max ${limit} for ${role}, team_finish limits.summary). Shorten it: put detail in findings, concerns or a file in your worktree and name it.`,
+      `a summary of ≤${limit} lines`,
     )
   }
 }
@@ -452,7 +461,7 @@ export const Report = Schema.Struct({
       "done: complete (team_finish first runs any assigned check not yet run at HEAD). done_with_concerns: complete but unsure, or uncommitted files named in deferred. blocked, needs_context (information missing) and rejected (outside your role or scope) need at least one entry in needs. Work that still needs a file or check outside your scope is not done: blocked, with one need per file (path) or check.",
   }),
   summary: Schema.String.check(Schema.isMaxLength(5000)).annotate({
-    description: "What your parent must act on, at most 40 lines; it receives it in full.",
+    description: "What your parent must act on; it receives it in full. The line limit is set per member (team_finish Limits → Report summary), and the tool refuses a longer summary: put detail in findings, concerns or a file.",
   }),
   concerns: field(
     Schema.Array(Schema.String.check(Schema.isMaxLength(1000)))
@@ -693,7 +702,9 @@ export type BudgetOverBy = typeof BudgetOverBy.Type
 
 // A child session's context size in the status output is the prompt size of
 // its latest completed step (input + cache read + cache write), or null when
-// it has no completed step. Its compaction is its own model's (compactionInput).
+// it has no completed step. A team member (the lead included) condenses at
+// TEAM_CONTEXT_TOKENS of context unless a Compaction › Input row sets its own
+// threshold.
 
 export interface BudgetDimension {
   name: "turns" | "tokens" | "wall"

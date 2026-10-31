@@ -5,7 +5,9 @@
 // answer; no Plus logic is copied here.
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
+import path from "node:path"
 import { apply, type ApplyInput } from "../src/instructions/apply.js"
+import { teachingSkillLocation } from "../src/instructions/teaching.js"
 import type { CustomizationRecord } from "../src/instructions/model.js"
 import { agentHarness, agentInfo, context, toolHarness } from "./harness.js"
 import { change, linked, presetInput, type TeamMember } from "./teams/preset-table.js"
@@ -95,8 +97,25 @@ test("a shipped preset member keeps the same opening under its own row", async (
   expect(evaluate("external_directory", "/etc/*", rules)).toMatchObject({
     effect: "deny",
     message:
-      'paths outside this checkout are not available here; still allowed: Temporary directories (denied by item:project:opencodeplus-team/:ocp-implementer:perm:read:where.external "Outside this checkout, for every tool (external_directory)": off, from preset basic › implementer)',
+      'paths outside this checkout are not available here; still allowed: Temporary directories, Reference files of the instructions-tools skill (denied by item:project:opencodeplus-team/:ocp-implementer:perm:read:where.external "Outside this checkout, for every tool (external_directory)": off, from preset basic › implementer)',
   })
+})
+
+// The skill tells its reader to open reference files beside it, in the
+// global config: a member kept inside its checkout can still read them.
+test("a shipped preset member may read the instructions-tools skill's reference files", async () => {
+  const { evaluate } = await import("../../core/src/permission.js")
+  const member = linked("ocp-implementer", "implementer")
+  const rules = await rulesAfterApply(member.id, presetInput({ members: [member] }))
+  // A config directory outside every temporary one, which Temporary directories would open.
+  const previous = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = "/home/someone/.config/opencodeplus"
+  const reference = path.join(path.dirname(teachingSkillLocation()), "reference")
+  if (previous === undefined) delete process.env.OPENCODE_CONFIG_DIR
+  else process.env.OPENCODE_CONFIG_DIR = previous
+  expect(evaluate("external_directory", `${reference}/*`, rules).effect).not.toBe("deny")
+  expect(evaluate("read", `${reference}/find.md`, rules).effect).not.toBe("deny")
+  expect(evaluate("external_directory", `${path.dirname(path.dirname(reference))}/*`, rules).effect).toBe("deny")
 })
 
 test("a read row that is off still refuses inside /tmp: the opening is only on external_directory", async () => {

@@ -19,6 +19,10 @@ import { toolsAndRulesSample } from "./fixtures/tools-and-rules.js"
 
 const UPDATED = "2026-01-01T00:00:00.000Z"
 
+// A stand-alone agent's team tool rows are off until something turns them on
+// (model.ts standAloneTeamTool): Defaults turn team_check on for every agent.
+const teamCheckForEveryone: CustomizationRecord = { type: "customization", level: "defaults", agent: null, item: "tool:team_check", section: null, state: "on", basedOn: "", updated: UPDATED }
+
 const roleText = `# Role
 
 ## Always
@@ -41,14 +45,14 @@ const agents = ["alpha", "beta"]
 const links = agents.map((agent) => ({ type: "link" as const, level: "project" as Level, agent, preset: { kind: "agent" as const, id: "build" }, updated: UPDATED }))
 
 function memo(records: readonly CustomizationRecord[], rowlinks: readonly RowlinkRecord[] = []): MemoInput {
-  return { items, records, rowlinks, agents: agents.map((id) => ({ id, scope: "project" as const, origin: "user" as const })), links, teams: [] }
+  return { items, records: [teamCheckForEveryone, ...records], rowlinks, agents: agents.map((id) => ({ id, scope: "project" as const, origin: "user" as const })), links, teams: [] }
 }
 
 function applyInput(records: readonly CustomizationRecord[], rowlinks: readonly RowlinkRecord[] = []): ApplyInput {
   const sources = agents.map((id) => ({ id, scope: "project" as const, origin: "user" as const }))
   return {
     items,
-    records,
+    records: [teamCheckForEveryone, ...records],
     splits: [],
     agents: agents.map((id) => ({ id, level: "project" as Level })),
     scopes: chainContext({ agents: sources, items, links, rowlinks }),

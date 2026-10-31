@@ -17,6 +17,7 @@
 // - An allow-list row (`allow: true`) lets through what it matches while it is
 //   on, and only matters once the fallback is off.
 import { fingerprint, permItemId, type Item, type PermKind } from "./model.js"
+import { TEAM_CONTEXT_TOKENS } from "../teams/schema.js"
 
 export interface RowSpec {
   readonly id: string
@@ -346,6 +347,15 @@ const nativeCatalog: Record<string, readonly CategorySpec[]> = {
       },
       rows: [
         { id: "tmp", label: "Temporary directories", on: true, allow: true, patterns: ["/tmp/*", "*/run/plus/tmp/*"] },
+        // The instructions-tools skill points its reader at reference files
+        // beside it in the global config (teaching.ts), outside every checkout.
+        {
+          id: "skill-reference",
+          label: "Reference files of the instructions-tools skill",
+          on: true,
+          allow: true,
+          patterns: ["*/opencodeplus/skills/instructions-tools/*"],
+        },
         // Core asks `external_directory` before any tool (read, edit, the
         // shell) touches a path outside the checkout; a delegated run has
         // nobody to answer, so this row refuses instead of asking.
@@ -816,6 +826,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "brief", label: "Brief size (characters)", on: true, limit: 6000 },
         { id: "attachment", label: "Attached brief file (characters)", on: true, limit: 8000 },
         { id: "members", label: "Live team runs in total", on: true, limit: 12 },
+        { id: "wall", label: "Longest wall at delegation (minutes)", on: true, limit: 480 },
       ],
     },
     approval(),
@@ -838,6 +849,7 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
       rows: [
         { id: "rounds", label: "Followups per child", on: false, limit: 5 },
         { id: "budget-ping", label: "Budget reminder interval (minutes)", on: true, limit: 15 },
+        { id: "context", label: "Child context limit (tokens)", on: true, limit: TEAM_CONTEXT_TOKENS },
       ],
     },
     approval(),
@@ -922,6 +934,15 @@ const teamCatalog: Record<string, readonly CategorySpec[]> = {
         { id: "commit", label: "A commit deliverable has a commit", on: false },
         { id: "clean", label: "Worktree committed before done", on: false },
       ],
+    },
+    // Enforced by team_finish, not by a prompt: the report's summary is counted
+    // in lines before the report is recorded, and the refusal names the number.
+    {
+      id: "limits",
+      label: "Limits",
+      kind: "team",
+      summary: "How long this member's report summary may be. Edit the row to change the number; off leaves the role's own default.",
+      rows: [{ id: "summary", label: "Report summary (lines)", on: true, limit: 15 }],
     },
   ],
   team_stop: [runs("team_stop"), approval()],
@@ -1434,3 +1455,17 @@ export function limitOf(text: string): number | undefined {
   const value = Number(match[0].replaceAll("_", ""))
   return Number.isFinite(value) ? value : undefined
 }
+
+/**
+ * A member's report summary limit: the number its own team_finish Limits →
+ * Report summary row resolves to, else 15. The row ships 15; a shipped member
+ * preset sets a role whose report is long by nature to 20 (scout), and a role
+ * outside the shipped presets takes its default here (fixer-god 25). A number
+ * the row resolves to always wins. team_finish refuses a longer summary,
+ * naming the number, the role and the row.
+ */
+export function summaryLineLimit(limit: number | undefined, role: string): number {
+  return limit ?? roleSummaryLines[role] ?? 15
+}
+
+const roleSummaryLines: Readonly<Record<string, number>> = { scout: 20, "fixer-god": 25 }

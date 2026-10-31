@@ -1,28 +1,28 @@
 import { lstat, mkdir, realpath, stat } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { Effect } from "effect"
-import { git, gitRaw } from "./git.js"
+import { git, gitRaw, NO_REPOSITORY_PROGRAMS } from "./git.js"
 import { toolError } from "./schema.js"
 import { lock } from "./store.js"
 import { errCode, io } from "./io.js"
 import { directoryUse } from "./directory-use.js"
 import { removeSnapshotStores } from "./snapshots.js"
 
-// Team worktrees share one repository, so a task executor can write the
-// repository-local git config — hooks, `core.fsmonitor`, `commit.gpgSign` — and a
-// later host-plane git command would run that program as the host, outside every
-// placement boundary. `-c` outranks repository config, and each value cannot be
-// redirected by the executor: `/dev/null` can never be a directory, and `false`
-// disables the feature outright. Add a key here only once a canary proves git
-// spawns it for one of our subcommands; `packages/core/src/git.ts` carries the
-// same list as its own copy because it cannot import plugin code.
-export const NO_REPOSITORY_PROGRAMS = [
+export { NO_REPOSITORY_PROGRAMS } from "./git.js"
+
+// `GIT_LFS_SKIP_SMUDGE=1` alone only stops LFS's own smudge command; a
+// repository with `filter.lfs.process` configured (what `git lfs install`
+// writes) runs LFS through one long-lived process per checkout and ignores it.
+// Clearing the process and smudge filters is what actually leaves pointer
+// files, and `filter.lfs.required=false` keeps git from failing on the empty
+// command. Each `-c` outranks repository config, like the entries above.
+export const LFS_POINTERS_FLAGS = [
   "-c",
-  "core.hooksPath=/dev/null",
+  "filter.lfs.smudge=",
   "-c",
-  "core.fsmonitor=false",
+  "filter.lfs.process=",
   "-c",
-  "commit.gpgSign=false",
+  "filter.lfs.required=false",
 ]
 
 function exists(p: string): Promise<boolean> {
@@ -63,6 +63,12 @@ export interface CreateOptions {
   name: string
   base: string
   workspaceRoot: string
+  /**
+   * `pointers`: the checkout gets LFS pointer files instead of their content.
+   * Empty is today's behaviour — git runs the repository's smudge filter, so
+   * every LFS file is materialised. Landing and merge worktrees never set it.
+   */
+  lfs?: "pointers"
 }
 
 export interface Created {
@@ -107,7 +113,15 @@ async function createLocked(opts: CreateOptions): Promise<Created> {
   // nothing that resolves it (the host's FileSystem.realPath, the writes
   // below) can miss it.
   await mkdir(dirname(dir), { recursive: true })
-  await git(opts.repoRoot, [...NO_REPOSITORY_PROGRAMS, "worktree", "add", "-b", branch, dir, verify.out])
+  const pointers = opts.lfs === "pointers"
+  // Both halves are needed: the flags replace the smudge filter itself, and the
+  // env stops any LFS helper that still runs from fetching content (a
+  // repository with `filter.lfs.process` set ignores the env alone).
+  await git(
+    opts.repoRoot,
+    [...NO_REPOSITORY_PROGRAMS, ...(pointers ? LFS_POINTERS_FLAGS : []), "worktree", "add", "-b", branch, dir, verify.out],
+    pointers ? { GIT_LFS_SKIP_SMUDGE: "1" } : {},
+  )
   const head = await git(dir, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "HEAD"])
   // Hand back the canonical directory: the host realpaths the location it is
   // given, and a data root reached through a symlink would otherwise yield two

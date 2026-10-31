@@ -5,7 +5,7 @@ import { Effect, Option, Schema } from "effect"
 import { modelActivationRefusal, reflectedPeer, reflectedRows } from "./instructions/reflection.js"
 import { interactiveActor } from "./instructions-cli.js"
 import { captureRows, pasteRows, type Clipboard } from "./instructions/clipboard.js"
-import { duplicateName, duplicateSource, itemRecordsCopy, materializedOwnerRecords, ownerLayoutCopy, systemCopyId, teamLayoutCopy, teamRecordsCopy, type DuplicateSource } from "./instructions/duplicate.js"
+import { copyActiveModelsRebased, copyLink, copyNameRefusal, duplicateName, duplicateSource, itemRecordsCopy, ownerLayoutCopy, ownerRecordsCopy, ownNodeCopies, systemCopyId, teamLayoutCopy, withoutCopyNodes, type DuplicateSource, type NodeCopy } from "./instructions/duplicate.js"
 import { runRegistration } from "./instructions/apply.js"
 import { changedLines, unifiedDiff } from "./instructions/diff-lines.js"
 import { defaultInclude, mergeUnits, renderMerge, withoutFinalNewline, type MergeEntry } from "./instructions/merge-units.js"
@@ -89,10 +89,11 @@ import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { isModelPrompt } from "./instructions/system-order.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
-import { rowlinksOf, storedRecords } from "./instructions/resolve-memo.js"
+import { rowlinksOf } from "./instructions/resolve-memo.js"
 import { markerIn } from "./instructions/requires.js"
 import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkRecord, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
+import { stagedApi } from "./instructions/staged.js"
 import type { StoredRecord } from "./instructions/store.js"
 import { IMAGE_FIELDS, type ImageField } from "./image-settings.js"
 import {
@@ -135,42 +136,42 @@ const options = { namespace, codemode: true, permission: "instructions" } as con
 const maxRows = 200
 
 const FindDescription =
-  "Find instruction rows: one \"id | badges | from\" line per thing; every parameter given must match.\n" +
-  "Each row appears once, at its most specific level (what runs here). Without agent or team, agents' copies with the same on/off and text are one row, ending \"(+N agents)\"; agent \"*\" lists each. " +
-  "level, in, type section|preset and is (each level's own edits) show the rest. " +
-  "e.g. {agent:\"build\",type:\"tool\",state:\"off\"}, {is:\"review\"}. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
+  "Find instruction rows: one \"id | badges | from\" line per thing; every filter given must match.\n" +
+  "Lists match any: {agent:[\"build\",\"plan\"],type:\"tool\",name:[\"edit\",\"write\"]}. A row shows once, at its most specific level; without agent or team, agents' copies that agree are one row ending \"(+N agents)\" (agent \"*\" lists each). " +
+  "level, in, type section|preset and is show the rest. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
 
 const ReadDescription =
-  "Read one row: its text and where it comes from (view resolved, the default).\n" +
-  "On an agent, group or root, resolved lists the rows under it. assembled appears only when what reaches the model differs from text.\n" +
-  "Views: upstream, mine, diff (unified diffs and the merge units set's resolve merge takes), record, sections, assembled (an agent's whole prompt).\n" +
-  "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] }."
+  "Read one row: its text, on/off and where it comes from (view resolved, the default).\n" +
+  "On an agent, group or root it lists the rows under it. Views: upstream, mine, record, sections, diff (a review's diffs and merge units), " +
+  "assembled (an agent's whole prompt, large; part names|system|tools|skills gives one part).\n" +
+  "Several rows: id as a list, or find with find's filters; answers { total, failed, results: [{ id, output } or { id, error }] }."
+
+// What a write over several rows answers (eachStep).
+const ManyWrites =
+  "Several rows: id as a list, or find with find's filters. Written once; answers { status, changed, already, notDone: [{ id, reason }] } (verbose adds each row's answer). dryRun writes nothing."
 
 const SetDescription =
   "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
-  "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
-  "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
-  "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
-  "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldFirst (Compact cold chats first for this model, over the Settings switch), coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
-  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  "text replaces the whole text (edit changes part of it). state on|off; a bare id toggles (models: activates); on a group, every row under it. " +
+  "mode primary|subagent|all (agents); active (models); resolve keep|take|edit|merge settles a review (merge takes include); preset links (\"<id>\" or \"<team>/<member>\"; null unlinks); rename; " +
+  "like:\"<agent>\" takes that agent's on/off and text for the same rows.\n" +
+  "setting:* and compaction:* rows take text (enabled and hidden: state; empty clears). Rule rows: message, label, patterns, keywords. System rows: requires; model prompts: models. Model and Defaults › Models rows: warming, interval, waiting, subagent, prompt, effort and the compaction and image fields (null inherits). Details: skill instructions-tools.\n" +
+  ManyWrites
 
 const EditDescription =
   "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
-  "oldString must match the row's current text (read's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
-  "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  "oldString must match the row's current text (read's text) once, or pass replaceAll. Saves like set({ id, text }); models, rules, teams and groups change with set. Returns { id, status, replacements }.\n" +
+  ManyWrites
 
 const MoveDescription =
   "Move a row, folder or section before or after a sibling, or a row or folder into a folder or a tab's top level.\n" +
-  "Rows move only inside their own tab; folders are display only. A section moves within its item (the item's text is rewritten).\n" +
-  "In a System list, moving a row reorders that part of the owner's system prompt (before/after only; a base prompt moves with Role/persona; OpenCode's parts move but are not edited)."
+  "Rows stay in their tab; folders are display only; a section moves within its item. In a System list the order is the system prompt's (OpenCode's parts move but are not edited).\n" +
+  "id takes a list: the rows move in that order to the same place, written once; dryRun writes nothing."
 
 const ResetDescription =
-  "Drop the override at this level only (TUI `r`).\n" +
-  "Agent and member rows reset their settings and compaction controls; model rows clear only this level's active flag; a Defaults › Models row clears its values.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  "Drop the override at this level only (TUI `r`), so the row follows what it inherits again.\n" +
+  "Agent rows reset their settings and compaction; model rows only this level's active flag; a Defaults › Models row its values. undo takes back a whole call instead.\n" +
+  ManyWrites
 
 const SplitDescription =
   "Set manual sections or append one (TUI `s` / `a` on an item).\n" +
@@ -178,25 +179,25 @@ const SplitDescription =
 
 const CreateDescription =
   "Create an agent, team, member, Defaults entry, preset, skill, base, system, MCP, model, rule or folder row (TUI `a`).\n" +
-  "Returns {id, item}: pass id to read, set, edit and delete. Kinds and their fields: agent (id, scope project|global, preset); team (team, level, preset = a team preset; created disabled); " +
-  "member (team, level, id, preset; at level defaults a Teams entry, team and id are patterns); entry (catalogue agents|teams, name with * or %, team pattern, preset); " +
-  "preset, teamPreset, presetMember (id, from; presetMember also team); skill (name, body, scope); base (id, title, text); system (id, text, title; models makes a model prompt); mcp (name, config); " +
-  "model (providerID, modelID, variant, level, agent; it becomes the active one there); rule (tool, id, label, patterns as core wildcards not regex, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
-  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); without one an agent is unlinked and Defaults still apply. catalogue agents|teams picks where a shared Defaults model or rule lands."
+  "Returns {id, item}: pass id to read, set, edit and delete. Fields per kind: agent (id, scope project|global, preset); team (team, level, preset, members; created off); " +
+  "member (team, level, id, preset); entry (catalogue agents|teams, name pattern, preset); preset|teamPreset|presetMember (id, from; presetMember also team); skill (name, body, scope); " +
+  "base (id, title, text); system (id, text, title, models); mcp (name, config); model (providerID, modelID, variant, level, agent; becomes active); " +
+  "rule (tool, id, label, patterns as wildcards, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
+  "A preset is \"<id>\" or \"<team>/<member>\". id and agent take lists (one row each), answered like set's several rows; dryRun previews records, not new files."
 
 const DeleteDescription =
   "Delete a user-owned row: agent, team, member, file, Defaults entry, user preset, custom rule or folder.\n" +
-  "Needs confirm:true. A model row deletes its candidate at this level (the active model refuses: activate another first); a Defaults › Models row clears its values. A preset still linked is refused (preset.inUse names the rows); force:true overrides links only other projects hold.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  "Needs confirm:true. A model row deletes its candidate here (not the active one); a Defaults › Models row clears its values; a preset still linked is refused (force:true overrides links only other projects hold).\n" +
+  ManyWrites
 
 const LogDescription =
-  "Change history (who/what/when).\n" +
-  "Reads the change log newest-first with where/limit/offset filtering."
+  "Change history (who/what/when), newest first.\n" +
+  "limit defaults to 20; where takes since:1d, target:<id prefix>, actor:tui|tool|cli, op:<text> or a word. An entry's rows lists what one write changed; undo with its ts takes it back."
 
 const LinkDescription =
   "Inspect or set a link between two rows of the same owner and level.\n" +
-  "Without target: list the row's links in and out. With target: store a link from id to target; type either (default: turning one on switches the other off), shownWhenOn or shownWhenOff (target is sent only while id is on / off; id must be a whole row).\n" +
-  "enabled:false masks the pair at this level, including an inherited link."
+  "Without target: the row's links. With target: type either (default: turning one on switches the other off), shownWhenOn or shownWhenOff (target is sent only while id is on / off). enabled:false masks the pair here.\n" +
+  "id and target take lists (every id to every target); dryRun refuses links."
 
 const Field = Schema.Union([
   Schema.Literal("id"),
@@ -230,29 +231,37 @@ const Sort = Schema.Union([
   Schema.Literal("-id"),
 ])
 
-const FindFilter = Schema.Struct({
-  agent: Schema.optionalKey(Schema.String).annotate({
-    description: "An agent or team member by name, ignoring case; * stands for any text.",
-  }),
-  team: Schema.optionalKey(Schema.String).annotate({ description: "A team: its rows and its members' rows." }),
-  level: Schema.optionalKey(Schema.Literals(["project", "global", "defaults", "preset"])).annotate({
-    description: "Only this level. Without it, each row at the most specific level it has (what runs here).",
-  }),
-  type: Schema.optionalKey(Schema.Literals(rowTypes)),
-  name: Schema.optionalKey(Schema.String).annotate({
-    description: "A row's own name: tool, skill, rule, setting, section or agent name, ignoring case; * stands for any text.",
-  }),
-  in: Schema.optionalKey(Schema.String).annotate({ description: "Only rows under this row id, e.g. a tool's parameters and rules." }),
-  state: Schema.optionalKey(Schema.Literals(["on", "off"])),
-  text: Schema.optionalKey(Schema.String).annotate({ description: "Rows whose text contains this, ignoring case." }),
-  is: Schema.optionalKey(Schema.Literals(namedFinds)).annotate({
-    description:
-      "Rows holding an edit: review (what it was based on changed since), changed (any; reset drops it), " +
-      "overruled (a more specific level sets it too, so it never applies), orphaned (its row is gone). " +
-      "held-back: rows and sections that are on, but the agent does not get them because their \"shown when\" does not hold.",
-  }),
-  where: Schema.optionalKey(Schema.String).annotate({ description: "More key:value terms (skill instructions-tools)." }),
-})
+// A filter value: one, or a list matching any of them. In the string form a
+// comma separates values too (agent:"build,plan"), as in where.
+const OneOrMore = <S extends Schema.Top>(value: S) => Schema.Union([value, Schema.Array(value)])
+
+// find's filters. The find tool describes each one and lists the values of
+// level, type and is; a write's `find` takes the same filters bare, since a
+// tool's schema is sent with every request (the query still refuses an unknown
+// value and names the valid ones).
+const findFilter = (
+  describe: (text: string) => { readonly description?: string },
+  values: <const L extends readonly string[]>(literals: L) => Schema.Literals<L> | Schema.String,
+) =>
+  Schema.Struct({
+    agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate(describe("An agent or team member by name, ignoring case; * stands for any text.")),
+    team: Schema.optionalKey(OneOrMore(Schema.String)).annotate(describe("A team: its rows and its members' rows.")),
+    level: Schema.optionalKey(OneOrMore(values(["project", "global", "defaults", "preset"]))).annotate(
+      describe("Only this level. Without it, each row at its most specific level (what runs here)."),
+    ),
+    type: Schema.optionalKey(OneOrMore(values(rowTypes))),
+    name: Schema.optionalKey(OneOrMore(Schema.String)).annotate(describe("A row's own name (tool, skill, rule, setting, section, agent), ignoring case; * stands for any text.")),
+    in: Schema.optionalKey(Schema.String).annotate(describe("Only rows under this row id, e.g. a tool's parameters and rules.")),
+    state: Schema.optionalKey(Schema.Literals(["on", "off"])),
+    text: Schema.optionalKey(Schema.String).annotate(describe("The text contains this, ignoring case.")),
+    is: Schema.optionalKey(OneOrMore(values(namedFinds))).annotate(
+      describe("Rows holding an edit: review (its base changed), changed, overruled (a more specific level sets it), orphaned; held-back: on, but its \"shown when\" fails."),
+    ),
+    where: Schema.optionalKey(Schema.String).annotate(describe("More key:value terms (skill instructions-tools).")),
+  })
+
+const FindFilter = findFilter((description) => ({ description }), (literals) => Schema.Literals(literals))
+const RowsFilter = findFilter(() => ({}), () => Schema.String)
 
 const FindInput = Schema.Struct({
   ...FindFilter.fields,
@@ -265,14 +274,17 @@ const FindInput = Schema.Struct({
 // The rows read, set, edit, reset and delete act on: one id, a list, or what a
 // find filter matches (eachRow).
 const Rows = {
-  id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({
-    description: "A row id, or a list of row ids: a list answers one result per row.",
+  id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({ description: "A row id, or a list of them." }),
+  find: Schema.optionalKey(RowsFilter).annotate({
+    description: `Instead of id: find's filters (every page; without agent or team, each agent's copy; at most ${maxRows} rows).`,
   }),
-  find: Schema.optionalKey(FindFilter).annotate({
-    description:
-      "Instead of id: the rows find lists with these filters (every page; without agent or team, each agent's copy). " +
-      `One result per row; at most ${maxRows} rows.`,
-  }),
+}
+
+// Every write takes these. Several rows are applied to one in-memory store and
+// written once: one store revision, one log entry, one publish.
+const WriteOptions = {
+  dryRun: Schema.optionalKey(Schema.Boolean).annotate({ description: "Answer what would change; write nothing." }),
+  verbose: Schema.optionalKey(Schema.Boolean).annotate({ description: "Add each row's full answer." }),
 }
 // Exactly one of id and find names the rows.
 const oneSelection = Schema.makeFilter<{ readonly id?: unknown; readonly find?: unknown }>((input) =>
@@ -296,30 +308,33 @@ const ReadInput = Schema.Struct({
       Schema.Literal("assembled"),
     ]),
   ),
+  part: Schema.optionalKey(Schema.Literals(["names", "system", "tools", "skills"])).annotate({
+    description: "view assembled: one part (names: the tool and skill ids and each system part's first line).",
+  }),
 }).check(oneSelection)
 
 const SetInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
+  like: Schema.optionalKey(Schema.String).annotate({
+    description: "Take this agent's on/off and text for the same rows (\"<team>/<member>\" for a member).",
+  }),
   mode: Schema.optionalKey(Schema.Literals(["primary", "subagent", "all"])),
   text: Schema.optionalKey(Schema.String),
   state: Schema.optionalKey(Schema.Union([Schema.Literal("on"), Schema.Literal("off")])),
   pin: Schema.optionalKey(Schema.Boolean),
   requires: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.String))).annotate({
-    description:
-      "System rows (not Role/persona as a whole) and their sections: send it only while these rows are on for the agent, " +
-      "e.g. [\"tool:question\"]; \"!perm:shell:git-push\" = while that row is off. [] = always; null = drop this level's " +
-      "condition (the level above, or the section's own <!-- requires --> line, decides). Shown as \"shown when\".",
+    description: "System rows and sections: sent only while these rows are on, e.g. [\"tool:question\"] (\"!perm:…\": while off). [] always; null drops this level's condition.",
   }),
   models: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description:
-      "Model prompt rows only: the models it is sent for. Each pattern is matched, ignoring case, against provider/model, the model id and its name; * or % stands for any text, e.g. [\"*opus-5-5*\", \"%qwen3.6%\"].",
+    description: "Model prompt rows: the models it is sent for, as patterns over provider/model, id and name (* or % any text).",
   }),
   active: Schema.optionalKey(Schema.Boolean),
   resolve: Schema.optionalKey(
     Schema.Union([Schema.Literal("keep"), Schema.Literal("take"), Schema.Literal("edit"), Schema.Literal("merge")]),
   ),
   include: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "With resolve merge: the unit ids (read's merge.units) to include; omitted = the defaults.",
+    description: "resolve merge: unit ids from read's diff; omitted = the defaults.",
   }),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -345,24 +360,21 @@ const SetInput = Schema.Struct({
   compactionInput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   compactionOutput: Schema.optionalKey(Schema.NullOr(Schema.String)),
   rename: Schema.optionalKey(Schema.String).annotate({
-    description:
-      "Rename this agent, on-disk team member or Project/Global team row to this new name/id, or a folder row to a new name. " +
-      "Everything that names it follows in one store revision; built-ins, shipped Defaults rows, " +
-      "ancestor-backed agents and Protected agents (tool actor) refuse.",
+    description: "New name of a user agent, member, team or folder; everything naming it follows. Built-ins and protected agents refuse.",
   }),
 }).check(oneSelection)
 
 const EditInput = Schema.Struct({
   ...Rows,
-  oldString: Schema.String.annotate({ description: "Exact text to find in the row's current text (read's text)" }),
-  newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
-  replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
-    description: "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
-  }),
+  ...WriteOptions,
+  oldString: Schema.String.annotate({ description: "Exact text in the row's current text (read's text)" }),
+  newString: Schema.String.annotate({ description: "Its replacement (must differ)" }),
+  replaceAll: Schema.optionalKey(Schema.Boolean).annotate({ description: "Replace every match; otherwise oldString must match once." }),
 }).check(oneSelection)
 
 const MoveInput = Schema.Struct({
-  id: Schema.String,
+  id: OneOrMore(Schema.String).annotate({ description: "A row id, or a list moved together in this order." }),
+  ...WriteOptions,
   into: Schema.optionalKey(Schema.String),
   before: Schema.optionalKey(Schema.String),
   after: Schema.optionalKey(Schema.String),
@@ -370,10 +382,12 @@ const MoveInput = Schema.Struct({
 
 const ResetInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
 }).check(oneSelection)
 
 const SplitInput = Schema.Struct({
   id: Schema.String,
+  dryRun: WriteOptions.dryRun,
   boundaries: Schema.optionalKey(
     Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, start: Schema.Number, depth: Schema.optionalKey(Schema.Number) })),
   ),
@@ -398,7 +412,8 @@ const CreateInput = Schema.Struct({
     Schema.Literal("presetMember"),
     Schema.Literal("folder"),
   ]),
-  id: Schema.optionalKey(Schema.String),
+  id: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "A list creates one row per id." }),
+  ...WriteOptions,
   scope: Schema.optionalKey(
     Schema.Union([Schema.Literal("project"), Schema.Literal("global"), Schema.Literal("defaults"), Schema.Literal("preset")]),
   ),
@@ -409,7 +424,7 @@ const CreateInput = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   text: Schema.optionalKey(Schema.String),
   models: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "kind system: make it a model prompt sent only for these models (patterns; * or % stands for any text).",
+    description: "kind system: a model prompt for these model patterns.",
   }),
   config: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   team: Schema.optionalKey(Schema.String),
@@ -420,7 +435,10 @@ const CreateInput = Schema.Struct({
   providerID: Schema.optionalKey(Schema.String),
   modelID: Schema.optionalKey(Schema.String),
   variant: Schema.optionalKey(Schema.String),
-  agent: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "kind model|rule: the owner; a list makes one each." }),
+  members: Schema.optionalKey(Schema.Array(Schema.Union([Schema.String, Schema.Struct({ id: Schema.String, preset: Schema.optionalKey(PresetInput) })]))).annotate({
+    description: "kind team: members to add (ids, or {id, preset}).",
+  }),
   tool: Schema.optionalKey(Schema.String),
   label: Schema.optionalKey(Schema.String),
   patterns: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -430,6 +448,7 @@ const CreateInput = Schema.Struct({
 
 const DeleteInput = Schema.Struct({
   ...Rows,
+  ...WriteOptions,
   confirm: Schema.optionalKey(Schema.Boolean),
   force: Schema.optionalKey(Schema.Boolean),
 }).check(oneSelection)
@@ -441,8 +460,9 @@ const LogInput = Schema.Struct({
 })
 
 const LinkInput = Schema.Struct({
-  id: Schema.String,
-  target: Schema.optionalKey(Schema.String),
+  id: OneOrMore(Schema.String).annotate({ description: "The row(s) the link starts from." }),
+  target: Schema.optionalKey(OneOrMore(Schema.String)).annotate({ description: "The other row(s): every id to every target." }),
+  ...WriteOptions,
   type: Schema.optionalKey(
     Schema.Union([
       Schema.Literal("either"),
@@ -453,13 +473,52 @@ const LinkInput = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
 })
 
+const BatchOps = ["set", "edit", "reset", "split", "create", "delete", "move", "link"] as const
+
+const BatchInput = Schema.Struct({
+  changes: Schema.optionalKey(Schema.Array(Schema.Record(Schema.String, Schema.Unknown))).annotate({
+    description: "[{ op: set|edit|reset|delete|create|move|link|split, ...that op's fields }], applied in order.",
+  }),
+  op: Schema.optionalKey(Schema.Literals(BatchOps)).annotate({ description: "TUI multi-select only (with id, selected, input)." }),
+  id: Schema.optionalKey(Schema.String),
+  selected: Schema.optionalKey(Schema.Array(Schema.String)),
+  input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  ...WriteOptions,
+}).check(Schema.makeFilter<{ readonly changes?: unknown; readonly op?: unknown; readonly id?: unknown; readonly selected?: unknown; readonly input?: unknown }>((input) =>
+  input.changes !== undefined
+    ? input.op === undefined && input.id === undefined && input.selected === undefined && input.input === undefined ? true : "Pass changes, or op with id, selected and input, not both"
+    : input.op !== undefined && input.id !== undefined && input.selected !== undefined && input.input !== undefined ? true : "Pass changes: [{ op, ...fields }]",
+))
+
+const BatchDescription =
+  "Several different changes in one call, applied in order and written once.\n" +
+  "batch({ changes: [{ op: \"create\", kind: \"agent\", id: \"lead\" }, { op: \"set\", find: { agent: \"lead\", type: \"tool\", name: [\"edit\", \"write\"] }, state: \"off\" }] }): a later change sees what an earlier one created. " +
+  "One revision, one log entry; a change that refuses does not stop the rest, and the answer names each one not done and why. dryRun: files (new agents, teams, skills) are not previewed.\n" +
+  "op, id (focused row), selected (roots) and input are the TUI's multi-select form: one op on the corresponding row under each root."
+
+const UndoInput = Schema.Struct({
+  ts: Schema.optionalKey(Schema.String).annotate({ description: "The log entry's ts; omitted = the newest." }),
+  dryRun: WriteOptions.dryRun,
+})
+
+const UndoDescription =
+  "Take back one change log entry (one whole call) to the values before it; undo of an undo puts it back.\n" +
+  "Unlike reset, it restores an earlier own value. Rows changed again since are kept and named. Only records undo: files (agents, skills, teams) are not deleted or created again."
+
 export async function registerInstructionTools(ctx: Context, api: PlusApi): Promise<Registration> {
   const clipboards = new Map<string, Clipboard>()
+  // The write ops batch runs, each against the api it is given (batch's
+  // staged one), so a batch is applied to one in-memory store.
+  const ops = new Map<string, { readonly input: Schema.Top; readonly run: (input: never, context: Tool.Context, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error> }>()
+  const registered = <S extends Schema.Top>(name: string, input: S, run: (input: S["Type"], context: Tool.Context, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>) => {
+    ops.set(name, { input, run })
+    return (value: S["Type"], context: Tool.Context) => run(value, context, api)
+  }
   return runRegistration(ctx.tool.transform, (editor) => {
     editor.namespace({ name: namespace, description: "Instruction rows: tools, base prompts, skills, system files, MCP, teams." })
     editor.add({
       name: "clipboard",
-      description: "Copy, cut and paste Instructions rows, or duplicate rows that can exist twice.\nPaste goes onto a compatible row or category. Copy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.\nduplicate with ids makes an independent copy of each agent (a built-in one becomes a user agent), team, team member with a file, skill, preset (built-in and team presets included), user System row or built-in System row (as a new user row with the text this owner sees), or folder, right after it, named \"<name> copy\" / \"<id>-copy\" (name sets it for one id). A copy is never linked to the original or its preset: it takes the original's effective configuration (on/off, texts, models, rules, links between its rows, folder layout) as its own records. A folder's copy holds a copy of every row inside it that can exist twice, recursively; the status names the rows it skipped and why. Rows that exist once (Tools, Role/persona, base prompts, AGENTS.md files, model prompts, tools, parameters, rules, models) refuse with the reason.",
+      description: "Copy, cut and paste Instructions rows, or duplicate rows that can exist twice.\nPaste goes onto a compatible row or category. Copy captures independent configuration. Cut is pending until paste succeeds; clear cancels without writes. The returned clipboard token is temporary in this host. Pasting a tool into another agent updates its existing tool; copying the same tool within one owner refuses a duplicate. Placement and configuration are saved together. Use action copy/cut with ids, paste with clipboard and into, or clear with clipboard.\nduplicate with ids makes an independent copy of each agent (a built-in one becomes a user agent), team, team member with a file, skill, preset (built-in and team presets included), user System row or built-in System row (as a new user row with the text this owner sees), or folder, right after it, named \"<name> copy\" / \"<id>-copy\" (name sets it for one id; it refuses a name an agent already has, built-ins included, and spaces). A copy holds only changes: it follows the preset the original follows (a built-in agent's or a shipped preset's copy follows that preset) and carries the original's own edits (on/off, texts, models, rules, links between its rows, folder layout), so it resolves like the original; it is never linked to the original itself. A System row's copy starts off. With several ids, each row that can be copied is, and the status names every row left and why. A folder's copy holds a copy of every row inside it that can exist twice, recursively; the status names the rows it skipped and why. Rows that exist once (Tools, Role/persona, base prompts, AGENTS.md files, model prompts, tools, parameters, rules, models) refuse with the reason.",
       input: Schema.Struct({
         action: Schema.Literals(["copy", "cut", "paste", "clear", "duplicate"]),
         ids: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -472,24 +531,33 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       origin,
       execute: (input, context) => Effect.gen(function* () {
         if (input.action === "clear") {
-          if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
+          const token = input.clipboard
+          if (token === undefined) return { output: { status: "Clipboard cleared", rows: [] } }
+          // An unknown token names nothing: say so instead of answering as if a
+          // clipboard had been there and emptied (a-21).
+          if (!clipboards.delete(token))
+            return yield* Effect.fail(new Tool.Error({ message: `clipboard.unknown: no clipboard "${token}"; copy or cut rows first` }))
           return { output: { status: "Clipboard cleared", rows: [] } }
         }
         if (input.action === "duplicate") {
           const ids = [...new Set(input.ids ?? [])]
           if (ids.length === 0) return yield* Effect.fail(new Tool.Error({ message: "Select rows to duplicate" }))
+          if (ids.length > 1 && (input.name?.trim() ?? "") !== "")
+            return yield* Effect.fail(new Tool.Error({ message: `name.invalid: name names one copy, but ids holds ${ids.length} rows; nothing was duplicated. Give one id with name, or leave name out to name each copy "<name>-copy"` }))
           const actor = actorFrom(context)
           const done: { row: string; status: string }[] = []
           const refused: string[] = []
           for (const id of ids) {
-            yield* duplicateRow(api, id, ids.length === 1 ? input.name : undefined, actor).pipe(Effect.match({
+            yield* duplicateRow(api, id, input.name, actor).pipe(Effect.match({
               onSuccess: (copy) => { done.push(copy) },
-              onFailure: (error) => { refused.push(error.message) },
+              onFailure: (error) => { refused.push(ids.length === 1 ? error.message : `${id}: ${error.message}`) },
             }))
           }
-          if (done.length === 0) return yield* Effect.fail(new Tool.Error({ message: refused.join("; ") }))
-          const status = done.length === 1 ? done[0]!.status : `Duplicated ${done.length} rows`
-          return { output: { status: refused.length === 0 ? status : `${status}; not duplicated: ${refused.join("; ")}`, rows: done.map((copy) => copy.row) } }
+          // Several rows: each that can be copied is; the status names every
+          // copy and every row left, with its reason.
+          if (done.length === 0) return yield* Effect.fail(new Tool.Error({ message: ids.length === 1 ? refused[0]! : `Nothing duplicated: ${refused.join("; ")}` }))
+          const status = done.length === 1 && ids.length === 1 ? done[0]!.status : `Duplicated ${done.length} of ${ids.length} rows: ${done.map((copy) => copy.status).join("; ")}`
+          return { output: { status: refused.length === 0 ? status : `${status}; not duplicated (${refused.length}): ${refused.join("; ")}`, rows: done.map((copy) => copy.row) } }
         }
         const snapshot = yield* snapshotOrFail(api)
         const memo = memoFromSnapshot(snapshot)
@@ -499,7 +567,11 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if (input.clipboard !== undefined) clipboards.delete(input.clipboard)
           const id = crypto.randomUUID()
           clipboards.set(id, captured)
-          return { output: { clipboard: id, mode: captured.mode, rows: captured.rows, status: `${captured.rows.length} row(s) ${input.action === "cut" ? "ready to move" : "copied"}` } }
+          // Copying an agent or team captures its whole configuration, so the
+          // count alone described neither side (d-07).
+          const owners = captured.rows.flatMap((row) => ownerWord(memo, row))
+          const what = owners.length === 0 ? `${captured.rows.length} row(s)` : owners.join(", ")
+          return { output: { clipboard: id, mode: captured.mode, rows: captured.rows, status: `${what} ${input.action === "cut" ? "ready to move" : "copied"}` } }
         }
         const captured = input.clipboard === undefined ? undefined : clipboards.get(input.clipboard)
         if (captured === undefined) return yield* Effect.fail(new Tool.Error({ message: "Clipboard is unavailable; copy or cut the rows again" }))
@@ -507,57 +579,85 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         const plan = pasteRows(memo, captured, input.into)
         if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
         const delta = deltaOf(memo.records, plan.memo.records)
+        const pastedOwners = captured.rows.flatMap((row) => ownerWord(memo, row))
+        // A shipped preset takes edits like any row, but every agent and team
+        // made from it gets them: the answer says so.
+        const tree = treeMemoOf(memo)
+        const shipped = [...new Set(plan.rows.flatMap((row) => {
+          const preset = lazyPath(tree, row).findLast((node) => node.owner?.preset !== undefined)?.owner?.preset
+          return preset === undefined || preset.origin === "user" ? [] : [presetLabelOf(tree, preset.ref)]
+        }))]
+        const into = shipped.length > 0
+          ? ` into the built-in preset ${shipped.join(", ")}: every agent and team made from it gets this change (reset undoes it; duplicate the preset to change a copy instead)`
+          : pastedOwners.length === 0 ? "" : ` into ${input.into}`
+        const status = `Pasted ${pastedOwners.length === 0 ? `${captured.rows.length} row(s)` : pastedOwners.join(", ")}${into}`
         const written = yield* Effect.promise(() => api.layoutWrite({
           ...plan.layout,
           changes: { upsert: delta.upsert.flatMap((record) => { const row = snapshotRecordOf(record); return row === undefined ? [] : [row] }), remove: delta.remove },
           expectedProjectRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision,
-          target: input.into!, status: `Pasted ${captured.rows.length} row(s)`, actor: actorFrom(context),
+          target: input.into!, status, actor: actorFrom(context),
         }))
         if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: written.error.message }))
         if (captured.mode === "cut") clipboards.delete(input.clipboard!)
-        return { output: { ...written.value, rows: plan.rows, consumed: captured.mode === "cut" } }
+        return { output: { ...written.value, status, rows: plan.rows, consumed: captured.mode === "cut" } }
       }),
     })
     editor.add({
       name: "batch",
-      description: "Apply one row operation to the corresponding setting in every selected row.\nid is the focused row; selected contains roots (for example tools or agents). When id is below a selected root, match its parameter, permission, Description or setting by identity under each other root. A focus outside selection changes only itself. input holds the ordinary operation's fields except id. Returns applied, skipped and failed ids; successful rows are saved even if another row refuses.",
-      input: Schema.Struct({
-        op: Schema.Literals(["set", "edit", "reset", "split", "create", "delete", "move", "link"]),
-        id: Schema.String,
-        selected: Schema.Array(Schema.String),
-        input: Schema.Record(Schema.String, Schema.Unknown),
-      }),
-      output: Plus.InstructionsBatchOutput,
+      description: BatchDescription,
+      input: BatchInput,
+      output: Schema.Unknown,
       options,
       origin,
       execute: (input, context) => Effect.gen(function* () {
+        if (input.changes !== undefined) {
+          const steps = input.changes.map((change, index) => {
+            const { op: name, dryRun: _dryRun, ...fields } = change
+            const entry = typeof name === "string" && name !== "batch" ? ops.get(name) : undefined
+            const label = `${index + 1}. ${String(name)}${typeof fields.id === "string" ? ` ${fields.id}` : ""}`
+            return {
+              id: label,
+              run: (api: PlusApi) => {
+                if (entry === undefined) return Effect.fail(new Tool.Error({ message: `unknown op ${JSON.stringify(name)}; ops: ${[...ops.keys()].filter((key) => key !== "undo").join(", ")}` }))
+                const decoded = Schema.decodeUnknownExit(entry.input as unknown as Schema.Codec<unknown>)(fields)
+                if (decoded._tag === "Failure") return Effect.fail(new Tool.Error({ message: `invalid ${String(name)}: ${String(decoded.cause).split("\n")[0]}` }))
+                return entry.run(decoded.value as never, context, api)
+              },
+            }
+          })
+          return yield* eachStep(api, steps, { single: false, dryRun: input.dryRun, verbose: input.verbose })
+        }
+        // The TUI's multi-select: one op on the corresponding row under each selected root.
+        const focus = input.id!
+        const selected = input.selected ?? []
+        const fieldsIn = input.input ?? {}
         const snapshot = yield* snapshotOrFail(api)
         const memo = treeMemoOf(memoFromSnapshot(snapshot))
-        const reflected = reflectedRows(memo, input.id, input.selected)
-        if (input.op === "set" && (input.input.active === true || input.input.state === "on")) {
+        const reflected = reflectedRows(memo, focus, selected)
+        if (input.op === "set" && (fieldsIn.active === true || fieldsIn.state === "on")) {
           const refusal = modelActivationRefusal(reflected.targets)
           if (refusal !== undefined) return yield* Effect.fail(new Tool.Error({ message: refusal }))
         }
-        const tools = yield* ctx.tool.list()
-        const operation = tools.find((tool) => tool.name === input.op && tool.options?.namespace === "instructions")
-        if (operation === undefined || !Schema.isSchema(operation.input)) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
+        const operation = input.op === undefined ? undefined : ops.get(input.op)
+        if (operation === undefined) return yield* Effect.fail(new Tool.Error({ message: `Unknown Instructions operation ${input.op}` }))
+        const staged = stagedApi(api, { dryRun: input.dryRun === true, status: () => `${input.op} on ${reflected.targets.length} selected rows` })
         const applied: string[] = []
         const failed: { id: string; reason: string }[] = []
         const created = new Set<string>()
         const skipped = [...reflected.skipped]
         for (const row of reflected.targets) {
-          const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(input.input.target)) : undefined
-          const target = peer === undefined ? undefined : reflectedPeer(memo, input.id, row.id, input.selected, peer)
+          const peer = input.op === "link" ? Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(fieldsIn.target)) : undefined
+          const target = peer === undefined ? undefined : reflectedPeer(memo, focus, row.id, selected, peer)
           if (peer !== undefined && target === undefined) {
             failed.push({ id: row.id, reason: "Does not have the corresponding link endpoint" })
             continue
           }
-          const fields = input.op === "create" ? creationFields(memo, row, input.input) : { ...input.input, id: row.id, ...(target === undefined ? {} : { target: target.id }) }
+          const fields = input.op === "create" ? creationFields(memo, row, fieldsIn) : { ...fieldsIn, id: row.id, ...(target === undefined ? {} : { target: target.id }) }
           if ("refusal" in fields) {
             failed.push({ id: row.id, reason: String(fields.refusal) })
             continue
           }
-          const decoded = Schema.decodeUnknownOption(operation.input)(fields)
+          const decoded = Schema.decodeUnknownOption(operation.input as unknown as Schema.Codec<unknown>)(fields)
           if (Option.isNone(decoded)) {
             failed.push({ id: row.id, reason: `Invalid arguments for ${input.op}` })
             continue
@@ -567,12 +667,14 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             skipped.push({ id: row.id, reason: "The same shared resource was already created for another selected row" })
             continue
           }
-          yield* operation.execute(decoded.value, context).pipe(Effect.match({
-            onSuccess: () => { applied.push(row.id); created.add(identity) },
+          yield* operation.run(decoded.value as never, context, staged.api).pipe(Effect.match({
+            onSuccess: () => { applied.push(row.id); created.add(identity); staged.settle(row.id) },
             onFailure: (error) => { failed.push({ id: row.id, reason: error.message }) },
           }))
         }
-        return { output: { applied, skipped, failed } }
+        yield* Effect.promise(() => staged.commit())
+        const refused = new Set(staged.refused().map((entry) => entry.id))
+        return { output: { applied: applied.filter((id) => !refused.has(id)), skipped, failed: [...failed, ...staged.refused()] } }
       }),
     })
     editor.add({
@@ -626,9 +728,12 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
         eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const view = input.view ?? "resolved"
-            if (view === "assembled") return yield* showAssembled(api, input.id)
+            if (view === "assembled") return yield* showAssembled(api, input.id, input.part)
+            if (input.part !== undefined)
+              return yield* Effect.fail(new Tool.Error({ message: `view.unsupported: part takes view assembled (got view ${view})` }))
             return yield* showRow(api, input.id, view)
           }),
+          true,
         ),
     })
     editor.add({
@@ -638,17 +743,23 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
-        eachRow(api, input, (input, api) =>
+      execute: registered("set", SetInput, (input, context, api) =>
+        eachRow(api, input, (given, api) =>
           Effect.gen(function* () {
             const actor = actorFrom(context)
             const snapshot = yield* snapshotOrFail(api)
             const memo = memoFromSnapshot(snapshot)
             const treeMemo = treeMemoOf(memo)
-            const node = findRow(memo, input.id, treeMemo)
-            if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
+            const node = findRow(memo, given.id, treeMemo)
+            if (node === undefined) return yield* Effect.fail(unknownError(given.id, memo))
             const protectedAgent = protectedOf(snapshot, node)
             if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+            // like: the same row's on/off and text for that agent, set here.
+            const liked = given.like === undefined ? undefined : likeFields(memo, treeMemo, node, given)
+            if (liked !== undefined && "refusal" in liked) return yield* Effect.fail(new Tool.Error({ message: liked.refusal }))
+            if (liked !== undefined && liked.state === undefined && liked.text === undefined)
+              return { output: { id: given.id, status: `"${node.label}" is already like ${given.like}` } }
+            const input = liked === undefined ? given : { ...given, ...liked }
             const folderId = folderIdOfRef(rowToken(node) ?? "")
             if (folderId !== undefined) {
               if (input.rename === undefined) return yield* Effect.fail(new Tool.Error({ message: `"${node.label}" is a folder: set it with rename` }))
@@ -688,9 +799,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const op = input.resolve === "merge" ? mergeOp(memo, treeMemo, node, input) : computeSet(memo, input, treeMemo, (agent) => protectedForActor(snapshot, agent))
             if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
             const applied = yield* mutateOp(api, memo, op, actor)
-            return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+            return { output: { id: input.id, status: applied.status + shippedPresetNote(memo, input.id), revision: applied.revision, globalRevision: applied.globalRevision } }
           }),
-        ),
+        )),
     })
     editor.add({
       name: "edit",
@@ -699,7 +810,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("edit", EditInput, (input, context, api) =>
         eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const snapshot = yield* snapshotOrFail(api)
@@ -718,9 +829,9 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const op = computeSet(memo, { id: input.id, text: replaced.text }, treeMemo, (agent) => protectedForActor(snapshot, agent))
             if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
             const applied = yield* mutateOp(api, memo, op, actorFrom(context))
-            return { output: { id: input.id, status: applied.status, replacements: replaced.replacements } }
+            return { output: { id: input.id, status: applied.status + shippedPresetNote(memo, input.id), replacements: replaced.replacements } }
           }),
-        ),
+        )),
     })
     editor.add({
       name: "move",
@@ -729,25 +840,18 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
-        Effect.gen(function* () {
-          const actor = actorFrom(context)
-          const snapshot = yield* snapshotOrFail(api)
-          const memo = memoFromSnapshot(snapshot)
-          const node = findRow(memo, input.id, treeMemoOf(memo))
-          if (node === undefined) return yield* Effect.fail(unknownError(input.id, memo))
-          const protectedAgent = protectedOf(snapshot, node)
-          if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
-          if (node.kind === "section") {
-            const op = planSectionMove(memo, input.id, input, new Date().toISOString())
-            if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
-            const applied = yield* mutateOp(api, memo, op, actor)
-            return { output: { id: input.id, target: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
-          }
-          const change = planRowMove(memo, layoutOf(snapshot), input.id, input, new Date().toISOString())
-          const applied = yield* applyLayout(api, snapshot, change, actor)
-          return { output: { id: input.id, ...applied } }
-        }),
+      execute: registered("move", MoveInput, (input, context, api) => {
+        // Several ids keep their order: the first goes where asked, each next one right after it.
+        const ids = typeof input.id === "string" ? [input.id] : [...new Set(input.id)]
+        const first = {
+          ...(input.into === undefined ? {} : { into: input.into }),
+          ...(input.before === undefined ? {} : { before: input.before }),
+          ...(input.after === undefined ? {} : { after: input.after }),
+        }
+        return eachStep(api, ids.map((id, index) => ({ id, run: (api) => moveRow(api, id, index === 0 ? first : { after: ids[index - 1]! }, actorFrom(context)) })), {
+          single: typeof input.id === "string", dryRun: input.dryRun, verbose: input.verbose,
+        })
+      }),
     })
     editor.add({
       name: "reset",
@@ -756,7 +860,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("reset", ResetInput, (input, context, api) =>
         eachRow(api, input, (input, api) =>
           Effect.gen(function* () {
             const actor = actorFrom(context)
@@ -780,7 +884,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
             const applied = yield* mutateOp(api, memo, op, actor)
             return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
           }),
-        ),
+        )),
     })
     editor.add({
       name: "split",
@@ -789,7 +893,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("split", SplitInput, (input, context, api) =>
         Effect.gen(function* () {
           const actor = actorFrom(context)
           const snapshot = yield* snapshotOrFail(api)
@@ -804,7 +908,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
           const applied = yield* mutateOp(api, memo, op, actor)
           return { output: { id: input.id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
-        }),
+        })),
     })
     editor.add({
       name: "create",
@@ -813,10 +917,13 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
-        Effect.gen(function* () {
-          return yield* createRow(api, input, actorFrom(context))
-        }),
+      execute: registered("create", CreateInput, (input, context, api) => {
+        const rows = createRows(input)
+        const single = rows.length === 1 && typeof input.id !== "object" && typeof input.agent !== "object"
+        return eachStep(api, rows.map((row) => ({ id: createLabel(row), run: (api) => createRow(api, row, actorFrom(context)) })), {
+          single, dryRun: input.dryRun, verbose: input.verbose,
+        })
+      }),
     })
     editor.add({
       name: "delete",
@@ -825,7 +932,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("delete", DeleteInput, (input, context, api) =>
         input.confirm !== true
           ? Effect.fail(new Tool.Error({ message: "delete.unconfirmed: delete requires confirm:true" }))
           : eachRow(api, input, (input, api) =>
@@ -857,7 +964,7 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
                 if ("refusal" in plan) return yield* Effect.fail(new Tool.Error({ message: plan.refusal }))
                 return yield* deletePlan(api, plan, actor, input.force === true)
               }),
-            ),
+            )),
     })
     editor.add({
       name: "log",
@@ -871,7 +978,8 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
           const result = yield* Effect.promise(() =>
             api.log({
               ...(input.where === undefined ? {} : { where: input.where }),
-              ...(input.limit === undefined ? {} : { limit: input.limit }),
+              // The whole history is hundreds of thousands of characters (c-04).
+              limit: input.limit ?? 20,
               ...(input.offset === undefined ? {} : { offset: input.offset }),
             }),
           )
@@ -885,10 +993,39 @@ export async function registerInstructionTools(ctx: Context, api: PlusApi): Prom
       output: Schema.Unknown,
       options,
       origin,
-      execute: (input, context) =>
+      execute: registered("link", LinkInput, (input, context, api) => {
+        const ids = typeof input.id === "string" ? [input.id] : [...new Set(input.id)]
+        const targets = input.target === undefined ? [undefined] : typeof input.target === "string" ? [input.target] : [...new Set(input.target)]
+        const pairs = ids.flatMap((id) => targets.map((target) => ({ id, target })))
+        const fields = { ...(input.type === undefined ? {} : { type: input.type }), ...(input.enabled === undefined ? {} : { enabled: input.enabled }) }
+        const single = pairs.length === 1 && typeof input.id === "string" && typeof input.target !== "object"
+        // Without a target link only reads: several rows answer each row's links.
+        if (input.target === undefined && !single)
+          return Effect.forEach(ids, (id) => linkRow(api, { id }, actorFrom(context)).pipe(Effect.match({
+            onSuccess: (done) => ({ id, output: done.output }),
+            onFailure: (error) => ({ id, error: error.message }),
+          }))).pipe(Effect.map((results) => ({ output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } })))
+        return eachStep(api, pairs.map((pair) => ({
+          id: pair.target === undefined ? pair.id : `${pair.id} -> ${pair.target}`,
+          run: (api) => linkRow(api, { id: pair.id, ...(pair.target === undefined ? {} : { target: pair.target }), ...fields }, actorFrom(context)),
+        })), { single, dryRun: input.dryRun, verbose: input.verbose })
+      }),
+    })
+    editor.add({
+      name: "undo",
+      description: UndoDescription,
+      input: UndoInput,
+      output: Schema.Unknown,
+      options,
+      origin,
+      execute: registered("undo", UndoInput, (input, context, api) =>
         Effect.gen(function* () {
-          return yield* linkRow(api, input, actorFrom(context))
-        }),
+          const result = yield* Effect.promise(() =>
+            api.undo({ ...(input.ts === undefined ? {} : { ts: input.ts }), dryRun: input.dryRun === true, actor: actorFrom(context) }),
+          )
+          if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
+          return { output: result.value }
+        })),
     })
   })
 }
@@ -915,6 +1052,35 @@ function childLine(node: TreeNode): string {
   return [node.id, cell(badges.join(" ")), cell(node.badges.fromLabel)].join(" | ")
 }
 
+// `set { like }`: the on/off and the text (rows that hold one) the same row
+// has for that agent, at the row's level first, then the most specific level
+// it has, as fields for this row; only what differs. A member is
+// "<team>/<member>".
+function likeFields(
+  memo: MemoInput,
+  tree: Memo,
+  node: TreeNode,
+  input: { readonly id: string; readonly like?: string; readonly state?: unknown; readonly text?: unknown },
+): { state?: "on" | "off"; text?: string } | { refusal: string } {
+  const like = input.like!.trim()
+  if (input.state !== undefined || input.text !== undefined) return { refusal: `like takes the state and text from ${like}; set state or text in another change` }
+  const address = node.address
+  const kind = input.id.split(":", 1)[0]
+  const marker = address === undefined ? -1 : input.id.indexOf(`:${address.item}`, `${kind}:${address.level}:`.length)
+  if (address === undefined || (kind !== "item" && kind !== "section") || marker === -1)
+    return { refusal: `"${node.label}" is not a row another agent has (like works on tool, skill, rule, system, base and setting rows)` }
+  const owner = like.includes("/") ? `${like.slice(0, like.indexOf("/"))}/:${like.slice(like.indexOf("/") + 1)}` : like
+  const rest = input.id.slice(marker)
+  const levels = [address.level, "project", "global", "defaults", "preset"].filter((level, index, all) => all.indexOf(level) === index)
+  const source = levels.map((level) => `${kind}:${level}:${owner}${rest}`).map((id) => ({ id, row: findRow(memo, id, tree) })).find((entry) => entry.row !== undefined)
+  if (source?.row === undefined) return { refusal: `${like} has no row like "${node.label}" (${kind}:<level>:${owner}${rest})` }
+  const state = source.row.badges.state !== undefined && source.row.badges.state !== node.badges.state ? source.row.badges.state : undefined
+  const theirs = holdsText(source.id, source.row) ? editableText(memo, source.id, tree) : undefined
+  const mine = holdsText(input.id, node) ? editableText(memo, input.id, tree) : undefined
+  const text = theirs !== undefined && !("refusal" in theirs) && mine !== undefined && !("refusal" in mine) && theirs.text !== mine.text ? theirs.text : undefined
+  return { ...(state === undefined ? {} : { state }), ...(text === undefined ? {} : { text }) }
+}
+
 // Rows whose text set saves as an override; models and their fields,
 // permission rules, teams, groups and folders change by field instead.
 function holdsText(id: string, node: TreeNode): boolean {
@@ -924,12 +1090,19 @@ function holdsText(id: string, node: TreeNode): boolean {
   return !isPermRowId(id) && !item.startsWith("perm:")
 }
 
-// A find filter as the terms the TUI and CLI type, each value quoted whole.
-function findWhere(filter: typeof FindFilter.Type): string {
+// A find filter as the terms the TUI and CLI type, each value quoted. A list,
+// or a comma in a string value of a key that names things, is alternatives
+// (`agent:"build","plan"`); in, state and text are taken whole.
+function findWhere(filter: typeof RowsFilter.Type): string {
+  const quote = (value: string) => `"${value.replace(/[\\"]/g, "\\$&")}"`
   return [
     ...(["agent", "team", "level", "type", "name", "in", "state", "is", "text"] as const).flatMap((key) => {
       const value = filter[key]
-      return value === undefined || value === "" ? [] : [`${key}:"${value.replace(/[\\"]/g, "\\$&")}"`]
+      const whole = key === "in" || key === "state" || key === "text"
+      const values = (value === undefined ? [] : typeof value === "string" ? (whole ? [value] : value.split(",")) : [...value])
+        .map((entry) => (whole ? entry : entry.trim()))
+        .filter((entry) => entry !== "")
+      return values.length === 0 ? [] : [`${key}:${values.map(quote).join(",")}`]
     }),
     filter.where ?? "",
   ].join(" ")
@@ -938,46 +1111,135 @@ function findWhere(filter: typeof FindFilter.Type): string {
 // The rows one call acts on (the input names them with exactly one of id and
 // find, oneSelection). A single id answers exactly as before. A list of ids,
 // or the rows a find filter matches, runs the operation once per row in order
-// and answers one result per row: a row that refuses does not stop the rest,
-// and each one that succeeds stays saved.
-function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof FindFilter.Type }>(
+// against one in-memory store and writes once (eachStep); read answers one
+// result per row.
+function eachRow<Input extends { readonly id?: string | readonly string[]; readonly find?: typeof RowsFilter.Type; readonly dryRun?: boolean; readonly verbose?: boolean }>(
   api: PlusApi,
   input: Input,
-  one: (input: Omit<Input, "id" | "find"> & { readonly id: string }, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>,
+  one: (input: Omit<Input, "id" | "find" | "dryRun" | "verbose"> & { readonly id: string }, api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>,
+  reads = false,
 ): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
-    const { id, find, ...rest } = input
-    if (typeof id === "string") return yield* one({ ...rest, id }, api)
-    const ids = find === undefined ? [...new Set(id ?? [])] : yield* foundRows(api, find)
-    // A list saves row by row but publishes once: each publish rediscovers and reinstalls everything.
-    const deferred = { writes: 0 }
-    const batch: PlusApi = {
-      ...api,
-      mutate: (change) => {
-        deferred.writes++
-        return api.mutate(change, { publish: false })
-      },
+    const { id, find, dryRun, verbose, ...rest } = input
+    if (typeof id === "string" && dryRun !== true) return yield* one({ ...rest, id }, api)
+    const ids = typeof id === "string" ? [id] : find === undefined ? [...new Set(id ?? [])] : yield* foundRows(api, find)
+    if (reads) {
+      const results = yield* Effect.forEach(ids, (row) =>
+        one({ ...rest, id: row }, api).pipe(
+          Effect.match({
+            onSuccess: (done) => ({ id: row, output: done.output }),
+            onFailure: (error) => ({ id: row, error: error.message }),
+          }),
+        ),
+      )
+      return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
     }
-    const results = yield* Effect.forEach(ids, (row) =>
-      one({ ...rest, id: row }, batch).pipe(
-        Effect.match({
-          onSuccess: (done) => ({ id: row, output: done.output }),
-          onFailure: (error) => ({ id: row, error: error.message }),
-        }),
-      ),
-    ).pipe(
-      // Also when interrupted: rows already saved must still reach the running chats.
-      Effect.ensuring(Effect.suspend(() => (deferred.writes > 0 ? Effect.promise(() => api.refresh()) : Effect.void))),
-    )
-    return { output: { total: results.length, failed: results.filter((result) => "error" in result).length, results } }
+    return yield* eachStep(api, ids.map((row) => ({ id: row, run: (api) => one({ ...rest, id: row }, api) })), {
+      single: typeof id === "string", dryRun, verbose,
+    })
   })
+}
+
+interface Step {
+  readonly id: string
+  readonly run: (api: PlusApi) => Effect.Effect<{ output: unknown }, Tool.Error>
+}
+
+// What a call with several rows answers: one status line with the counts, the
+// rows it changed and every row it did not change with the reason; each row's
+// own answer only with verbose.
+interface Many {
+  readonly status: string
+  readonly changed: readonly string[]
+  readonly already: number
+  readonly notDone: readonly { readonly id: string; readonly reason: string }[]
+  readonly dryRun?: true
+  readonly revision?: number
+  readonly globalRevision?: number
+  readonly results?: readonly unknown[]
+}
+
+function isMany(value: unknown): value is Many {
+  return typeof value === "object" && value !== null && Array.isArray((value as Many).changed) && Array.isArray((value as Many).notDone) && typeof (value as Many).already === "number"
+}
+
+// Run steps in order against one staged store (staged.ts) and write once. A
+// step that refuses does not stop the rest; a write that refuses names every
+// row it carried. A single step that is not a dry run answers as itself.
+function eachStep(
+  api: PlusApi,
+  steps: readonly Step[],
+  options: { readonly single: boolean; readonly dryRun?: boolean; readonly verbose?: boolean },
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const dryRun = options.dryRun === true
+    if (options.single && steps.length === 1 && !dryRun) return yield* steps[0]!.run(api)
+    const counts = { changed: 0 }
+    const staged = stagedApi(api, { dryRun, status: () => `${counts.changed} change${counts.changed === 1 ? "" : "s"}: ${steps.map((step) => step.id).join(", ")}` })
+    const done: { id: string; output?: unknown; error?: string; changed: boolean }[] = []
+    for (const step of steps) {
+      const before = staged.changes()
+      const outcome = yield* step.run(staged.api).pipe(
+        Effect.match({
+          onSuccess: (result): { id: string; output?: unknown; error?: string } => ({ id: step.id, output: result.output }),
+          onFailure: (error): { id: string; output?: unknown; error?: string } => ({ id: step.id, error: error.message }),
+        }),
+      )
+      const changed = outcome.error === undefined && staged.changes() > before
+      if (changed) counts.changed++
+      if (outcome.error === undefined) staged.settle(step.id)
+      done.push({ ...outcome, changed })
+    }
+    const written = yield* Effect.promise(() => staged.commit())
+    if (options.single && steps.length === 1) {
+      const only = done[0]!
+      if (only.error !== undefined) return yield* Effect.fail(new Tool.Error({ message: only.error }))
+      const output = only.output as { readonly status?: unknown }
+      return { output: { ...(typeof output === "object" && output !== null ? output : { output }), dryRun: true, status: `Dry run, nothing written: ${typeof output?.status === "string" ? output.status : only.changed ? "it would change" : "nothing to change"}` } }
+    }
+    const refused = new Map(staged.refused().map((entry) => [entry.id, entry.reason]))
+    const nested = done.flatMap((entry) => (isMany(entry.output) ? [entry.output] : []))
+    // A row created and then set by a later change is one changed row.
+    const changed = [...new Set([
+      ...done.filter((entry) => entry.changed && !isMany(entry.output) && !refused.has(entry.id)).map((entry) => createdIdOf(entry.output) ?? entry.id),
+      ...nested.flatMap((many) => many.changed),
+    ])]
+    const notDone = [
+      ...done.flatMap((entry) => (entry.error === undefined ? [] : [{ id: entry.id, reason: entry.error }])),
+      ...staged.refused(),
+      ...nested.flatMap((many) => many.notDone),
+    ]
+    const already = done.filter((entry) => entry.error === undefined && !entry.changed && !isMany(entry.output)).length + nested.reduce((sum, many) => sum + many.already, 0)
+    // Files, teams and links are written as their op runs, besides the one record write.
+    const writes = staged.writes()
+    const wrote = !dryRun && writes > 0
+    const counted = `${changed.length} ${dryRun ? "would change" : "changed"}, ${already} already so, ${notDone.length} not done`
+    const how = writes === 1 ? "written once" : `written in ${writes} writes`
+    const many: Many = {
+      status: `${dryRun ? "Dry run, nothing written: " : ""}${counted}${wrote ? ` (${how}${written.revision === undefined ? "" : `: revision ${written.revision}, global ${written.globalRevision}`})` : ""}`,
+      changed,
+      already,
+      notDone,
+      ...(dryRun ? { dryRun: true as const } : {}),
+      ...(written.revision === undefined ? {} : { revision: written.revision, globalRevision: written.globalRevision }),
+      ...(options.verbose === true ? { results: done.map((entry) => (entry.error === undefined ? { id: entry.id, output: entry.output } : { id: entry.id, error: entry.error })) } : {}),
+    }
+    return { output: many }
+  })
+}
+
+// The row a create answered with, so a list of creates names what it made.
+function createdIdOf(output: unknown): string | undefined {
+  if (typeof output !== "object" || output === null || !("item" in output)) return undefined
+  const id = (output as { readonly id?: unknown }).id
+  return typeof id === "string" ? id : undefined
 }
 
 // The rows a find filter selects: every row find lists (all pages), with each
 // agent's copy rather than one row standing for them, and the shared Defaults
-// rows first, so an agent's copy changed after its shared row inherits the
-// change instead of storing its own.
-function foundRows(api: PlusApi, filter: typeof FindFilter.Type): Effect.Effect<string[], Tool.Error> {
+// rows first. Each copy then stores the value as its own, as a set of that row
+// alone does.
+function foundRows(api: PlusApi, filter: typeof RowsFilter.Type): Effect.Effect<string[], Tool.Error> {
   return Effect.gen(function* () {
     const memo = memoFromSnapshot(yield* snapshotOrFail(api))
     const where = findWhere(filter)
@@ -1111,8 +1373,46 @@ function isOwnerLevel(value: string | undefined): value is "project" | "global" 
 }
 
 // The folder a delete id names: `folder:<id>` or a folder row's id.
+// What a copied row stands for, when it is an owner: an agent, a team or a
+// member. A copy of one carries its whole configuration, so the clipboard's
+// answer names it instead of counting "rows".
+function ownerWord(memo: MemoInput, id: string): string[] {
+  const node = findRow(memo, id, treeMemoOf(memo))
+  if (node?.owner === undefined) return []
+  if (node.kind === "agent") return [`agent ${node.label}`]
+  if (node.kind !== "team") return []
+  const parts = node.id.split(":")
+  return [parts.length > 3 && parts[2] !== "preset" ? `member ${node.label} of ${parts[2]}` : `team ${node.label}`]
+}
+
+// A row inside a shipped preset is editable, and the edit reaches every agent
+// linked to that preset. delete and link refuse such a preset as read-only, so
+// a row-level save must say which preset it just changed (b-08).
+function shippedPresetNote(memo: MemoInput, id: string): string {
+  const treeMemo = treeMemoOf(memo)
+  const node = findRow(memo, id, treeMemo)
+  if (node === undefined) return ""
+  const ref = node.owner?.preset?.ref ?? presetOfAddressOf(node)
+  if (ref === undefined) return ""
+  const entry = treeMemo.ctx.listing.find((candidate) => presetKey(candidate.ref) === presetKey(ref))
+  if (entry === undefined || entry.origin === "user") return ""
+  return `; ${entry.label} ships with the release: the change reaches every agent linked to it (copy it to a User preset to change only your own)`
+}
+
+function presetOfAddressOf(node: TreeNode): Plus.PresetRef | undefined {
+  const address = node.address
+  if (address?.level !== "preset" || address.agent === null) return undefined
+  return address.team === undefined
+    ? { kind: "agent", id: address.agent }
+    : { kind: "member", team: address.team.team, id: address.agent }
+}
+
 function folderIdOfInput(memo: MemoInput, id: string): string | undefined {
   if (id.startsWith("folder:")) return id.slice("folder:".length)
+  // A folder row id carries the layout ref literally (`<tab>:folder:<id>`), so
+  // a create's answer works before any snapshot has seen the new folder.
+  const mark = id.indexOf(":folder:")
+  if (mark !== -1) return id.slice(mark + ":folder:".length)
   const node = findRow(memo, id, treeMemoOf(memo))
   const token = node === undefined ? undefined : rowToken(node)
   return token === undefined ? undefined : folderIdOfRef(token)
@@ -1140,6 +1440,7 @@ function applyLayout(api: PlusApi, snapshot: Plus.Snapshot, change: LayoutChange
     if (!written.ok) return yield* Effect.fail(new Tool.Error({ message: `${written.error.code}: ${written.error.message}` }))
     return {
       target: change.target,
+      ...(change.row === undefined ? {} : { row: change.row }),
       status: change.status,
       changed: written.value.changed,
       revision: written.value.revision,
@@ -1312,6 +1613,31 @@ function setLink(
         status: members.length === 0 ? said : `${said}; relinked ${members.map((member) => member.agent).join(", ")}`,
       },
     }
+  })
+}
+
+function moveRow(
+  api: PlusApi,
+  id: string,
+  placement: { readonly into?: string; readonly before?: string; readonly after?: string },
+  actor: Plus.Actor,
+): Effect.Effect<{ output: unknown }, Tool.Error> {
+  return Effect.gen(function* () {
+    const snapshot = yield* snapshotOrFail(api)
+    const memo = memoFromSnapshot(snapshot)
+    const node = findRow(memo, id, treeMemoOf(memo))
+    if (node === undefined) return yield* Effect.fail(unknownError(id, memo))
+    const protectedAgent = protectedOf(snapshot, node)
+    if (protectedAgent !== undefined) return yield* Effect.fail(protectedError(protectedAgent))
+    if (node.kind === "section") {
+      const op = planSectionMove(memo, id, placement, new Date().toISOString())
+      if ("refusal" in op) return yield* Effect.fail(new Tool.Error({ message: op.refusal }))
+      const applied = yield* mutateOp(api, memo, op, actor)
+      return { output: { id, target: id, status: applied.status, revision: applied.revision, globalRevision: applied.globalRevision } }
+    }
+    const change = planRowMove(memo, layoutOf(snapshot), id, placement, new Date().toISOString())
+    const applied = yield* applyLayout(api, snapshot, change, actor)
+    return { output: { id, ...applied } }
   })
 }
 
@@ -1522,12 +1848,12 @@ function mutateDelta(
   next: readonly StoredRecord[],
   actor: Plus.Actor,
   status: string,
-): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
+): Effect.Effect<{ revision: number; globalRevision: number; status: string; changed: boolean }, Tool.Error> {
   return Effect.gen(function* () {
-    // Both sides as stored: an edit equal to what its row inherits is not
-    // written, and one already stored is not removed for a row this op did
-    // not touch (a tool may not change a protected agent's rows).
-    const delta = deltaOf(storedRecords(before, before.records), storedRecords(before, next))
+    // Records as written: a value equal to what its row inherits is an own
+    // value, and a write never removes another row's record because a change
+    // made it equal (a preset's edit leaves its linked agents' changes alone).
+    const delta = deltaOf(before.records, next)
     const upsert = delta.upsert.flatMap((record) => {
       const snapshot = snapshotRecordOf(record)
       return snapshot === undefined ? [] : [snapshot]
@@ -1537,7 +1863,15 @@ function mutateDelta(
     )
     if (!result.ok) return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     if (!result.value.ok) return yield* Effect.fail(new Tool.Error({ message: "stale: delta write was refused" }))
-    return { revision: result.value.revision, globalRevision: result.value.globalRevision, status }
+    // A delta with nothing in it wrote no record and no log line: the answer
+    // says so instead of reporting a save that did not happen (a-18).
+    const changed = upsert.length > 0 || delta.remove.length > 0
+    return {
+      revision: result.value.revision,
+      globalRevision: result.value.globalRevision,
+      changed,
+      status: changed ? status : `${status} (no change: it was already so)`,
+    }
   })
 }
 
@@ -2109,7 +2443,7 @@ function setGroup(
   })
 }
 
-function showAssembled(api: PlusApi, id: string): Effect.Effect<{ output: unknown }, Tool.Error> {
+function showAssembled(api: PlusApi, id: string, part?: "names" | "system" | "tools" | "skills"): Effect.Effect<{ output: unknown }, Tool.Error> {
   return Effect.gen(function* () {
     // Presets and Defaults entries are not agents: nothing assembles for them.
     if (!/^agent:(project|global|defaults):/.test(id))
@@ -2120,8 +2454,35 @@ function showAssembled(api: PlusApi, id: string): Effect.Effect<{ output: unknow
     const result = yield* Effect.promise(() => api.assembled({ agent }))
     if (!result.ok)
       return yield* Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
-    return { output: { id, view: "assembled", ...result.value } }
+    const value = result.value
+    // A whole prompt is tens of thousands of characters; a part is what one
+    // question needs (c-06): names answers "which tools and skills".
+    if (part === undefined) return { output: { id, view: "assembled", ...value } }
+    const dropped = value.dropped === undefined ? {} : { dropped: value.dropped }
+    const shown =
+      part === "names"
+        ? {
+            system: value.system.map((text) => (text.split("\n").find((line) => line.trim() !== "") ?? "").slice(0, 120)),
+            tools: value.tools.map((tool) => tool.id),
+            skills: value.skills.map((skill) => skill.id),
+            ...(value.dropped === undefined ? {} : { dropped: value.dropped.length }),
+          }
+        : part === "system"
+          ? { system: value.system }
+          : part === "tools"
+            ? { tools: value.tools, ...dropped }
+            : { skills: value.skills }
+    return { output: { id, view: "assembled", part, agent: value.agent, ...shown } }
   })
+}
+
+// The rows directly under an entity row, one line each in find's columns, for
+// `read` of a preset, a member or a team: what creating from it yields, and
+// how many rows are on, without a full `find` dump (b-10, c-15).
+function childListing(treeMemo: Memo, id: string): { readonly columns?: string; readonly rows?: readonly string[] } {
+  const children = findLazy(treeMemo, id)?.children().map(materialize)
+  if (children === undefined) return {}
+  return { columns: "id | badges | from", rows: children.map(childLine) }
 }
 
 function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output: unknown }, Tool.Error> {
@@ -2156,7 +2517,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       return { output: { id, view, label: node.label, field: modelField.field, value: node.badges.value ?? null } }
     }
     // Presets and Defaults entries carry no text of their own: resolved and
-    // record render what the row is and what it is linked to.
+    // record render what the row is and what it is linked to. Resolved also
+    // lists the rows directly under it, as an agent does, so a preset's or a
+    // member's groups and their on counts are one cheap read (b-10, c-15).
     const owner = node.owner
     if (owner !== undefined && (owner.preset !== undefined || owner.entry !== undefined)) {
       if (view !== "resolved" && view !== "record")
@@ -2170,7 +2533,7 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
         ...(owner.linkMissing === true ? { linkMissing: true } : {}),
       }
       if (view === "record") return { output: { id, view, record: entity } }
-      return { output: { id, view, ...entity } }
+      return { output: { id, view, ...entity, ...childListing(treeMemo, id) } }
     }
     if (node.kind === "team") {
       // Team and member rows carry no item address, so resolved/record render
@@ -2182,7 +2545,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           new Tool.Error({ message: `view.unsupported: ${view} view is not available for team rows (got ${id})` }),
         )
       if (view === "record") return { output: { id, view, record: entity } }
-      return { output: { id, view, ...entity } }
+      // A member lists its rows like an agent, so its Tools group and on count
+      // are visible without a full find dump (c-15).
+      return { output: { id, view, ...entity, ...childListing(treeMemo, id) } }
     }
     if (isModelDefaultRowId(id) || isModelSettingRowId(id)) {
       const key = defaultsKeyOf(node)
@@ -2270,7 +2635,14 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
       const patterns = upstream.patterns === undefined ? [] : [...upstream.patterns]
       const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
       const parent = memo.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
-      const scrubbed = parent === undefined ? { text: "", hidden: 0, preview: [] as readonly string[] } : scrubLines(parent.text, keywords)
+      // Only the parent tool description is scrubbed live (apply.ts
+      // applyRuleScrub); system text and skills are never cut, and a subagent
+      // row drops nothing (Core already lists only the subagents an agent may
+      // run), whatever keywords a stored record holds.
+      const scrubbed =
+        parent === undefined || upstream.permTool === "subagent"
+          ? { text: "", hidden: 0, preview: [] as readonly string[] }
+          : scrubLines(parent.text, keywords)
       const message = upstream.custom === true ? upstream.message : curatedRuleMessage(upstream.permTool ?? "", upstream.ruleId ?? "") ?? upstream.message
       return {
         output: {
@@ -2310,6 +2682,12 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
     if (view === "resolved") {
       const resolved = resolve(chain)
       const text = address.section === null ? (resolved.fullText ?? resolved.text) : resolved.text
+      // A model row's provenance is its model candidate's: a model record at
+      // this level, a preset that ships the model, or the host model. The
+      // generic chain answers from the item's own text, which a preset also
+      // "ships" at its upstream value, so a member's own project model read as
+      // `source: preset` while `from` said "set here" (c-10). Report one source.
+      const modelRow = address.item.startsWith("model:")
       return {
         output: {
           id,
@@ -2318,9 +2696,9 @@ function showRow(api: PlusApi, id: string, view: string): Effect.Effect<{ output
           // What reaches the model, only when gates or markers make it differ.
           ...(resolved.assembled === text ? {} : { assembled: resolved.assembled }),
           enabled: resolved.enabled,
-          source: resolved.source,
-          stateFrom: resolved.from,
-          textFrom: resolved.textFrom,
+          source: modelRow ? node.badges.source : resolved.source,
+          stateFrom: modelRow ? node.badges.from : resolved.from,
+          textFrom: modelRow ? node.badges.from : resolved.textFrom,
           ...(node.badges.fromLabel === undefined ? {} : { from: node.badges.fromLabel }),
           ...(node.badges.reviewOf === undefined ? {} : { reviewOf: node.badges.reviewOf }),
           // Instructions that follow capabilities (requires.ts): a section's
@@ -2401,21 +2779,29 @@ function mergeIds(entries: readonly MergeEntry[]): string[] {
   return entries.flatMap((entry) => (entry.type === "unchanged" ? [] : entry.upstreamId === undefined ? [entry.id] : [entry.id, entry.upstreamId]))
 }
 
+// Each unit carries only the sides that differ from its base, and a both
+// unit's upstream id points at its unit instead of repeating its texts: a
+// one-line edit of a long skill was 24k chars when every side was written out
+// (c-06). The default merge is the units marked included.
 function mergeOutput(entries: readonly MergeEntry[]) {
   const defaults = defaultInclude(entries)
-  const units = entries.flatMap((entry) =>
-    entry.type === "unchanged"
-      ? []
-      : mergeIds([entry]).map((id) => ({
-          id,
-          kind: entry.kind,
-          yours: entry.yours.join(""),
-          upstream: entry.upstream.join(""),
-          base: entry.base.join(""),
-          included: defaults.has(id),
-        })),
-  )
-  return { units, text: renderMerge(entries, defaults) }
+  const units = entries.flatMap((entry) => {
+    if (entry.type === "unchanged") return []
+    const base = entry.base.join("")
+    const yours = entry.yours.join("")
+    const upstream = entry.upstream.join("")
+    const unit = {
+      id: entry.id,
+      kind: entry.kind,
+      included: defaults.has(entry.id),
+      base,
+      ...(yours === base ? {} : { yours }),
+      ...(upstream === base || upstream === yours ? {} : { upstream }),
+    }
+    if (entry.upstreamId === undefined) return [unit]
+    return [unit, { id: entry.upstreamId, kind: entry.kind, included: defaults.has(entry.upstreamId), of: entry.id }]
+  })
+  return { units }
 }
 
 // `set` with resolve merge: the include set (default: the defaults) renders the
@@ -2535,7 +2921,10 @@ function createRow(
       const snapshot = yield* snapshotOrFail(api)
       const memo = memoFromSnapshot(snapshot)
       const applied = yield* applyLayout(api, snapshot, planFolderCreate(memo, layoutOf(snapshot), input.id, input.name ?? "", new Date().toISOString()), actor)
-      return { output: { id: applied.target, item: applied.target, ...applied } }
+      // The row read, moved, renamed and deleted is the folder row; the
+      // layout ref alone names nothing a tree op finds (a-22).
+      const id = applied.row ?? applied.target
+      return { output: { id, item: id, ...applied } }
     }
     if (input.kind === "agent") {
       if (input.id === undefined) return yield* Effect.fail(new Tool.Error({ message: "create agent requires id" }))
@@ -2710,8 +3099,16 @@ function createRow(
       const team = input.team?.trim()
       // team.addAgent validates and trims the team name itself, so the lookup
       // resolves the same name the write used.
-      if (team === undefined || level === undefined || level === "preset" || input.id === undefined)
-        return yield* Effect.fail(new Tool.Error({ message: "create member requires team, level project|global|defaults, and id" }))
+      if (team === undefined || level === undefined || level === "preset" || input.id === undefined) {
+        // Name the field that is missing, not the whole shape: an agent that
+        // gave an id is not sent to add one (b-09).
+        const missing = [
+          ...(team === undefined || team === "" ? ["team"] : []),
+          ...(level === undefined || level === "preset" ? ["level project|global|defaults"] : []),
+          ...(input.id === undefined ? ["id"] : []),
+        ]
+        return yield* Effect.fail(new Tool.Error({ message: `create member requires ${missing.join(", ")}` }))
+      }
       const snapshot = yield* snapshotOrFail(api)
       const teammate = input.id.trim()
       // A Defaults member entry is a pattern, not an agent: protection is
@@ -2731,6 +3128,18 @@ function createRow(
             : createdMemberRow(memo, level, team, created.value.id),
         `team member "${created.value.id}"`,
       )
+      // An agent preset is allowed (an agent takes an agent or member preset),
+      // but it brings an agent's rows and no team role: say so, so nobody
+      // mistakes it for a member preset.
+      if (preset?.kind === "agent")
+        return {
+          output: {
+            ...created.value,
+            id: row.id,
+            item: row.item,
+            status: `Linked member ${created.value.id} to the agent preset ${preset.id}, not a member preset: it takes ${preset.id}'s rows (its tools, skills and role text), not a team member's role. For a team role pick a member preset ("<team>/<member>", e.g. "basic/implementer").`,
+          },
+        }
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "model") {
@@ -2762,16 +3171,11 @@ function createRow(
             }),
           )
       }
-      const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`, treeMemoOf(memo))
-      // Match the TUI Models group: presets and Defaults entries own scoped
-      // records; an ordinary member writes its agent's records in this team's chain.
+      // Match the TUI Models group: a member, a member preset and a Teams
+      // entry own records scoped to their team.
       if (team !== undefined && (agent === null || findRow(memo, `group:${level}:${team}/:${agent}:models`, treeMemoOf(memo)) === undefined))
         return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
-      const owner = team === undefined
-        ? {}
-        : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
-          ? { team: { level, team } }
-          : { memberOf: { level, team } }
+      const owner = team === undefined ? {} : { team: { level, team } }
       if (team === undefined && findRow(memo, `group:${level}:${agent ?? (input.catalogue === "teams" ? "/teams" : "")}:models`, treeMemoOf(memo)) === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `model.invalid: unknown model owner ${JSON.stringify(agent)} at ${level}` }))
       const created = yield* Effect.promise(() =>
@@ -2820,8 +3224,7 @@ function createRow(
       const member = team === undefined ? undefined : findRow(memo, `team:${level}:${team}:${agent}`, treeMemoOf(memo))
       if (team !== undefined && member?.owner === undefined)
         return yield* Effect.fail(new Tool.Error({ message: `rule.invalid: unknown member ${JSON.stringify(agent)} of team ${JSON.stringify(team)} at ${level}` }))
-      const owner = team === undefined ? {} : member?.owner?.preset !== undefined || member?.owner?.entry !== undefined
-        ? { team: { level, team } } : { memberOf: { level, team } }
+      const owner = team === undefined ? {} : { team: { level, team } }
       const created = yield* Effect.promise(() =>
         api.addRule({
           level,
@@ -2858,6 +3261,34 @@ function createRow(
     }
     return yield* Effect.fail(new Tool.Error({ message: `create unknown kind ${input.kind}` }))
   })
+}
+
+type CreateOne = Parameters<typeof createRow>[1]
+
+// create's lists, one create each: every id (for every agent of a model or
+// rule), and a team's members right after the team.
+function createRows(input: typeof CreateInput.Type): CreateOne[] {
+  const { id, agent, members, dryRun: _dryRun, verbose: _verbose, ...rest } = input
+  const ids = id === undefined ? [undefined] : typeof id === "string" ? [id] : [...new Set(id)]
+  const agents = agent === undefined ? [undefined] : typeof agent === "string" ? [agent] : [...new Set(agent)]
+  const rows: CreateOne[] = ids.flatMap((one) => agents.map((owner) => ({ ...rest, ...(one === undefined ? {} : { id: one }), ...(owner === undefined ? {} : { agent: owner }) })))
+  if (input.kind !== "team" || members === undefined) return rows
+  return [
+    ...rows,
+    ...rows.flatMap((team) =>
+      members.map((member): CreateOne => ({
+        kind: "member",
+        ...(team.team === undefined ? {} : { team: team.team }),
+        ...(team.level === undefined ? {} : { level: team.level }),
+        ...(typeof member === "string" ? { id: member } : { id: member.id, ...(member.preset === undefined ? {} : { preset: member.preset }) }),
+      })),
+    ),
+  ]
+}
+
+function createLabel(row: CreateOne): string {
+  const name = row.id ?? row.name ?? row.team ?? (row.modelID === undefined ? undefined : `${row.providerID}/${row.modelID}`) ?? ""
+  return `create ${row.kind} ${name}${row.agent === undefined ? "" : ` for ${row.agent}`}${row.kind === "member" && row.team !== undefined ? ` in ${row.team}` : ""}`.trim()
 }
 
 function presetInputOrFail(
@@ -2900,10 +3331,11 @@ function createdRowOrFail(
 }
 
 // Duplicate one row: the existing create operation makes the copy (a file, a
-// skill or a preset) without the original's preset, and one guarded layout
-// write gives it the original's effective configuration as its own records
-// (clipboard.ts pasteRows) and its folder layout. A copy is independent: it is
-// never linked to the original or to the presets either of them followed.
+// skill or a preset) with the preset its original follows, and one guarded
+// layout write gives it the original's own records (ownerRecordsCopy) and its
+// folder layout. A copy holds only changes: what the original inherits, the
+// copy inherits through the same preset, and it is never linked to the
+// original itself.
 function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor: Plus.Actor, into?: string): Effect.Effect<{ readonly row: string; readonly status: string }, Tool.Error> {
   return Effect.gen(function* () {
     const snapshot = yield* snapshotOrFail(api)
@@ -2911,22 +3343,19 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
     const tree = treeMemoOf(memo)
     const source = duplicateSource(tree, id)
     if ("refusal" in source) return yield* Effect.fail(new Tool.Error({ message: source.refusal }))
-    const label = name?.trim() || duplicateName(tree, source)
+    const given = name?.trim() ?? ""
+    const refusal = given.length === 0 ? undefined : copyNameRefusal(tree, source, given)
+    if (refusal !== undefined) return yield* Effect.fail(new Tool.Error({ message: refusal }))
+    const label = given || duplicateName(tree, source)
     const updated = new Date().toISOString()
+    const scopes = tree.ctx.scopes
     const failed = (result: { readonly ok: false; readonly error: { readonly code: string; readonly message: string } }) =>
       Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     if (source.kind === "folder") return yield* duplicateFolder(api, snapshot, memo, source, label, updated, actor)
-    // A copy carries the original's effective configuration as its own
-    // records (materializedOwnerRecords): what it resolves to now, not a link
-    // to what it followed. A copy never stays linked to its original.
-    const settle = (fresh: Plus.Snapshot, current: MemoInput, row: string, layout: LayoutRecords, status: string, records: MemoInput["records"]) =>
-      Effect.gen(function* () {
-        const placed = into === undefined ? layout : placeInto({ ...current, ...layout }, layout, row, into, updated)
-        return yield* writeCopy(api, fresh, current, records, placed, row, status, actor)
-      })
     if (source.kind === "system") {
+      // The copy starts off, so the original's text is not sent twice.
       const created = yield* Effect.promise(() =>
-        api.createSystem({ id: systemCopyId(tree, label), title: label, text: source.text, ...(source.models === undefined ? {} : { models: source.models }), actor }),
+        api.createSystem({ id: systemCopyId(tree, label), title: label, text: source.text, ...(source.models === undefined ? {} : { models: source.models }), off: true, actor }),
       )
       if (!created.ok) return yield* failed(created)
       const item = `system:${created.value.id}`
@@ -2934,11 +3363,17 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       const after = yield* snapshotOrFail(api)
       const current = memoFromSnapshot(after)
       const row = `${source.row.slice(0, -source.item.length)}${item}`
-      // A user System row's copy carries every agent's settings; a built-in
-      // row's copy starts from the text this owner sees, and nothing else.
-      const records = [...current.records, ...(builtInSystem(tree, source.item) ? [] : itemRecordsCopy(current.records, source.item, item))]
+      // A user System row's copy carries every agent's edits of it but none of
+      // their on/off: it starts off for everyone. A built-in row's copy starts
+      // from the text this owner sees, and nothing else.
+      const copied = builtInSystem(tree, source.item) ? [] : itemRecordsCopy(current.records, source.item, item).flatMap((record) => {
+        if (record.type !== "customization" || record.section !== null || record.state === undefined) return [record]
+        const rest = Object.fromEntries(Object.entries(record).filter(([key]) => key !== "state" && key !== "basedOnState")) as CustomizationRecord
+        return rest.text === undefined && rest.pin === undefined && rest.requires === undefined ? [] : [rest]
+      })
       const layout = systemOrderAfter(current, layoutOf(after), row, source.row, updated)
-      return yield* writeCopy(api, after, current, records, into === undefined ? layout : placeInto({ ...current, ...layout }, layout, row, into, updated), row, `Duplicated "${source.title}" as "${label}"`, actor)
+      const status = `Duplicated "${source.title}" as "${label}" (off for every agent: turn it on where it should be sent instead of the original)`
+      return yield* writeCopy(api, after, current, [...current.records, ...copied], into === undefined ? layout : placeInto({ ...current, ...layout }, layout, row, into, updated), row, status, actor)
     }
     if (source.kind === "skill") {
       const created = yield* Effect.promise(() =>
@@ -2958,54 +3393,28 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       const row = `${source.row.slice(0, -source.skill.length - "skill:".length)}skill:${created.value.id}`
       return yield* writeCopy(api, after, current, current.records, layoutOf(after), row, `Duplicated skill ${source.skill} as ${created.value.id}`, actor)
     }
-    if (source.kind === "team") {
-      const created = yield* Effect.promise(() => api.createTeam({ level: source.level, team: label, actor }))
-      if (!created.ok) return yield* failed(created)
-      yield* Effect.promise(() => api.refresh())
-      const row = `team:${source.level}:${label}`
-      const members = tree.ctx.teams.find((entry) => entry.level === source.level && entry.team === source.team)?.agents ?? []
-      const copied: string[] = []
-      const skipped: string[] = []
-      for (const member of members) {
-        const made = yield* duplicateRow(api, `team:${source.level}:${source.team}:${member}`, member, actor, row).pipe(Effect.match({
-          onSuccess: (copy) => (copied.push(copy.row), copy),
-          onFailure: (error) => (skipped.push(error.message), undefined as { readonly row: string; readonly status: string } | undefined),
-        }))
-        if (made === undefined) continue
-      }
-      const after = yield* snapshotOrFail(api)
-      const current = memoFromSnapshot(after)
-      const records = [...current.records, ...teamRecordsCopy(current.records, source.level, source.team, label)]
-      // The team's own settings and rules, resolved as it shows them now.
-      const values = materializedOwnerRecords(treeMemoOf(current), {
-        row: `team:${source.level}:${source.team}`, level: source.level, agent: null, team: { level: source.level, team: source.team },
-      }, { level: source.level, agent: null, team: { level: source.level, team: label } }, updated)
-      const layout = teamLayoutCopy(layoutOf(after), source.level, source.team, label, updated)
-      records.push(...values)
-      const kept = members.length - copied.length
-      const status = `Duplicated team "${source.team}" as "${label}"${copied.length === 0 ? "" : `: ${copied.length} member${copied.length === 1 ? "" : "s"} copied`}${kept === 0 ? "" : `; ${kept} member${kept === 1 ? "" : "s"} not copied: ${skipped.join("; ")}`} (the copy starts off: one team is on at a time)`
-      return yield* writeCopy(api, after, current, records, layout, row, status, actor)
-    }
+    if (source.kind === "team") return yield* duplicateTeam(api, tree, source, label, updated, actor)
     if (source.kind === "agent" || source.kind === "member") {
-      // A member copied into another team (a team's copy) lands in that team's
-      // directory, with the same id.
       const team = source.kind === "member" ? { level: source.level, team: source.team } : undefined
-      const destination = team === undefined
-        ? undefined
-        : into?.startsWith(`team:${source.level}:`) === true ? into.slice(`team:${source.level}:`.length) : team.team
+      const nodesFor = (copy: string) => ownNodeCopies(scopes, { level: source.level, agent: source.agent, ...(team === undefined ? {} : { team }) }, {
+        agent: copy,
+        ...(team === undefined ? {} : { team }),
+        global: source.kind === "agent" ? source.scope === "global" : scopes.global.has(copy),
+      })
+      const original = tree.ctx.agents.find((agent) => agent.id === source.agent && agent.team === undefined)
+      const builtIn = source.kind === "agent" && (original?.origin === "native" || original?.origin === "plus")
+      const preset = copyLink(scopes, nodesFor(label), builtIn ? { kind: "agent", id: source.agent } : undefined)
       const created = yield* Effect.promise(() => source.kind === "agent"
-        ? api.createAgent({ scope: source.scope, id: label, ...(source.file ? { from: source.agent } : {}), actor })
-        // A copy in the same team copies the member's file; one in another team
-        // starts from an empty file, and its rows carry the configuration.
-        : api.addTeamAgent({ level: source.level, team: destination!, id: label, ...(destination === team!.team ? { from: source.agent } : {}), actor }))
+        ? api.createAgent({ scope: source.scope, id: label, ...(source.file ? { from: source.agent } : {}), ...(preset === undefined ? {} : { preset }), actor })
+        : api.addTeamAgent({ level: source.level, team: source.team, id: label, from: source.agent, ...(preset === undefined ? {} : { preset }), actor }))
       if (!created.ok) return yield* failed(created)
       const copy = created.value.id
-      const row = team === undefined ? `agent:${source.level}:${copy}` : `team:${source.level}:${destination}:${copy}`
+      const row = team === undefined ? `agent:${source.level}:${copy}` : `team:${source.level}:${team.team}:${copy}`
       const discard = () => Effect.promise(() => source.kind === "agent"
         ? api.deleteAgent({ scope: source.scope, id: copy, actor }).then(() => undefined)
-        : api.removeTeamAgent({ level: source.level, team: destination!, id: copy, actor }).then(() => undefined))
+        : api.removeTeamAgent({ level: source.level, team: source.team, id: copy, actor }).then(() => undefined))
       // The host lists a new agent file after its debounced rescan; rebuild
-      // now so the copy is in the tree to carry the configuration.
+      // now so the copy is in the tree to place it.
       yield* Effect.promise(() => api.refresh())
       const listed = yield* createdRowOrFail(api, (input) => findRow(input, row, treeMemoOf(input)) === undefined ? undefined : { id: row, item: copy }, `agent "${copy}"`).pipe(Effect.option)
       if (Option.isNone(listed)) {
@@ -3014,79 +3423,135 @@ function duplicateRow(api: PlusApi, id: string, name: string | undefined, actor:
       }
       const after = yield* snapshotOrFail(api)
       const current = memoFromSnapshot(after)
+      const nodes = nodesFor(copy)
+      const records = copyRecords(current, nodes, updated)
       const levels = [...new Set(source.kind === "agent" ? [source.scope, source.level] : [source.level])]
-      const targetTeam = team === undefined ? undefined : { level: team.level, team: destination! }
-      const owner = (agent: string) => (level: string) => team === undefined ? `group:${level}:${agent}:` : `group:${level}:${destination}/:${agent}:`
-      const treeAfter = treeMemoOf(current)
-      const copied = levels.flatMap((level) => [
-        ...materializedOwnerRecords(treeAfter, {
-          row: source.row,
-          level,
-          agent: source.agent,
-          ...(team === undefined ? {} : { team }),
-        }, { level, agent: copy, ...(targetTeam === undefined ? {} : { team: targetTeam }) }, updated),
-        // A discovered member's own rows and its team-scoped rows both come along.
-        ...(team === undefined ? [] : materializedOwnerRecords(treeAfter, {
-          row: `team:${level}:${team.team}:${source.agent}`,
-          level,
-          agent: source.agent,
-          team: { level, team: team.team },
-        }, { level, agent: copy, team: { level, team: destination! } }, updated)),
-      ])
+      const owner = (agent: string) => (level: string) => team === undefined ? `group:${level}:${agent}:` : `group:${level}:${team.team}/:${agent}:`
       const layout = levels.reduce((all, level) => ownerLayoutCopy(all, owner(source.agent)(level), owner(copy)(level), updated), layoutOf(after))
-      const records = [...current.records, ...copied]
       // The copy goes right after its original in its catalogue list (an
       // owner row reorders inside its group), unless a folder takes it.
       const placed = placeAfter({ ...current, records, ...layout }, layout, row, source)
-      return yield* settle(after, current, row, placed, `Duplicated ${source.agent} as ${copy}`, records).pipe(Effect.catchTag("Tool.Error", (error) => discard().pipe(Effect.andThen(Effect.fail(error)))))
+      const status = `Duplicated ${source.agent} as ${copy}${preset === undefined ? "" : `, following preset ${presetLabelOf(tree, preset)} as ${source.agent} does`}`
+      return yield* writeCopy(api, after, current, records, into === undefined ? placed : placeInto({ ...current, ...placed }, placed, row, into, updated), row, status, actor)
+        .pipe(Effect.catchTag("Tool.Error", (error) => discard().pipe(Effect.andThen(Effect.fail(error)))))
     }
+    return yield* duplicatePreset(api, tree, source, label, updated, actor)
+  })
+}
+
+// A team's copy: a new team at the same level following the same team preset,
+// each member a copy that keeps its name and follows its member's preset, and
+// the team's own records (its rows, its Special agents', its members'
+// team-scoped ones) re-addressed. The copy starts off: one team is on at a time.
+function duplicateTeam(api: PlusApi, tree: Memo, source: Extract<DuplicateSource, { kind: "team" }>, label: string, updated: string, actor: Plus.Actor) {
+  return Effect.gen(function* () {
+    const scopes = tree.ctx.scopes
+    const from = { level: source.level, team: source.team }
+    const created = yield* Effect.promise(() => api.createTeam({ level: source.level, team: label, actor }))
+    if (!created.ok) return yield* Effect.fail(new Tool.Error({ message: `${created.error.code}: ${created.error.message}` }))
+    const to = { level: source.level, team: label }
+    const row = `team:${source.level}:${label}`
+    const notes: string[] = []
+    const teamLink = scopes.links?.find((link) => link.level === source.level && link.agent === null && sameTeam(link.team, from))?.preset
+    if (teamLink !== undefined) {
+      const linked = yield* Effect.promise(() => api.setLink({ level: source.level, agent: null, team: to, preset: teamLink, actor }))
+      if (!linked.ok) notes.push(`the team does not follow preset ${presetLabelOf(tree, teamLink)}: ${linked.error.message}`)
+    }
+    const members = tree.ctx.teams.find((entry) => entry.level === source.level && entry.team === source.team)?.agents ?? []
+    const copied: string[] = []
+    for (const member of members) {
+      const preset = copyLink(scopes, ownNodeCopies(scopes, { level: source.level, agent: member, team: from }, { agent: member, team: to, global: scopes.global.has(member) }))
+      const added = yield* Effect.promise(() => api.addTeamAgent({ level: source.level, team: label, id: member, from: member, fromTeam: source.team, ...(preset === undefined ? {} : { preset }), actor }))
+      if (!added.ok) notes.push(`member ${member} not copied: ${added.error.message}`)
+      else copied.push(member)
+    }
+    yield* Effect.promise(() => api.refresh())
+    yield* createdRowOrFail(api, (input) => findRow(input, row, treeMemoOf(input)) === undefined ? undefined : { id: row, item: label }, `team "${label}"`)
+    const after = yield* snapshotOrFail(api)
+    const current = memoFromSnapshot(after)
+    // Every owner of the team: its rows, its Special agents' and its members'.
+    const nodes = [{ from: { level: source.level, team: from }, to: { level: source.level, team: to } }]
+    const records = copyRecords(current, nodes, updated)
+    const layout = copied.reduce(
+      (all, member) => ownerLayoutCopy(all, `group:${source.level}:${source.team}/:${member}:`, `group:${source.level}:${label}/:${member}:`, updated),
+      teamLayoutCopy(layoutOf(after), source.level, source.team, label, updated),
+    )
+    const status = `Duplicated team "${source.team}" as "${label}": ${copied.length} of ${members.length} member${members.length === 1 ? "" : "s"} copied${teamLink === undefined ? "" : `, following preset ${presetLabelOf(tree, teamLink)}`}${notes.length === 0 ? "" : `; not done: ${notes.join("; ")}`} (the copy starts off: one team is on at a time)`
+    return yield* writeCopy(api, after, current, records, layout, row, status, actor)
+  })
+}
+
+// A preset's copy is a user preset. It follows what the original follows: a
+// shipped preset itself, a user preset its own link; then it carries the
+// original's own records. A team preset's copy has the same members, each
+// following what the original member follows.
+function duplicatePreset(api: PlusApi, tree: Memo, source: Extract<DuplicateSource, { kind: "preset" }>, label: string, updated: string, actor: Plus.Actor) {
+  return Effect.gen(function* () {
+    const scopes = tree.ctx.scopes
     const ref = source.ref
+    const failed = (result: { readonly ok: false; readonly error: { readonly code: string; readonly message: string } }) =>
+      Effect.fail(new Tool.Error({ message: `${result.error.code}: ${result.error.message}` }))
     if (ref.kind === "team") {
-      // A team preset: an independent copy of the member list, each member an
-      // independent preset of its own, carrying the original member's values.
-      const created = yield* Effect.promise(() => api.createPreset({ kind: "team", id: label, actor }))
+      const from = { level: "preset" as const, team: ref.id }
+      const created = yield* Effect.promise(() => api.createPreset({ kind: "team", id: label, from: ref.id, actor }))
       if (!created.ok) return yield* failed(created)
       const team = created.value.ref.id
+      const to = { level: "preset" as const, team }
       const members = tree.ctx.listing.find((entry) => entry.ref.kind === "team" && entry.ref.id === ref.id)?.members ?? []
-      const copied: string[] = []
-      const failedMembers: string[] = []
-      for (const member of members) {
-        const added = yield* Effect.promise(() => api.addPresetMember({ team, id: member, actor }))
-        if (!added.ok) { failedMembers.push(`${member}: ${added.error.message}`); continue }
-        const memberRow = yield* createdRowOrFail(api, (input) => createdPresetRow(input, { kind: "member", team, id: member }), `member preset "${team} › ${member}"`).pipe(Effect.option)
-        if (Option.isNone(memberRow)) { failedMembers.push(`${member}: its row is missing`); continue }
-        const fresh = yield* snapshotOrFail(api)
-        const current = memoFromSnapshot(fresh)
-        const values = materializedOwnerRecords(treeMemoOf(current), {
-          row: `team:preset:${ref.id}:${member}`, level: "preset", agent: member, team: { level: "preset", team: ref.id },
-        }, { level: "preset", agent: member, team: { level: "preset", team } }, updated)
-        yield* writeCopy(api, fresh, current, [...current.records, ...values], layoutOf(fresh), memberRow.value.id, `Copied member ${member}`, actor)
-        copied.push(member)
+      const notes: string[] = []
+      // A user team preset's copy is made from it (its member list), then
+      // relinked to what the original and each of its members follow.
+      if (source.origin === "user") {
+        const teamLink = copyLink(scopes, [{ from: { level: "preset", agent: null, team: from }, to: { level: "preset", agent: null, team: to } }])
+        const linked = yield* Effect.promise(() => api.setLink({ level: "preset", agent: null, team: to, preset: teamLink ?? null, actor }))
+        if (!linked.ok) notes.push(`the copy could not follow what ${ref.id} follows: ${linked.error.message}`)
+        for (const member of members) {
+          const link = copyLink(scopes, [{ from: { level: "preset", agent: member, team: from }, to: { level: "preset", agent: member, team: to } }])
+          const relinked = yield* Effect.promise(() => api.setLink({ level: "preset", agent: member, team: to, preset: link ?? null, actor }))
+          if (!relinked.ok) notes.push(`member ${member} could not follow what the original member follows: ${relinked.error.message}`)
+        }
       }
-      const status = `Duplicated team preset ${ref.id} as ${team}${members.length === 0 ? "" : `: ${copied.length} of ${members.length} members copied`}${failedMembers.length === 0 ? "" : `; not copied: ${failedMembers.join("; ")}`}`
-      return { row: `team:preset:${team}`, status }
+      yield* createdRowOrFail(api, (input) => createdPresetRow(input, { kind: "team", id: team }), `team preset "${team}"`)
+      const after = yield* snapshotOrFail(api)
+      const current = memoFromSnapshot(after)
+      const nodes = [{ from: { level: "preset" as const, team: from }, to: { level: "preset" as const, team: to } }]
+      const records = copyRecords(current, nodes, updated)
+      const layout = members.reduce((all, member) => ownerLayoutCopy(all, `group:preset:${ref.id}/:${member}:`, `group:preset:${team}/:${member}:`, updated), layoutOf(after))
+      const status = `Duplicated team preset ${ref.id} as ${team}: ${members.length} member${members.length === 1 ? "" : "s"}${source.origin === "user" ? "" : `, following ${ref.id}`}${notes.length === 0 ? "" : `; not done: ${notes.join("; ")}`}`
+      return yield* writeCopy(api, after, current, records, layout, `team:preset:${team}`, status, actor)
     }
+    const owner = (id: string) => ({ level: "preset" as const, agent: id, ...(ref.kind === "member" ? { team: { level: "preset" as const, team: ref.team } } : {}) })
+    const link = copyLink(scopes, [{ from: owner(ref.id), to: owner(label) }], ref)
     const created = yield* Effect.promise(() => ref.kind === "member"
-      ? api.addPresetMember({ team: ref.team, id: label, actor })
-      : api.createPreset({ kind: "agent", id: label, actor }))
+      ? api.addPresetMember({ team: ref.team, id: label, ...(link === undefined ? {} : { from: link }), actor })
+      : api.createPreset({ kind: "agent", id: label, ...(link === undefined ? {} : { from: link }), actor }))
     if (!created.ok) return yield* failed(created)
     const copy = created.value.ref
     const row = yield* createdRowOrFail(api, (input) => createdPresetRow(input, copy), `preset "${copy.id}"`)
     const after = yield* snapshotOrFail(api)
     const current = memoFromSnapshot(after)
-    const copied = materializedOwnerRecords(treeMemoOf(current), {
-      row: row.id, level: "preset", agent: ref.id,
-      ...(ref.kind === "member" ? { team: { level: "preset" as const, team: ref.team } } : {}),
-    }, {
-      level: "preset", agent: copy.id,
-      ...(copy.kind === "member" ? { team: { level: "preset" as const, team: copy.team } } : {}),
-    }, updated)
+    const nodes = [{ from: owner(ref.id), to: owner(copy.id) }]
+    const records = copyRecords(current, nodes, updated)
     const prefix = (agent: string) => ref.kind === "member" ? `group:preset:${ref.team}/:${agent}:` : `group:preset:${agent}:`
     const layout = ownerLayoutCopy(layoutOf(after), prefix(ref.id), prefix(copy.id), updated)
-    return yield* settle(after, current, row.id, layout, `Duplicated preset ${ref.id} as ${copy.id}`, [...current.records, ...copied]).pipe(Effect.catchTag("Tool.Error", (error) =>
+    const status = `Duplicated preset ${ref.id} as ${copy.id}${link === undefined ? "" : `, following preset ${presetLabelOf(tree, link)}`}`
+    return yield* writeCopy(api, after, current, records, layout, row.id, status, actor).pipe(Effect.catchTag("Tool.Error", (error) =>
       Effect.promise(() => api.deletePreset({ ref: copy, actor }).then(() => undefined)).pipe(Effect.andThen(Effect.fail(error))),
     ))
   })
+}
+
+// The store with a copy's nodes holding its original's own records, its
+// active models based on what the copy inherits (`current` holds the copy and
+// its link already).
+function copyRecords(current: MemoInput, nodes: readonly NodeCopy[], updated: string) {
+  const kept = withoutCopyNodes(current.records, nodes)
+  const copied = ownerRecordsCopy(current.records, nodes, updated)
+  return [...kept, ...copyActiveModelsRebased(copied, treeMemoOf(current), [...kept, ...copied])]
+}
+
+function presetLabelOf(tree: Memo, ref: Plus.PresetRef): string {
+  return tree.ctx.labels.get(presetKey(ref)) ?? presetKey(ref)
 }
 
 // A folder copy holds a copy of every row inside it that can exist twice,
@@ -3198,6 +3663,10 @@ function builtInSystem(tree: Memo, item: string): boolean {
 
 function writeCopy(api: PlusApi, snapshot: Plus.Snapshot, before: MemoInput, records: MemoInput["records"], layout: LayoutRecords, row: string, status: string, actor: Plus.Actor) {
   return Effect.gen(function* () {
+    // A copy carries only the original's own records (duplicate.ts
+    // ownerRecordsCopy), each an own value even where it equals what the
+    // copy's row inherits: none is dropped, so the copy keeps it as the
+    // original does.
     const delta = deltaOf(before.records, records)
     const written = yield* Effect.promise(() => api.layoutWrite({
       folders: [...layout.folders], orders: [...layout.orders],

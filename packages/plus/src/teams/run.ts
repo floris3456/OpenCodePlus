@@ -24,6 +24,18 @@ export interface AttemptRecord {
   inbox?: string[]
   /** The parent was told this attempt settled; it is told exactly once. */
   notified?: boolean
+  /** Why the parent was not told of this settlement: a dead or terminal parent,
+   * or an inbox write that failed. Left on the attempt so team_status shows it,
+   * and cleared once a later idle delivers the settlement. */
+  notifyError?: string
+  /** The uncommitted work this attempt left when it settled without a report:
+   * one binary patch in the run folder that a parent can apply in a worktree
+   * (`git apply --index <file>`) or hand to a fresh run. Undefined for a clean
+   * worktree, a removed worktree, or a failed save (see the settlement text). */
+  patch?: { file: string; files: number; bytes: number; skipped: string[] }
+  /** Why the patch could not be saved, when the settlement had uncommitted work
+   * but writing it failed. The settlement still goes out and says so. */
+  patchError?: string
   /** Plus asked this delegated attempt once to report after a turn ended without team_finish. */
   finishNudged?: boolean
   /** Error types already notified to the parent during this attempt. */
@@ -33,6 +45,10 @@ export interface AttemptRecord {
   retries?: { firstAt: string; count: number; error: AttemptError }
   /** Why the host ended this attempt failed (a provider or quota error, say), as the host reported it. */
   error?: AttemptError
+  /** The attempt failed on a provider whose quota is out until then (ISO): a
+   * quota answer named a reset, so the run is blocked rather than broken. The
+   * provider is cooled in `cooldowns.json` until the same moment. */
+  blockedUntil?: string
   requestedModel?: ModelIdentity | null
   loadedModel?: ModelIdentity | null
   resolvedModel?: ModelIdentity | null
@@ -44,6 +60,12 @@ export interface AttemptError {
   type: string
   message: string
   status?: number
+}
+
+/** A failure as the host reported it: `AttemptError` plus the answer body the
+ * quota parser reads. Only the three fields above are stored on the attempt. */
+export interface AttemptFailure extends AttemptError {
+  response?: { body: string }
 }
 
 export interface StateHistoryEntry {
@@ -122,6 +144,14 @@ export interface RunRecord {
    * resumes it (a prompt in its chat, or its parent's team_followup). */
   held?: { at: string; reason: "inactivity" }
   worktree?: WorktreeState
+  /**
+   * `pointers`: the member's "LFS files in its worktrees" row resolved to
+   * pointers when `delegate` created this worktree, so it holds LFS pointer
+   * files and not their content. Absent means full content (the default and
+   * every record written before this field existed). Only `delegate` sets it;
+   * a reopened worktree (`api-followup.ts`) keeps full content.
+   */
+  lfs?: "pointers"
   promotedFrom?: string
   /** Where the chat moved after this run was tied to a folder, when the run stays behind. Cleared once a team call reports it. */
   movedTo?: string

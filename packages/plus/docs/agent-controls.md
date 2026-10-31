@@ -22,8 +22,25 @@ current project, even while editing its Global or Defaults settings.
 Description, color, and maximum steps use OpenCode's existing agent fields. The
 step limit is a positive integer; new user input resets the allowance. Empty
 color or step values clear those fields; Reset resumes inheritance. Reset on an
-agent row clears its nine agent/compaction controls at that level, not its tool
+agent row clears its ten agent/compaction controls at that level, not its tool
 or prompt overrides.
+
+**Tool result cap** sets, in tokens, when a tool result is saved to a file
+instead of reaching the model whole. A result above the cap is written to
+`<tmp>/tool-output/<session>/<tool>-<call>.txt`; the model gets its head (whole
+lines) and one notice naming the file. Images and PDFs are never counted or
+dropped. The `read` tool is the exception: the file it shows is already on
+disk, so it keeps the head that fits and ends with the offset that continues it.
+Skill, `team_*` and `instructions_*` results are never capped. The value is a
+positive integer of at least 1 000 or `off`; empty means 10 000 for a team
+member and no cap for any other agent. It is a Plus setting, not an OpenCode
+agent field, so it never changes model or provider token limits.
+
+A team member also has **LFS files in its worktrees**: `pointers` gives its
+delegated worktree LFS pointer files instead of their content (empty or `full`
+keeps the content, which is the default). See the README's team worktree notes;
+the setting changes only what `team_delegate` puts on disk, never a landing or
+merge worktree.
 
 The **OpenCode → Special** group contains only `title`, `compaction`, and
 `summary`. A custom agent does not become Special merely because it is hidden.

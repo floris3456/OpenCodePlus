@@ -98,7 +98,6 @@ export function modelDetail(
     agent: address.agent,
     ...(address.team === undefined ? {} : { team: address.team }),
     ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }),
-    ...(address.memberOf === undefined ? {} : { memberOf: address.memberOf }),
     ...(upstream === undefined ? {} : { upstream }),
   }
   const candidate = modelCandidates(input).find((entry) => sameModelCandidate(entry, parsed))
@@ -110,7 +109,7 @@ export function modelDetail(
     level: address.level,
     owner: address.agent,
     ...(address.agent === null ? {} : { agentScope: derived.agents.find((entry) => entry.id === address.agent)?.scope }),
-    ...((address.memberOf ?? address.team) === undefined ? {} : { team: (address.memberOf ?? address.team)! }),
+    ...(address.team === undefined ? {} : { team: address.team }),
   })
   const active = resolveActiveModel({ ...input, level: runtime.level, scopes: runtime.scopes })
   const isActive = active !== undefined && sameModelCandidate(active, candidate)
@@ -192,14 +191,19 @@ export function scrubInfo(
     const upstream = upstreamFor(derived, address)
     if (upstream?.kind !== "perm") return undefined
     const keywords = upstream.keywords === undefined ? [] : [...upstream.keywords]
-    if (keywords.length === 0) return { hidden: 0, preview: [], keywords: [] }
+    // A subagent row drops nothing whatever a stored record holds: Core already
+    // lists only the subagents an agent may run (tool-permissions.ts idRules).
+    if (keywords.length === 0 || upstream.permTool === "subagent") return { hidden: 0, preview: [], keywords: [] }
     const parent = derived.items.find((entry) => entry.id === `tool:${upstream.permTool ?? ""}`)
     if (parent === undefined) return { hidden: 0, preview: [], keywords }
     const scrubbed = scrubLines(parent.text, keywords)
     return { hidden: scrubbed.hidden, preview: scrubbed.preview, keywords }
   }
+  // Only a tool row previews the scrub: an off rule cuts tool and catalog
+  // descriptions, never system text or skills (apply.ts applyRuleScrub).
+  if (!address.item.startsWith("tool:")) return undefined
   const keywords = derived.items.flatMap((item) => {
-    if (item.kind !== "perm" || item.keywords === undefined) return []
+    if (item.kind !== "perm" || item.permTool === "subagent" || item.keywords === undefined) return []
     const owner = address.agent
     if (owner === null) {
       if (item.agents !== undefined) return []
@@ -304,6 +308,8 @@ export function controlDetail(node: TreeNode, snapshot: Snapshot, memo?: Memo): 
     : item === "setting:hidden" ? "On hides the agent from the picker; it does not disable the agent."
     : item === "setting:mode" ? "Enter cycles Primary → Subagent → All."
     : item === "setting:steps" ? "Positive whole-number step limit; empty means unlimited. Reset follows the value above."
+    : item === "setting:tool-output" ? "A tool result above this many tokens is saved to a file; the model gets its head and the path. Empty: 10000 for team members, no cap for other agents. off: no cap."
+    : item === "setting:lfs" ? "pointers: the member's worktree gets LFS pointer files, not the content. Empty means full LFS content."
     : item === "setting:color" ? "Agent display color (#RRGGBB); empty clears the color. Reset follows the value above."
     : isAttentionRow(item) ? attentionHelp(item)
     : item === "compaction:strategy" ? "Enter cycles Auto → Local → Remote. Remote requires provider support."

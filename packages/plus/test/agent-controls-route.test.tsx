@@ -31,9 +31,9 @@ for (const width of [80, 120]) {
     for (const [index, value] of ["subagent", "all", "primary"].entries()) {
       expect(dispatch(fixture, "return")).toBe(true)
       await fixture.waitForFrame((frame) => fixture.fake.mutateInputs.length === index + 1 && selected(frame).includes(value[0].toUpperCase() + value.slice(1)))
-      // Primary is what the row inherits: the write drops the record instead of storing a copy.
-      const mode = fixture.fake.mutateInputs[index].records.filter((record) => record.type === "customization" && record.item === "setting:mode")
-      expect(mode).toEqual(value === "primary" ? [] : [expect.objectContaining({ type: "customization", level: "project", agent: "build", text: value })])
+      expect(fixture.fake.mutateInputs[index].records).toContainEqual(expect.objectContaining({
+        type: "customization", level: "project", agent: "build", item: "setting:mode", text: value,
+      }))
       expect(selected(fixture.captureCharFrame())).toContain(value[0].toUpperCase() + value.slice(1))
       expect(fixture.renderer.currentFocusedEditor).toBeNull()
       expect(dispatch(fixture, "e")).toBe(false)
@@ -91,8 +91,7 @@ test("Space toggles an agent and its Enabled row; Hidden stays distinct; ctrl+sp
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("●"))
   fixture.emitAgents([build])
-  // On is what the agent inherits: the write drops its off record rather than storing on.
-  expect(fixture.fake.mutateInputs[1].records).not.toContainEqual(expect.objectContaining({ item: "setting:enabled" }))
+  expect(fixture.fake.mutateInputs[1].records).toContainEqual(expect.objectContaining({ item: "setting:enabled", state: "on" }))
   await reach(fixture, hidden, "Hidden")
   dispatch(fixture, "space")
   await fixture.waitForFrame((frame) => selected(frame).includes("●"))
@@ -328,5 +327,8 @@ test("r on a member-preset entity resets all nine scoped controls while retainin
   expect(dispatch(fixture, "r")).toBe(true)
   await fixture.waitForFrame((frame) => frame.includes('Reset agent controls for "planner"'))
   expect(fixture.fake.mutateInputs[0].records).toEqual(retained)
-  expect(dispatch(fixture, "r")).toBe(false)
+  // Nothing is left to reset: r says so and writes nothing (d-09).
+  expect(dispatch(fixture, "r")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes('"planner" has no override to reset'))
+  expect(fixture.fake.mutateInputs).toHaveLength(1)
 })

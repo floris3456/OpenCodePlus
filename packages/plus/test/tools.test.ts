@@ -33,7 +33,7 @@ import { resolve } from "../src/instructions/model.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput, TreeNodeKind } from "../src/instructions/tree.js"
 import { registerInstructionTools } from "../src/tools.js"
-import { teachingSkillContent } from "../src/instructions/teaching.js"
+import { teachingReferences } from "../src/instructions/teaching.js"
 import { plusTeamPresets } from "../src/instructions/presets.js"
 import { memoInputOf, presetStateOfSnapshot } from "../src/instructions/snapshot.js"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -43,7 +43,7 @@ import { toolsAndRulesSample } from "./fixtures/tools-and-rules.js"
 const roots: string[] = []
 const priorConfigDir = process.env.OPENCODE_CONFIG_DIR
 const priorDataHome = process.env.XDG_DATA_HOME
-const instructionToolIds = ["batch", "clipboard", "create", "delete", "edit", "find", "link", "log", "move", "read", "reset", "set", "split"].map((name) => `instructions_${name}`)
+const instructionToolIds = ["batch", "clipboard", "create", "delete", "edit", "find", "link", "log", "move", "read", "reset", "set", "split", "undo"].map((name) => `instructions_${name}`)
 
 for (const combined of [true, false]) {
   test(`repeat whole-row headed set retains authored text (${combined ? "combined state:on" : "text-only control"})`, async () => {
@@ -329,7 +329,8 @@ test("C1 registered model set and emitted field reset persist atomically without
   const values = { compactWarm: "on", coldFirst: "off", coldModels: ["acme/cold#high"], compactionStrategy: "remote", compactionModel: "acme/summary#low", compactionInstructions: "", compactionInput: "120000", compactionOutput: "off" }
   // Bind the taught typed fields to the registered schema and real write,
   // not just the permissive field-id parser.
-  for (const field of Object.keys(values)) expect(teachingSkillContent).toContain(`\`${field}\``)
+  // The model fields are taught in the skill's models reference file.
+  for (const field of Object.keys(values)) expect(teachingReferences["reference/models.md"]).toContain(`\`${field}\``)
   const input = decoded(set, { id: created.id, ...values })
   expect(input).toMatchObject(values)
   // The per-model cold switch is retired: setting it names the Settings row and writes nothing.
@@ -403,7 +404,7 @@ test("C1 registered Defaults dispatcher accepts comma coldModels and truthful em
     expect((await load(project)).records.find((record) => record.type === "modelSettings")).not.toHaveProperty(field)
   }
   expect(emitted.some((node) => node.address?.item.startsWith("modelsetting:coldModels:"))).toBe(false)
-  expect(teachingSkillContent).toContain("no `modelsetting:coldModels` field row is emitted")
+  expect(teachingReferences["reference/models.md"]).toContain("no `modelsetting:coldModels` field row is emitted")
   const bogus = `item:defaults:/models:modelsetting:coldModels:${row.address!.item.slice("modeldefault:".length)}`
   const untouched = await load(project)
   expect((await runFail(set, decoded(set, { id: bogus, text: "acme/guessed" }))).message).toContain("row.unknown")
@@ -552,24 +553,65 @@ test("folders flow down the chain; a copy reads to review when they change above
   expect(await find({ in: project, type: "group", name: "Renamed" })).toHaveLength(1)
 })
 
-test("an edit back to the inherited text stores nothing; a stored copy goes with the row's next save", async () => {
+test("an edit back to the inherited text stays an own value until reset; a copy an earlier release stored stays too", async () => {
   const { api, tools, project } = await freshFixture()
   const id = await readerRowId(api)
   const reader = async () => (await load(project)).records.filter((record) => record.type === "customization" && record.item === "tool:reader")
+  const changed = async () => rowIds((await runOk(need(tools, "instructions_find"), { is: "changed" })) as { rows: string[] })
   await runOk(need(tools, "instructions_edit"), { id, oldString: "read things", newString: "scan things" })
   expect(await reader()).toHaveLength(1)
   await runOk(need(tools, "instructions_edit"), { id, oldString: "scan things", newString: "read things" })
+  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", text: "read things" })])
+  expect(await changed()).toEqual([id])
+  // reset makes it follow again, and says so; a second reset has nothing to reset.
+  const reset = (await runOk(need(tools, "instructions_reset"), { id })) as { status: string }
+  expect(reset.status).toContain("it follows what it inherits again")
   expect(await reader()).toEqual([])
-  // A copy of the inherited text an earlier release stored is no edit…
+  expect((await runFail(need(tools, "instructions_reset"), { id })).message).toContain("has no override to reset")
+  // A copy of the inherited text an earlier release stored is an own value as well…
   const loaded = await load(project)
   const copy = { type: "customization" as const, level: "defaults" as const, agent: "alpha", item: "tool:reader", section: null, text: "read things", basedOn: "x", updated: "2026-01-01T00:00:00.000Z" }
   expect((await save(project, { expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision, records: [...loaded.records, copy] })).ok).toBe(true)
   expect(id).toBe("item:defaults:alpha:tool:reader")
-  expect(rowIds((await runOk(need(tools, "instructions_find"), { is: "changed" })) as { rows: string[] })).toEqual([])
-  // …and goes when the row is saved next; what the save sets stays.
+  expect(await changed()).toEqual([id])
+  // …and the row's next save keeps it beside what the save sets.
   await runOk(need(tools, "instructions_set"), { id, state: "on" })
-  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", state: "on" })])
-  expect((await reader())[0]).not.toHaveProperty("text")
+  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", text: "read things", state: "on" })])
+})
+
+test("a preset change never removes or overrides a linked agent's own change (b-06)", async () => {
+  const { project } = await tempProject()
+  await linkToBuild(project, "defaults", ["alpha"])
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const own = "item:defaults:alpha:tool:reader"
+  const preset = "item:preset:build:tool:reader"
+  const row = async () => (await runOk(need(tools, "instructions_find"), { where: `id:${own}`, fields: ["id", "badges", "from"] })) as { rows: unknown[] }
+  const records = async () => (await load(project)).records.filter((record) => record.type === "customization" && record.agent === "alpha")
+  await runOk(set, { id: own, state: "off" })
+  expect(await records()).toEqual([expect.objectContaining({ level: "defaults", item: "tool:reader", state: "off" })])
+  // The preset now says off too: the agent's off stays its own.
+  await runOk(set, { id: preset, state: "off" })
+  expect(await records()).toEqual([expect.objectContaining({ level: "defaults", item: "tool:reader", state: "off" })])
+  // Its own row, not the preset's; the change above puts it to review (keep or take).
+  expect((await row()).rows).toEqual(["item:defaults:alpha:tool:reader | off to review (state) | from default alpha"])
+  // The preset goes back on: the agent stays off.
+  await runOk(set, { id: preset, state: "on" })
+  expect(await records()).toEqual([expect.objectContaining({ level: "defaults", item: "tool:reader", state: "off" })])
+  expect(await rowState(api, own)).toBe("off")
+  // Set to what it inherits (on): an own value, kept through a later preset change.
+  await runOk(set, { id: own, state: "on" })
+  expect(await records()).toEqual([expect.objectContaining({ item: "tool:reader", state: "on" })])
+  await runOk(set, { id: preset, state: "off" })
+  expect(await rowState(api, own)).toBe("on")
+  // reset follows the preset again.
+  const reset = (await runOk(need(tools, "instructions_reset"), { id: own })) as { status: string }
+  expect(reset.status).toBe('Reset "reader": it follows what it inherits again (off, from preset Build)')
+  expect(await records()).toEqual([])
+  expect(await rowState(api, own)).toBe("off")
 })
 
 for (const baseline of ["", "Unheaded baseline", "# Previous\nPrevious body."]) {
@@ -1520,10 +1562,82 @@ test("show with each view returns the right shape, diff returns two diffs plus s
   expect(unknown.message).toContain(unknownRowRefusal("item:project:alpha:does:not:exist"))
 })
 
-// A reader whose upstream description changes under a customization made
-// against an earlier description. Changes alternate with unchanged sentences
-// on each side, so each is its own merge unit: yours-only (Alpha), upstream-only
-// (Gamma), both changed differently (Epsilon), both changed the same (Eta).
+// An off rule previews what it really cuts: whole-word lines of its parent
+// tool description. A subagent row drops nothing at all, whatever keywords a
+// stored record holds (Core already lists only the subagents an agent may run).
+test("a subagent rule reports no scrub, and a tool rule previews its own cut lines", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "The runner takes the next step.\nRun git commit before you report.")],
+    tools: [
+      { id: "shell", description: "Run shell.\nUse git commit to save.\nInspect with git status.", options: { codemode: false } },
+      { id: "subagent", description: "Run a subagent.", options: { codemode: false } },
+    ],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  // The discovered agents resolve at Defaults here, so the records live there.
+  // The stored subagent rule keeps the keywords an older record could hold;
+  // discovery ships the row without any, and no keyword ever cuts a line.
+  const loaded = await load(project)
+  const saved = await save(project, {
+    expectedProjectRevision: loaded.projectRevision,
+    expectedGlobalRevision: loaded.globalRevision,
+    records: [
+      { type: "link", level: "defaults", agent: "alpha", preset: { kind: "agent", id: "build" }, updated: "2026-01-01T00:00:00.000Z" },
+      { type: "customization", level: "defaults", agent: "alpha", item: "perm:subagent:runner", section: null, state: "off", basedOn: "any", updated: "2026-01-01T00:00:00.000Z" },
+      { type: "rule", level: "defaults", agent: "alpha", tool: "subagent", id: "runner", label: "runner", patterns: ["runner"], keywords: ["runner"], updated: "2026-01-01T00:00:00.000Z" },
+      { type: "customization", level: "defaults", agent: "alpha", item: "perm:shell:git", section: null, state: "on", basedOn: "any", updated: "2026-01-01T00:00:00.000Z" },
+      { type: "customization", level: "defaults", agent: "alpha", item: "perm:shell:git-commit", section: null, state: "off", basedOn: "any", updated: "2026-01-01T00:00:00.000Z" },
+    ],
+  })
+  if (!saved.ok) throw new Error("expected records to save")
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const rows = expandedTree(memoFromSnapshot(await snapshotOf(api)))
+  const rowOf = (item: string) => {
+    const node = rows.find((candidate) => candidate.address?.item === item && candidate.address?.agent === "alpha")
+    if (node === undefined) throw new Error(`missing ${item} row`)
+    return node
+  }
+  const subagentShown = (await runOk(need(tools, "instructions_read"), { id: rowOf("perm:subagent:runner").id })) as {
+    keywords: string[]
+    scrub: { hidden: number; preview: readonly string[] }
+  }
+  // The stored record's keywords are reported (a user rule keeps its own
+  // definition), yet they cut nothing: a subagent row never scrubs.
+  expect(subagentShown.keywords).toEqual(["runner"])
+  expect(subagentShown.scrub).toEqual({ hidden: 0, preview: [] })
+  const gitShown = (await runOk(need(tools, "instructions_read"), { id: rowOf("perm:shell:git-commit").id })) as {
+    scrub: { hidden: number; preview: readonly string[] }
+  }
+  expect(gitShown.scrub).toEqual({ hidden: 1, preview: ["Use git commit to save."] })
+  // read({ view: "assembled" }) passes the same list through, so the model sees
+  // every line a rule cut and which rule cut it; system text never appears.
+  const agentRow = rows.find((node) => node.kind === "agent" && node.label === "alpha")
+  if (agentRow === undefined) throw new Error("missing alpha agent row")
+  const assembled = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled" })) as {
+    system: readonly string[]
+    tools: readonly { id: string; description: string }[]
+    dropped?: readonly { where: string; rule: string; line: string }[]
+  }
+  expect(assembled.tools.find((entry) => entry.id === "shell")?.description).toBe("Run shell.\nInspect with git status.")
+  expect(assembled.system).toContain("The runner takes the next step.\nRun git commit before you report.")
+  expect(assembled.dropped).toEqual([{ where: "tool:shell", rule: "perm:shell:git-commit", line: "Use git commit to save." }])
+  // part reads one piece of the prompt (c-06): names answers which tools and
+  // skills the agent gets, without their texts.
+  const names = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled", part: "names" })) as Record<string, unknown>
+  expect(names).toMatchObject({ part: "names", agent: "alpha", tools: assembled.tools.map((tool) => tool.id), dropped: 1 })
+  expect((names.system as string[]).length).toBe(assembled.system.length)
+  expect(JSON.stringify(names)).not.toContain("Inspect with git status.")
+  const toolsPart = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled", part: "tools" })) as Record<string, unknown>
+  expect(toolsPart).toEqual({ id: agentRow.id, view: "assembled", part: "tools", agent: "alpha", tools: assembled.tools, dropped: assembled.dropped })
+  const systemPart = (await runOk(need(tools, "instructions_read"), { id: agentRow.id, view: "assembled", part: "system" })) as Record<string, unknown>
+  expect(Object.keys(systemPart).toSorted()).toEqual(["agent", "id", "part", "system", "view"])
+  expect((await runFail(need(tools, "instructions_read"), { id: agentRow.id, part: "tools" })).message).toContain("part takes view assembled")
+})
+
 // Stored original and yours have no final newline; the live upstream keeps one (B41).
 const mergeOriginal = "Alpha one.\nBeta two.\nGamma three.\nDelta four.\nEpsilon five.\nZeta six.\nEta seven."
 const mergeMine = "Alpha mine.\nBeta two.\nGamma three.\nDelta four.\nEpsilon yours.\nZeta six.\nEta same."
@@ -1580,10 +1694,14 @@ test("take on a heading-derived item follows upstream for the whole row", async 
   expect(shown.text).toBe(upstream.text.replace(/\n+$/, ""))
 })
 
-test("show diff proposes merge units with their kinds and defaults", async () => {
+// Each unit carries only the sides that differ from its base, and a both
+// unit's upstream id points at its unit instead of repeating its texts (c-06).
+// The merge text is no longer in the answer: it repeated the whole row once
+// more; the default merge is the included units, as set resolve merge saves.
+test("show diff proposes merge units with their kinds and defaults, each side once", async () => {
   const { tools, id } = await mergeFixture()
   const diff = (await runOk(need(tools, "instructions_read"), { id, view: "diff" })) as {
-    merge: { units: { id: string; kind: string; included: boolean; yours: string; upstream: string; base: string }[]; text: string }
+    merge: { units: { id: string; kind: string; included: boolean; yours?: string; upstream?: string; base?: string; of?: string }[]; text?: string }
   }
   expect(diff.merge.units.map((unit) => [unit.id, unit.kind, unit.included])).toEqual([
     ["m0", "yours", true],
@@ -1592,8 +1710,15 @@ test("show diff proposes merge units with their kinds and defaults", async () =>
     ["m2:upstream", "both", false],
     ["m3", "same", true],
   ])
-  expect(diff.merge.units[3]).toMatchObject({ yours: "Epsilon yours.\n", upstream: "Epsilon upstream.\n", base: "Epsilon five.\n" })
-  expect(diff.merge.text).toBe(mergeDefault)
+  expect(diff.merge.units[0]).toEqual({ id: "m0", kind: "yours", included: true, base: "Alpha one.\n", yours: "Alpha mine.\n" })
+  expect(diff.merge.units[1]).toEqual({ id: "m1", kind: "upstream", included: true, base: "Gamma three.\n", upstream: "Gamma upstream.\n" })
+  expect(diff.merge.units[2]).toEqual({ id: "m2", kind: "both", included: true, base: "Epsilon five.\n", yours: "Epsilon yours.\n", upstream: "Epsilon upstream.\n" })
+  expect(diff.merge.units[3]).toEqual({ id: "m2:upstream", kind: "both", included: false, of: "m2" })
+  expect(diff.merge.units[4]).toMatchObject({ id: "m3", kind: "same", yours: "Eta same." })
+  expect(diff.merge.units[4]?.upstream).toBeUndefined()
+  expect(diff.merge.text).toBeUndefined()
+  const json = JSON.stringify(diff.merge)
+  for (const line of ["Epsilon upstream.", "Epsilon yours.", "Epsilon five."]) expect(json.split(line).length - 1).toBe(1)
 })
 
 test("set resolve merge with the defaults saves the default render", async () => {
@@ -1654,6 +1779,21 @@ test("registered list and log tools return persisted rows and history", async ()
   }
   expect(logged.total).toBeGreaterThan(0)
   expect(logged.entries.some((entry) => entry.op === "mutate")).toBe(true)
+})
+
+// c-04: log without a limit returned the whole history (262k chars).
+test("log answers the newest 20 entries unless asked for more, with the total", async () => {
+  const { api, tools } = await freshFixture()
+  const id = await readerRowId(api)
+  const set = need(tools, "instructions_set")
+  for (let index = 0; index < 23; index++) await runOk(set, { id, text: `Reader text ${index}.` })
+  const log = need(tools, "instructions_log")
+  const newest = (await runOk(log, {})) as { entries: readonly { ts: string }[]; total: number }
+  expect(newest.entries).toHaveLength(20)
+  expect(newest.total).toBeGreaterThanOrEqual(23)
+  const all = (await runOk(log, { limit: 100 })) as { entries: readonly { ts: string }[]; total: number }
+  expect(all.entries).toHaveLength(newest.total)
+  expect(all.entries.slice(0, 20)).toEqual([...newest.entries])
 })
 
 test("find takes structured parameters and answers one row per thing", async () => {
@@ -2045,13 +2185,13 @@ test("create model preserves the selected member owner and returns its addressab
   expect(await runOk(show, { id: member.id, view: "record" })).toMatchObject({ record: { active: true } })
   expect((await load(project)).records.find((record) => record.type === "model" && record.team === undefined))
     .toEqual(prior.records.find((record) => record.type === "model"))
-  // Ordinary discovered members keep per-agent storage, just like the TUI,
-  // but the returned row stays in the selected team's inheritance chain.
+  // An ordinary discovered member's own rows are stored with its team, just
+  // like the TUI writes them (phase 4, member-scope; before, per agent name).
   await runOk(create, { kind: "team", team: "live", level: "project", preset: "crew" })
   const live = await runOk(create, { ...model, level: "project", team: "live" }) as { id: string }
   expect(live.id).toBe("item:project:live/:reader:model:acme/nova-2")
-  expect(await runOk(show, { id: live.id, view: "record" })).toMatchObject({ record: { level: "project", agent: "reader" } })
-  expect((await snapshotOf(api)).records.find((record) => record.type === "model" && record.level === "project")?.team).toBeUndefined()
+  expect(await runOk(show, { id: live.id, view: "record" })).toMatchObject({ record: { level: "project", agent: "reader", team: { level: "project", team: "live" } } })
+  expect((await snapshotOf(api)).records.find((record) => record.type === "model" && record.level === "project")?.team).toEqual({ level: "project", team: "live" })
 
   await runOk(create, { kind: "entry", catalogue: "teams", team: "crew*", name: "reader*" })
   const entry = await runOk(create, { ...model, level: "defaults", team: "crew*", agent: "reader*" }) as { id: string }
@@ -2147,7 +2287,7 @@ test("team activation tool reports exactly the teams it disables", async () => {
   expect(await runOk(set, { id: "team:global:two", state: "off" })).toMatchObject({ disabledTeams: [] })
 })
 
-test("read, set, edit, reset and delete take a list of ids or a find filter, one result per row", async () => {
+test("read, set, edit, reset and delete take a list of ids or a find filter; writes answer counts and the rows not done", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -2160,40 +2300,43 @@ test("read, set, edit, reset and delete take a list of ids or a find filter, one
   const tools = await readTools(ctx)
   const [find, read, set, edit, reset, remove] = ["find", "read", "set", "edit", "reset", "delete"].map((name) => need(tools, `instructions_${name}`))
   type Many = { total: number; failed: number; results: { id: string; output?: { status?: string; enabled?: boolean; replacements?: number }; error?: string }[] }
+  type Written = { status: string; changed: string[]; already: number; notDone: { id: string; reason: string }[]; results?: Many["results"] }
   const alphas = rowIds((await runOk(find, { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] })
   const push = alphas.find((id) => id.endsWith(":perm:shell:git-push"))
   const sudo = alphas.find((id) => id.endsWith(":perm:shell:sudo"))
   if (push === undefined || sudo === undefined) throw new Error("expected alpha's git-push and sudo rows")
 
-  // A list: each row is saved even though another refuses.
-  const switched = (await runOk(set, { id: [push, "item:project:alpha:perm:shell:nope", sudo], state: "on" })) as Many
-  expect(switched).toMatchObject({ total: 3, failed: 1 })
-  expect(switched.results.map((result) => [result.id, result.error === undefined])).toEqual([[push, true], ["item:project:alpha:perm:shell:nope", false], [sudo, true]])
+  // A list: each row is saved even though another refuses, and the answer names it with the reason.
+  const switched = (await runOk(set, { id: [push, "item:project:alpha:perm:shell:nope", sudo], state: "on" })) as Written
+  expect(switched.changed).toEqual([push, sudo])
+  expect(switched.notDone.map((entry) => entry.id)).toEqual(["item:project:alpha:perm:shell:nope"])
+  expect(switched.notDone[0]?.reason).toContain("row.unknown")
+  expect(switched.status).toStartWith("2 changed, 0 already so, 1 not done (written once")
   const shown = (await runOk(read, { id: [push, sudo] })) as Many
   expect(shown.results.map((result) => result.output?.enabled)).toEqual([true, true])
   // A single id still answers as before.
   expect(await runOk(read, { id: push })).toMatchObject({ enabled: true, patterns: ["git push *"] })
 
   // find picks the rows: here the two edits alpha holds.
-  const undone = (await runOk(reset, { find: { agent: "alpha", type: "rule", is: "changed" } })) as Many
-  expect(undone.results.map((result) => result.id).toSorted()).toEqual([push, sudo].toSorted())
-  expect(undone.failed).toBe(0)
+  const undone = (await runOk(reset, { find: { agent: "alpha", type: "rule", is: "changed" } })) as Written
+  expect(undone.changed.toSorted()).toEqual([push, sudo].toSorted())
+  expect(undone.notDone).toEqual([])
   expect((await snapshotOf(api)).records.some((record) => record.type === "customization" && record.item.startsWith("perm:"))).toBe(false)
 
   // Without agent, find reaches every agent's copy, the shared Defaults row first.
-  const everyone = (await runOk(set, { find: { type: "rule", name: "git-push" }, state: "on" })) as Many
-  expect(everyone.failed).toBe(0)
-  expect(everyone.results[0]?.id).toBe("item:defaults::perm:shell:git-push")
+  const everyone = (await runOk(set, { find: { type: "rule", name: "git-push" }, state: "on" })) as Written
+  expect(everyone.notDone).toEqual([])
+  expect(everyone.changed[0]).toBe("item:defaults::perm:shell:git-push")
   const copies = rowIds((await runOk(find, { agent: "*", type: "rule", name: "git-push", fields: ["id", "badges"] })) as { rows: readonly string[] })
   const states = (await runOk(read, { id: copies.filter((id) => id.includes(":alpha:") || id.includes(":beta:")) })) as Many
   expect(states.results.length).toBe(2)
   expect(states.results.every((result) => result.output?.enabled === true)).toBe(true)
 
-  // edit takes a list too.
+  // edit takes a list too; verbose adds each row's own answer.
   const shells = rowIds((await runOk(find, { agent: "*", type: "tool", name: "shell" })) as { rows: readonly string[] }).filter((id) => id.includes(":alpha:") || id.includes(":beta:"))
   expect(shells).toHaveLength(2)
-  const reworded = (await runOk(edit, { id: shells, oldString: "Run shell.", newString: "Runs one shell command." })) as Many
-  expect(reworded.results.map((result) => result.output?.replacements)).toEqual([1, 1])
+  const reworded = (await runOk(edit, { id: shells, oldString: "Run shell.", newString: "Runs one shell command.", verbose: true })) as Written
+  expect(reworded.results?.map((result) => result.output?.replacements)).toEqual([1, 1])
 
   // Exactly one of id and find: the input schema refuses both and neither.
   expect(Exit.isFailure(Schema.decodeUnknownExit(set.input as Schema.Codec<unknown>)({ id: push, find: { agent: "alpha" }, state: "on" }))).toBe(true)
@@ -2242,8 +2385,10 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   }
   expect(curatedShownRecord.record?.type).toBe("customization")
   expect(curatedShownRecord.record?.state).toBe("on")
-  // …and off again is what it inherits: no record is left.
+  // …and off again, what it inherits, is an own off until reset.
   expect(((await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }).status).toContain("Disabled")
+  expect(((await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as { record: { state?: string } | null }).record?.state).toBe("off")
+  expect(((await runOk(need(tools, "instructions_reset"), { id: row.id })) as { status: string }).status).toContain("it follows what it inherits again (off")
   expect(((await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as { record: unknown }).record).toBeNull()
   const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
   expect(textError.message).toContain("cannot be edited")
@@ -3483,6 +3628,8 @@ test("create kind member adds members at project level, refuses a Defaults team,
   expect(memberRows).toContain(subtreeTool)
   round3Capture("member flow: project member subtree rows", { subtreeTool, memberRows }, project)
   const toggled = (await runOk(need(tools, "instructions_set"), { id: subtreeTool, state: "off" })) as { status: string }
+  // The row already resolves off: the set stores off as its own value (the
+  // owner's decision, 2026-10-31), so it is a write and has no "no change" note.
   expect(toggled.status).toBe('Disabled "shell"')
   round3Capture("member flow: subtree row set", { request: { id: subtreeTool, state: "off" }, output: toggled }, project)
   const enabled = await api.setTeamEnabled({ level: "project", team: "crew:one", enabled: true, actor: { type: "tui" } })
@@ -4304,9 +4451,9 @@ test("set state:on persists its either partner off in one save, and it stays off
   const before = await load(project)
   const on = (await runOk(set, { id: reader, text: "updated reader", state: "on" })) as { status: string }
   expect(on.status).toBe(`Enabled "reader"; disabled tool:question`)
-  // Off is what question inherits here, so it reads off with no record of its own.
+  // The switch replaces question's own on with an own off, durable after reload.
   expect(await rowState(api, question)).toBe("off")
-  expect(await customizationState(project, "tool:question")).toBeUndefined()
+  expect(await customizationState(project, "tool:question")).toBe("off")
   const saved = await load(project)
   expect(saved.projectRevision + saved.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
   expect(saved.records.filter((record) => record.type === "rowlink")).toEqual(before.records.filter((record) => record.type === "rowlink"))
@@ -4611,4 +4758,253 @@ test("a model prompt is created with create kind system + models, re-aimed with 
   expect((await runFail(set, decoded(set, { id: "item:defaults::system:tools-and-rules", models: ["*"] }))).message).toContain("is not a model prompt")
   expect(await runOk(need(tools, "instructions_delete"), { id: output.id, confirm: true })).toMatchObject({ id: "model/opus" })
   expect((await snapshotOf(api)).items.some((item) => item.id === "system:model/opus")).toBe(false)
+})
+
+// Team tools for every agent (2026-10-31): an agent linked to a member preset
+// has that preset's team tool rows, an agent with no preset has them off, a
+// member of a disabled team has its preset's role, and a member linked to an
+// agent preset hears that it got an agent's rows and no team role.
+test("team tool rows reach every agent, a disabled team's member keeps its role, and a member from an agent preset is told so", async () => {
+  const { api, tools } = await freshFixture({
+    tools: [
+      { id: "reader", description: "read things", options: { codemode: false } },
+      { id: "skill", description: "Load a skill", options: { codemode: false } },
+      { id: "delegate", description: "Delegate a Brief.", options: { codemode: false, namespace: "team", permission: "team.delegate" } },
+      { id: "check", description: "Run a check.", options: { codemode: false, namespace: "team", permission: "team.check" } },
+    ],
+  })
+  const create = need(tools, "instructions_create")
+  await runOk(create, { kind: "agent", id: "lead", scope: "project", preset: "basic/orchestrator" })
+  await runOk(create, { kind: "agent", id: "worker", scope: "project", preset: "basic/implementer" })
+  await runOk(create, { kind: "agent", id: "solo", scope: "project" })
+  await runOk(create, { kind: "team", team: "crew", level: "project" })
+  const hand = (await runOk(create, { kind: "member", team: "crew", level: "project", id: "hand", preset: "basic/implementer" })) as Record<string, unknown>
+  expect(hand.status).toBeUndefined()
+  const seat = (await runOk(create, { kind: "member", team: "crew", level: "project", id: "seat", preset: "build" })) as Record<string, unknown>
+  expect(seat.status).toBe(
+    `Linked member seat to the agent preset build, not a member preset: it takes build's rows (its tools, skills and role text), not a team member's role. For a team role pick a member preset ("<team>/<member>", e.g. "basic/implementer").`,
+  )
+  const nodes = expandedTree(memoInputOf(await snapshotOf(api)))
+  const state = (id: string) => nodes.find((node) => node.id === id)?.badges.state
+  expect(state("item:project:lead:tool:team_delegate")).toBe("on")
+  expect(state("item:project:lead:tool:team_check")).toBe("on")
+  expect(state("item:project:worker:tool:team_delegate")).toBe("off")
+  expect(state("item:project:worker:tool:team_check")).toBe("on")
+  expect(state("item:project:solo:tool:team_delegate")).toBe("off")
+  expect(state("item:defaults:alpha:tool:team_check")).toBe("off")
+  // The team is disabled (create leaves it so), yet the member has its role.
+  const role = nodes.find((node) => node.id === "item:project:crew/:hand:system:role")
+  expect(role?.badges.state).toBe("on")
+  expect(nodes.some((node) => node.id.startsWith("section:project:crew/:hand:system:role:"))).toBe(true)
+})
+
+// c-09: a team's Special rows are listed by find --type agent, so `read` must
+// accept the same id instead of answering row.unknown.
+test("read renders a team's Special agent row", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream alpha"), agentInfo("title", "upstream title")],
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project" })
+  const id = "team:project:crew:special:title"
+  const listed = (await runOk(need(tools, "instructions_find"), { type: "agent", limit: 200 })) as { rows: readonly string[] }
+  expect(listed.rows.some((row) => row.startsWith(`${id} |`))).toBe(true)
+  expect(await runOk(need(tools, "instructions_read"), { id })).toMatchObject({
+    kind: "special",
+    level: "project",
+    team: "crew",
+    agent: "title",
+  })
+  expect(await runOk(need(tools, "instructions_read"), { id, view: "record" })).toMatchObject({
+    record: { kind: "special", level: "project", team: "crew", agent: "title" },
+  })
+})
+
+// c-10: a member's own model row named two sources: `stateFrom`/`textFrom`
+// pointed at the member preset (which ships no model) while `from` said
+// "set here". A model row names the one source its candidate has.
+test("a member's own model row names one source, not the preset that has none", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+    models: [modelInfo("acme", "nova-2")],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project", preset: "basic" })
+  const created = (await runOk(need(tools, "instructions_create"), {
+    kind: "model",
+    providerID: "acme",
+    modelID: "nova-2",
+    level: "project",
+    team: "crew",
+    agent: "implementer",
+  })) as { id: string }
+  expect(created.id).toBe("item:project:crew/:implementer:model:acme/nova-2")
+  const shown = (await runOk(need(tools, "instructions_read"), { id: created.id })) as Record<string, unknown>
+  expect(shown).toMatchObject({
+    source: "project",
+    stateFrom: { kind: "level", level: "project" },
+    textFrom: { kind: "level", level: "project" },
+    from: "set here",
+  })
+  const found = (await runOk(need(tools, "instructions_find"), { team: "crew", agent: "implementer", type: "model", fields: ["id", "from", "source"] })) as {
+    rows: readonly string[]
+  }
+  expect(found.rows).toEqual([`${created.id} | set here | project`])
+})
+
+// c-14: after `set` on one agent's copy, a plain find folded that copy into
+// the shared Defaults row, so the edit read as "off by default" and looked
+// lost. An own edit keeps its own row.
+test("find keeps an agent's own edit out of the shared Defaults row", async () => {
+  const { project } = await tempProject()
+  for (const id of ["alpha", "beta"]) await Bun.write(path.join(project, ".opencode", "agent", `${id}.md`), formatMarkdown({}, "role\n"))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  // alpha follows the native build preset, so it inherits the host's git-push
+  // rule on; beta inherits the shared Defaults row's off.
+  await linkToBuild(project, "project", ["alpha"])
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const find = need(tools, "instructions_find")
+  const set = need(tools, "instructions_set")
+  const read = need(tools, "instructions_read")
+  const shared = "item:defaults::perm:shell:git-push"
+  const alpha = "item:project:alpha:perm:shell:git-push"
+  await runOk(set, { id: shared, state: "off" })
+  // alpha's inherited value is on, so switching it off is its own edit — and
+  // its state then equals the shared row's, which is what folded it away.
+  expect(await runOk(read, { id: alpha })).toMatchObject({ enabled: true })
+  await runOk(set, { id: alpha, state: "off" })
+  const rows = (await runOk(find, { name: "git-push", limit: 20 })) as { rows: readonly string[] }
+  expect(rows.rows).toContain(`${alpha} | off | set here`)
+})
+
+// a-18/a-21/d-07/b-08/b-09: the texts the tools answer. A write that saved
+// nothing says so, an unknown clipboard token is refused, a copied owner is
+// named instead of counted, a shipped preset row's save says what it reaches,
+// and a missing create-member field is the field that is missing.
+test("the tool answers say what actually happened", async () => {
+  const { project } = await tempProject()
+  for (const id of ["alpha", "beta"]) await Bun.write(path.join(project, ".opencode", "agent", `${id}.md`), formatMarkdown({}, "role\n"))
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const read = need(tools, "instructions_read")
+  const find = need(tools, "instructions_find")
+  const clipboard = need(tools, "instructions_clipboard")
+
+  // a-18: a set that writes nothing says it wrote nothing.
+  const rule = rowIds((await runOk(find, { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] })
+    .find((id) => id.endsWith("perm:shell:git-push"))
+  if (rule === undefined) throw new Error("expected alpha's git-push row")
+  // It already reads off: the first set stores off as its own value (the
+  // owner's decision, 2026-10-31); the same set again stores nothing.
+  const own = (await runOk(set, { id: rule, state: "off" })) as { status: string; revision: number }
+  expect(own.status).toBe('Disabled "Git push"')
+  const nothing = (await runOk(set, { id: rule, state: "off" })) as { status: string; revision: number }
+  expect(nothing.status).toBe('Disabled "Git push" (no change: it was already so)')
+  expect(nothing.revision).toBe(own.revision)
+  // A set that writes does not carry the note.
+  const wrote = (await runOk(set, { id: rule, state: "on" })) as { status: string }
+  expect(wrote.status).toBe('Enabled "Git push"')
+
+  // a-21: an unknown clipboard token is refused, not answered as "cleared".
+  const unknown = await runFail(clipboard, { action: "clear", clipboard: "not-a-clipboard" })
+  expect(unknown.message).toContain("clipboard.unknown")
+
+  // d-07: copying an agent names it, since its whole configuration moves.
+  const copied = (await runOk(clipboard, { action: "copy", ids: ["agent:project:alpha"] })) as { status: string; clipboard: string }
+  expect(copied.status).toBe("agent alpha copied")
+  const pasted = (await runOk(clipboard, { action: "paste", clipboard: copied.clipboard, into: "agent:project:beta" })) as { status: string }
+  expect(pasted.status).toBe("Pasted agent alpha into agent:project:beta")
+
+  // b-08: a shipped preset row's save names the preset it reaches.
+  const presetRow = "item:preset:build:tool:shell"
+  const savedPreset = (await runOk(set, { id: presetRow, state: "off" })) as { status: string }
+  expect(savedPreset.status).toContain('Disabled "shell"')
+  expect(savedPreset.status).toContain("ships with the release")
+  expect(savedPreset.status).toContain("every agent linked to it")
+
+  // b-09: the refusal names only the field that is missing.
+  const noTeam = await runFail(create, { kind: "member", level: "defaults", id: "worker3*" })
+  expect(noTeam.message).toBe("create member requires team")
+  const noId = await runFail(create, { kind: "member", team: "crew", level: "project" })
+  expect(noId.message).toBe("create member requires id")
+  void read
+})
+
+// b-10/c-15: read of a preset or a member answered only an identity stub, so
+// comparing an agent with its preset, or seeing a member's on counts, needed
+// two ~150 kB find dumps. Resolved lists the rows directly under it.
+test("read of a preset, an entry and a member lists their rows", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const show = need(tools, "instructions_read")
+  const create = need(tools, "instructions_create")
+
+  // A shipped agent preset: its groups, with on counts, beside its identity.
+  const preset = (await runOk(show, { id: "agent:preset:build" })) as { kind: string; rows?: readonly string[]; columns?: string }
+  expect(preset).toMatchObject({ kind: "preset", columns: "id | badges | from" })
+  expect(preset.rows?.map((row) => row.split(" | ")[0])).toEqual([
+    "group:preset:build:models",
+    "group:preset:build:tools",
+    "group:preset:build:skills",
+    "group:preset:build:system",
+    "group:preset:build:settings",
+  ])
+  expect(preset.rows?.some((row) => row.startsWith("group:preset:build:tools |") && row.includes("on"))).toBe(true)
+
+  // A member preset.
+  const member = (await runOk(show, { id: "team:preset:basic:implementer" })) as { kind: string; rows?: readonly string[] }
+  expect(member.kind).toBe("preset")
+  expect(member.rows?.map((row) => row.split(" | ")[0])).toContain("group:preset:basic/:implementer:tools")
+
+  // A Defaults entry.
+  await runOk(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*" })
+  const entry = (await runOk(show, { id: "agent:defaults:*orchestrator*" })) as { kind: string; rows?: readonly string[] }
+  expect(entry.kind).toBe("entry")
+  expect(entry.rows?.map((row) => row.split(" | ")[0])).toEqual([
+    "group:defaults:*orchestrator*:models",
+    "group:defaults:*orchestrator*:tools",
+    "group:defaults:*orchestrator*:skills",
+    "group:defaults:*orchestrator*:system",
+    "group:defaults:*orchestrator*:settings",
+  ])
+
+  // A live team member: its groups and their on counts.
+  await runOk(create, { kind: "team", team: "crew", level: "project", preset: "basic" })
+  const live = (await runOk(show, { id: "team:project:crew:implementer" })) as { kind: string; team: string; rows?: readonly string[] }
+  expect(live).toMatchObject({ kind: "member", team: "crew" })
+  expect(live.rows?.map((row) => row.split(" | ")[0])).toContain("group:project:crew/:implementer:tools")
+  // The record view stays the identity, with no rows: it is the stored record.
+  const record = (await runOk(show, { id: "team:project:crew:implementer", view: "record" })) as { record: Record<string, unknown> }
+  expect(record.record).toMatchObject({ kind: "member", team: "crew", member: "implementer" })
+  expect("rows" in record.record).toBe(false)
 })

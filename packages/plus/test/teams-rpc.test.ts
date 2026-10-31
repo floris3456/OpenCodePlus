@@ -665,7 +665,7 @@ test("a model activated on a project team member sets agent.model on the host an
   )
 
   await Effect.runPromise(
-    handlers["model.add"]({ level: "project", agent: "m", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+    handlers["model.add"]({ level: "project", agent: "m", team: { level: "project", team: "crew" }, providerID: "acme", modelID: "nova-2" }, throwingContext({})),
   )
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -673,6 +673,7 @@ test("a model activated on a project team member sets agent.model on the host an
     type: "model",
     level: "project",
     agent: "m",
+    team: { level: "project", team: "crew" },
     providerID: "acme",
     modelID: "nova-2",
     active: true,
@@ -723,7 +724,7 @@ test("a model activated on a global team member sets agent.model on the host and
   )
 
   await Effect.runPromise(
-    handlers["model.add"]({ level: "global", agent: "m", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+    handlers["model.add"]({ level: "global", agent: "m", team: { level: "global", team: "globalcrew" }, providerID: "acme", modelID: "nova-2" }, throwingContext({})),
   )
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -731,6 +732,7 @@ test("a model activated on a global team member sets agent.model on the host and
     type: "model",
     level: "global",
     agent: "m",
+    team: { level: "global", team: "globalcrew" },
     providerID: "acme",
     modelID: "nova-2",
     active: true,
@@ -779,7 +781,7 @@ test("a model activated on a team-only member sets agent.model and disabling the
   )
 
   await Effect.runPromise(
-    handlers["model.add"]({ level: "project", agent: "teamonly", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+    handlers["model.add"]({ level: "project", agent: "teamonly", team: { level: "project", team: "crew" }, providerID: "acme", modelID: "nova-2" }, throwingContext({})),
   )
 
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
@@ -787,6 +789,7 @@ test("a model activated on a team-only member sets agent.model and disabling the
     type: "model",
     level: "project",
     agent: "teamonly",
+    team: { level: "project", team: "crew" },
     providerID: "acme",
     modelID: "nova-2",
     active: true,
@@ -872,9 +875,10 @@ test("a team member inherits a defaults-level model when no team-level model is 
   expect(listed2.data.find((entry) => String(entry.id) === "m")?.model).toMatchObject({ providerID: "acme", id: "nova-1" })
   expect(state.activeModels.get("m")).toMatchObject({ providerID: "acme", modelID: "nova-1" })
 
-  // Add project model nova-2 for m and activate it
+  // Add project model nova-2 for m as a member of crew (a member's own rows
+  // are stored with its team) and activate it
   await Effect.runPromise(
-    handlers["model.add"]({ level: "project", agent: "m", providerID: "acme", modelID: "nova-2" }, throwingContext({})),
+    handlers["model.add"]({ level: "project", agent: "m", team: { level: "project", team: "crew" }, providerID: "acme", modelID: "nova-2" }, throwingContext({})),
   )
   const snap2 = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   await Effect.runPromise(
@@ -896,6 +900,7 @@ test("a team member inherits a defaults-level model when no team-level model is 
             type: "model",
             level: "project",
             agent: "m",
+            team: { level: "project", team: "crew" },
             providerID: "acme",
             modelID: "nova-2",
             active: true,

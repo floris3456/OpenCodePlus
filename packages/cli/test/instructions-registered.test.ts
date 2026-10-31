@@ -97,6 +97,13 @@ test("serialized registered instruction schemas drive CLI coercion and real disp
       op: "find",
       input: { agent: "alpha", is: "held-back" },
     })
+    // One value of a one-or-a-list input stays one value (a list, even of
+    // one, answers as several rows); a comma list or a repeated flag is a list.
+    expect(await parse(["find", "--agent", "alpha,beta", "--type", "tool", "--type=skill", "--is", "review"])).toEqual({
+      kind: "run",
+      op: "find",
+      input: { agent: ["alpha", "beta"], type: ["tool", "skill"], is: "review" },
+    })
     expect(await parse(["move", "row", "--into", "folder", "--before", "first", "--after=last"])).toEqual({
       kind: "run",
       op: "move",

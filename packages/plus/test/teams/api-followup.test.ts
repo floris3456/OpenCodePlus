@@ -227,7 +227,7 @@ test("a reviewer-preset child refuses a followup with its row's message", async 
     const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "rev-1" }), callerFor(parent)))
     expect(error.code).toBe("E_NO_FOLLOWUP")
     expect(error.message).toBe(
-      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).",
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.",
     )
     expect(error.accepted).toBe("delegate a fresh run")
   })
@@ -256,6 +256,51 @@ test("a child with no preset takes no correction: the row falls back to off", as
     const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "alice-1" }), callerFor(parent)))
     expect(error.code).toBe("E_NO_FOLLOWUP")
     expect(error.message).toStartWith("ocp-alice takes no corrections by followup")
+  })
+})
+
+// A budget raise is no correction: a working child whose Corrections by
+// followup row is off still takes one, because it carries no prompt. A call
+// with text is refused as before, now saying how to raise a budget alone.
+test("a budget-only followup raises a working child's budget even with Corrections by followup off", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const now = new Date().toISOString()
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc", {
+      role: "reviewer",
+      state: "working",
+      budget: { turns: 30, tokens: 1000, wallMs: 5000 },
+      attempts: [{ n: 1, state: "streaming", startedAt: now, trigger: "delegate" }],
+    })
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    const session = recordSession()
+    const api = createTeamApi(context({ session: session.domain }), teamState())
+    const value = required(
+      await api.followup({ run: child.id, requestID: "budget-only-1", budget: { wallMs: 9_000_000 }, reason: "The review needs more time" }, callerFor(parent)),
+    )
+    expect(value).toMatchObject({ attempt: 1, state: "working", next: "End your turn now: its settlement wakes you, and so does every other run still working." })
+    const updated = await loadRun(root, child.id)
+    expect(updated?.budget).toEqual({ turns: 30, tokens: 1000, wallMs: 9_000_000 })
+    expect(updated?.history.some((entry) => "reason" in entry && entry.reason === "The review needs more time")).toBe(true)
+    // No prompt was sent: the child reads nothing and its turn is untouched.
+    expect(session.prompted).toEqual([])
+    expect(await peek(root, child.id)).toEqual([])
+
+    const refused = rejected(
+      await api.followup(
+        { run: child.id, requestID: "budget-with-text", prompt: "Also check the CLI path.", budget: { wallMs: 9_500_000 }, reason: "More time for the CLI" },
+        callerFor(parent),
+      ),
+    )
+    expect(refused.code).toBe("E_NO_FOLLOWUP")
+    expect(refused.message).toBe(
+      "reviewer takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.",
+    )
+    expect((await loadRun(root, child.id))?.budget.wallMs).toBe(9_000_000)
+
+    // A widened scope sends the child a note too, so it is a correction.
+    const widened = rejected(await api.followup({ run: child.id, requestID: "paths-only", paths: ["docs/notes.md"] }, callerFor(parent)))
+    expect(widened.code).toBe("E_NO_FOLLOWUP")
   })
 })
 
@@ -1039,3 +1084,135 @@ test("a landed child is reopened only for a prompt to a live run; otherwise noth
     }
   })
 }, 30000)
+
+// core's `session.context` messages as Plus reads a child's latest step: the
+// last assistant with token usage is the context size (input + cache read +
+// cache write).
+function contextAt(tokens: number) {
+  return [
+    {
+      id: SessionMessage.ID.make("msg_context_step"),
+      type: "assistant" as const,
+      agent: Agent.ID.make("implementer"),
+      model: Model.Ref.parse("proxy/chat-model"),
+      content: [],
+      tokens: { input: tokens, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 1 },
+    },
+  ]
+}
+
+function sessionWithContext(tokens: number) {
+  const recorded = recordSession()
+  const first = recorded.domain.prompt
+  const domain = {
+    ...recorded.domain,
+    context: () => Effect.succeed(contextAt(tokens)),
+    prompt: first,
+  } as unknown as SessionDomain
+  return { ...recorded, domain }
+}
+
+test("a child above the team's 400k context limit refuses a followup with E_CONTEXT and sends nothing", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-aaaaaaaaaaaaaaaa")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const session = sessionWithContext(400_001)
+    const api = createTeamApi(context({ session: session.domain }), teamState())
+    const before = await loadRun(root, child.id)
+    const error = rejected(await api.followup(followupInput({ run: child.id, requestID: "ctx-1" }), callerFor(parent)))
+    expect(error.code).toBe("E_CONTEXT")
+    expect(error.message).toBe(
+      `${child.id} holds 400001 tokens of context (limit 400000, team_followup limits.context). Start a fresh run with team_delegate instead: give it this run's report and branch ${child.branch} (or its commit) in the Brief.`,
+    )
+    expect(error.accepted).toBe("team_delegate a fresh run")
+    // Nothing reached the child: no prompt, no inbox item, no receipt, no run change.
+    expect(session.prompted).toEqual([])
+    expect(await peek(root, child.id)).toEqual([])
+    expect(await fs.readdir(path.join(root, "requests")).catch(() => [])).toEqual([])
+    expect(await loadRun(root, child.id)).toEqual(before)
+  })
+})
+
+test("a child just under the limit still takes a followup", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-bbbbbbbbbbbbbbbb")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const session = sessionWithContext(399_999)
+    const api = createTeamApi(context({ session: session.domain }), teamState())
+    expect(required(await api.followup(followupInput({ run: child.id, requestID: "ctx-2" }), callerFor(parent)))).toMatchObject({ state: "admitted" })
+    expect(session.prompted).toHaveLength(1)
+  })
+})
+
+test("the Limits row raises the child context limit: 600 000 lets 400 001 through", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-cccccccccccccccc")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const orchestrator = shippedMembers().find((member) => member.id === "orchestrator")
+    if (orchestrator === undefined) throw new Error("no orchestrator in the shipped team")
+    const table = presetTable({
+      records: [change(orchestrator, "perm:team_followup:limits.context", { text: "600000" })],
+    })
+    const session = sessionWithContext(400_001)
+    const api = createTeamApi(context({ session: session.domain }), teamState(table))
+    expect(required(await api.followup(followupInput({ run: child.id, requestID: "ctx-3" }), callerFor(parent)))).toMatchObject({ state: "admitted" })
+    expect(session.prompted).toHaveLength(1)
+  })
+})
+
+test("a caller whose context row is off (a member with no preset) still gets the 400 000 team default", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-eeeeeeeeeeeeeeee")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const orchestrator = shippedMembers().find((member) => member.id === "orchestrator")
+    if (orchestrator === undefined) throw new Error("no orchestrator in the shipped team")
+    const table = presetTable({ records: [change(orchestrator, "perm:team_followup:limits.context", { state: "off" })] })
+    const session = sessionWithContext(400_001)
+    const api = createTeamApi(context({ session: session.domain }), teamState(table))
+    expect(rejected(await api.followup(followupInput({ run: child.id, requestID: "ctx-off" }), callerFor(parent))).code).toBe("E_CONTEXT")
+    expect(session.prompted).toEqual([])
+  })
+})
+
+test("the context limit refuses a path-only or rebase followup too, but never a budget-only one", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-dddddddddddddddd")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const session = sessionWithContext(500_000)
+    const api = createTeamApi(context({ session: session.domain }), teamState())
+    // paths alone still sends the child a prompt.
+    expect(rejected(await api.followup(followupInput({ run: child.id, requestID: "ctx-4", prompt: undefined, paths: ["src/cli.ts"] }), callerFor(parent))).code).toBe("E_CONTEXT")
+    // A budget change sends nothing, so it is not refused.
+    const budgeted = required(
+      await api.followup(followupInput({ run: child.id, requestID: "ctx-5", prompt: undefined, budget: { tokens: 5 }, reason: "more room" }), callerFor(parent)),
+    ) as { state: string }
+    expect(budgeted.state).toBe("idle")
+    expect((await loadRun(root, child.id))?.budget.tokens).toBe(5)
+    expect(session.prompted).toEqual([])
+  })
+})
+
+test("a child whose context size is unknown is not refused", async () => {
+  await withIsolatedTeamsRoot(async (root) => {
+    const { parent, child } = parentChild("main-0123456789abcdef", "w-eeeeeeeeeeeeeeee")
+    await saveRun(root, parent)
+    await saveRun(root, child)
+    await writeBrief(root, child)
+    const session = recordSession()
+    const domain = { ...session.domain, context: () => Effect.succeed([]) } as unknown as SessionDomain
+    const api = createTeamApi(context({ session: domain }), teamState())
+    expect(required(await api.followup(followupInput({ run: child.id, requestID: "ctx-6" }), callerFor(parent)))).toMatchObject({ state: "admitted" })
+    expect(session.prompted).toHaveLength(1)
+  })
+})

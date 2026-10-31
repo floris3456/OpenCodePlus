@@ -222,6 +222,8 @@ export interface TreeNodeBadges {
   readonly disabled?: string
   /** The owner has execute off: its Code Mode tools cannot be called. "group" is the Code Mode row itself, "row" anything inside it. */
   readonly codeModeOff?: "group" | "row"
+  /** The row is an allow row (an allow-list's opening row): on, it lets its patterns through; off, it opens nothing. */
+  readonly allow?: boolean
   readonly modified?: boolean
   readonly review?: boolean
   readonly reviewCount?: number
@@ -1433,7 +1435,7 @@ function ownerAddressOfTab(tabId: string, tab: string): Address | undefined {
   const member = owner.indexOf("/:")
   if (member === -1) return { ...at, agent: owner }
   const team: TeamRef = { level, team: owner.slice(0, member) }
-  return level === "preset" ? { ...at, agent: owner.slice(member + 2), team } : { ...at, agent: owner.slice(member + 2), memberOf: team }
+  return { ...at, agent: owner.slice(member + 2), team }
 }
 
 // Each arranged tab's owners down its chain (layoutOwners), so the lists
@@ -1941,7 +1943,7 @@ function lazyTeamMember(
   const scoped = entry || preset !== undefined
   // An ordinary member resolves as a member of this team — its team-scoped
   // link and records, this team's Teams entries — exactly as apply resolves
-  // it, while its own records stay the per-agent ones (`memberOf`).
+  // it; its own records are stored with its team (`L/A@T`).
   const teamRef: RowTeam = scoped ? { level, team: team.team } : { memberOf: { level, team: team.team } }
   const removable =
     preset !== undefined
@@ -1975,13 +1977,10 @@ function lazyTeamMember(
     ...(preset === undefined ? { add: "agent" as const } : {}),
     ...(rowOwner === undefined ? {} : { owner: rowOwner }),
     actions: { ...noActions(), remove: removable },
-    // A member's rows address the same per-agent records as its Agents-group
-    // rows (level + agent + item), so an edit made here and an edit made there
-    // are one record. What differs is the chain — this team's `L/A@T` node,
-    // link and Teams entries, then the Teams catalogue, never Agents — which
-    // is a different resolved answer, so the rows carry their own ids under
-    // the member's `<team>/:<member>` owner path instead of colliding with
-    // the stand-alone agent's.
+    // A member's rows address its team-scoped node (`L/A@T`): an edit here
+    // changes this member only, not the stand-alone agent of its name nor a
+    // member of that name in another team. The rows carry their own ids under
+    // the member's `<team>/:<member>` owner path.
     children: () =>
       withFolders(memo, [
         lazyModels(ctx, memo, level, owner, agent, depth + 1, `${memberGroup}:models`, teamRef, "teams", memberPath),
@@ -2115,6 +2114,9 @@ export function controlValue(item: string, text: string, enabled: boolean): stri
   if (item === "compaction:model") return "Inherited model"
   if (item === "compaction:instructions") return "Empty prompt"
   if (item === "setting:steps") return "Unlimited"
+  // Empty is a value here, not "not set": it means the member default or no cap.
+  if (item === "setting:tool-output") return "Default"
+  if (item === "setting:lfs") return "Full"
   return "Not set"
 }
 
@@ -2263,12 +2265,37 @@ function withAgentControls(
       const { value, ...badges } = control.partial()
       return {
         ...row.partial(),
-        ...badges,
+        ...linkedBadges(memo, row.owner, level, badges),
         ...(hidden === undefined ? {} : { hidden: wholeOf(memo, level, owner, hidden, catalogue, teamRef).enabled }),
         ...(mode === undefined ? {} : { mode: wholeOf(memo, level, owner, mode, catalogue, teamRef).text }),
       }
     },
   }
+}
+
+// An agent, member or entry row says where it comes from: its preset link,
+// not the Enabled setting's own answer. A native agent's Enabled row falls
+// through to the host (upstream), so the control alone made a preset-linked
+// agent read like an unlinked built-in (L4, b-05, c-11). An Enabled value this
+// level sets still reads "set here": the link only names what nothing closer
+// decides. Preset rows keep their own reading: a preset's link is its base,
+// and its content is what it ships.
+function linkedBadges<B extends Pick<TreeNodeBadges, "from" | "fromLabel">>(
+  memo: Memo,
+  owner: RowOwner | undefined,
+  level: Level,
+  badges: B,
+): B {
+  const link = owner?.link
+  if (link === undefined || level === "preset" || badges.from?.kind === "level") return badges
+  const from: From = {
+    kind: "preset",
+    id: link.id,
+    ...(link.kind === "member" ? { team: link.team } : {}),
+    shipped: (memo.ctx.listing.find((entry) => presetKey(entry.ref) === presetKey(link))?.origin ?? "user") !== "user",
+  }
+  // Only where it comes from changes: its on/off and the other badges stay.
+  return { ...badges, from, fromLabel: fromLabel(from, { labels: memo.ctx.labels, level }) }
 }
 
 // Models group, the first tab of each agent subtree and shared Defaults
@@ -2386,9 +2413,9 @@ function lazyModelsState(
     ...(catalogue === undefined ? {} : { catalogue }),
     ...(upstream === undefined ? {} : { upstream }),
   }
-  // Ordinary members carry memberOf, not team. Their runtime level is the
-  // team's tier even when discovery lists the same agent at Defaults.
-  const team = view.memberOf ?? view.team
+  // A member's runtime level is the team's tier even when discovery lists the
+  // same agent at Defaults.
+  const team = view.team
   const runtime = modelRuntimeScope({
     scopes: ctx.scopes,
     level,
@@ -2440,7 +2467,6 @@ function lazyModelItem(
   const address = addressOf(level, owner, itemId, null, teamRef, catalogue)
   const target = { providerID: candidate.providerID, modelID: candidate.modelID, ...(candidate.variant === undefined ? {} : { variant: candidate.variant }) }
   const isActive = active !== undefined && sameModelCandidate(target, active)
-  // The row's own node: a member row's is per-agent (teamFields → memberOf).
   const own = teamFields(teamRef).team
   const scope = { level, agent: owner, ...(own !== undefined ? { team: own } : {}), ...(catalogue === undefined ? {} : { catalogue }) }
   const canResetHere = hasModelActiveAt(ctx.models, scope)
@@ -3041,7 +3067,7 @@ function lazyTools(
     depth,
     actions: noActions(),
     children: () => {
-      const tools = sortedKind(ctx, "tool", owner).filter((item) => visibleInCatalogue(item, catalogue))
+      const tools = sortedKind(ctx, "tool", owner)
       return [
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "OpenCode", depth + 1, tools.filter((item) => item.group === "native"), teamRef, catalogue, ownerPath),
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus"), teamRef, catalogue, ownerPath),
@@ -3052,17 +3078,6 @@ function lazyTools(
     },
   })
 }
-
-// Team tools live in the Teams catalogue only. A stand-alone agent never
-// calls them (apply denies the whole namespace for every non-member), so
-// listing them under Agents would advertise rows that can never resolve to a
-// usable tool.
-function visibleInCatalogue(item: Item, catalogue?: Catalogue): boolean {
-  if (catalogueOf(catalogue) === "teams") return true
-  return !(item.namespace === teamNamespace || item.id.startsWith(`tool:${teamNamespace}_`))
-}
-
-const teamNamespace = "team"
 
 // A member's rule rows list under the tool they govern (Permissions → Team
 // role). The rows whose tool is not in this owner's inventory (a tool the host
@@ -3392,7 +3407,7 @@ export function systemOrderAt(memo: Memo, address: Address): string[] {
 export function systemSlotOf(memo: Memo, row: Pick<Lazy, "id" | "kind" | "address">): string | undefined {
   if (row.kind === "group") return row.id.endsWith(":base") ? firstSlot : row.id.endsWith(":model-prompts") ? modelPromptsSlot : undefined
   const id = row.address?.section === null ? row.address.item : undefined
-  const item = id === undefined ? undefined : memo.ctx.items.find((entry) => entry.id === id)
+  const item = id === undefined ? undefined : itemsWithId(memo.ctx.items, id)[0]
   return item === undefined ? undefined : slotOfItem(item)
 }
 
@@ -3600,7 +3615,7 @@ function toolServerGroup(
 function exposedTools(memo: Memo, items: readonly Item[], level: Level, owner: string | null, catalogue?: Catalogue, teamRef?: RowTeam): readonly Item[] {
   return items.map((item) => {
     if (item.execute === true) return item
-    const exposure = memo.ctx.items.find((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+    const exposure = itemsWithId(memo.ctx.items, `toolmode:${item.id.slice("tool:".length)}`)[0]
     if (exposure === undefined) return item
     return { ...item, codemode: wholeOf(memo, level, owner, exposure, catalogue, teamRef).assembled === "codemode" }
   })
@@ -3785,7 +3800,7 @@ function lazyItem(
     if (!tool) return sections
     return [
       ...sections,
-      ...ctx.items.filter((entry) => entry.id === `toolmode:${item.id.slice("tool:".length)}`)
+      ...itemsWithId(ctx.items, `toolmode:${item.id.slice("tool:".length)}`)
         .map((entry) => lazyControl(memo, level, owner, entry, depth + 1, teamRef, catalogue, ownerPath)),
       ...toolParameters(ctx, memo, level, owner, item, rowId, depth + 1, teamRef, catalogue, ownerPath),
       ...toolPermissions(ctx, memo, level, owner, item, depth + 1, teamRef, catalogue, ownerPath),
@@ -3826,7 +3841,7 @@ function lazyItem(
       toggle: executable || codemode || !wholeNoToggle,
       edit: !executable,
       reset: !executable && canReset(ctx.customizations, address),
-      remove: teamFields(teamRef).team !== undefined ? false : removable(level, owner, item),
+      remove: teamRef !== undefined && !("memberOf" in teamRef) ? false : removable(level, owner, item),
       split: splittable,
       pin: codemode && !executable,
       // An instruction file or Tools and rules can be sent only when rows are
@@ -3864,6 +3879,27 @@ interface ListedRow {
 // rows it shares with another tool (edit's Protected files under write and
 // patch), in category order, "Everything else" first in each.
 export function toolPermissionRows(
+  ctx: BuildContext,
+  owner: string | null,
+  toolId: string,
+  level?: Level,
+  team?: RowTeam,
+  catalogue?: Catalogue,
+): readonly { category: string; rows: ListedRow[] }[] {
+  // A tool row and each of its parameters ask for the same rows: build them once per owner.
+  const key = JSON.stringify([owner, toolId, level ?? null, team ?? null, catalogue ?? null])
+  const cache = permissionRowsCache.get(ctx) ?? new Map<string, readonly { category: string; rows: ListedRow[] }[]>()
+  permissionRowsCache.set(ctx, cache)
+  const cached = cache.get(key)
+  if (cached !== undefined) return cached
+  const built = permissionRowsOf(ctx, owner, toolId, level, team, catalogue)
+  cache.set(key, built)
+  return built
+}
+
+const permissionRowsCache = new WeakMap<BuildContext, Map<string, readonly { category: string; rows: ListedRow[] }[]>>()
+
+function permissionRowsOf(
   ctx: BuildContext,
   owner: string | null,
   toolId: string,
@@ -3916,6 +3952,16 @@ export function toolPermRows(
   return toolPermissionRows(ctx, owner, item.id.slice("tool:".length), level, teamRef, catalogue).flatMap((entry) =>
     entry.rows.map((row) => lazyPermRow(memo, level, owner, row.item, depth, teamRef, catalogue, ownerPath, row.alias)),
   )
+}
+
+const itemIndexCache = new WeakMap<readonly Item[], Map<string, Item[]>>()
+
+// Items with one id, in list order: rows look up their toolmode and guidance
+// items per owner, and scanning the whole inventory each time cost seconds.
+function itemsWithId(items: readonly Item[], id: string): readonly Item[] {
+  const cached = itemIndexCache.get(items) ?? Map.groupBy(items, (item) => item.id)
+  itemIndexCache.set(items, cached)
+  return cached.get(id) ?? []
 }
 
 const permIndexCache = new WeakMap<readonly Item[], Map<string, ListedRow[]>>()
@@ -4103,6 +4149,7 @@ function permBadges(
   return {
     ...(guidance.length === 0 ? {} : { guidance }),
     state: resolved.enabled ? "on" : "off",
+    ...(item.allow === true ? { allow: true } : {}),
     modified: resolved.modified,
     source: resolved.source,
     ...fromBadges(memo.ctx, resolved, level, ownPreset(memo.ctx, level, owner, teamRef)),
@@ -4358,7 +4405,7 @@ function unmet(requires: TreeNodeBadges["requires"]): boolean {
 // Whether the owner has a row on, as apply decides it for that agent;
 // undefined for a row it does not have. Shared rows (no owner) cannot answer.
 function ownerHas(memo: Memo, level: Level, owner: string, id: string, teamRef?: RowTeam, catalogue?: Catalogue): boolean | undefined {
-  const item = memo.ctx.items.find((candidate) => candidate.id === id && applies(candidate, owner))
+  const item = itemsWithId(memo.ctx.items, id).find((candidate) => applies(candidate, owner))
   return item === undefined ? undefined : wholeOf(memo, level, owner, item, catalogue, teamRef).enabled
 }
 
@@ -4433,7 +4480,7 @@ function capabilityBadges(
 // The Tools and rules sections whose condition names this row, as this owner
 // resolves them (a level may have rewritten, added or re-conditioned sections).
 function guidanceFor(memo: Memo, level: Level, owner: string | null, id: string, teamRef?: RowTeam, catalogue?: Catalogue): readonly string[] {
-  const row = memo.ctx.items.find((candidate) => candidate.id === guidanceItemId && (owner === null || applies(candidate, owner)))
+  const row = itemsWithId(memo.ctx.items, guidanceItemId).find((candidate) => owner === null || applies(candidate, owner))
   if (row === undefined) return []
   return splitOf(memo, level, owner, row, catalogue, teamRef)
     .sections.filter((section) =>

@@ -1211,7 +1211,13 @@ test("rule.add and rule.update accept an optional refusal message at the RPC bou
   )
 })
 
-test("rule.update keeps a matched Teams rule's catalogue on a message edit and materialises the addressed catalogue for a new override", async () => {
+// a36f74a5ab decided that a message edit cannot move a rule into another
+// catalogue: a matched record keeps its stored catalogue and team, and only a
+// first write takes the addressed row's catalogue. Since rules are owner-scoped
+// (993f78b2cf) a rule is also identified by its catalogue, so an address that
+// names Teams edits the Teams rule and an address silent about the catalogue
+// (the Agents one) writes the Agents row, leaving Teams alone.
+test("rule.update keeps a Teams rule's catalogue on a message edit and materialises the addressed catalogue for a new override", async () => {
   const { project } = await tempRoot()
   const handlers = createHandlers(fullContext({ directory: project }), createState())
   const added = await Effect.runPromise(
@@ -1231,13 +1237,14 @@ test("rule.update keeps a matched Teams rule's catalogue on a message edit and m
   )
   expect(added).toMatchObject({ level: "defaults", agent: null, tool: "shell", id: "round3-team-edit" })
 
-  // The lab edit: same tool/id, message revised, address silent about the
-  // catalogue. The stored Teams identity must survive.
-  const revised = await Effect.runPromise(
+  // The lab edit addresses the Teams row: the stored Teams identity survives
+  // and the message changes in place.
+  await Effect.runPromise(
     handlers["rule.update"](
       {
         level: "defaults",
         agent: null,
+        catalogue: "teams",
         tool: "shell",
         id: "round3-team-edit",
         label: "Round3 team edit",
@@ -1247,11 +1254,39 @@ test("rule.update keeps a matched Teams rule's catalogue on a message edit and m
       throwingContext({}),
     ),
   )
-  expect(revised).toMatchObject({ level: "defaults", agent: null, tool: "shell", id: "round3-team-edit" })
-
   const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  const stored = snapshot.records.find((record) => record.type === "rule" && record.id === "round3-team-edit")
-  expect(stored).toMatchObject({ level: "defaults", agent: null, catalogue: "teams", message: "Round3 team edit revised." })
+  expect(snapshot.records.filter((record) => record.type === "rule" && record.id === "round3-team-edit")).toEqual([
+    expect.objectContaining({ level: "defaults", agent: null, catalogue: "teams", message: "Round3 team edit revised." }),
+  ])
+
+  // An address silent about the catalogue is the Agents row: it writes an
+  // Agents rule of its own and the Teams rule keeps its message.
+  await Effect.runPromise(
+    handlers["rule.update"](
+      {
+        level: "defaults",
+        agent: null,
+        tool: "shell",
+        id: "round3-team-edit",
+        label: "Agents copy",
+        patterns: ["printf round3-team-edit"],
+        message: "Agents refuses.",
+      },
+      throwingContext({}),
+    ),
+  )
+  const both = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const rows = both.records.filter((record) => record.type === "rule" && record.id === "round3-team-edit")
+  expect(rows).toHaveLength(2)
+  expect(rows.find((record) => record.type === "rule" && record.catalogue === "teams")).toMatchObject({
+    level: "defaults",
+    agent: null,
+    catalogue: "teams",
+    message: "Round3 team edit revised.",
+  })
+  const agentsCopy = rows.find((record) => record.type === "rule" && record.catalogue === undefined)
+  expect(agentsCopy).toMatchObject({ type: "rule", level: "defaults", agent: null, message: "Agents refuses." })
+  expect(Object.keys(agentsCopy ?? {}).includes("catalogue")).toBe(false)
 
   // A first write through update (an override of a curated/mined row with no
   // stored record) lands in the catalogue the caller addressed...
@@ -2661,10 +2696,13 @@ test("protected agents refuse tool-actor rule writes at the RPC boundary and all
   )
   expect(added).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Custom" })
 
+  // Protection follows the addressed owner (rule definitions are owner-scoped
+  // since 993f78b2cf): a tool actor may not write alpha's rule, whether it
+  // names alpha's row openly or reaches for another agent's row of the item.
   const updateRefused: { current?: CapturedError } = {}
   await expectDeclaredError(
     handlers["rule.update"](
-      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Hacked", patterns: ["evil *"], actor: { type: "tool" } },
       throwingContext(updateRefused),
     ),
     updateRefused,
@@ -2673,12 +2711,28 @@ test("protected agents refuse tool-actor rule writes at the RPC boundary and all
   const survived = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
   const kept = survived.records.find((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")
   if (kept === undefined || kept.type !== "rule") throw new Error("expected rule to survive")
-  expect(kept.label).toBe("Custom")
+  expect(kept).toMatchObject({ agent: "alpha", label: "Custom", patterns: ["danger *"] })
 
-  // The TUI edits the same rule through another agent's row; the owner stays alpha.
+  // A tool actor writing through beta's own row is allowed, and it creates
+  // beta's independent definition: alpha's rule is not touched.
+  const betas = await Effect.runPromise(
+    handlers["rule.update"](
+      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Beta's own", patterns: ["beta *"], actor: { type: "tool" } },
+      throwingContext({}),
+    ),
+  )
+  expect(betas).toMatchObject({ level: "project", agent: "beta", tool: "shell", id: "custom" })
+  const both = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  expect(
+    both.records.filter((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom").map((record) =>
+      record.type === "rule" ? [record.agent, record.label] : [],
+    ),
+  ).toEqual([["alpha", "Custom"], ["beta", "Beta's own"]])
+
+  // The TUI edits alpha's own rule; the owner stays alpha.
   const edited = await Effect.runPromise(
     handlers["rule.update"](
-      { level: "project", agent: "beta", tool: "shell", id: "custom", label: "Tui edit", patterns: ["danger *"] },
+      { level: "project", agent: "alpha", tool: "shell", id: "custom", label: "Tui edit", patterns: ["danger *"] },
       throwingContext({}),
     ),
   )
@@ -2686,19 +2740,27 @@ test("protected agents refuse tool-actor rule writes at the RPC boundary and all
 
   const removeRefused: { current?: CapturedError } = {}
   await expectDeclaredError(
-    handlers["rule.remove"]({ level: "project", agent: "beta", tool: "shell", id: "custom", actor: { type: "tool" } }, throwingContext(removeRefused)),
+    handlers["rule.remove"]({ level: "project", agent: "alpha", tool: "shell", id: "custom", actor: { type: "tool" } }, throwingContext(removeRefused)),
     removeRefused,
     "agent.protected",
   )
   const stillThere = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expect(stillThere.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(true)
+  expect(
+    stillThere.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom" && record.agent === "alpha"),
+  ).toBe(true)
 
   const removed = await Effect.runPromise(
-    handlers["rule.remove"]({ level: "project", agent: "beta", tool: "shell", id: "custom" }, throwingContext({})),
+    handlers["rule.remove"]({ level: "project", agent: "alpha", tool: "shell", id: "custom" }, throwingContext({})),
   )
   expect(removed).toMatchObject({ level: "project", agent: "alpha", tool: "shell", id: "custom" })
   const gone = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
-  expect(gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom")).toBe(false)
+  expect(
+    gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom" && record.agent === "alpha"),
+  ).toBe(false)
+  // Beta's definition is its own: removing alpha's leaves it in place.
+  expect(
+    gone.records.some((record) => record.type === "rule" && record.tool === "shell" && record.id === "custom" && record.agent === "beta"),
+  ).toBe(true)
 })
 
 test("rule.remove as a tool actor refuses when the item cascade would erase a protected agent's row", async () => {

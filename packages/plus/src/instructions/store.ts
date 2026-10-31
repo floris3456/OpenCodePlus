@@ -26,6 +26,8 @@ import { basicMemberForRetiredAgent, basicTeamId, retiredMemberPresets } from ".
 import { catalogFor } from "./permission-catalog.js"
 import { currentRowId, currentToolId } from "./tool-renames.js"
 import { ensure } from "../project.js"
+import { memberRowsPerTeam } from "./owner-records.js"
+import { discoverTeams } from "./teams.js"
 
 export type { CustomizationRecord, SplitRecord }
 export type { ModelRecord, ModelSettingsRecord, OriginalCandidate, RuleRecord }
@@ -79,6 +81,14 @@ export interface Loaded {
   readonly foldersMigrated: boolean
   /** True when this load migrated `requires` lists or retired one-way links. */
   readonly rowlinksMigrated: boolean
+  /**
+   * True when this load stored team members' own rows with their teams
+   * (memberRowsPerTeam), or read a store written before they were: the next
+   * save marks the store's header (`members: "team"`), so it runs once.
+   */
+  readonly membersMigrated: boolean
+  /** True when that migration moved records (not only marks the header). */
+  readonly membersMoved: boolean
 }
 
 export interface SaveInput {
@@ -125,6 +135,8 @@ export function loadedFromSave(saved: SaveSuccess, records: readonly StoredRecor
     wholeRowsMigrated: false,
     foldersMigrated: false,
     rowlinksMigrated: false,
+    membersMigrated: false,
+    membersMoved: false,
   }
 }
 
@@ -398,9 +410,13 @@ const V2Record = Schema.Union([
   V2Rowlink,
 ])
 
+// `members: "team"`: team members' own rows are stored with their teams
+// (owner-records.ts memberRowsPerTeam). A release before reads the header as
+// v2 all the same and drops the key when it writes.
 const V2Header = Schema.Struct({
   version: Schema.Literal(2),
   revision: Schema.Number,
+  members: Schema.optional(Schema.Literal("team")),
 })
 
 const V1Header = Schema.Struct({
@@ -433,6 +449,8 @@ interface ParsedFile {
   readonly records: readonly (StoredRecord | LegacyCategory)[]
   readonly migrated: boolean
   readonly rowlinksMigrated?: boolean
+  /** The header says team members' own rows are stored with their teams. */
+  readonly members?: boolean
 }
 
 export async function load(projectDir: string): Promise<Loaded> {
@@ -440,6 +458,33 @@ export async function load(projectDir: string): Promise<Loaded> {
   const global = await readFile(globalRecordsPath())
   const projectParsed = parseFile(project)
   const globalParsed = parseFile(global)
+  const loaded = loadParsed(projectParsed, globalParsed)
+  return withMembersPerTeam(loaded, projectDir, [
+    { level: "project", exists: project !== undefined, done: projectParsed.members === true },
+    { level: "global", exists: global !== undefined, done: globalParsed.members === true },
+  ])
+}
+
+// The member-rows migration of each store file whose header does not say it
+// ran: its level's teams (read from disk) get their members' records. A file
+// that exists is marked by the next save even when nothing moved; a missing
+// one only when something did (an idempotent move, so a read never makes a
+// revision of its own for nothing).
+async function withMembersPerTeam(
+  loaded: Omit<Loaded, "membersMigrated" | "membersMoved">,
+  projectDir: string,
+  files: readonly { readonly level: "project" | "global"; readonly exists: boolean; readonly done: boolean }[],
+): Promise<Loaded> {
+  const pending = files.filter((file) => !file.done)
+  if (pending.length === 0) return { ...loaded, membersMigrated: false, membersMoved: false }
+  const teams = (await Promise.all(pending.map((file) => discoverTeams(file.level, projectDir)))).flat()
+  const moved = memberRowsPerTeam(loaded.records, teams.flatMap((team) =>
+    team.level === "defaults" ? [] : [{ level: team.level, team: team.team, agents: team.agents.map((agent) => agent.id) }],
+  ))
+  return { ...loaded, records: moved.records, membersMigrated: moved.migrated || pending.some((file) => file.exists), membersMoved: moved.migrated }
+}
+
+function loadParsed(projectParsed: ParsedFile, globalParsed: ParsedFile): Omit<Loaded, "membersMigrated" | "membersMoved"> {
   if (!projectParsed.migrated && !globalParsed.migrated) {
     const folders = migrateCategories([...projectParsed.records, ...globalParsed.records])
     const catalogues = migrateCatalogues(folders.records)
@@ -934,11 +979,12 @@ export async function ensureCatalogues(projectDir: string): Promise<{
   wholeRowsMigrated: boolean
   foldersMigrated: boolean
   rowlinksMigrated: boolean
+  membersMoved: boolean
   loaded: Loaded
   revision: number
 }> {
   const current = await load(projectDir)
-  const none = { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, foldersMigrated: false, rowlinksMigrated: false }
+  const none = { migrated: false, presetsMigrated: false, skillsMigrated: false, splitsMigrated: false, wholeRowsMigrated: false, foldersMigrated: false, rowlinksMigrated: false, membersMoved: false }
   if (
     !current.cataloguesMigrated &&
     !current.presetsMigrated &&
@@ -946,7 +992,8 @@ export async function ensureCatalogues(projectDir: string): Promise<{
     !current.splitsMigrated &&
     !current.wholeRowsMigrated &&
     !current.foldersMigrated &&
-    !current.rowlinksMigrated
+    !current.rowlinksMigrated &&
+    !current.membersMigrated
   )
     return { ...none, loaded: current, revision: current.globalRevision }
   const saved = await save(projectDir, {
@@ -963,6 +1010,7 @@ export async function ensureCatalogues(projectDir: string): Promise<{
     wholeRowsMigrated: current.wholeRowsMigrated,
     foldersMigrated: current.foldersMigrated,
     rowlinksMigrated: current.rowlinksMigrated,
+    membersMoved: current.membersMoved,
     loaded: await load(projectDir),
     revision: saved.globalRevision,
   }
@@ -980,7 +1028,7 @@ async function write(projectDir: string, input: SaveInput, options?: SaveOptions
   // catalogue duplication and the retired-preset move are the same situation:
   // both sides of `same` are already migrated (the load applied them in
   // memory), so only these flags make the moved records reach disk.
-  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated || current.foldersMigrated || current.rowlinksMigrated
+  const forced = current.migrated || current.cataloguesMigrated || current.presetsMigrated || current.skillsMigrated || current.splitsMigrated || current.wholeRowsMigrated || current.foldersMigrated || current.rowlinksMigrated || current.membersMigrated
   const projectMissing = !(await Bun.file(projectRecordsPath(projectDir)).exists())
   // A read-triggered migration never writes a missing project store, and a
   // forced rewrite still never writes an empty one into a directory that has
@@ -1112,7 +1160,7 @@ function parseFile(text: string | undefined): ParsedFile {
   const lines = text.split("\n").filter((line) => line.trim().length > 0)
   if (lines.length === 0) return { revision: 0, records: [], migrated: false }
   const v2 = Option.getOrUndefined(decodeV2Header(lines[0]))
-  if (v2 !== undefined) return { revision: v2.revision, ...parseV2(lines.slice(1)), migrated: false }
+  if (v2 !== undefined) return { revision: v2.revision, ...parseV2(lines.slice(1)), migrated: false, members: v2.members === "team" }
   // Any header without "version" is v1 and must be migrated; never write v1 again.
   const v1 = Option.getOrUndefined(decodeV1Header(lines[0]))
   return { revision: v1?.revision ?? 0, records: lines.slice(1).flatMap(migrateLine), migrated: true }
@@ -1310,7 +1358,7 @@ function migrateState(state: "inherit" | "enabled" | "disabled"): "on" | "off" |
 
 function serialize(revision: number, records: readonly StoredRecord[]): string {
   const lines = canonical(records).map((record) => JSON.stringify(stable(record)))
-  return [JSON.stringify({ version: VERSION, revision }), ...lines].join("\n") + "\n"
+  return [JSON.stringify({ version: VERSION, revision, members: "team" }), ...lines].join("\n") + "\n"
 }
 
 // Canonically ordered and stably keyed so an unchanged save is a no-op.

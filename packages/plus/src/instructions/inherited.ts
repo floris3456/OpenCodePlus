@@ -11,20 +11,24 @@ export interface InheritedInput {
   readonly scopes: Scopes
   readonly agents: readonly { readonly id: string }[]
   readonly teams: readonly { readonly level: Level; readonly team: string; readonly agents: readonly string[] }[]
+  /** The records a copy wrote: only these are looked at, every other one stays as stored. */
+  readonly copied: (record: CustomizationRecord) => boolean
 }
 
 type Field = "text" | "state" | "pin"
 
 /**
- * The records without what their rows already inherit. A text, on/off or pin
- * is dropped when no row that reads it resolves differently without it, and a
- * record left with nothing it sets goes whole. What reaches the model is the
- * same either way; the rows stop showing an edit, show where their value
- * comes from, and the next save of the row stores none.
+ * A copy's records without what their rows already inherit. A copied text,
+ * on/off or pin is dropped when no row that reads it resolves differently
+ * without it, and a record left with nothing it sets goes whole, so the copy's
+ * rows keep following what they inherit. A value a person sets is never
+ * dropped: an own value equal to the inherited one stays an own value until
+ * `reset`, so this runs on what a paste or a duplicate wrote, never on reads
+ * or other writes.
  *
  * Only records whose readers are known are looked at: an agent's own records
- * (read by that agent at its level and the more specific ones, alone and as a
- * team member) and a shared Defaults row's text and pin (the item's own text
+ * (read by that agent at its level and the more specific ones, and by the
+ * members of its name in teams of a more specific level) and a shared Defaults row's text and pin (the item's own text
  * and pin below it for every agent). A preset's, a team-scoped node's and a
  * pattern entry's records are read by agents not listed here, so they stay.
  */
@@ -38,6 +42,7 @@ export function withoutInherited(input: InheritedInput): CustomizationRecord[] {
     records: Map.groupBy(input.customizations, (record) => record.item),
   }
   return input.customizations.flatMap((record) => {
+    if (!input.copied(record)) return [record]
     // An edit for an agent that is gone is an orphan, kept for the person to decide on.
     if (record.agent !== null && !known.has(record.agent)) return [record]
     const readers = readersOf(input, byId, record)
@@ -87,7 +92,9 @@ function readersOf(input: InheritedInput, byId: ById, record: CustomizationRecor
   return {
     addresses: levels.flatMap((level) => [
       at(level),
-      ...teams.map((team) => ({ ...at(level), memberOf: { level: team.level, team: team.team } })),
+      // A member stores its own rows with its team: it reads an agent's
+      // record of its name only from a level above its team's.
+      ...teams.filter((team) => team.level === level && record.level !== level).map((team) => ({ ...at(level), team: { level: team.level, team: team.team } })),
       ...(member ? [{ ...at(level), catalogue: "teams" as const }] : []),
     ]),
     fields: ["text", "state", "pin"],

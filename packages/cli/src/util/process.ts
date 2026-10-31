@@ -21,12 +21,12 @@ export function selfCommand() {
 
 // Bun reads JSX configuration from $cwd/tsconfig.json without walking up,
 // so a daemon started elsewhere transpiles this repo's .tsx with the wrong or no JSX runtime.
+// The CLI package's root is found from this module, not from the entry: an entry outside the
+// package that imports it (a test home's) would otherwise give whatever package lies above it.
 export function serviceDirectory() {
   const current = runtime()
   if (!current.script) return path.dirname(process.execPath)
-  if (!entrypoint) throw new Error("Failed to resolve CLI entrypoint")
-  const fallback = path.dirname(entrypoint)
-  return findPackageRoot(fallback, fallback)
+  return findPackageRoot(import.meta.dirname, import.meta.dirname)
 }
 
 function findPackageRoot(dir: string, fallback: string): string {

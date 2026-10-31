@@ -16,6 +16,8 @@ export type Args = {
   readonly onStart?: EnsureOptions["onStart"]
 }
 
+const HEALTH_TIMEOUT_MS = 5_000
+
 export type Resolved = {
   readonly endpoint: Endpoint
   readonly service?: ReturnType<typeof managedService>
@@ -32,7 +34,7 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
     } satisfies Endpoint
     const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
     const health = yield* Effect.tryPromise({
-      try: () => client.server.info({ signal: AbortSignal.timeout(5_000) }),
+      try: () => client.server.info({ signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) }),
       catch: (cause) => connectError(endpoint, cause),
     })
     if (health.version !== OPENCODE_VERSION)
@@ -110,6 +112,14 @@ function connectError(endpoint: Endpoint, cause: unknown) {
       { cause },
     )
   }
+  // A server that accepted the connection but did not answer in time is up and
+  // busy (a long operation holds its thread); telling it apart keeps a caller
+  // from taking a running server for a dead one and retrying blindly.
+  if (cause instanceof ClientError && cause.reason === "Transport" && cause.cause instanceof Error && cause.cause.name === "TimeoutError")
+    return new Error(
+      `Server at ${endpoint.url} is busy: it did not answer within ${HEALTH_TIMEOUT_MS / 1000} s, so this command was not sent. An operation it is running may still finish; try again once it is done.`,
+      { cause },
+    )
   if (cause instanceof ClientError && cause.reason === "Transport")
     return new Error(`Could not reach server at ${endpoint.url}`, { cause })
   return new Error(`Server at ${endpoint.url} did not provide a compatible V2 health response`, { cause })

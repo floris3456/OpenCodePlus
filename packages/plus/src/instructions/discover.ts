@@ -1044,7 +1044,7 @@ function userSystemItems(order: number): Item[] {
     group: "none",
     title: row.title,
     text: row.text,
-    enabled: upstreamEnabled(),
+    enabled: row.off === true ? false : upstreamEnabled(),
     fingerprint: fingerprint(row.text),
     order: order + index,
     userSystem: true,

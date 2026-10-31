@@ -9,6 +9,7 @@ import { basicDelegation, builtinTeams } from "./builtin-teams.js"
 import { controlItems, isControl } from "./agent-controls.js"
 import {
   fingerprint,
+  memberKey,
   presetKey,
   scopedTo,
   scopesOf,
@@ -28,6 +29,7 @@ import {
   type TeamRef,
 } from "./model.js"
 import type { RowlinkRecord } from "./rowlinks.js"
+import type { TeamLevel } from "./teams.js"
 
 /** One Native agent preset per native opencode agent (§3.4). */
 export const nativePresetIds = ["build", "plan", "general", "explore", "title"] as const
@@ -124,7 +126,8 @@ export interface ContextInput extends PresetState {
   /** Discovered items: Native presets ship their native agent's role text from these. */
   readonly items: readonly Item[]
   /** Teams and their member ids (any level, enabled or not): a member without a team on its address reads these. */
-  readonly teams?: readonly { readonly team: string; readonly agents: readonly string[] }[]
+  /** `level` absent: the team's members are not told apart from the stand-alone agents of their names. */
+  readonly teams?: readonly { readonly level?: TeamLevel; readonly team: string; readonly agents: readonly string[] }[]
 }
 
 // ── what the Basic member presets set (DESIGN §6) ───────────────────────────
@@ -357,6 +360,10 @@ const memberBaseOverrides: Readonly<Record<BasicMemberId, PresetOverrides>> = {
     ...readOnly,
     ...rows(off, ["skill:opencode", "tool:skill"]),
     ...teamToolRows(off, ["delegate", "followup", "integrate", "checkpoint", "stop", "status", "list", "check", "diff"]),
+    // A scout's report is a list of located facts the parent reads in full, so
+    // its summary may run longer than the shipped 15 lines (its "Report
+    // summary (lines)" row; team_finish refuses past it).
+    "perm:team_finish:limits.summary": { text: "20" },
   },
   // The build seat is the user's chat: nobody delegates to it, so it has no
   // report to finish. It checkpoints what it may edit, like any chat run.
@@ -532,6 +539,7 @@ export function chainContext(input: ContextInput): ChainContext {
     entries: input.entries ?? [],
     presets: presetCatalog({ items: input.items, presets: input.presets ?? [] }),
     memberTeams: memberTeamsOf(input.teams ?? []),
+    members: membersOf(input.teams ?? []),
   }
 }
 
@@ -675,8 +683,16 @@ export function ownerRoleItems(items: readonly Item[], owners: readonly string[]
     }))
 }
 
-/** `items` plus a Role/persona row for every preset and Defaults entry that has none. */
-export function withOwnerRoles(items: readonly Item[], state: PresetState): Item[] {
+/**
+ * `items` plus a Role/persona row for every preset and Defaults entry that has
+ * none, and for every member of a team (enabled or not): a member of a
+ * disabled team is no host agent, so discovery gives it no role, yet its
+ * preset's role is part of it whether the team is on or off.
+ */
+export function withOwnerRoles(
+  items: readonly Item[],
+  state: PresetState & { readonly teams?: readonly { readonly agents: readonly string[] }[] },
+): Item[] {
   const owners = [
     ...presetListing(state.presets).flatMap((entry) => (entry.ref.kind === "team" ? [] : [entry.ref.id])),
     ...(state.entries ?? []).map((entry) => entry.name),
@@ -686,7 +702,7 @@ export function withOwnerRoles(items: readonly Item[], state: PresetState): Item
     controlItems(owner)
       .filter((row) => !owned.has(`${row.id}\u0000${owner}`)),
   )
-  return [...items, ...ownerRoleItems(items, owners), ...controls]
+  return [...items, ...ownerRoleItems(items, [...owners, ...(state.teams ?? []).flatMap((team) => team.agents)]), ...controls]
 }
 
 /**
@@ -783,4 +799,16 @@ function memberTeamsOf(teams: readonly { readonly team: string; readonly agents:
       if (!known.includes(team.team)) out.set(agent, [...known, team.team])
     }
   return out
+}
+
+// Members of project and Global teams: a Defaults team is a Teams entry, whose
+// node is its own already.
+function membersOf(teams: NonNullable<ContextInput["teams"]>): Set<string> {
+  return new Set(
+    teams.flatMap((team) => {
+      const level = team.level
+      if (level !== "project" && level !== "global") return []
+      return team.agents.map((agent) => memberKey({ level, team: team.team }, agent))
+    }),
+  )
 }

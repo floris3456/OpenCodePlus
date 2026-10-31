@@ -7,7 +7,7 @@ import { Session } from "@opencode/schema/session"
 import { Duration, Effect, Fiber, Option, Schedule, Schema, Semaphore, type Scope } from "effect"
 import { batchNotify, partition, peek, put, take, teamInboxKey, type InboxItem } from "./inbox.js"
 import { io, errCode } from "./io.js"
-import { gitRaw, parsePorcelain } from "./git.js"
+import { gitRaw, parsePorcelain, savePatch } from "./git.js"
 import type { MergeEntry } from "./merge.js"
 import {
   attemptTransition,
@@ -24,6 +24,7 @@ import {
   transition,
   updateRun,
   type AttemptError,
+  type AttemptFailure,
   type AttemptRecord,
   type RunRecord,
 } from "./run.js"
@@ -35,6 +36,8 @@ import { RETRY_SCHEDULED, SessionOutcomes, type SessionOutcome } from "./session
 import { lock, readJson } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS, orphans, ownedRoot, remove, removeLocked } from "./worktree.js"
 import { removeLeftoverSnapshotStores } from "./snapshots.js"
+import { saveCooldown, providerKeyOfRun } from "./cooldown.js"
+import { quotaReset, quotaResetText } from "@opencodeplus/cliproxyapi/server"
 
 // Policy file loading lands later; the sweep tick reads the schema default
 // (2000 ms), the same source api.ts reads its bounds from.
@@ -49,22 +52,36 @@ const policy = Schema.decodeUnknownSync(Policy)({})
 const sweepPermit = Semaphore.makeUnsafe(1)
 let lastPassAt = 0
 let lastGcAt = 0
+// One boot drain per process: pending settlements left by a restart are
+// delivered on the first pass, not on every pass.
+let bootDrained = false
 
 /** Test-only: reset the process-wide sweep pacing between isolated roots. */
 export function resetSweepState(): void {
   lastPassAt = 0
   lastGcAt = 0
+  bootDrained = false
 }
 
-function settledText(run: RunRecord, previous: string, attemptN: number): string {
+function settledText(run: RunRecord, previous: string, attempt: AttemptRecord | undefined): string {
   const task = run.task ?? "-"
   const session = run.sessionID ?? "-"
-  return (
-    `[team] ${run.id} (${run.role}, ${task}) settled: failed — host session gone; attempt ${attemptN} marked failed.\n` +
-    `summary: session ${session} is no longer known to the host; the run was ${previous} and is now dead.\n` +
-    `report: none\n` +
-    `next: team_stop + delegate fresh`
-  )
+  const lines = [
+    `[team] ${run.id} (${run.role}, ${task}) settled: failed — host session gone; attempt ${attempt?.n ?? 0} marked failed.`,
+    `summary: session ${session} is no longer known to the host; the run was ${previous} and is now dead.`,
+    `report: none`,
+  ]
+  if (attempt?.patch !== undefined) lines.push(patchLine(attempt.patch))
+  if (attempt?.patchError !== undefined) lines.push(`Uncommitted work: could not be saved (${attempt.patchError}).`)
+  lines.push("next: team_stop + delegate fresh")
+  return lines.join("\n")
+}
+
+// The uncommitted work of an attempt that ended without a report, as one line:
+// where the patch is and how to use it. A clean worktree says nothing.
+function patchLine(patch: NonNullable<AttemptRecord["patch"]>): string {
+  const skipped = patch.skipped.length > 0 ? `, skipped: ${pathList(patch.skipped)}` : ""
+  return `Uncommitted work saved: ${patch.file} (${patch.files} files, ${patch.bytes} bytes${skipped}). Apply it in a worktree with git apply --index ${patch.file}, or delegate a fresh run that starts from it.`
 }
 
 function deadTrigger(state: RunRecord["state"]): string | undefined {
@@ -143,6 +160,57 @@ async function notifySafe(root: string, parent: string, from: string, text: stri
   await Effect.runPromise(io(() => put(root, parent, { kind: "notify", from, text, dedupeKey })).pipe(Effect.ignore))
 }
 
+// A settlement without a report is the only news a parent gets of what the
+// attempt left behind, so the uncommitted work is written to the run folder
+// before the text is rendered. A clean worktree, a removed worktree and an
+// attempt that did report all keep the settlement as it was; a failed save
+// records its reason on the attempt and never blocks the settlement.
+async function saveAttemptPatch(root: string, run: RunRecord, attempt: AttemptRecord): Promise<AttemptRecord> {
+  if (attempt.patch !== undefined || attempt.patchError !== undefined) return attempt
+  if (!isAttemptTerminal(attempt.state)) return attempt
+  if (run.worktree === "removed" || run.directory === "") return attempt
+  if (!(await onDisk(run.directory))) return attempt
+  if ((await readJson<unknown>(path.join(root, "runs", run.id, `report-${attempt.n}.json`))) !== undefined) return attempt
+  const file = path.join(root, "runs", run.id, `uncommitted-${attempt.n}.patch`)
+  const result = await Effect.runPromise(io(() => savePatch(run.directory, file)).pipe(Effect.result))
+  // The patch lands on the attempt as it is at write time: the settle pass may
+  // have marked the attempt notified since this copy was read.
+  const saved = await updateRun(root, run.id, (current) => {
+    const last = current.attempts.at(-1)
+    if (last === undefined || last.n !== attempt.n) return current
+    const next: AttemptRecord =
+      result._tag === "Failure"
+        ? { ...last, patchError: result.failure instanceof Error ? result.failure.message : String(result.failure) }
+        : result.success === undefined
+          ? last
+          : { ...last, patch: result.success }
+    if (next === last) return current
+    return { ...current, attempts: [...current.attempts.slice(0, -1), next] }
+  })
+  return saved?.attempts.at(-1) ?? attempt
+}
+
+// One settlement per attempt: `notified` is written after the put, so the
+// claim that keeps two concurrent passes (a sweep and an idle event) from
+// writing the item twice lives in this process, not in the record.
+const announcing = new Set<string>()
+
+// Writes the attempt's patch, tells the parent, and only then marks the attempt
+// notified, so a failed put is retried by the next idle.
+async function announceSettlement(ctx: Context, root: string, run: RunRecord, attempt: AttemptRecord): Promise<RunRecord> {
+  const key = `${run.id}:${attempt.n}`
+  if (announcing.has(key)) return run
+  announcing.add(key)
+  try {
+    const saved = await saveAttemptPatch(root, run, attempt)
+    const told = await notifyParent(ctx, root, run, saved)
+    if (!told.delivered) return (await loadRun(root, run.id)) ?? run
+    return (await markNotified(root, run.id, saved.n)) ?? run
+  } finally {
+    announcing.delete(key)
+  }
+}
+
 async function reconcileOne(ctx: Context, root: string, entry: string): Promise<string | undefined> {
   if (entry.startsWith(".")) return undefined
   const record = await loadRecordSafe(root, entry)
@@ -188,10 +256,11 @@ async function reconcileOne(ctx: Context, root: string, entry: string): Promise<
     return await failOpenAttempt(dead)
   })
   if (saved === undefined || !applied.changed) return undefined
-  const last = saved.attempts[saved.attempts.length - 1]
-  const attemptN = last?.n ?? 0
-  if (saved.parent !== null && saved.parent !== undefined)
-    await notifySafe(root, saved.parent, saved.id, settledText(saved, applied.previous, attemptN))
+  if (saved.parent !== null && saved.parent !== undefined) {
+    const last = saved.attempts.at(-1)
+    const attempt = last === undefined ? undefined : await saveAttemptPatch(root, saved, last)
+    await notifySafe(root, saved.parent, saved.id, settledText(saved, applied.previous, attempt))
+  }
   return saved.id
 }
 
@@ -448,12 +517,27 @@ function utcTime(at: number) {
   return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`
 }
 
+/** The three fields an attempt stores: the answer body stays in the event. */
+function storedError(error: AttemptFailure): AttemptError {
+  return {
+    type: error.type,
+    message: error.message,
+    ...(error.status === undefined ? {} : { status: error.status }),
+  }
+}
+
+/** "provider.quota (429): Quota exceeded …", for a cooldown's record. */
+function failureLine(error: AttemptFailure): string {
+  return `${error.type}${error.status === undefined ? "" : ` (${error.status})`}: ${error.message.slice(0, 300)}`
+}
+
 // The host's reason for a failed execution (core's SessionError.Error): what
 // the parent needs to tell a provider that is out of quota from a broken run.
 const FailedError = Schema.Struct({
   type: Schema.String,
   message: Schema.String,
   status: Schema.optional(Schema.Number),
+  response: Schema.optional(Schema.Struct({ body: Schema.String })),
 })
 
 // Order matters: settle the attempt that just ended, move the run to idle,
@@ -465,7 +549,7 @@ export async function onSessionIdle(
   root: string,
   run: RunRecord,
   outcome: SessionOutcome = "idle",
-  error?: AttemptError,
+  error?: AttemptFailure,
   inactive = false,
 ): Promise<RunRecord> {
   // The settle, the notify bookkeeping and a pending stop transition in one
@@ -489,26 +573,30 @@ export async function onSessionIdle(
       attempt !== undefined &&
       isAttemptTerminal(attempt.state) &&
       attempt.notified !== true
-    const next = announce ? markNotified(idle) : idle
     if (announce && attempt !== undefined) settled.attempt = attempt
+    // `notified` is not written here: announceSettlement records it only once
+    // the parent's inbox holds the item, so a failed write retries next idle.
     // A stopped run's session can still end a turn (a prompt admitted before
     // the stop): it is stopped already.
-    if (!next.stopRequested || next.state === "stopping" || next.state === "stopped") return next
+    if (!idle.stopRequested || idle.state === "stopping" || idle.state === "stopped") return idle
     settled.stopped = true
-    const stopped = transition(transition(next, "stopping", "shutdown"), "stopped", "exited")
-    return next.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: next.stopRequestedBy } : stopped
+    const stopped = transition(transition(idle, "stopping", "shutdown"), "stopped", "exited")
+    return idle.stopRequestedBy !== undefined ? { ...stopped, stoppedBy: idle.stopRequestedBy } : stopped
   })
   if (marked === undefined) return (await loadRun(root, run.id)) ?? run
   if (settled.nudged) await put(root, marked.id, { kind: "system", from: "plus", text: FINISH_NUDGE })
-  if (settled.attempt !== undefined) await notifyParent(ctx, root, marked, settled.attempt)
+  if (settled.attempt !== undefined) {
+    // The patch and the inbox item are written before `notified` is recorded.
+    await announceSettlement(ctx, root, marked, settled.attempt)
+  }
   if (settled.stopped) {
     await evictRunFolder(ctx, marked)
-    return marked
+    return (await loadRun(root, run.id)) ?? marked
   }
   return deliverInbox(ctx, root, marked)
 }
 
-async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptError): Promise<RunRecord> {
+async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutcome, error?: AttemptFailure): Promise<RunRecord> {
   const current = withoutRetrying(run)
   const last = current.attempts[current.attempts.length - 1]
   if (last === undefined || isAttemptTerminal(last.state)) return current
@@ -517,7 +605,26 @@ async function settleAttempt(root: string, run: RunRecord, outcome: SessionOutco
     if (error === undefined) return failed
     const attempt = failed.attempts.at(-1)
     if (attempt === undefined) return failed
-    return { ...failed, attempts: [...failed.attempts.slice(0, -1), { ...attempt, error }] }
+    const quota = quotaReset(error, Date.now())
+    const key = providerKeyOfRun(failed)
+    // An out-of-quota failure is not the Brief going wrong: the provider serves
+    // again at its reset, so the attempt records until when and the provider is
+    // cooled for every run. The settlement then says "blocked", not "failed".
+    if (quota === undefined || key === undefined)
+      return { ...failed, attempts: [...failed.attempts.slice(0, -1), { ...attempt, error: storedError(error) }] }
+    await saveCooldown(
+      root,
+      key,
+      { untilMs: quota.untilMs, text: quota.text, error: failureLine(error), at: new Date().toISOString(), run: failed.id },
+      Date.now(),
+    )
+    return {
+      ...failed,
+      attempts: [
+        ...failed.attempts.slice(0, -1),
+        { ...attempt, error: storedError(error), blockedUntil: new Date(quota.untilMs).toISOString() },
+      ],
+    }
   }
   if (outcome === "interrupted") return attemptTransition(current, "interrupted", "interrupt")
   // finish wrote this attempt's report and owns its terminal state.
@@ -594,12 +701,13 @@ export async function stopIdle(ctx: Context, root: string, run: RunRecord, by?: 
   const stoppedTransition = transition(transition(ended, "stopping", "shutdown"), "stopped", "exited")
   const stopped = by !== undefined ? { ...stoppedTransition, stoppedBy: by } : stoppedTransition
   const attempt = stopped.attempts.at(-1)
-  const toSave = waiting ? markNotified(stopped) : stopped
-  await saveRun(root, toSave)
-  await evictRunFolder(ctx, toSave)
-  if (waiting && attempt !== undefined && stopped.parent !== null && stopped.parent !== by)
-    await notifyParent(ctx, root, stopped, attempt)
-  return toSave
+  await saveRun(root, stopped)
+  await evictRunFolder(ctx, stopped)
+  if (!waiting || attempt === undefined || stopped.parent === null) return stopped
+  // A parent that stopped this child was answered by the tool result; there is
+  // no settlement to send it, and nothing may announce this attempt again.
+  if (stopped.parent === by) return (await markNotified(root, stopped.id, attempt.n)) ?? stopped
+  return announceSettlement(ctx, root, stopped, attempt)
 }
 
 /**
@@ -616,11 +724,22 @@ export async function evictRunFolder(ctx: Context, run: RunRecord): Promise<void
   )
 }
 
-function markNotified(run: RunRecord): RunRecord {
-  const last = run.attempts[run.attempts.length - 1]
-  if (last === undefined) return run
-  const updated: AttemptRecord = { ...last, notified: true }
-  return { ...run, attempts: [...run.attempts.slice(0, -1), updated] }
+function markNotified(root: string, runID: string, attemptN: number): Promise<RunRecord | undefined> {
+  return updateRun(root, runID, (current) => {
+    const last = current.attempts.at(-1)
+    if (last === undefined || last.n !== attemptN) return current
+    const next: AttemptRecord = { ...last, notified: true }
+    delete next.notifyError
+    return { ...current, attempts: [...current.attempts.slice(0, -1), next] }
+  })
+}
+
+function markNotifyError(root: string, runID: string, attemptN: number, message: string): Promise<RunRecord | undefined> {
+  return updateRun(root, runID, (current) => {
+    const last = current.attempts.at(-1)
+    if (last === undefined || last.n !== attemptN) return current
+    return { ...current, attempts: [...current.attempts.slice(0, -1), { ...last, notifyError: message }] }
+  })
 }
 
 // The settlement is the parent's whole view of the attempt: the report in
@@ -651,10 +770,20 @@ export function childSettledText(
   _reportPath?: string,
 ): string {
   const task = run.task ?? "-"
-  const status = typeof report?.status === "string" ? report.status : attempt.state
-  const lines = [`[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`]
+  const blocked = attempt.blockedUntil
+  // A quota failure blocks the run's provider, it does not fail the work: the
+  // settlement says when it serves again so the parent can route around it.
+  const status = blocked !== undefined ? "blocked" : typeof report?.status === "string" ? report.status : attempt.state
+  const key = providerKeyOfRun(run)
+  const lines = [
+    blocked === undefined
+      ? `[team] ${run.id} (${run.role}, ${task}) settled: ${status} — attempt ${attempt.n} ${attempt.state}.`
+      : `[team] ${run.id} (${run.role}, ${task}) settled: blocked — ${key ?? "provider"} quota; resets at ${quotaResetText(Date.parse(blocked), Date.now())}. Not retried.`,
+  ]
   if (report === undefined) {
     lines.push(`No report: attempt ${attempt.n} ended ${attempt.state} without team_finish.`)
+    if (attempt.patch !== undefined) lines.push(patchLine(attempt.patch))
+    if (attempt.patchError !== undefined) lines.push(`Uncommitted work: could not be saved (${attempt.patchError}).`)
     if (run.parent !== null && run.state === "stopped" && (run.stopRequestedBy ?? run.stoppedBy) === run.parent) {
       lines.push("next: nothing is needed; you stopped this child. team_followup resumes it with its context.")
       return lines.join("\n")
@@ -675,6 +804,10 @@ export function childSettledText(
         lines.push(
           `The host retried it ${times(attempt.retries.count)} over ${retryDuration(attempt.retries.firstAt, attempt.endedAt)} (from ${utcTime(Date.parse(attempt.retries.firstAt))} UTC) before the step failed.`,
         )
+      if (blocked !== undefined) {
+        lines.push("next: delegate the Brief to a member on another provider, or follow up after the reset.")
+        return lines.join("\n")
+      }
       lines.push(
         `next: if the member's model is unavailable (quota, rate limit, provider down), team_stop it and delegate the same Brief to another member; otherwise read team_status and team_diff with run: "${run.id}", then team_followup or team_stop.`,
       )
@@ -736,21 +869,36 @@ function landStep(id: string): string {
 }
 
 // One settlement, one inbox item. An idle parent is prompted with it now;
-// a working parent gets it through its own idle drain.
-async function notifyParent(ctx: Context, root: string, child: RunRecord, attempt: AttemptRecord): Promise<void> {
+// a working parent gets it through its own idle drain. `delivered` is true only
+// once the item is on disk: a parent that is terminal or gone, or a failed
+// write, records why on the child's attempt instead of vanishing.
+async function notifyParent(
+  ctx: Context,
+  root: string,
+  child: RunRecord,
+  attempt: AttemptRecord,
+): Promise<{ delivered: boolean }> {
   const parentID = child.parent
-  if (parentID === null || parentID === undefined || parentID === child.id) return
+  if (parentID === null || parentID === undefined || parentID === child.id) return { delivered: true }
   const parent = await loadRun(root, parentID)
-  if (parent === undefined || isTerminal(parent.state) || parent.state === "dead") return
+  if (parent === undefined || isTerminal(parent.state) || parent.state === "dead") {
+    await markNotifyError(root, child.id, attempt.n, `parent ${parentID} is ${parent?.state ?? "gone"}`)
+    return { delivered: false }
+  }
   const reportPath = path.join(root, "runs", child.id, `report-${attempt.n}.json`)
   const report = await readJson<SettledReport>(reportPath)
   const displayPath = report === undefined ? undefined : path.join(root, "runs", child.id, `report-${attempt.n}.md`)
-  await Effect.runPromise(
+  const written = await Effect.runPromise(
     io(() =>
       put(root, parentID, { kind: "child.settled", from: child.id, text: childSettledText(child, attempt, report, displayPath) }),
-    ).pipe(Effect.ignore),
+    ).pipe(Effect.result),
   )
+  if (written._tag === "Failure") {
+    await markNotifyError(root, child.id, attempt.n, written.failure instanceof Error ? written.failure.message : String(written.failure))
+    return { delivered: false }
+  }
   await deliverInbox(ctx, root, parent)
+  return { delivered: true }
 }
 
 // The idle handoff: everything pending becomes ONE prompt. A run whose last
@@ -842,13 +990,43 @@ export function slowWarning(label: string, fields: Record<string, string>, detai
     })
 }
 
-function renderInbox(items: readonly InboxItem[]): string {
-  const split = partition([...items])
+// The parent reads the head line of a message and little else (issue 8: two
+// settlements arrived behind a budget notice and were missed). Settlements come
+// first in their own order; notices and prompts follow. A message of more than
+// one item opens with an index line naming each one, so nothing can hide.
+export function renderInbox(items: readonly InboxItem[]): string {
+  const sorted = [...items].sort((a, b) => a.id.localeCompare(b.id))
+  const settlements = sorted.filter((item) => item.kind === "child.settled")
+  const rest = sorted.filter((item) => item.kind !== "child.settled")
+  const split = partition(rest)
   const blocks = [
-    batchNotify([...items]).text,
+    ...settlements.map((item) => item.text.replace(/\r?\n$/, "")),
+    batchNotify(rest).text,
     ...[...split.prompts, ...split.shutdown].map((item) => item.text.replace(/\r?\n$/, "")),
   ]
-  return blocks.filter((block) => block.trim().length > 0).join("\n\n")
+  const text = blocks.filter((block) => block.trim().length > 0).join("\n\n")
+  if (text === "" || sorted.length <= 1) return text
+  return `${inboxIndex([...settlements, ...rest])}\n\n${text}`
+}
+
+function inboxIndex(items: readonly InboxItem[]): string {
+  const summaries = items.map((item) =>
+    item.kind === "child.settled" ? settlementSummary(item.text) : `notice: ${firstLine(item.text, 80)}`,
+  )
+  return `[team] ${items.length} items: ${summaries.join("; ")}`
+}
+
+// "[team] w-1 (runner, T315) settled: done — attempt 5 reported." reads as
+// "w-1 (runner, T315) settled: done"; a first line without that shape is kept.
+function settlementSummary(text: string): string {
+  const line = firstLine(text, 200).replace(/^\[team\] /, "")
+  const dash = line.indexOf(" — ")
+  return dash < 0 ? line : line.slice(0, dash)
+}
+
+function firstLine(text: string, max: number): string {
+  const line = (text.split("\n")[0] ?? "").trim()
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
 // The one periodic tick of the team runtime: everything that must happen
@@ -857,12 +1035,35 @@ function renderInbox(items: readonly InboxItem[]): string {
 // mostly unnecessary, so it runs at most every policy.sweep.reconcileMs even
 // though a pass runs every tick.
 export async function sweep(ctx: Context, root: string): Promise<SweepResult> {
+  // A settlement written just before a restart survives on disk, but nothing
+  // prompted the parent: the first pass after boot delivers whatever is still
+  // pending. deliverInbox keeps its own guards, so a busy or held parent waits
+  // for its next idle as usual.
+  const first = !bootDrained
+  bootDrained = true
+  if (first) await deliverPendingInboxes(ctx, root)
   const dead = await reconcile(ctx, root)
   const now = Date.now()
   if (now - lastGcAt < policy.sweep.reconcileMs)
     return { dead, gc: { reaped: [], skippedDirty: [], orphansRemoved: [], removeFailed: [] } }
   lastGcAt = now
   return { dead, gc: await gc(root, policy, { background: true }) }
+}
+
+async function deliverPendingInboxes(ctx: Context, root: string): Promise<void> {
+  const entries = await Effect.runPromise(
+    io(() => readdir(path.join(root, "runs"))).pipe(
+      Effect.map((names) => [...names]),
+      Effect.catchCause(() => Effect.succeed([] as string[])),
+    ),
+  )
+  for (const entry of entries) {
+    if (entry.startsWith(".")) continue
+    const record = await loadRecordSafe(root, entry)
+    if (record === undefined || isTerminal(record.state)) continue
+    if ((await peek(root, record.id)).length === 0) continue
+    await deliverInbox(ctx, root, record).catch(() => undefined)
+  }
 }
 
 export interface SweepResult {

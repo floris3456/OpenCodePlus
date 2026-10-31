@@ -2,7 +2,6 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Registration } from "@opencode/plugin/effect/registration"
 import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import { Permission } from "@opencode/schema/permission"
-import { Session } from "@opencode/schema/session"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Exit, Option, Schema, Scope, Stream } from "effect"
 import path from "node:path"
@@ -14,8 +13,7 @@ import { gitRaw } from "./git.js"
 import { rowState, unattendedMessage, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { delegationTargets } from "./reach.js"
-import { attemptTransition, bySession, loadRun, newRunID, openChildren, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
-import { peek, teamInboxKey } from "./inbox.js"
+import { attemptTransition, bySession, newRunID, saveRun, startAttempt, updateRun, type RunRecord } from "./run.js"
 import { lock } from "./store.js"
 import { NO_REPOSITORY_PROGRAMS } from "./worktree.js"
 import {
@@ -43,9 +41,9 @@ const origin = { type: "plugin", name: "opencode.plus" } as const
 const DelegateDescription =
   "Start a run for a team member in its own worktree, from your last commit.\nEach call starts one run; to start several, make their calls together in one step. Its settlement wakes you with the report, so end your turn instead of polling."
 const FinishDescription =
-  "In a delegated run: report your task's outcome to your parent; it ends your turn. Once per attempt; corrections arrive as new messages. In the user's chat, answer the user instead."
+  "In a delegated run: report your task's outcome to your parent; it ends your turn. Once per attempt; corrections arrive as new messages. The summary's line limit is your member's, and a longer one is refused. In the user's chat, answer the user instead."
 const FollowupDescription =
-  "Send a correction, more scope, work or budget to your child. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
+  "Send a correction, more scope, work or budget to your child. Budget alone (with reason) needs no corrections row and prompts nothing. A child whose work has landed gets a new worktree at your HEAD and keeps its context."
 const IntegrateDescription =
   "Land a done child's commits on your branch: rebased onto your HEAD, verified (its checks, landed children's and your Brief's; only its own failures or new breakages block), then fast-forwarded."
 const CheckpointDescription = "Commit chosen files in your own worktree."
@@ -586,16 +584,18 @@ function runGatedInner<A>(
     if (run === undefined) {
       // Root-run bootstrap: a chat of a member whose "Start a team run from a
       // chat" row is on becomes that member's main run on its first team
-      // tool call, then continues through the normal gate. A member whose row
-      // is off hears E_NOT_ACTOR plus the row's own words; every other no-run
-      // call keeps the byte-exact E_NOT_ACTOR message.
+      // tool call, then continues through the normal gate. Every other no-run
+      // call says why it cannot act: a member whose row is off hears the row's
+      // own words, an agent of no enabled team (team tools can be on for any
+      // agent) that it is none.
       const member = table?.teamMembers.has(agent) === true
-      const start = member ? rowState(table, agent, "team_get_context", "bootstrap.chat") : undefined
-      if (member && start?.on !== true) {
+      if (!member) return yield* Effect.fail(new Tool.Error({ message: noRunError(name, input, notMemberWords(agent, table)) }))
+      const start = rowState(table, agent, "team_get_context", "bootstrap.chat")
+      if (start?.on !== true) {
         const words = start?.item.message ?? "you do not start a team run from a chat"
         return yield* Effect.fail(
           new Tool.Error({
-            message: `${notActorError(runIdOf(input) ?? "unknown").message} ${words.charAt(0).toUpperCase()}${words.slice(1)} (team_get_context → Team runs → Start a team run from a chat).`,
+            message: noRunError(name, input, `${words.charAt(0).toUpperCase()}${words.slice(1)} (team_get_context → Team runs → Start a team run from a chat).`),
           }),
         )
       }
@@ -705,57 +705,11 @@ function runGatedInner<A>(
         new Tool.Error({ message: `${result.error.code}: ${result.error.message}${acceptedLine}` }),
       )
     }
-    const open = name === "status" || name === "list" ? yield* Effect.promise(() => waitingOn(teamsDataDir(), owned.id)) : []
-    const waiting = open.length > 0 && !(yield* answersNews(pluginCtx, sessionID, String(toolCtx.messageID))) ? open : []
-    if (waiting.length > 0 && onlyAsksAbout(name, input as object, waiting)) return { output: { waiting, next: WAITING }, endTurn: "alone" }
+    // team_status and team_list are looks: they never end the caller's turn
+    // (owner, 2026-10-28: whether to wait is the agent's own decision).
     if (name === "finish" && owned.parent != null) return { output: result.value, endTurn: true }
-    return { output: result.value, ...(waiting.length > 0 ? { endTurn: "alone" as const } : {}) }
+    return { output: result.value }
   })
-}
-
-const WAITING = "Nothing new: these runs are still working. Your turn ends here; each settlement wakes you with its report."
-
-// A status or list call is a look, not a wait, in the first step after a
-// compaction (the summary is all the model knows of its runs) and in a step
-// that answers a person's message rather than a settlement. Live theorysnap
-// lead: after compaction its first call was team_status, the wait ended the
-// turn, and the owner's message went unanswered until a child settled.
-// Unreadable history keeps the wait.
-function answersNews(ctx: Context, sessionID: string, messageID: string): Effect.Effect<boolean> {
-  return Effect.suspend(() => ctx.session.context({ sessionID: Session.ID.make(sessionID) })).pipe(
-    Effect.map((messages) => {
-      const at = messages.findIndex((message) => message.id === messageID)
-      const before = at === -1 ? messages : messages.slice(0, at)
-      const previous = before.findLastIndex((message) => message.type === "assistant")
-      if (previous === -1) return true
-      return before.slice(previous + 1).some((message) => message.type === "user" && message.metadata?.[teamInboxKey] !== "inbox")
-    }),
-    Effect.catchCause(() => Effect.succeed(false)),
-  )
-}
-
-// A status or list call while a child is still working and no news waits in
-// the caller's inbox is a wait: it ends the turn, and the next settlement
-// wakes the caller. Leads said "I'm waiting" and called team_status or
-// team_list anyway: a step for nothing (b8, b9-s12). Asked with no filter it
-// gets this short answer instead of every run's status, which the context
-// would carry for nothing (b13-s13), and so does a status that names only
-// runs still working (b15-s12); a call that names another run or filters
-// gets what it asked for.
-function onlyAsksAbout(name: string, input: object, waiting: readonly string[]): boolean {
-  const keys = Object.keys(input)
-  if (keys.length === 0) return true
-  const runs = (input as { runs?: readonly string[] }).runs
-  return name === "status" && keys.length === 1 && runs !== undefined && runs.every((id) => waiting.includes(id))
-}
-
-async function waitingOn(root: string, runID: string): Promise<string[]> {
-  const run = await loadRun(root, runID)
-  if (run === undefined) return []
-  const open = await openChildren(root, run.id)
-  if (open.length === 0) return []
-  const delivered = new Set(run.attempts.flatMap((attempt) => attempt.inbox ?? []))
-  return (await peek(root, run.id)).every((item) => delivered.has(item.id)) ? open : []
 }
 
 function requireActor(
@@ -766,6 +720,22 @@ function requireActor(
   if (run === undefined) return Effect.fail(notActorError(runIdOf(input) ?? "unknown"))
   if (run.role !== agent) return Effect.fail(notActorError(runIdOf(input) ?? run.id))
   return Effect.succeed(run)
+}
+
+// A call from a chat that is no team run: what the tool needs (a team run)
+// and why this caller has none. A call that names a run says it is not that
+// run's owner.
+function noRunError(name: TeamTool, input: unknown, why: string): string {
+  const id = runIdOf(input)
+  const head = id === undefined
+    ? `E_NOT_ACTOR: team_${name} acts on a team run, and this chat is not one.`
+    : `${notActorError(id).message}`
+  return `${head} ${why}`
+}
+
+function notMemberWords(agent: string, table: PermissionTable | undefined): string {
+  if (table === undefined) return `Plus has not loaded its Instructions yet, so it cannot tell whether ${agent} is a team member; call again once the chat has started.`
+  return `${agent} is not a member of an enabled team, so it cannot start one: a team run starts in the chat of a member of an enabled team (its team_get_context → Team runs → Start a team run from a chat row on), or through that member's team_delegate.`
 }
 
 function notActorError(id: string): Tool.Error {

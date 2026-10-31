@@ -169,14 +169,17 @@ export const curatedRules: readonly CuratedRule[] = rawRules.map((rule) => ({
 }))
 
 // Subagent rules populate from the discovered agents at discovery time, so
-// names are never hardcoded: one rule per id matching exactly that id.
+// names are never hardcoded: one rule per id matching exactly that id. They
+// carry no scrub keywords: Core already lists only the subagents an agent may
+// run (core/src/tool/plugin/subagent.ts filters by permission), so a keyword
+// here would only cut prose that names an agent.
 export function idRules(tool: string, ids: readonly string[]): CuratedRule[] {
   return ids.map((id) => ({
     tool,
     id,
     label: id,
     patterns: [id],
-    keywords: keywordsForPattern(id),
+    keywords: [],
   }))
 }
 
@@ -215,10 +218,11 @@ const webActions: Readonly<Record<string, string>> = {
 // means the match is not part of a larger alphanumeric word: "git" does not
 // scrub "gitpush", but "git push" scrubs "run git push origin". Keywords come
 // only from keywordsForPattern (head plus subcommands), so "git push *"
-// scrubs "git push" lines, not every "git" line.
-export function scrubLines(text: string, keywords: readonly string[]): { text: string; hidden: number; preview: readonly string[] } {
+// scrubs "git push" lines, not every "git" line. `dropped` holds every dropped
+// line (the assembled view lists each one); `preview` keeps the first three.
+export function scrubLines(text: string, keywords: readonly string[]): { text: string; hidden: number; preview: readonly string[]; dropped: readonly string[] } {
   const active = keywords.filter((keyword) => keyword.length > 0)
-  if (active.length === 0) return { text, hidden: 0, preview: [] }
+  if (active.length === 0) return { text, hidden: 0, preview: [], dropped: [] }
   const lines = text.split("\n")
   const kept: string[] = []
   const dropped: string[] = []
@@ -229,7 +233,7 @@ export function scrubLines(text: string, keywords: readonly string[]): { text: s
     }
     kept.push(line)
   }
-  return { text: kept.join("\n"), hidden: dropped.length, preview: dropped.slice(0, 3) }
+  return { text: kept.join("\n"), hidden: dropped.length, preview: dropped.slice(0, 3), dropped }
 }
 
 export function containsWholeWord(line: string, keyword: string): boolean {

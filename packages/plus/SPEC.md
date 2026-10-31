@@ -118,22 +118,37 @@ registered the agent. The owner for those groups is the bare member id with
 the registered agent when one exists
 (`ctx.agents.find(a => a.id === member && a.scope === level) ?? find(a => a.id === member) ?? null`),
 so shared items (`agents === undefined`) populate for unregistered members
-while `system:role` appears only for registered ones. A member's rows address
-the same records as its Agents-catalogue rows (level + agent + item, and
-`address.agent` stays the bare agent id), so an edit made under Teams and one
-made under Agents are one record — but they resolve through different
-catalogues, so they carry their own ids under the member's owner path:
+while `system:role` appears only for registered ones. A member's own rows are
+stored with its team: its rows address the team-scoped node `L/A@T` (level +
+agent + item + `team`, `address.agent` stays the bare agent id), so an edit of
+one member changes neither the member of that name in another team nor the
+stand-alone agent of that name, and a rename or delete of the member or its
+team takes them along. They carry their own ids under the member's owner path:
 `group:<level>:<team>/:<member>:models|tools|base|system` for the four
 groups (with nested Tools subgroup ids extending those prefixes) and
 `item:<level>:<team>/:<member>:<itemId>` /
 `section:<level>:<team>/:<member>:<itemId>:<id>` for their rows, whose address
-carries `catalogue: "teams"` and `memberOf: { level, team }`. `memberOf` makes
-the row resolve with its own team exactly as apply resolves that member
-(`L/A@T` first, the team-scoped link of T, T's Teams entries), so a member of an
-enabled team never shows a same-id disabled team's link, and team-scoped
-overrides are in the displayed chain; the address's own node (what edits,
-resets and model activations write) stays the per-agent `L/A`. The flat `item:<level>:<member>:<itemId>` id
-still resolves: it is the stand-alone Agents-catalogue row for the same agent.
+carries `catalogue: "teams"` and `team: { level, team }`. The row resolves with
+its own team exactly as apply resolves that member (`L/A@T`, the team-scoped
+link of T, T's Teams entries), and its own node — what edits, resets and model
+activations write — is `L/A@T`. An ordinary member's chain does not read the
+stand-alone agent of its name at its own level (`L/A`); a project member still
+reads the Global agent of its name (`global/A`), as a project agent does
+(`ChainContext.members`, `model.ts` ownNodes). The flat
+`item:<level>:<member>:<itemId>` id still resolves: it is the stand-alone
+Agents-catalogue row of an agent of that name, another owner.
+
+Before 2.0.32-plus-1.3.31 (phase 4 of the Instructions fixes) a member's own
+rows were stored under its name (`L/A`). The load migration
+(`owner-records.ts` memberRowsPerTeam, run by `store.ts` load for each store
+file whose header lacks `members: "team"`) copies every member's per-name
+records (row edits, sections, models, rules, row links, its link) to
+`L/A@T` of each team at that level that has it, merged field by field under
+what `L/A@T` held (the order the member's chain read them), and leaves them at
+`L/A` for the stand-alone agent. `loadMigrated` saves it once with the header
+mark and logs `migrate.members`; it is not an undoable change (no undo
+journal entry): undoing it would leave members reading the new chain without
+their rows.
 `dialogs.tsx` `scopeFromModelsGroup` accepts the `<team>/:<member>` owner form
 and strips the `<team>/:` prefix so `a` on a member's Models group adds for the
 member id; for a member preset, a Teams entry member and a team's Special agent
@@ -663,7 +678,7 @@ export interface Item {
   readonly ruleId?: string
   /** Perm rule rows only: core wildcard patterns denied when the row is off. Only discovery ever sets it. */
   readonly patterns?: readonly string[]
-  /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern. Only discovery ever sets it. */
+  /** Perm rule rows only: whole-word scrub keywords derived via keywordsForPattern (none on a subagent row: Core already lists only the subagents an agent may run). Only discovery ever sets it. */
   readonly keywords?: readonly string[]
   /** Perm rule rows only: true when the row comes from a user RuleRecord. Only discovery ever sets it. */
   readonly custom?: boolean
@@ -787,19 +802,23 @@ export interface Resolved {
   without raising it on sibling sections.
 - Roll-up: `countReview(entries, prefix)` counts reviewable descendants under
   an address prefix so ancestors can display "N to review".
-- A value equal to what the row inherits is no edit (`inherited.ts`
-  `withoutInherited`): the memo's customizations drop a text, state or pin
-  (whole rows only) when no row that reads it resolves differently without
-  it, and a record left with nothing goes. Readers are known only for an
-  existing agent's own records (its level and the more specific ones, alone,
-  as a team member and in the Teams catalogue) and a shared Defaults row's
-  text and pin; preset, team-scoped, pattern-entry and orphan records stay as
-  stored. What reaches the model is unchanged. Writes store records in that
-  form (`storedRecords`): the TUI's `persist` sends its whole set so, and a
-  tool write compares both sides so, which stores no equal value and leaves
-  other rows' stored copies alone (a tool may not touch a protected agent's
-  rows). On/off has two values, so a change above can only meet an override
-  that differed from it: new writes never leave a state or pin to review.
+- Own changes win. A value set on a row is stored and read as that row's own,
+  also when it equals what the row inherits; only `reset` makes the row follow
+  again (its status names what it follows now). The memo reads records as
+  stored, and a write sends only the records its op changed: a preset,
+  Defaults or upstream change never removes or overrides a linked row's own
+  record, also when it makes the two equal (the own state or pin is then to
+  review, since the value above changed). Records an earlier release stored
+  equal to their inherited value count as own values.
+- Copies are the exception (`resolve-memo.ts` `withoutCopiedInherited`,
+  `inherited.ts` `withoutInherited`): of the records a paste or a duplicate
+  writes, a text, state or pin (whole rows only) is not stored when no row
+  that reads it resolves differently without it, so the copy's rows keep
+  following what they inherit. Records the copy did not write stay as they
+  are. Readers are known only for an existing agent's own records (its level
+  and the more specific ones, alone, as a team member and in the Teams
+  catalogue) and a shared Defaults row's text and pin; preset, team-scoped,
+  pattern-entry and orphan records are stored as copied.
 
 ```ts
 export interface ThreeWay {
@@ -877,8 +896,8 @@ export function modelRuntimeScope(input: { scopes: Scopes; level: Level; owner: 
   replaces a target's tombstone (re-adding clears the hide); `hasModelRecordAt`
   counts live records only.
   `modelRuntimeScope` names the chain a row's agent resolves through: the
-  address itself for shared and team-scoped rows (ordinary members carrying
-  `memberOf` use their team's tier too), `runtimeScope` for an
+  address itself for shared and team-scoped rows (ordinary members use their
+  team's tier too), `runtimeScope` for an
   agent's own level (a native built-in's Defaults row runs at Project). The
   TUI marks the runtime winner active (`badges.activeFrom` when it sits at
   another level) and carries `badges.effective` on the group when the winner
@@ -1037,12 +1056,12 @@ memo behind the tree/query/ops, the tools' `read`, and the TUI state and
 inspector (`snapshot.ts` `contextOfSnapshot`, `memoInputOf`).
 
 A member's link carries its team (`L/A@T`). The tree's member rows carry
-`memberOf` (the row's own team), so their chain is apply's team-scoped chain
-for that team; an address without a team or `memberOf` in the Teams catalogue
-reads a link of `L/A@T` for any team `memberTeams` names. Both pick
-the nearest link among the member's own nodes with the team-scoped node first:
-`L/A@T`, then `L/A`, then `global/A` — a Global link of the same id never
-beats the member's team-scoped link.
+`team` (the row's own team), so their chain is apply's team-scoped chain for
+that team; an address without a team in the Teams catalogue reads a link of
+`L/A@T` for any team `memberTeams` names. An ordinary member's own nodes are
+`L/A@T` (then `global/A` for a project member); a team's Special agent and a
+member of a team the context does not list keep `L/A@T`, `L/A`, `global/A`. A
+Global link of the same id never beats the member's team-scoped link.
 
 Apply installs nothing without records only while every agent is *plain*
 (no Defaults entry exists, no link names it, and its fallback is upstream);
@@ -1285,9 +1304,11 @@ stores the candidate AND makes it the active model at that level for that
 owner, exclusively (the previously active row at the same level/agent stops
 being active) in one revision and one log line. `rule.add` derives `keywords` through
 `keywordsForPattern` when omitted and matches existing rules by `(tool, id)`
-globally, not per level/agent. `rule.remove` matches by `(tool, id)` only:
-`level`/`agent` are carried but not part of the lookup. `rule.update`
-upserts a `RuleRecord` by `(tool, id)`, so editing a curated or catalog row
+within its owner (level, agent, team, catalogue): another owner may define
+its own rule with the same tool and id. `rule.remove` removes the addressed
+owner's own definition. `rule.update` edits the owner's own definition or,
+when the row reads an inherited one (another level's, a curated or catalog
+row), writes one for this owner, so editing a curated or catalog row
 materialises a custom override of the same identity; blank `keywords`
 derive server-side via `keywordsForPattern` like `rule.add`. `message` is
 trimmed, a blank one clears the stored text, and an omitted one on
@@ -1304,15 +1325,17 @@ semantics, not an unconditional compatibility guarantee. `rule.add`,
 the protected-agent refusal is decided at the PlusApi boundary from the
 request's `actor`, so a tool-originated write is refused whichever surface
 forwarded it (tools, the RPC, or a direct API call), while a missing actor —
-the TUI — is never refused. Protection follows the row's effective owner: on
-an update the matched record's owner, not the caller's row address; on an
-add the requested `agent`. The declared error is `agent.protected` with
+the TUI — is never refused. Protection follows the owner the write lands on:
+the addressed owner (an update of an inherited rule writes that owner's own
+definition); on an add the requested `agent`. The declared error is `agent.protected` with
 `{ agent, id?, reason }`, and the reason text is the same
 `agent.protected: row belongs to protected agent "<id>"` the tools raise.
-Deleting an item is a write to other agents' rows too: `rule.remove` refuses
-a tool actor before the rule is saved when the item-record cascade would drop
-a customization or split owned by a protected agent, even when the removed
-rule itself is shared or owned by someone else. `skill.delete`,
+Removing the last definition of a tool and id deletes the item, and with it
+every owner's customizations and splits of it (so re-adding the rule starts
+from the rule's own state); while another owner's definition remains, the
+item and the other owners' rows stay. That cascade is a write to other
+agents' rows too: `rule.remove` refuses a tool actor before the rule is saved
+when it would drop a customization or split owned by a protected agent. `skill.delete`,
 `base.delete` and `mcp.remove` guard their cascades the same way before the
 file or the project config entry is removed. Their RPC inputs carry no
 `actor`, so their boundary always normalises to the TUI and the cascade
@@ -1433,12 +1456,20 @@ exactly as apply does (`apply.ts` `resolvedFor`), over the agents and context
 a publish applies (`index.ts` `publishChain`): a team member, and an enabled
 team's Special agent, resolves with its team.
 
+`dropped` lists every line a rule cut from a tool or catalog description, with
+`where` (`tool:<id>` or `catalog:<id>`), `rule` (the perm item id whose keyword
+matched, first match wins) and `line`. It is omitted when nothing was dropped,
+and holds nothing for system text or skills: those are never scrubbed. As in
+the live request, a description that would be emptied entirely keeps its
+original text, and nothing is listed for it.
+
 ```ts
 export interface Assembled {
   readonly agent: string
   readonly system: readonly string[]
   readonly tools: readonly AssembledTool[]
   readonly skills: readonly { readonly id: string; readonly content: string }[]
+  readonly dropped?: readonly { readonly where: string; readonly rule: string; readonly line: string }[]
 }
 export interface AssembledTool {
   readonly id: string
@@ -1719,6 +1750,11 @@ still admitted, and the line lets the delegator redirect the work.
 Followup returns `{ attempt, state, next }`, with
 `next: "End your turn: its settlement wakes you."` for admitted, queued and
 budget-only calls. Identical request IDs return the stored output unchanged.
+A call that sends the child text (`prompt`, `paths` or `rebase`) is refused
+with `E_CONTEXT` when the child's latest step holds more context than the
+member's `limits.context` row (default 400 000, `TEAM_CONTEXT_TOKENS`), naming
+the run, its size, the limit and `team_delegate` of a fresh run with the report
+and branch; a budget-only call still applies.
 Session/worktree paths, Brief paths, budgets, model provenance and hashes stay
 in durable run data rather than these admission responses.
 
@@ -1882,7 +1918,7 @@ refused, a requirement demands nothing, a bound is absent.
 | former hidden rule | row now (id, category → label) | read for |
 | --- | --- | --- |
 | every team call needs a kind; caller/target must name one | gone: members are the enabled teams' agents | — |
-| team tool ceiling per kind | `tool:team_<tool>` (the tool rows; off installs the core deny `team.<tool>` `*` for a member, direct and Code Mode alike) | the caller (tool plans, Code Mode denies, core deny) |
+| team tool ceiling per kind | `tool:team_<tool>` (the tool rows; off installs the core deny `team.<tool>` `*` for any agent, direct and Code Mode alike) | the caller (tool plans, Code Mode denies, core deny) |
 | root-run bootstrap only for planner/orchestrator/build | `perm:team_get_context:bootstrap.chat`, Team runs → Start a team run from a chat | the calling member |
 | delegated planner may not delegate | `perm:team_delegate:access.delegated`, Access → Delegate from a delegated run | the caller |
 | implementer target needs `scope.paths` | `perm:team_get_context:accepts.scope-paths`, Briefs it accepts → Scope paths for a commit (`E_PATHS`) | the target |
@@ -1892,6 +1928,9 @@ refused, a requirement demands nothing, a bound is absent.
 | reviewer cannot be followed up | `perm:team_get_context:accepts.followup`, … → Corrections by followup (off: `E_NO_FOLLOWUP`) | the child |
 | Runs reach per kind | `perm:team_<tool>:runs.descendants`, `runs.others` (Runs) for followup, stop, status, diff, list; shipped off | the caller |
 | implementer must commit | `perm:team_finish:requirements.clean`, Requirements for done → Worktree committed before done (`E_DIRTY`), shipped off | the finishing member |
+| a report's summary length | `perm:team_finish:limits.summary`, Limits → Report summary (lines), 15 shipped, a scout 20; `E_SUMMARY` names it | the finishing member |
+| a wall at delegation | `perm:team_delegate:limits.wall`, Limits → Longest wall at delegation (minutes), 480 shipped; `E_TOO_LONG` names it; `brief.wall` sets the child's budget | the caller |
+| a budget raise to a child that takes no corrections | the same `accepts.followup` row, which a budget-only `followup` (no prompt) ignores | the child |
 | read secrets | read → Files rows `keys`, `credentials`, `opencode-config` (Provider config and service passwords), `databases`, and the curated `perm:read:env` | core rules |
 | subagent, task, question, shell | `tool:subagent` (task is its legacy action), `tool:question`, `tool:shell` | tool plans |
 | external directories | read → Where → `where.external` "Outside this checkout, for every tool (external_directory)", a rule row denying `external_directory *` while off, beside Where's `outside` (read), edit's Where and glob/grep Search roots; the on allow rows of read's Where (Temporary directories) stay open for it (`apply.ts` `externalAllowList`, the shell allow-list's shape) | core rule / tool hook |
@@ -2011,13 +2050,17 @@ member of an enabled team (`policyMembersOf` keeps every one):
 The other catalog rows of the team tools (the per-tool table under Permission
 rules) are read by the same handlers: `team_delegate` Limits — Children
 working at once 4, Delegation depth 3, Brief size 6000 characters, Attached
-brief file 8000 characters, Live team runs in total 12, all on (`E_BOUNDS`,
-`E_ROLE`, `E_TOO_LONG`; an off row removes the bound; an attachment over the
-attachment limit is named by path only, must be committed at the child's base
-(`E_PATHS` otherwise), and does not count toward the brief limit); `team_followup` Limits (Followups per child 5, shipped off;
-`E_ROUNDS`); `team_finish` Requirements for done (Assigned checks pass at HEAD,
+brief file 8000 characters, Live team runs in total 12, Longest wall at
+delegation 480 minutes, all on (`E_BOUNDS`, `E_ROLE`, `E_TOO_LONG`; an off row
+removes the bound; a `wall` above the wall row is refused by it, `E_TOO_LONG`
+naming `limits.wall`; an attachment over the attachment limit is named by path
+only, must be committed at the child's base
+(`E_PATHS` otherwise), and does not count toward the brief limit); `team_followup` Limits (Followups per child 5, shipped off,
+`E_ROUNDS`; Child context limit 400000 tokens, on, `E_CONTEXT`; Budget reminder
+interval 15 minutes); `team_finish` Requirements for done (Assigned checks pass at HEAD,
 on, `E_DIRTY` before checks on uncommitted work, otherwise `E_CHECKS_RED`; A commit deliverable has at least one commit, off,
-`E_NO_COMMIT`); `team_integrate` Outcomes it lands (done, done_with_concerns;
+`E_NO_COMMIT`) and Limits (Report summary lines, 15 shipped, read for the
+member reporting; `E_SUMMARY`); `team_integrate` Outcomes it lands (done, done_with_concerns;
 `E_NOT_DONE`) and Branches it lands on (Protected branches `main`, `master`,
 `v2`, `release*`, shipped on; off refuses landing while the
 parent's branch matches, `E_BRANCH`); `team_get_context` Contents (Sibling
@@ -2125,20 +2168,23 @@ then refusals. A role row's own order — `deny *`, the allowed paths, the
 never-editable state — is that order, so it survives unchanged, and a role's
 `allow shell *` can no longer undo a shell row that is off.
 
-Team tools appear only under the Teams catalogue's `Tools` inventory; the
-Agents catalogue never lists them. An agent that is not a member of an enabled
-team receives one wildcard deny, `{ action: "team.*", resource: "*", effect:
-"deny" }`, which is the shape core drops a tool for
-(`packages/core/src/tool.ts` `whollyDisabled` matches the action by wildcard
-against `options.permission`). `E_NOT_ACTOR` is therefore never the answer to
-"why can't build call this": `build` never sees a `team_*` tool at all, unless
-it is a member of an enabled team. A member's id says nothing about what it
-may do. A member whose `tool:team_<tool>` row resolves off gets one more
-refusal, `{ action: "team.<tool>", resource: "*", effect: "deny" }` on the
-tool's own permission (`apply.ts` `teamToolDenials`), whether the tool is
-direct (hidden from the model by the tool plan) or Code Mode (denied by its
-registry id): hiding is not refusing, and the registry-id deny never matches
-`team.<tool>`.
+Team tools are rows like any other, for every agent: both the Agents and the
+Teams catalogue list them. A team member's `tool:team_<tool>` row resolves
+through its chain as before (its member preset ships today's team tool set).
+A stand-alone agent's resolves off unless something turns it on — its own row,
+Defaults, or a preset it is linked to; a Native (OpenCode) preset ships nothing
+for it (`model.ts` `standAloneTeamTool`), so an upgrade gives `build` no team
+tool. There is no namespace-wide deny: every agent whose `tool:team_<tool>` row
+resolves off gets one refusal, `{ action: "team.<tool>", resource: "*", effect:
+"deny" }`, on the tool's own permission (`apply.ts` `teamToolDenials`), which
+is the shape core drops a tool for (`packages/core/src/tool.ts`
+`whollyDisabled`), whether the tool is direct (hidden from the model by the
+tool plan) or Code Mode (denied by its registry id): hiding is not refusing,
+and the registry-id deny never matches `team.<tool>`. A team's Special agent
+is no member and answers like a stand-alone agent. An agent's id says nothing
+about what it may do. A stand-alone agent given a team tool that needs a run
+hears `E_NOT_ACTOR: team_<tool> acts on a team run, and this chat is not one.
+<agent> is not a member of an enabled team, so it cannot start one: …`.
 
 A refusal renders as `${code}: ${message}`. When the error carries `accepted`,
 one more line follows: `accepted: ${JSON.stringify(accepted)}`. For example,
@@ -2154,7 +2200,11 @@ accepted: ["packages/plus/src/*","packages/plus/test/*"]
 `finish` handlers through `validateChecks` / `validateSummary`, not by schema
 filters, and both carry `accepted`.
 
-Report summaries allow 40 lines for every deliverable, including commits.
+A report summary's line limit is the reporting member's own `team_finish`
+Limits → Report summary row (15 shipped; a scout ships 20; a role outside the
+shipped presets reads its default, fixer-god 25). `team_finish` loads the run
+first and refuses a longer summary with `E_SUMMARY`, naming the count, the
+limit, the role and `team_finish limits.summary`.
 A `commit` Brief is refused with `E_ROLE` if the target member's resolved
 `tool:team_checkpoint` row is off. The refusal names the target and lists
 reachable members whose checkpoint tool is on (`accepted: { roles: [...] }`),
@@ -2164,7 +2214,7 @@ Error codes carrying `accepted` today:
 - `E_PATHS`: valid scope paths array (`["packages/plus/src/*","packages/plus/test/*"]`); for a target whose Plan files only row is on, `<target> accepts plan files only: every scope path must match one of its patterns [<patterns>]; outside them: [<paths>].` with the row's patterns
 - `E_ROLE`: the first member open to the caller (`{"role":"<member>"}`), present only when one is. The message ends in what is open — `You may delegate to: <members>.` or `No member is open to you for delegation.` — after `<agent> may not delegate.`, `"<role>" is not a member of an enabled team.` or `<agent> may not delegate to "<role>".`. A delegated run whose Delegate from a delegated run row is off gets `<agent>: a delegated run of yours may not delegate further; finish with needs=[{kind:"decision",...}] instead` with `"report blocked with needs=[{kind:\"decision\"}]"`. The depth bound keeps `Depth limit <n> reached; this run cannot delegate. Report blocked with needs=[{kind:"decision",...}] instead.` with `"report blocked with needs=[{kind:\"decision\"}]"`.
 - `E_CHECKS`: valid check definition (`{"id":"plus-tests","argv":["bun","test","packages/plus/test/model.test.ts"]}`)
-- `E_SUMMARY`: summary length guidance (`"a summary of ≤40 lines"`)
+- `E_SUMMARY`: the member's line limit (`"a summary of ≤<limit> lines"`)
 - `E_BRIEF`: the target's A check (`{"checks":1}`), Paths per brief (`{"paths":<n>}`) or Checks per brief (`{"checks":<n>}`) row refuses the brief: `<target> needs at least one check (Briefs it accepts → A check).`, `<target> accepts at most <n> scope paths per brief (Brief limits → Paths per brief); this brief has <m>.`, `<target> accepts at most <n> checks per brief (Brief limits → Checks per brief); this brief has <m>.`
 - `E_REASON`: the target's A reason row is on and the brief has none: `<target> needs a reason: say why this member and not another (Briefs it accepts → A reason).` with `{"reason":"3 independent packages, each needs its own workers"}`
 - `E_NEEDS`: valid needs array (`[{"kind":"path","detail":"packages/core/src/x.ts is outside scope; needed to add the export"}]`)
@@ -2173,8 +2223,9 @@ Error codes carrying `accepted` today:
 - `E_REPO`: caller's repository key
 - `E_DIRTY`: uncommitted files object (`{"files":[...]}`)
 - `E_BOUNDS`: delegation and followup both name `In-flight limit <n> reached (<runs>).` or `Live team runs limit <n> reached (<runs>).`, then ask the caller to end its turn and retry after a run settles. `<n>` is the caller's Children working at once / Live team runs in total row. Both count only slot-holding team member runs, excluding `kind: "main"` user chats and idle runs with terminal attempts; a session id and a live `starting|working|idle|blocked_input` state are required. The total remains install-wide across projects. Delegation's accepted guidance is `"end your turn and delegate after a child settles"`; followup's is `"retry after a run settles"`.
-- `E_NO_FOLLOWUP`: `followup` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup).` with `"delegate a fresh run"`
+- `E_NO_FOLLOWUP`: a `followup` carrying a `prompt` to a child whose Corrections by followup row is off (the reviewer preset's): `<child> takes no corrections by followup: delegate a fresh run with team_delegate and point it at the previous report (Briefs it accepts → Corrections by followup). A budget raise alone is accepted: call team_followup with only budget and reason.` with `"delegate a fresh run"`. A call carrying only `budget` (and its `reason`), `paths` or `rebase` is not a correction: it applies without prompting the child and is not refused by the row.
 - `E_ROUNDS`: `"team_stop and delegate a fresh run"` once a child has had as many corrections as its Followups per child row allows
+- `E_CONTEXT`: `"team_delegate a fresh run"` when a followup that sends text (`prompt`, `paths` or `rebase`) targets a child whose latest step holds more context than the caller's Child context limit row (default 400000); the message names the run, its token size, the limit, `team_followup limits.context`, and the fresh run's Brief carrying this run's report and branch
 - `E_BRANCH`: `"a task branch"` when the parent's branch matches the Protected branches row while that row is off
 - `E_NO_COMMIT`: `{"status":"blocked","needs":[{"kind":"info","detail":"why nothing was committed"}]}` for `done` on a commit deliverable with no commit since the base, while its row is on
 - `E_PERMISSION` (from `team_check`): `{"status":"blocked","needs":[{"kind":"check","detail":"<check id>"}]}` when the caller's Checks it may run row for that check's family is off
@@ -2220,6 +2271,10 @@ New input and output fields:
   via `integrate` or GC reaping), or is stopped with uncommitted/tracked modifications.
   `status` reports the record's value (`worktree` defaulting to `"present"`) next to
   its live `dirty` git read, so the registered `team_status` and `team_list` agree.
+- `status` carries `patch: { file, files, bytes, skipped } | null` — the last
+  attempt's saved uncommitted work (see Uncommitted work) — and `notifyError:
+  string | null`, why the parent was not told of the last settlement (a dead or
+  terminal parent, or a failed inbox write).
 
 ### Audit chain and permission gating (`teams/audit.ts`, `teams/tools.ts`)
 
@@ -2301,12 +2356,41 @@ unchanged. For turn-ending events (`session.execution.succeeded`,
    recovered adds `Provider errors: the host retried … (last: <type>
    (<status>))` before its `next:`. An idle parent is prompted with it
    immediately; a working parent receives it through its own idle handoff. An
-   attempt kept open is not settled, so nothing is told;
+   attempt kept open is not settled, so nothing is told. `notified` is written
+   only after the `put` of the item succeeded: a failed write leaves it unset
+   and the next idle retries, recording `notifyError`; a parent that is dead or
+   terminal also records `notifyError: "parent <id> is <state>"` on the child's
+   attempt instead of dropping the settlement. `status` reports it. A quota answer with a
+   readable reset instead settles `blocked` (see **Quota cooldown** below);
 4. drains the inbox with `inbox.take` into ONE prompt and moves the run
    `idle → working`: a new attempt (trigger `followup`) when the last attempt
    has ended, the same attempt when it is still open. Items already recorded
    on an attempt's `inbox` list (a followup that was delivered immediately to
    an already idle child) are consumed without being prompted again.
+
+### Context: the team default and the Brief re-send (`compaction/rows.ts`, `teams/brief-resend.ts`, `index.ts`)
+
+A team member — the lead included — condenses at `TEAM_CONTEXT_TOKENS`
+(400 000, `teams/schema.ts`) when no Compaction › Input row sets a threshold
+for its (agent, model): `decideCompaction` receives `team: true` from
+`decideCompactionFor` when its cached agent source carries a team, and
+`inputThresholdOf` answers the same value for `compaction.window`, so the
+footer's context % measures a member against it. An explicit row at any level
+still decides and `off` still means no early trigger; a non-team agent keeps
+core's window.
+
+A child's Brief is its first user message, and core's compaction summarizes
+everything older than its kept tail. On the durable `session.compaction.ended`
+event (which carries `sessionID`, also published for manual compaction) Plus
+looks the session up with `bySession`; for a delegated run (`kind: "w"`, never
+the lead's `main-*`) that is `working` or `idle` with an open attempt, it sends
+`runs/<id>/brief.md` again whole as one steer,
+`"[team] Your Brief, whole again after the condense (the summary above may
+shorten it):\n\n" + brief`. A stopped, settled or missing run, and a run with no
+`brief.md`, gets nothing. The delivery is remembered per (run, compaction event
+id) in the process, and the steer's `SessionMessage.ID` is a hash of that pair,
+so a replay after a restart reuses the inbox id and core treats it as the same
+admission.
 
 **Waiting on children.** There is no `team_wait`: a parent ends its turn and a
 settling child wakes it (step 3 of the child's own pass). A turn that ends
@@ -2326,7 +2410,52 @@ once, unless that parent is the run that stopped it.
 
 `InboxKind` gains `child.settled`; `partition` and `batchNotify` classify it
 with `notify` and `system`, so a batch of settlements reaches a parent as one
-synthetic text.
+synthetic text. `renderInbox` puts every `child.settled` block first, in its
+own order, before notices, prompts and shutdown items; a message of more than
+one item opens with one `[team] <k> items: …` index line naming each one, then
+renders each item's text unchanged.
+
+**Uncommitted work.** An attempt that settles with no `report-<n>.json`
+(`no_report`, `failed`, `interrupted`, a stop, or a session that is gone
+through `reconcile`) saves the worktree first, before the settlement text is
+rendered: `teams/git.ts` `savePatch(directory, file)` writes
+`<root>/runs/<run>/uncommitted-<n>.patch` — `git diff --binary HEAD` plus one
+`git diff --binary --no-index /dev/null <path>` per untracked file, skipping
+`node_modules/` and files over 5 MB, capped at 50 MB, with every skipped path
+listed. It never stages or stashes: the index and the worktree are unchanged.
+`AttemptRecord.patch` holds `{ file, files, bytes, skipped }` and `status`
+reports it; the settlement gains `Uncommitted work saved: <file> (<files>
+files, <bytes> bytes[, skipped: …]). Apply it in a worktree with git apply
+--index <file>, or delegate a fresh run that starts from it.` A clean worktree
+saves nothing and adds no line; a failing save adds `Uncommitted work: could
+not be saved (<message>).` and the settlement still goes out.
+
+**Delivery after a restart.** The first `sweep` pass after the plugin starts
+delivers pending inbox items (`deliverPendingInboxes`): every non-terminal run
+with a non-empty inbox gets `deliverInbox`, with its existing guards (a busy or
+held parent waits for its next idle). `resetSweepState` clears the one-shot
+boot flag for isolated test roots.
+
+**Quota cooldown.** A quota 429 is neither a broken run nor a briefly
+unavailable model: the provider answers again at a named reset, so
+`settleAttempt` reads it with the cliproxyapi parser (`quotaReset`,
+`packages/cliproxyapi/src/quota-reset.ts`; both plugins share it rather than
+keeping a copy), records the attempt's `blockedUntil`, writes the provider's
+cooldown to `<teams root>/cooldowns.json` (`{ [key]: { untilMs, text, error,
+at, run } }` through `atomicJson`, expired entries dropped on the next write)
+and the settlement reads `settled: blocked — <key> quota; resets at <text>. Not
+retried.` followed by the usual `Error:` line and `next: delegate the Brief to
+a member on another provider, or follow up after the reset.` The key is the
+run's `loadedModel ?? requestedModel` as `provider/model`, or `provider/vendor`
+when the model id names a vendor first (`cliproxyapi/commandcode/deepseek/
+deepseek-v4.1-flash` → `cliproxyapi/commandcode`): one CPA account's quota is
+not one model's. `team_delegate` refuses `E_COOLDOWN` when the member's active
+model is on a cooling provider, before any worktree is created, and skips the
+check when no active model is known; `team_followup` refuses the same way only
+for a call that would prompt that child (`prompt`; a budget or paths change is
+allowed). `team_status` adds the run's active `cooldown` and its
+`blockedUntil`. `packages/cliproxyapi/src/outage.ts` ends a step at once when
+such a quota resets more than two minutes out, even if Core said retry.
 
 `lifecycle.sweep(ctx, root)` is the one periodic tick: `startSweep` runs it at
 `policy.sweep.tickMs` (default 2000 ms) forked on the plugin scope, so it is
@@ -2462,6 +2591,30 @@ the field, and `removed` is terminal for it.
   their project directory through `activationDirectory`, so a child worktree's API sees and edits the
   project its run recorded.
 
+### LFS content in member worktrees (`teams/worktree.ts`, `teams/api.ts`, `teams/brief.ts`, `teams/run.ts`)
+
+A member's **LFS files in its worktrees** row (`setting:lfs`, empty/`full` or `pointers`)
+decides what `delegate`'s `git worktree add` puts on disk:
+
+- Empty or `full` (the default, and every record written before the row existed) runs the
+  repository's own smudge filter, so every LFS file arrives as its content.
+- `pointers` runs `git worktree add` with `GIT_LFS_SKIP_SMUDGE=1` **and**
+  `-c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false`. Both are needed:
+  a repository carrying `filter.lfs.process` (what `git lfs install` writes) ignores the
+  variable, and the empty process/smudge filters are what leave the committed pointer text.
+  The worktree is otherwise ordinary: the index matches the committed blobs, so `git status
+  --porcelain` is empty and a `team_checkpoint` commit neither re-smudges nor shows an LFS file
+  as modified. Fetched content is the run's own business: `git lfs pull --include <path>` in the
+  worktree.
+- `delegate` records `lfs: "pointers"` on the child's `run.json` only when it created the
+  worktree that way, and its Brief gains an Environment section naming the worktree directory,
+  plus one line that its LFS files are pointers and how to fetch one. Landing and merge
+  worktrees (`teams/merge.ts`) never set it; a landed child reopened by `team_followup` gets an
+  ordinary full-content worktree.
+- `lfsRowsOf` (`instructions/apply.ts`) resolves the row down the member's chain at publish;
+  `publishFresh` keeps the resulting member ids in `PlusState.lfsPointers`, which `delegate`
+  reads for the role being delegated to.
+
 ## §11 Tools, log, and query
 
 Agent-facing Code Mode namespace `instructions` (`teaching.ts` pins the
@@ -2477,16 +2630,18 @@ export type ToolResolve = "keep" | "take" | "edit"
 // query.ts rowTypes, the filter's `type:` values.
 export type RowType = "agent" | "team" | "member" | "preset" | "entry" | "tool" | "param" | "rule" | "skill" | "system" | "base" | "model" | "setting" | "compaction" | "mcp" | "section" | "group"
 // find's parameters compile to filter terms (each value quoted whole) before where's own.
+// A list matches any of its values; inside one string a comma separates values too.
+type OneOrMore<T> = T | readonly T[]
 export interface FindFilter {
-  readonly agent?: string
-  readonly team?: string
-  readonly level?: Level
-  readonly type?: RowType
-  readonly name?: string
+  readonly agent?: OneOrMore<string>
+  readonly team?: OneOrMore<string>
+  readonly level?: OneOrMore<Level>
+  readonly type?: OneOrMore<RowType>
+  readonly name?: OneOrMore<string>
   readonly in?: string
   readonly state?: "on" | "off"
   readonly text?: string
-  readonly is?: "review" | "changed" | "hidden" | "orphaned"
+  readonly is?: OneOrMore<"review" | "changed" | "hidden" | "orphaned">
   readonly where?: string
 }
 export interface FindInput extends FindFilter {
@@ -2497,12 +2652,25 @@ export interface FindInput extends FindFilter {
 }
 // The rows an operation acts on (eachRow): one id, a list, or what a filter matches; never both.
 export interface Rows { readonly id?: string | readonly string[]; readonly find?: FindFilter }
+// Every write (set, edit, reset, delete, split, create, move, link, batch) takes these.
+export interface WriteOptions { readonly dryRun?: boolean; readonly verbose?: boolean }
+// What a write over several rows answers (eachStep).
+export interface Many {
+  readonly status: string // counts, and "written once: revision …" when it wrote
+  readonly changed: readonly string[]
+  readonly already: number // rows that were already so
+  readonly notDone: readonly { readonly id: string; readonly reason: string }[]
+  readonly dryRun?: true
+  readonly revision?: number
+  readonly globalRevision?: number
+  readonly results?: readonly ({ readonly id: string; readonly output: unknown } | { readonly id: string; readonly error: string })[] // verbose
+}
 export interface ReadInput extends Rows { readonly view?: ToolView }
-export interface EditInput extends Rows { readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
+export interface EditInput extends Rows, WriteOptions { readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
 // A preset as tools name it: "<id>" (agent preset), "<team>/<member>" (member preset), or the RPC PresetRef.
 export type PresetInput = string | PresetRef
-export interface SetInput extends Rows { readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
-export interface ResetInput extends Rows {}
+export interface SetInput extends Rows, WriteOptions { readonly like?: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
+export interface ResetInput extends Rows, WriteOptions {}
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
   | { readonly kind: "agent"; readonly id: string; readonly scope?: "project" | "global"; readonly preset?: PresetInput }
@@ -2525,7 +2693,15 @@ export type CreateInput =
 // beside them. A create whose written row is not in the tree fails with
 // create.failed and never returns a hand-formatted id.
 export interface CreatedRow { readonly id: string; readonly item: string }
-export interface DeleteInput extends Rows { readonly confirm: true }
+export interface DeleteInput extends Rows, WriteOptions { readonly confirm: true }
+// create: id and agent also take lists (one create each); kind team also takes
+// members: (string | { id, preset? })[], created right after the team.
+// move: id takes a list; link: id and target take lists (every id × every target).
+export type BatchInput =
+  | ({ readonly changes: readonly ({ readonly op: "set" | "edit" | "reset" | "delete" | "create" | "move" | "link" | "split" } & Record<string, unknown>)[] } & WriteOptions)
+  // The TUI's multi-select form, unchanged: answers { applied, skipped, failed }.
+  | ({ readonly op: "set" | "edit" | "reset" | "split" | "create" | "delete" | "move" | "link"; readonly id: string; readonly selected: readonly string[]; readonly input: Record<string, unknown> } & WriteOptions)
+export interface UndoInput { readonly ts?: string; readonly dryRun?: boolean }
 ```
 
 - `find` returns `{ total, columns, rows }`, one `id | badges | from` line
@@ -2542,22 +2718,50 @@ export interface DeleteInput extends Rows { readonly confirm: true }
 - `read`, `set`, `edit`, `reset` and `delete` take the rows as `id` (one row
   id, answered exactly as before, or a list) or as `find` (`find`'s filter
   parameters, no paging), never both (`tools.ts` `eachRow`). A list or a
-  filter runs the operation once per row, in order, each against the store
-  as the previous one left it, and answers `{ total, failed, results }` with
-  one `{ id, output }` or `{ id, error }` per row: a row that refuses does not
-  stop the rest, and every row that succeeded stays saved. A filter selects
+  filter runs the operation once per row, in order, against one staged store
+  (`instructions/staged.ts`: each row's snapshot carries the rows before it)
+  and writes once at the end: one store revision per store, one log entry
+  per store listing every row in `rows`, one publish. A write answers `Many`
+  (counts, `changed`, `already`, `notDone` with each reason; `verbose` adds
+  each row's own answer); `read` still answers `{ total, failed, results }`.
+  A row that refuses does not stop the rest; if the one write refuses, every
+  row it carried is in `notDone`. An op that writes outside records (an
+  agent, skill or MCP file, a team, a link) first writes what is staged, then
+  runs as itself; a dry run refuses it. `dryRun` stages the same way and
+  writes nothing; a single id with `dryRun` answers its own shape with
+  `dryRun: true`. A filter selects
   what `find` lists, over every page, except that agents' copies are not
   folded (`foundRows`): without `agent` or `team` it reaches each agent's copy
-  and the shared Defaults rows, the shared rows first, so a copy changed after
-  its shared row inherits the change and stores nothing. More than 200 rows is
+  and the shared Defaults rows, the shared rows first; each copy then stores
+  the value as its own, also when it now equals what it inherits. More than 200 rows is
   refused before anything runs; `delete` asks for `confirm: true` once.
+- `batch({ changes })` runs different ops in order against the same staged
+  store and writes once; a later change sees what an earlier one made (a row
+  it created, a state it set). Each change is decoded with its op's own
+  input; an unknown op or invalid input is a `notDone` entry named
+  `<n>. <op> <id>`. The TUI's form (`op`, `id`, `selected`, `input`) is
+  unchanged and now also writes once.
+- `set({ id, like: "<agent>" })` takes that agent's on/off and text (rows
+  that hold text) for the same row, from the row's own level first, then
+  project, global, defaults, preset; only what differs is set; `like` with
+  `state` or `text` is refused. A member is `"<team>/<member>"`.
+- `undo({ ts? })` takes back one log entry's write (both stores' entries
+  share the `ts`; no `ts` is the newest): every record it changed goes back
+  to its value before, except a row changed again since, which keeps the
+  later value and is named in `notUndone` with the write that changed it.
+  The data is `undo.jsonl` beside each `log.jsonl` (appended by every record
+  or layout write: the records it changed, before and after; `undo.ts`).
+  Undo is itself logged (`op: "undo"`), so undo of an undo redoes. Files
+  (agents, skills, teams) are not undone.
 - `read` defaults to view
   `resolved`. On a perm row every view but `record` returns the rule view
   (`tool`, `rule`, `label`, `patterns`, `keywords`, `custom`,
   `enabled`, `source`, `category`, `kind` — the row's `permKind`, `rule` when
   absent — plus `field` and `value` when the row has them and `limit` — the
   resolved number, `null` when the text holds none — on a limit or bound row;
-  plus a scrub preview: `scrub.hidden` lines would drop,
+  plus a scrub preview of its own tool's description: `scrub.hidden` lines
+  the rule really drops there (always `0` for a subagent rule, and nothing
+  else is scanned — system text and skills are never scrubbed),
   `scrub.preview` shows up to 3; plus `message` when the rule has one — a
   user rule's own text, or for a shipped row the curated text, else the
   catalog row's own; plus `policy` on a team role row). Team and member rows
@@ -2724,9 +2928,10 @@ path is skipped.
   republishes; a stored state, number or `RuleRecord` enters via `records`).
   The TUI add-rule
   flow prompts for scope (row scope when invoked on a tool or perm row,
-  otherwise level then agent); custom rules are globally unique by `(tool, id)`,
-  not per level/agent (`rule.add`/`rule.remove`/`rule.update` match by tool+id
-  only, ownership and logging follow the record actually matched).
+  otherwise level then agent); a custom rule's identity is `(tool, id)` within
+  its owner, so each level, agent, team member and catalogue may define its
+  own rule with the same tool and id, and `rule.add`/`rule.remove`/`rule.update`
+  act on the addressed owner's definition.
 - Display and enforcement resolve one chain for every item kind (tools,
   skills, base, system, perm) and the active model. An OpenCode built-in
   (`build`, `plan`, `explore`, …: origin native or special, discovered at
@@ -2794,14 +2999,22 @@ path is skipped.
   to its first meaningful segment (`*.git*` → `[".git"]`). Catalog rows ship
   no keywords — their patterns name common words (`cp`, `touch`, `tee`) that a
   derived keyword would strip from unrelated guidance — so turning one off
-  scrubs no prompt line. Saving one through the rule editor or `rule.update`
-  makes it a user rule, whose blank keywords derive like any rule's.
+  drops no prompt line. Saving one through the rule editor or `rule.update`
+  makes it a user rule, whose blank keywords derive like any rule's. A
+  subagent rule carries no keywords at all (`idRules`): Core already lists
+  only the subagents an agent may run (its subagent tool description filters
+  by permission), so a keyword would cut only prose that names an agent, and
+  `scrubKeywordsByAgent` ignores a subagent row whatever keywords a stored
+  record holds.
 - Scrub points (all line-level whole-word, case-insensitive
   `scrubLines`/`containsWholeWord`): the `session.context` hook (every tool
-  description plus every system part, after the text plans), the
-  `session.catalog` hook (Code Mode catalog descriptions, after the
-  text/pin plans), and the `assembled` view (registry descriptions, system,
-  and skill content). Empty keyword sets install no extra hooks.
+  description, after the text plans), the `session.catalog` hook (Code Mode
+  catalog descriptions, after the text/pin plans), and the `assembled` view
+  (registry and catalog descriptions only). System parts (role rows, user
+  System rows, base prompts, Core's own parts such as the skill list) and
+  skills are author or host text and are never cut: a denied action is
+  enforced by its permission rule, not by hiding prose. Empty keyword sets
+  install no extra hooks.
 
 #### The per-tool catalog (`permission-catalog.ts`)
 
@@ -2944,11 +3157,11 @@ the shipped limits):
 | `execute` | Limits (Tool calls per run 50, refuse: Code Mode inner calls per `execute` call) |
 | `opencode_session_move` | Sessions (param `sessionID`: other sessions) · Destinations (input `directory`: absolute paths, `../`) |
 | `opencode_session_rename` | Sessions (param `sessionID`) · Limits (Longest title 80 characters, refuse) |
-| `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 12, on) · Requirements (team: reason) · Approval |
-| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`, `paths`) · Limits (team: Followups per child 5, off) · Approval |
+| `team_delegate` | Deliverables (value `deliverable.kind`) · Effort (value `effort`) · Scope it may grant (input `scope.paths[]`: edit's protected paths) · Checks it may assign (input `checks[].argv`) · Parameters (`repo`, `base`, `briefFile`, `prompt`, `task`) · Limits (team: 4, 3, 6000, 8000, 12, 480, on) · Requirements (team: reason) · Approval |
+| `team_followup` | Delivery (value `delivery`) · Parameters (`budget`, `paths`) · Limits (team: Followups per child 5, off; Child context limit 400000, on) · Approval |
 | `team_integrate` | Outcomes it lands (team) · Branches it lands on (team: protected branches) · Approval |
 | `team_checkpoint` | Commit types (input `message`: feat, fix, docs, chore, refactor, test) · Limits (Files per checkpoint 50, refuse) · Approval |
-| `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) |
+| `team_finish` | Outcomes (value `status`) · Needs (value `needs[].kind`) · Requirements for done (team: checks on, commit off; a member's clean row) · Limits (team: Report summary lines 15, on) |
 | `team_stop` | Approval |
 | `team_status` | — |
 | `team_diff` | Compare against (value `from`) · Limits (Largest diff 200000 bytes, clamp) |
@@ -3072,7 +3285,7 @@ permission hook not installed`); the rows still list and show their state.
 #### Rule order (`apply.ts` `orderRules`)
 
 Every Plus rule — rule-kind rows' denies (`permDenials`), role rows'
-`policy` (`policyRules`), the non-member `team.*` deny and a member's
+`policy` (`policyRules`), and an agent's
 `team.<tool>` deny for a team tool row that is off — lands in one
 stable order: first a role row's whole-resource defaults (`*`; `allow`, then
 `ask`, then `deny`), then the role rules that let a specific resource through

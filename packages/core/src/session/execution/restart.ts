@@ -141,27 +141,44 @@ export const layer = (options?: Options) =>
         suspended: ReadonlySet<SessionSchema.ID>,
       ) {
         const child = yield* store.get(recovery.childSessionID)
-        if (!child || child.parentID !== recovery.parentSessionID || !(yield* store.get(recovery.parentSessionID))) {
-          yield* jobs.completeBackground(background.notificationID)
-          return
-        }
+        const parent = yield* store.get(recovery.parentSessionID)
 
-        const notify = Effect.fnUntraced(function* (result: Pick<Job.Background, "status" | "output" | "error">) {
+        const notify = Effect.fnUntraced(function* (
+          result: Pick<Job.Background, "status" | "output" | "error">,
+          notResumed?: string,
+        ) {
           yield* SubagentCompletion.deliver(sessions, jobs, {
             ...result,
             recovery,
             notificationID: background.notificationID,
             resume: suspended.has(recovery.parentSessionID) ? false : undefined,
+            ...(notResumed === undefined ? {} : { notResumed }),
           }).pipe(Effect.orDie)
         })
 
+        // Nobody can be told without a parent; otherwise say why the child is not coming back.
+        if (!parent) {
+          yield* jobs.completeBackground(background.notificationID)
+          return
+        }
+        if (!child || child.parentID !== recovery.parentSessionID) {
+          yield* notify({ status: "cancelled" }, "its child session is gone")
+          return
+        }
+
         if (background.status !== "running") {
+          // The record only says a stop happened, not who asked for it, so a cancelled
+          // record keeps the deliberate-cancel wording: recovery cannot claim a restart
+          // caused it when a user stop writes the same status.
           yield* notify(background)
           return
         }
         if (yield* execution.isActive(recovery.childSessionID)) return
         if (!(yield* prepareResume(recovery.childSessionID))) {
-          yield* notify({ status: "error", error: RESUME_EXHAUSTED.message })
+          yield* notify(
+            { status: "error", error: RESUME_EXHAUSTED.message },
+            "it used up its automatic resume budget: execution was interrupted repeatedly and will not be resumed automatically",
+          )
           return
         }
 
@@ -192,7 +209,27 @@ export const layer = (options?: Options) =>
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {
           const active = yield* execution.active
-          const pending = yield* jobs.pendingBackground
+          // A subagent record can read cancelled although its child was only cut by the
+          // shutdown (theorysnap 2026-10-28: five restarts reported running background
+          // subagents as cancelled and nothing resumed them). A deliberate stop ends the
+          // child's turn with a terminal event: it releases the claim and projects an idle
+          // message. A child that still holds its claim, or whose history does not end in an
+          // idle message, was mid-turn when the process stopped and is resumed like a running one.
+          const claimed = new Set(yield* store.listSuspendedChildren())
+          const cut = Effect.fnUntraced(function* (childID: SessionSchema.ID) {
+            if (claimed.has(childID)) return true
+            const last = (yield* store
+              .messages({ sessionID: childID, order: "desc", limit: 1 })
+              .pipe(Effect.orElseSucceed(() => [])))[0]
+            return last !== undefined && last.type !== "idle"
+          })
+          const pending = yield* Effect.forEach(yield* jobs.pendingBackground, (background) =>
+            Effect.gen(function* () {
+              if (background.recovery.kind !== "subagent" || background.status !== "cancelled") return background
+              if (!(yield* cut(background.recovery.childSessionID))) return background
+              return { ...background, status: "running" as const }
+            }),
+          )
           const children = pending.flatMap((background) =>
             background.status === "running" && background.recovery.kind === "subagent"
               ? [background.recovery.childSessionID]

@@ -21,7 +21,7 @@ import { createBaseTemplate, deleteBaseTemplate, readUserBaseTextSync, readUserB
 import { createSystemRow, deleteSystemRow, setModelPromptModels } from "./agents/system.js"
 import { addMcp, projectConfigCandidates, removeMcp } from "./agents/mcp.js"
 import { createSkill, deleteSkill, importSkill, type SkillScope, type SkillTarget } from "./agents/skills.js"
-import { applyPublishParts, attentionRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
+import { applyPublishParts, attentionRowsOf, lfsRowsOf, roleUpdates, runRegistration, type AppliedPart, type ApplyAgent, type ApplyInput, type ToolPlan } from "./instructions/apply.js"
 import { controlItems, controlRecordError } from "./instructions/agent-controls.js"
 import { inPublishBatch } from "./instructions/publish-runtime.js"
 import { installTeaching } from "./instructions/teaching.js"
@@ -33,6 +33,7 @@ import { createTeamApi } from "./teams/api.js"
 import { byDirectory, bySession, loadRun } from "./teams/run.js"
 import { readJson } from "./teams/store.js"
 import { onSessionEvent, slowWarning, startSweep } from "./teams/lifecycle.js"
+import { resendBriefAfterCompaction } from "./teams/brief-resend.js"
 import { RETRY_SCHEDULED, SessionRunEvents } from "./teams/session-events.js"
 import { registerTeamTools } from "./teams/tools.js"
 import { liveRunScopes, policyMembersOf, teamPolicyItems } from "./instructions/team-policy-rows.js"
@@ -60,9 +61,11 @@ import {
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, modelItemId, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
+import { appendUndo, changedSides, planUndo, readUndo } from "./instructions/undo.js"
+import { ruleRecordFor } from "./instructions/rule-record.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
-import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
-import { deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
+import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type RowlinkRecord, type StoredRecord } from "./instructions/store.js"
+import { deltaRows, keyIdentity, recordIdentity, recordRow, snapshotRecordOf } from "./instructions/delta.js"
 import { layoutRefusal } from "./instructions/folders.js"
 import { builtinBody, discoverAllTeams, discoverBuiltinTeams, discoverTeams, isTeamEnabled, rankOf, resolveTeams, validateTeamName, type DiscoveredTeam, type TeamLevel, type TeamRecord } from "./instructions/teams.js"
 import type { BuiltinTeam } from "./instructions/builtin-teams.js"
@@ -101,7 +104,7 @@ import { agentAttention, mergeAttention, type AttentionRow } from "./attention-s
 import { attentionStore } from "./attention.js"
 import { createAttentionWatcher } from "./attention-watch.js"
 import { chooseImage } from "./image-settings.js"
-import { armedColdListOf, compactionRowsOf, inputThresholdOf, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
+import { armedColdListOf, compactionRowsOf, inputThresholdOf, isTeamMember, modelRowContextOf, scopeLevel } from "./compaction/rows.js"
 import { registerMonitorTools } from "./monitor/tools.js"
 import { registerRefreshTool } from "./refresh-tool.js"
 import type { SessionImage, SessionInstructionsUpdate, SessionWarming } from "@opencode/plugin/effect/session"
@@ -176,6 +179,12 @@ export interface PlusState {
   permissions: PermissionTable | undefined
   /** Every agent's notification rows from the last publish, resolved down its chain (attention-watch.ts). */
   attentionRows: ReadonlyMap<string, Readonly<Partial<Record<AttentionRow, string>>>>
+  /**
+   * Members whose "LFS files in its worktrees" row resolves to `pointers`: the
+   * delegated worktree `delegate` creates for one gets pointer files, not their
+   * content. Absent for every member whose row is empty or `full`.
+   */
+  lfsPointers: ReadonlySet<string>
   /** Hook-side permission state that outlives one publish (pending approvals, "always" answers). */
   enforcement: EnforcementState
   agentObserver?: Registration
@@ -244,6 +253,7 @@ export function createState(storage?: StorageDomain): PlusState {
     teamOutputIds: new Map(),
     permissions: undefined,
     attentionRows: new Map(),
+    lfsPointers: new Set(),
     enforcement: enforcementState(),
     semaphore: Effect.runSync(Semaphore.make(1)),
   }
@@ -732,7 +742,7 @@ export interface PlusApi {
   readonly deleteSkill: (input: Plus.DeleteSkillInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSkillResult>
   readonly createBase: (input: Plus.CreateBaseInput & { readonly actor?: Plus.Actor }) => Promise<CreateBaseResult>
   readonly deleteBase: (input: Plus.DeleteBaseInput & { readonly actor?: Plus.Actor }) => Promise<DeleteBaseResult>
-  readonly createSystem: (input: Plus.CreateSystemInput & { readonly actor?: Plus.Actor }) => Promise<CreateSystemResult>
+  readonly createSystem: (input: Plus.CreateSystemInput & { readonly actor?: Plus.Actor; readonly off?: boolean }) => Promise<CreateSystemResult>
   readonly deleteSystem: (input: Plus.DeleteSystemInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSystemResult>
   readonly setSystemModels: (input: Plus.SetSystemModelsInput & { readonly actor?: Plus.Actor }) => Promise<SetSystemModelsResult>
   readonly createInstruction: (input: Plus.CreateInstructionInput & { readonly actor?: Plus.Actor }) => Promise<CreateInstructionApiResult>
@@ -744,7 +754,7 @@ export interface PlusApi {
   readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
   readonly layoutWrite: (input: Plus.LayoutWriteInput & { readonly actor?: Plus.Actor }) => Promise<LayoutWriteResult>
   /** `from` (Duplicate, not on the RPC): copy that member's file instead of writing the preset's fields. */
-  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor; readonly from?: string }) => Promise<AddTeamAgentResult>
+  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor; readonly from?: string; readonly fromTeam?: string }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
   readonly renameTeam: (input: Plus.RenameTeamInput & { readonly actor?: Plus.Actor }) => Promise<RenameTeamResult>
@@ -762,7 +772,24 @@ export interface PlusApi {
   readonly addPresetMember: (input: Plus.PresetAddMemberInput) => Promise<AddPresetMemberResult>
   readonly deletePreset: (input: Plus.PresetDeleteInput) => Promise<DeletePresetResult>
   readonly setLink: (input: Plus.LinkSetInput) => Promise<SetLinkResult>
+  /** Take back one logged write (both stores' entries of its ts; newest when ts is omitted) to the records before it. */
+  readonly undo: (input: { readonly ts?: string; readonly dryRun?: boolean; readonly actor?: Plus.Actor }) => Promise<UndoResult>
 }
+
+export type UndoResult =
+  | {
+      ok: true
+      value: {
+        status: string
+        ts: string
+        undone: string[]
+        notUndone: { id: string; reason: string }[]
+        dryRun?: true
+        revision: number
+        globalRevision: number
+      }
+    }
+  | { ok: false; error: { code: "undo.nothing" | "agent.protected" | "undo.failed"; message: string } }
 
 export interface PlusApiOptions {
   /** Defaults-tier teams. None ship (the shipped teams are Plus team presets); tests inject fixtures. */
@@ -972,7 +999,71 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     }
   }
 
+  const undo = async (input: { readonly ts?: string; readonly dryRun?: boolean; readonly actor?: Plus.Actor }): Promise<UndoResult> => {
+    const directory = await activationDirectory(ctx.location.directory)
+    const config = await read(directory)
+    const entries = await readUndo(directory)
+    const ts = input.ts ?? entries.at(-1)?.ts
+    const target = entries.filter((entry) => entry.ts === ts)
+    if (ts === undefined || target.length === 0)
+      return {
+        ok: false,
+        error: {
+          code: "undo.nothing",
+          message: ts === undefined
+            ? "nothing to undo: no record change is logged yet"
+            : `nothing to undo at ${ts}: that log entry changed no records (agents, skills, teams and other files are not undone: delete or create them again)`,
+        },
+      }
+    const later = entries.filter((entry) => Date.parse(entry.ts) > Date.parse(ts))
+    const seen: { before?: readonly StoredRecord[] } = {}
+    type Decision = { kind: "refusal"; message: string } | { kind: "plan"; plan: ReturnType<typeof planUndo> }
+    const outcome = await updateGated<Decision>(directory, async (loaded) => {
+      const plan = planUndo(loaded.records, target, later)
+      const refusal = protectedRefusal(input.actor, deltaRows(loaded.records, plan.records), config)
+      if (refusal !== undefined) return { result: { kind: "refusal", message: refusal.message } }
+      seen.before = loaded.records
+      if (input.dryRun === true || plan.undone.length === 0) return { result: { kind: "plan", plan } }
+      return { result: { kind: "plan", plan }, records: plan.records }
+    })
+    if (outcome.result.kind === "refusal") return { ok: false, error: { code: "agent.protected", message: outcome.result.message } }
+    const plan = outcome.result.plan
+    const saved = outcome.saved
+    if (saved !== undefined && !saved.ok) return { ok: false, error: { code: "undo.failed", message: "the store changed while undoing; retry" } }
+    const summary = `undo ${ts}: ${plan.undone.length} row${plan.undone.length === 1 ? "" : "s"} back${plan.kept.length === 0 ? "" : `, ${plan.kept.length} changed again since and kept`}`
+    if (saved !== undefined) {
+      await logMutate({
+        directory,
+        actor: normalizeActor(input.actor),
+        before: seen.before ?? [],
+        after: plan.records,
+        projectRevision: saved.projectRevision,
+        globalRevision: saved.globalRevision,
+        projectChanged: saved.changed.project,
+        globalChanged: saved.changed.global,
+        op: "undo",
+        summary,
+      })
+      const next = { ...loadedFromSave(saved, plan.records), protectedAgents: config.protectedAgents }
+      await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+    }
+    const stored = saved?.ok === true ? saved : await load(directory)
+    return {
+      ok: true,
+      value: {
+        status: `${input.dryRun === true ? "Dry run, nothing written: would undo" : "Undid"} ${ts} (${target[0]!.summary}): ${plan.undone.length} row${plan.undone.length === 1 ? "" : "s"} back${plan.kept.length === 0 ? "" : `; ${plan.kept.length} not undone, changed again since`}`,
+        ts,
+        undone: plan.undone,
+        notUndone: plan.kept,
+        ...(input.dryRun === true ? { dryRun: true as const } : {}),
+        revision: stored.projectRevision,
+        globalRevision: stored.globalRevision,
+      },
+    }
+  }
+
   return {
+    undo,
     snapshot: async () => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
@@ -1418,7 +1509,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createSystem: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const result = await createSystemRow(input.id, input.title, input.text, input.models)
+      const result = await createSystemRow(input.id, input.title, input.text, input.models, input.off === true)
       if (!result.ok && result.reason === "exists")
         return {
           ok: false as const,
@@ -1934,16 +2025,21 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         records,
       })
       if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
+      const delta = deltaRows(current.records, records)
       for (const level of ["project", "global"] as const) {
         if (!saved.changed[level]) continue
+        const revision = level === "project" ? saved.projectRevision : saved.globalRevision
+        const rows = canonical(delta.filter((record) => (record.level === "project") === (level === "project")))
         await appendForLevel(directory, level, {
           ts: updated,
           actor,
           op: "layout",
           target: input.target,
           summary: input.status,
-          revision: level === "project" ? saved.projectRevision : saved.globalRevision,
+          revision,
+          ...rowsOf(rows),
         })
+        await journal(directory, level, { ts: updated, revision, actor, summary: input.status, before: current.records, after: records, delta })
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return {
@@ -2031,9 +2127,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // empty body; a team-scoped link makes the rest follow the preset.
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
-      const source = input.from === undefined ? undefined : found.agents.find((agent) => agent.id === input.from)?.path
+      // `fromTeam`: the member to copy is another team's at this level (a team's copy).
+      const sourceTeam = input.fromTeam === undefined ? found : known.find((team) => team.team === input.fromTeam)
+      const source = input.from === undefined ? undefined : sourceTeam?.agents.find((agent) => agent.id === input.from)?.path
       if (input.from !== undefined && source === undefined) {
-        const reason = `Member ${input.from} of team ${validatedTeam.team} has no file to copy`
+        const reason = `Member ${input.from} of team ${input.fromTeam ?? validatedTeam.team} has no file to copy`
         return { ok: false as const, error: { code: "agent.invalid" as const, message: reason, data: { id: input.from, reason } } }
       }
       await fs.mkdir(path.dirname(target), { recursive: true })
@@ -2552,46 +2650,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // A preset's rows are not an agent's, whatever its id.
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
-      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
-      if (!validated.ok)
-        return {
-          ok: false as const,
-          error: { code: "rule.invalid" as const, message: validated.reason, data: { tool: input.tool, id: input.id, reason: validated.reason } },
-        }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const existing = loaded.records.find(
-        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id && scopedTo(record, input),
-      )
-      if (existing !== undefined)
-        return {
-          ok: false as const,
-          error: {
-            code: "rule.exists" as const,
-            message: `Rule ${validated.tool}:${validated.id} already exists`,
-            data: { level: existing.level, agent: existing.agent, tool: validated.tool, id: validated.id },
-          },
-        }
-      const next: RuleRecord = {
-        type: "rule",
-        level: input.level,
-        agent: input.agent,
-        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
-        ...(input.team === undefined ? {} : { team: input.team }),
-        tool: validated.tool,
-        id: validated.id,
-        label: validated.label,
-        patterns: validated.patterns,
-        keywords: validated.keywords,
-        ...(validated.message === undefined ? {} : { message: validated.message }),
-        updated: new Date().toISOString(),
-      }
+      const made = ruleRecordFor(input, loaded.records)
+      if (!made.ok) return made
+      const next = made.record
       const saved = await saveRuleRecords(directory, loaded, [...loaded.records, next])
       if (!saved.ok) {
-        const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
+        const reason = `Rule ${next.tool}:${next.id} changed concurrently; retry`
         return {
           ok: false as const,
-          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: next.tool, id: next.id, reason } },
         }
       }
       if (saved.changed)
@@ -2600,7 +2669,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           actor: normalizeActor(input.actor),
           op: "rule.add",
           target: ruleRecordTarget(next),
-          summary: `rule.add ${validated.tool}:${validated.id} (${input.level})`,
+          summary: `rule.add ${next.tool}:${next.id} (${input.level})`,
           revision: saved.revision,
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
@@ -2629,7 +2698,21 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         }
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
+      const item = permItemId(validated.tool, validated.id)
       const next = loaded.records.filter((record) => record !== existing)
+      // Definitions are owner-scoped, so several owners may define the same
+      // tool/id: the item (and with it every owner's row state) exists while
+      // one of them remains. Only the last definition takes the item's
+      // customizations and splits with it, so re-adding the rule does not
+      // resurrect a stale state; removing one owner's definition leaves the
+      // item and the other owners' rows alone.
+      const lastDefinition = !next.some(
+        (record) => record.type === "rule" && record.tool === validated.tool && record.id === validated.id,
+      )
+      // That cascade is a write to other agents' rows, so a tool actor may not
+      // trigger it while one of them belongs to a protected agent.
+      const cascadeRefusal = lastDefinition ? refuseProtectedItemCascade(input.actor, loaded.records, item, config) : undefined
+      if (cascadeRefusal !== undefined) return { ok: false as const, error: cascadeRefusal }
       const saved = await saveRuleRecords(directory, loaded, next)
       if (!saved.ok) {
         const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
@@ -2637,6 +2720,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           ok: false as const,
           error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
         }
+      }
+      if (lastDefinition) {
+        const freshStored = await load(directory)
+        const freshLoaded = { ...freshStored, protectedAgents: config.protectedAgents }
+        await removeItemRecords(directory, freshLoaded, item)
       }
       if (saved.changed)
         await appendForLevel(directory, existing.level, {
@@ -4239,6 +4327,7 @@ export function decideCompactionFor(
       ...(modelRow === undefined ? {} : { model: modelRow }),
       ...(everyRow === undefined ? {} : { every: everyRow }),
       ...(agentWide === undefined ? {} : { agent: agentWide }),
+      ...(isTeamMember(state, event.agent) ? { team: true } : {}),
       ...(consulted && cold !== undefined ? { cold } : {}),
     })
   })
@@ -4585,7 +4674,7 @@ function contextFor(
     agents,
     items,
     ...presetStateOf(records),
-    teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
+    teams: teams.map((team) => ({ level: team.level, team: team.team, agents: team.agents.map((agent) => agent.id) })),
   })
 }
 
@@ -4628,10 +4717,10 @@ async function removeRecordsAt(
 }
 
 // The record kinds addressed at one scope: links and the row records
-// (customizations, splits, models, rules). Team records, entries and presets
-// are owners, not rows of an owner.
-function isScopedRow(record: StoredRecord): record is LinkRecord | CustomizationRecord | SplitRecord | ModelRecord | RuleRecord {
-  return record.type === "link" || record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule"
+// (customizations, splits, models, rules, links between rows). Team records,
+// entries and presets are owners, not rows of an owner.
+function isScopedRow(record: StoredRecord): record is LinkRecord | CustomizationRecord | SplitRecord | ModelRecord | RuleRecord | RowlinkRecord {
+  return record.type === "link" || record.type === "customization" || record.type === "split" || record.type === "model" || record.type === "rule" || record.type === "rowlink"
 }
 
 // The rows a deleted team leaves behind: its own TeamRecord, the team's and
@@ -4750,23 +4839,11 @@ async function renameTeamMember(
   const source = { level: input.scope, agent: input.from, team: { level: input.scope, team: validatedTeam.team } }
   const delegateFrom = `perm:team_delegate:to.${input.from}`
   const delegateTo = `perm:team_delegate:to.${input.to}`
-  const memberIds = known.agents.map((agent) => agent.id)
   const moved = await updateRecords(directory, (current) =>
     current.map((record): StoredRecord => {
+      // A member's rows are stored with its team: the stand-alone agents of
+      // its teammates' names keep theirs.
       if (!isScopedRow(record)) return record
-      // The TUI stores per-member Delegate-to rows without a team, so match
-      // them by the owner still being a member of the renamed member's team.
-      if (
-        record.type === "customization" &&
-        record.item === delegateFrom &&
-        record.team === undefined &&
-        record.level === input.scope &&
-        record.agent !== null &&
-        memberIds.includes(record.agent)
-      ) {
-        const renamed = { ...record, item: delegateTo }
-        return record.agent === input.from ? { ...renamed, agent: input.to } : renamed
-      }
       if (!sameTeam(record.team, { level: input.scope, team: validatedTeam.team })) return record
       // A "Delegate to" row naming the member (owned by a peer in the same
       // team) follows the member id; the file name and the target both move.
@@ -5211,7 +5288,7 @@ function isToolActor(type: Plus.Actor["type"]): boolean {
 function mutateTarget(rows: readonly StoredRecord[]): string {
   const first = rows[0]
   if (first === undefined) return "records"
-  return recordTarget(first)
+  return recordRow(first)
 }
 
 function mutateSummary(changed: readonly StoredRecord[], level: string): string {
@@ -5219,8 +5296,8 @@ function mutateSummary(changed: readonly StoredRecord[], level: string): string 
   // A reported-changed store with an empty delta is the v1→v2 migration
   // rewrite: same logical rows, new serialization, both files rewritten.
   if (first === undefined) return `mutate (${level}, migrated records)`
-  if (changed.length === 1) return `mutate ${recordTarget(first)}`
-  return `mutate ${changed.length} rows (${level}): ${changed.map(recordTarget).join(", ")}`
+  if (changed.length === 1) return `mutate ${recordRow(first)}`
+  return `mutate ${changed.length} rows (${level}): ${changed.map(recordRow).join(", ")}`
 }
 
 // One log line per store actually changed, naming only the rows that changed
@@ -5236,31 +5313,57 @@ async function logMutate(input: {
   globalRevision: number
   projectChanged: boolean
   globalChanged: boolean
+  /** An undo names itself; a plain write is "mutate". */
+  op?: string
+  summary?: string
 }): Promise<void> {
   const ts = new Date().toISOString()
   const delta = deltaRows(input.before, input.after)
+  const op = input.op ?? "mutate"
   if (input.projectChanged) {
     const rows = canonical(delta.filter((record) => record.level === "project"))
+    const summary = input.summary ?? mutateSummary(rows, "project")
     await appendForLevel(input.directory, "project", {
       ts,
       actor: { ...input.actor },
-      op: "mutate",
+      op,
       target: mutateTarget(rows),
-      summary: mutateSummary(rows, "project"),
+      summary,
       revision: input.projectRevision,
+      ...rowsOf(rows),
     })
+    await journal(input.directory, "project", { ts, revision: input.projectRevision, actor: input.actor, summary, before: input.before, after: input.after, delta })
   }
   if (input.globalChanged) {
     const rows = canonical(delta.filter((record) => record.level !== "project"))
+    const summary = input.summary ?? mutateSummary(rows, "global")
     await append(globalLogPath(), {
       ts,
       actor: { ...input.actor },
-      op: "mutate",
+      op,
       target: mutateTarget(rows),
-      summary: mutateSummary(rows, "global"),
+      summary,
       revision: input.globalRevision,
+      ...rowsOf(rows),
     })
+    await journal(input.directory, "global", { ts, revision: input.globalRevision, actor: input.actor, summary, before: input.before, after: input.after, delta })
   }
+}
+
+// A write of several rows lists every one (the summary is cut at 200 chars).
+function rowsOf(rows: readonly StoredRecord[]): { rows?: string[] } {
+  return rows.length > 1 ? { rows: [...new Set(rows.map(recordRow))] } : {}
+}
+
+// The undo data of one store write (undo.ts): the records it changed there.
+async function journal(
+  directory: string,
+  store: "project" | "global",
+  input: { ts: string; revision: number; actor: Plus.Actor; summary: string; before: readonly StoredRecord[]; after: readonly StoredRecord[]; delta: readonly StoredRecord[] },
+): Promise<void> {
+  const sides = changedSides(input.before, input.after, input.delta, store)
+  if (sides === undefined) return
+  await appendUndo(directory, { ts: input.ts, store, revision: input.revision, actor: { ...input.actor }, summary: input.summary.slice(0, 200), ...sides })
 }
 
 // File operations and team toggles log to the store that owns the file:
@@ -5339,6 +5442,15 @@ async function loadMigrated(directory: string): Promise<Awaited<ReturnType<typeo
       op: "migrate.splits",
       target: "root:defaults",
       summary: "migrate.splits: git merge and git worktree add rows took the state of the shell family they were split from",
+      revision: migration.revision,
+    })
+  if (migration.membersMoved)
+    await append(globalLogPath(), {
+      ts: new Date().toISOString(),
+      actor: { type: "tui" as const },
+      op: "migrate.members",
+      target: "root:teams",
+      summary: "migrate.members: each team member's own rows copied to its team (they were its name's, shared with the agent and every member of that name); the agent of that name keeps them",
       revision: migration.revision,
     })
   return migration.loaded
@@ -5642,7 +5754,7 @@ async function discoverAll(
     ruleRecords: rulesOf(loaded.records),
     modelBaselines: state.modelBaselines,
     presetState: presetStateOf(loaded.records),
-    teams: teams.map((team) => ({ team: team.team, agents: team.agents.map((agent) => agent.id) })),
+    teams: teams.map((team) => ({ level: team.level, team: team.team, agents: team.agents.map((agent) => agent.id) })),
     agentUpstream: state.agentUpstream,
     splits: splitsOf(loaded.records),
     knownMcpTools: state.knownMcpTools,
@@ -5963,6 +6075,7 @@ export function deactivate(state: PlusState): Effect.Effect<void> {
       state.cachedAgents = []
       state.cachedScopes = { global: new Set(), defaults: new Set() }
       state.attentionRows = new Map()
+      state.lfsPointers = new Set()
       state.teamOutputIds = new Map()
       state.hostModels = undefined
       state.hostCatalog = undefined
@@ -6345,6 +6458,7 @@ function publishFresh(
         deferAgentControls: true,
       }
       state.attentionRows = attentionRowsOf(applyInput)
+      state.lfsPointers = new Set(lfsRowsOf(applyInput).keys())
       const teamAgents = view.teamAgents
       const fileAgents = teamAgents.filter((agent) => agent.path !== undefined)
       const builtinWinners = teamAgents.filter((agent) => agent.path === undefined)
@@ -7056,6 +7170,11 @@ export function watchHostEvents(ctx: Context, state: PlusState): Effect.Effect<v
           const completedAt = typeof created === "number" ? created : Date.now()
           warmingStore.invalidateCompaction(sessionID, completedAt)
           yield* emitWarmingChanged(state, sessionID)
+          // A child's condensed chat gets its Brief again whole, as one steer.
+          if (event.type === "session.compaction.ended")
+            yield* Effect.promise(() =>
+              resendBriefAfterCompaction(ctx, teamsDataDir(), { id: event.id, sessionID }),
+            ).pipe(Effect.catchCause((cause) => Effect.logWarning("plus team brief re-send failed", { cause, sessionID })))
         }
       }).pipe(
         Effect.catchCause((cause) => Effect.logWarning("plus compaction event failed", { cause, type: event.type })),

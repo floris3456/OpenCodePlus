@@ -54,6 +54,10 @@ export function badgeLabels(node: TreeNode): string[] {
   // synthetic address would corrupt the mutate path). Structural rows carry
   // no state and still render no badge.
   if (node.badges.state !== undefined) labels.push(node.badges.state === "off" ? "off" : "on")
+  // An allow row's on/off does not mean refusal: on opens what it matches,
+  // off opens nothing and refuses nothing. Say so, so an off allow row is not
+  // read as a rule that refuses its commands (L5, c-12).
+  if (node.badges.allow === true) labels.push(node.badges.state === "off" ? "allow row (opens nothing)" : "allow row (opens its patterns)")
   if (node.badges.heldBack === true) {
     const needs = (node.badges.requires ?? []).filter((requirement) => !requirement.met).map((requirement) => `${requirement.id} ${requirement.on ? "on" : "off"}`)
     labels.push(`held back (needs ${needs.join(", ")})`)

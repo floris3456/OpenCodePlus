@@ -90,16 +90,8 @@ export function contextOf(input: MemoInput): BuildContext {
     listing,
     labels: presetLabels(listing),
     entries: input.entries ?? [],
-    // Every reader of the tree sees an edit equal to what its row inherits as none (inherited.ts).
-    customizations: withoutInherited({
-      items,
-      rules,
-      customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
-      splits,
-      scopes,
-      agents: input.agents,
-      teams: input.teams ?? [],
-    }),
+    // As stored: a value equal to what its row inherits is an own value too.
+    customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
     splits,
     models: input.records.filter((record): record is ModelRecord => record.type === "model"),
     rules,
@@ -114,13 +106,18 @@ export function contextOf(input: MemoInput): BuildContext {
 }
 
 /**
- * Records as they are stored: the customizations without what their rows
- * already inherit (inherited.ts), the rest as they are. A write compares and
- * sends these, so it stores no edit equal to its row's inherited value.
+ * A copy's records (a paste or a duplicate) without the copied values their
+ * rows already inherit (inherited.ts): only customizations not in `before`,
+ * the ones the copy wrote, are looked at; every other record stays as stored,
+ * so a copy never drops anyone's own change.
  */
-export function storedRecords<R extends { readonly type: string }>(input: MemoInput, records: readonly R[]): (R | CustomizationRecord)[] {
+export function withoutCopiedInherited<R extends { readonly type: string }>(input: MemoInput, records: readonly R[], before: ReadonlySet<unknown>): (R | CustomizationRecord)[] {
+  const customizations = records.filter((record): record is R & CustomizationRecord => record.type === "customization")
+  if (customizations.every((record) => before.has(record))) return [...records]
   const read = records.filter((record): record is R & MemoInput["records"][number] => memoTypes.has(record.type))
-  return [...records.filter((record) => record.type !== "customization"), ...contextOf({ ...input, records: read }).customizations]
+  const ctx = contextOf({ ...input, records: read })
+  const kept = withoutInherited({ ...ctx, customizations, copied: (record) => !before.has(record) })
+  return [...records.filter((record) => record.type !== "customization"), ...kept]
 }
 
 const memoTypes = new Set(["customization", "split", "model", "rule", "rowlink"])
@@ -205,39 +202,35 @@ export function textEntryOf(
 
 /**
  * A row's team: the `TeamRef` of a team-scoped node (a member preset, a Teams
- * entry, a team's Special agent), or `{ memberOf }` for an ordinary member row
- * — resolved as a member of that team, its own records per-agent
- * (model.ts Address.memberOf).
+ * entry, a team's Special agent), or `{ memberOf }` for an ordinary member
+ * row. Both address the team-scoped node `L/A@T`, where a member's own
+ * records are stored; `memberOf` only tells the tree that the row is an
+ * ordinary member's (its rows can be removed like an agent's).
  */
 export type RowTeam = TeamRef | { readonly memberOf: TeamRef }
 
 /** The address fields a row's team sets. */
-export function teamFields(team: RowTeam | undefined): { team?: TeamRef; memberOf?: TeamRef } {
+export function teamFields(team: RowTeam | undefined): { team?: TeamRef } {
   if (team === undefined) return {}
-  if ("memberOf" in team) return { memberOf: team.memberOf }
+  if ("memberOf" in team) return { team: team.memberOf }
   return { team }
 }
 
-/** A row address's team, the inverse of teamFields. */
-export function rowTeamOf(address: Pick<Address, "team" | "memberOf">): RowTeam | undefined {
-  if (address.team !== undefined) return address.team
-  if (address.memberOf !== undefined) return { memberOf: address.memberOf }
-  return undefined
+/** A row address's team, the inverse of teamFields (as a team-scoped node). */
+export function rowTeamOf(address: Pick<Address, "team">): RowTeam | undefined {
+  return address.team
 }
 
-// The team of the node a row's own records sit on: a member row's own node is
-// per-agent.
 function ownTeam(team: RowTeam | undefined): TeamRef | undefined {
-  if (team === undefined || "memberOf" in team) return undefined
-  return team
+  return teamFields(team).team
 }
 
 // Index over raw records: only shared-inventory records carry a catalogue, so
 // a per-agent record lands in one bucket both catalogues read. A team-scoped
-// node (`L/A@T`: a member preset, a Teams entry, a team's Special agent) is a
-// bucket of its own.
+// node (`L/A@T`: a member, a member preset, a Teams entry, a team's Special
+// agent) is a bucket of its own.
 function textKey(level: Level, owner: string | null, item: string, catalogue: Catalogue | undefined, team: TeamRef | undefined): string {
-  return JSON.stringify([level, owner, item, owner === null ? catalogueOf(catalogue) : "agents", teamKey(team)])
+  return JSON.stringify([level, owner, item, owner === null ? catalogueOf(catalogue) : "agents", team === undefined ? null : `${team.level}:${team.team}`])
 }
 
 // Resolution keys always carry the catalogue: the same (level, owner, item)
@@ -257,9 +250,8 @@ function keyOf(
 }
 
 function teamKey(team: RowTeam | undefined): string | null {
-  if (team === undefined) return null
-  if ("memberOf" in team) return `member:${team.memberOf.level}:${team.memberOf.team}`
-  return `${team.level}:${team.team}`
+  const own = ownTeam(team)
+  return own === undefined ? null : `${own.level}:${own.team}`
 }
 
 function addressOf(

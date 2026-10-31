@@ -5,7 +5,7 @@ import type { ToolEditor } from "@opencode/plugin/effect/tool"
 import { Deferred, Effect } from "effect"
 import { copyName, isSkillCopy, resolvedFor, systemOrders, type ApplyAgent, type ToolPlan } from "./apply.js"
 import { applies, catalogPath, isCodeModeToolEntry, type CustomizationRecord, type Item, type Scopes, type SplitRecord } from "./model.js"
-import { scrubLines } from "./tool-permissions.js"
+import { containsWholeWord, scrubLines } from "./tool-permissions.js"
 import { guidanceItemId } from "./paths.js"
 import { gateOf } from "./requires.js"
 import type { OrderRecord } from "./folders.js"
@@ -55,7 +55,16 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
   // team member with its team.
   const resolved = new Map(input.items.map((item) => [item.id, resolvedFor(item, owner, input)]))
   const systemEntry = await readAgentEntry(input.ctx, input.agent)
-  const scrubbed = scrubKeywords(input.items, resolved)
+  // Off perm rows drop matching lines from tool and catalog descriptions only.
+  // System parts and skills are author or host text (apply.ts applyRuleScrub),
+  // so they are reported whole and never listed as dropped.
+  const rules = scrubRules(input.items, resolved)
+  const dropped: Plus.AssembledDropped[] = []
+  const scrub = (where: string, text: string): string => {
+    const scrubbed = scrubText(text, rules)
+    for (const entry of scrubbed.dropped) dropped.push({ where, rule: entry.rule, line: entry.line })
+    return scrubbed.text
+  }
   // The Tools and rules row and user System rows as this agent receives them:
   // only the sections whose rows it has as they require (requires.ts), like
   // apply plans them.
@@ -74,8 +83,10 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       .filter((part) => part.text.trim().length > 0),
   ]
   // Listed in the order the agent's requests carry them (its System order).
+  // System parts are author or host text and are never scrubbed live either
+  // (apply.ts applyRuleScrub), so they are reported whole.
   const order = systemOrders({ ...input, agents: [owner] })[0]?.[1]
-  const system = arrangeBySlot(parts, (part) => part.slot, order ?? defaultSystemOrder(userSystemRows(input.items))).map((part) => preserveScrub(part.text, scrubbed))
+  const system = arrangeBySlot(parts, (part) => part.slot, order ?? defaultSystemOrder(userSystemRows(input.items))).map((part) => part.text)
   const tools = await listTools(input.ctx)
   const deniedTools = new Set(
     (input.installedTools ?? [])
@@ -89,6 +100,8 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
     .flatMap((item): Plus.AssembledTool[] => {
       if (item.execute === true) {
         if (executeDenied) return []
+        // The execute row's text is not a prompt tool description: apply
+        // installs it as the Code Mode executor's own text, unscrubbed.
         return [{ id: "execute", description: item.text }]
       }
       const live = tools.get(item.id.slice("tool:".length))
@@ -109,7 +122,7 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
         const installed = (input.installedTools ?? []).find(
           (plan) => plan.agent === input.agent && plan.codemode === true && plan.catalogPath === catalogPath(item),
         )
-        const description = preserveScrub(installed?.text ?? live.description, scrubbed)
+        const description = scrub(`catalog:${live.id}`, installed?.text ?? live.description)
         const pinned = installed?.pinned ?? live.pinned
         return [{ id: live.id, description, codemode: true as const, pinned }]
       }
@@ -119,7 +132,18 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // installed denial excludes the tool, while an unapplied or cleared
       // stored off leaves the tool present because the host still serves it.
       if (deniedTools.has(live.id)) return []
-      return [{ id: live.id, description: preserveScrub(live.description, scrubbed) }]
+      // A direct tool can also be denied by this agent's live permission rules
+      // (a namespace deny such as `team.*`, or a pattern rule keyed on the tool
+      // id): core drops a wholly denied tool from the request's tool set for
+      // every tool type, direct ones included.
+      if (liveRules !== undefined && toolDenied(live.id, live.group, liveRules)) return []
+      // The text the agent receives is the installed plan's, never the
+      // registry's: a stored text edit installs through the session context
+      // hook, so the registry keeps the upstream description.
+      const installed = (input.installedTools ?? []).find(
+        (plan) => plan.agent === input.agent && plan.codemode !== true && plan.tool === live.id,
+      )
+      return [{ id: live.id, description: scrub(`tool:${live.id}`, installed?.text ?? live.description) }]
     })
   const skills = await listSkills(input.ctx)
   const deniedSkills: ReadonlySet<string> | undefined =
@@ -164,29 +188,47 @@ export async function assembled(input: AssembledInput): Promise<Plus.Assembled |
       // win and the copy would never be consulted.
       const current = skillContent(skills, input.agent, id)
       if (current === undefined) return []
-      return [{ id, content: preserveScrub(current, scrubbed) }]
+      // Skills are never scrubbed: apply installs skill text whole.
+      return [{ id, content: current }]
     })
-  return { agent: input.agent, system, tools: visibleTools, skills: visibleSkills }
+  return {
+    agent: input.agent,
+    system,
+    tools: visibleTools,
+    skills: visibleSkills,
+    // Omitted when nothing was dropped, so an unscrubbed agent's view carries
+    // no empty list.
+    ...(dropped.length === 0 ? {} : { dropped }),
+  }
 }
 
-function scrubKeywords(items: readonly Item[], resolved: ReadonlyMap<string, { enabled: boolean }>): string[] {
-  const keywords = items.flatMap((item) => {
-    if (item.kind !== "perm" || item.keywords === undefined) return []
+// The off perm rows that scrub, with the id `read` takes for each: an off row
+// with no keywords (a subagent row, a catalog row) drops nothing. Subagent rows
+// are skipped whatever a stored record holds (apply.ts scrubKeywordsByAgent).
+function scrubRules(items: readonly Item[], resolved: ReadonlyMap<string, { enabled: boolean }>): { rule: string; keywords: readonly string[] }[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "perm" || item.permTool === "subagent" || item.keywords === undefined || item.keywords.length === 0) return []
     const state = resolved.get(item.id)
     if (state === undefined || state.enabled) return []
-    return [...item.keywords]
+    return [{ rule: item.id, keywords: [...item.keywords] }]
   })
-  return [...new Set(keywords)]
 }
 
-// Live request scrub (apply.ts applyRuleScrub/applyCatalogScrub) never
-// installs an emptied description: when every line matches, it keeps the
-// original text. The assembled readback mirrors that preservation so the
-// view agrees with what sessions actually receive.
-function preserveScrub(text: string, keywords: readonly string[]): string {
-  const scrubbed = scrubLines(text, keywords).text
-  if (scrubbed.trim().length === 0) return text
-  return scrubbed
+// Live request scrub (apply.ts applyRuleScrub/applyCatalogScrub) never installs
+// an emptied description: when every line matches, it keeps the original text.
+// The assembled readback mirrors that preservation so the view agrees with what
+// sessions actually receive, and names the first rule whose keyword matched
+// each dropped line.
+function scrubText(text: string, rules: readonly { rule: string; keywords: readonly string[] }[]): { text: string; dropped: { rule: string; line: string }[] } {
+  const words = rules.flatMap((entry) => [...entry.keywords])
+  const scrubbed = scrubLines(text, words)
+  if (scrubbed.dropped.length === 0 || scrubbed.text.trim().length === 0) return { text, dropped: [] }
+  // Every dropped line matched some rule's keyword, so the owner always exists.
+  const dropped = scrubbed.dropped.flatMap((line) => {
+    const owner = rules.find((entry) => entry.keywords.some((keyword) => containsWholeWord(line, keyword)))
+    return owner === undefined ? [] : [{ rule: owner.rule, line }]
+  })
+  return { text: scrubbed.text, dropped }
 }
 
 async function readAgentEntry(ctx: Context, agent: string): Promise<Agent.Info | undefined> {

@@ -36,9 +36,6 @@ export const Address = Schema.Struct({
   section: Schema.NullOr(Schema.String),
   team: Schema.optionalKey(TeamOwner),
   catalogue: Schema.optionalKey(Catalogue),
-  // An ordinary team member's row: resolved as a member of this team, its own
-  // records per-agent (instructions/model.ts Address.memberOf).
-  memberOf: Schema.optionalKey(TeamOwner),
 }).annotate({ identifier: "Plus.Address" })
 
 export type ItemKind = typeof ItemKind.Type
@@ -551,6 +548,8 @@ export const LogEntry = Schema.Struct({
   target: Schema.String,
   summary: Schema.String,
   revision: Schema.Number,
+  /** A write of several rows: every row it changed in this store. */
+  rows: Schema.optionalKey(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Plus.LogEntry" })
 
 export interface LogInput extends Schema.Schema.Type<typeof LogInput> {}
@@ -744,12 +743,25 @@ export const AssembledSkill = Schema.Struct({
   content: Schema.String,
 }).annotate({ identifier: "Plus.AssembledSkill" })
 
+// One line an off perm row dropped from a tool or catalog description, and the
+// rule that dropped it: `where` is `tool:<id>` or `catalog:<id>`, `rule` the
+// perm item id (`perm:<tool>:<rule>`) whose keyword matched. System text and
+// skills never appear: they are never scrubbed.
+export interface AssembledDropped extends Schema.Schema.Type<typeof AssembledDropped> {}
+export const AssembledDropped = Schema.Struct({
+  where: Schema.String,
+  rule: Schema.String,
+  line: Schema.String,
+}).annotate({ identifier: "Plus.AssembledDropped" })
+
 export interface Assembled extends Schema.Schema.Type<typeof Assembled> {}
 export const Assembled = Schema.Struct({
   agent: Schema.String,
   system: Schema.Array(Schema.String),
   tools: Schema.Array(AssembledTool),
   skills: Schema.Array(AssembledSkill),
+  // Present only when at least one line was dropped.
+  dropped: Schema.optionalKey(Schema.Array(AssembledDropped)),
 }).annotate({ identifier: "Plus.Assembled" })
 
 export interface AgentPermissionRule extends Schema.Schema.Type<typeof AgentPermissionRule> {}

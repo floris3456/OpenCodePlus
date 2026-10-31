@@ -31,7 +31,7 @@ import { stopHandler } from "./api-lifecycle.js"
 import { listHandler } from "./api-query.js"
 import { git, gitRaw, parsePorcelain } from "./git.js"
 import { peek } from "./inbox.js"
-import { wildcardMatch } from "../instructions/permission-catalog.js"
+import { summaryLineLimit, wildcardMatch } from "../instructions/permission-catalog.js"
 import { decide, rowState, shellLine, type PermissionTable } from "../instructions/permission-enforce.js"
 import type { TeamTool } from "./policy.js"
 import { allows, bound, delegationTargets, mayDelegate, mayReach, relationOf, row } from "./reach.js"
@@ -69,6 +69,7 @@ import {
   budgetExhaustion,
   isExpectedHead,
   pathList,
+  parseDuration,
   toolError,
   validateSummary,
   type Check,
@@ -77,6 +78,7 @@ import {
 } from "./schema.js"
 import { checksNote, readProjectChecks, resolveChecks } from "./project-checks.js"
 import { atomicJson, lock, readJson, sanitizeLockKey } from "./store.js"
+import { activeCooldown, cooldownRefusal, cooldownText, providerKey, providerKeyOfRun } from "./cooldown.js"
 import { addAdhoc, claim } from "./tasks.js"
 import { queue } from "./merge.js"
 import { provision, slug, NO_REPOSITORY_PROGRAMS } from "./worktree.js"
@@ -411,6 +413,17 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       "a shorter brief",
     )
 
+  // A wall given by hand replaces the effort's. Parsed and capped before the
+  // adhoc task is written, so a refusal leaves nothing claiming the task.
+  const wallMs = brief.wall === undefined ? undefined : parseDuration(brief.wall)
+  const wallLimit = bound(table, agent, "delegate", "limits.wall")
+  if (wallMs !== undefined && wallLimit !== undefined && wallMs > wallLimit * 60_000)
+    return fail(
+      "E_TOO_LONG",
+      `wall ${brief.wall} is ${Math.round(wallMs / 60_000)} minutes (max ${wallLimit} minutes, team_delegate limits.wall). Shorten it or raise the row (Permissions → Limits → Longest wall at delegation).`,
+      "a shorter wall",
+    )
+
   // A missing check file is writable only when the Brief includes it in scope.
   // This is also the checkpoint check-files row's explicit scope exception.
   const missingChecks = (await missingCheckFiles(repo.root, baseSha, checks)).filter(
@@ -425,6 +438,17 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
     )
   }
 
+  // The member's provider may be cooling after a quota answer (a settlement
+  // wrote cooldowns.json): starting the run would spend a worktree and a step
+  // into a quota that resets in hours. The active model is what the child is
+  // switched to; with none known, the check is skipped rather than guessed.
+  const cooling = providerKey(state.activeModels.get(brief.role))
+  const cooldown = cooling === undefined ? undefined : await activeCooldown(root, cooling, Date.now())
+  if (cooling !== undefined && cooldown !== undefined)
+    return fail("E_COOLDOWN", cooldownRefusal(brief.role, cooling, cooldown, Date.now()), {
+      cooldown: { key: cooling, untilMs: cooldown.untilMs, text: cooldownText(cooldown, Date.now()) },
+    })
+
   if (taskID === undefined) {
     const title = brief.objective.split("\n")[0] ?? ""
     taskID = await addAdhoc(root, {
@@ -438,8 +462,14 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   }
 
   const briefModule = await import("./brief.js")
-  const budget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
+  const effortBudget = briefModule.budgetFor(brief.effort, { effort: policy.effort })
+  const budget = wallMs === undefined ? effortBudget : { ...effortBudget, wallMs }
   const newPaths = await pathsNotAt(repo.root, baseSha, resolved.scope.paths)
+  // A member whose "LFS files in its worktrees" row is `pointers` gets pointer
+  // files, not their content: less disk, and nothing to fetch for a member that
+  // never opens an LFS file. The row is resolved for the member being delegated
+  // to, not the caller, and the Brief then says what its LFS files are.
+  const pointers = state.lfsPointers.has(brief.role)
 
   // A review starts where the delegating run started and ends at the commit
   // the reviewer's worktree starts from; the run's own check results there
@@ -458,15 +488,6 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
           ),
         }
       : undefined
-  const rendered = briefModule.render(resolved, {
-    budget,
-    newPaths,
-    ...(attached === undefined ? {} : { attached }),
-    ...(attachmentLimit === undefined ? {} : { attachmentLimit }),
-    ...(review === undefined ? {} : { review }),
-  })
-  const briefSha = createHash("sha256").update(rendered, "utf8").digest("hex")
-
   // The worktree is created and its starting child run registered in one
   // repository-lock hold. Creating the session activates Plus in the new
   // worktree, and the periodic sweep collects any worktree no run record
@@ -478,7 +499,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
   // and names the project directory it inherits.
   const now = new Date().toISOString()
   const gitCommonDir = await realpath(await git(repo.root, [...NO_REPOSITORY_PROGRAMS, "rev-parse", "--path-format=absolute", "--git-common-dir"]))
-  const { created, value: streaming } = await provision(
+  const { created, value: prepared } = await provision(
     root,
     {
       repoRoot: repo.root,
@@ -487,8 +508,19 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       name: slug(taskID ?? brief.requestID, childID),
       base: baseSha,
       workspaceRoot: root,
+      ...(pointers ? { lfs: "pointers" as const } : {}),
     },
     async (worktree) => {
+      // Rendered here, after `provision` named the directory: the Brief names
+      // the worktree it is read in, so the child never has to ask where it is.
+      const rendered = briefModule.render(resolved, {
+        budget,
+        newPaths,
+        ...(attached === undefined ? {} : { attached }),
+        ...(attachmentLimit === undefined ? {} : { attachmentLimit }),
+        ...(review === undefined ? {} : { review }),
+        worktree: { directory: worktree.dir, ...(pointers ? { lfs: "pointers" as const } : {}) },
+      })
       const opened = startAttempt(
         {
           id: childID,
@@ -508,7 +540,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
           task: taskID,
           parent: parent.id,
           children: [],
-          briefSha,
+          briefSha: createHash("sha256").update(rendered, "utf8").digest("hex"),
           bundle: parent.bundle,
           budget: { turns: budget.turns, tokens: budget.tokens, wallMs: budget.wallMs },
           createdAt: now,
@@ -519,6 +551,7 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
           // directory.
           projectDirectory: parent.projectDirectory ?? parent.directory,
           configDigest: null,
+          ...(pointers ? { lfs: "pointers" as const } : {}),
           history: [],
         },
         { trigger: "delegate" },
@@ -526,9 +559,11 @@ async function delegateHandler(ctx: Context, state: PlusState, input: Brief, cal
       const admitted = attemptTransition(opened, "admitted", "admit")
       const registered = attemptTransition(admitted, "streaming", "first_event")
       await saveRun(root, registered)
-      return registered
+      return { record: registered, rendered }
     },
   )
+  const streaming = prepared.record
+  const rendered = prepared.rendered
 
   // The child run is a session in this same process, created directly in its
   // worktree; no session.move is needed.
@@ -701,10 +736,10 @@ async function uncommittedNamed(directory: string, brief: Brief, attached: strin
 
 async function finishHandler(args: Report, caller: TeamCaller, table: PermissionTable | undefined): Promise<TeamApiResult> {
   const root = teamsDataDir()
-  const assignedBrief = await readJson<{ deliverable?: { kind?: Deliverable["kind"] } }>(path.join(root, "runs", caller.run.id, "brief.json"))
-  validateSummary(args.summary, assignedBrief?.deliverable?.kind)
   const stored = await loadRun(root, caller.run.id)
   if (stored === undefined) return fail("E_INTERNAL", `Unknown run "${caller.run.id}".`, caller.run.id)
+  const assignedBrief = await readJson<{ deliverable?: { kind?: Deliverable["kind"] } }>(path.join(root, "runs", caller.run.id, "brief.json"))
+  validateSummary(args.summary, stored.role, summaryLineLimit(bound(table, stored.role, "finish", "limits.summary"), stored.role))
   const last = stored.attempts[stored.attempts.length - 1]
   if (last === undefined) return fail("E_INTERNAL", `Run ${stored.id} has no attempts to finish.`, stored.id)
   const n = last.n
@@ -1472,6 +1507,8 @@ async function statusOf(ctx: Context, root: string, id: string) {
   const tokensUsed = usage?.used
   const contextTokens = await sessionContextTokens(ctx, record)
   const exhaustion = budgetExhaustion(record, { tokensUsed })
+  const cooling = providerKeyOfRun(record)
+  const cooldown = cooling === undefined ? undefined : await activeCooldown(root, cooling, Date.now())
   return {
     run: record.id,
     role: record.role,
@@ -1479,6 +1516,9 @@ async function statusOf(ctx: Context, root: string, id: string) {
     ...(record.stopReason === undefined ? {} : { stopReason: record.stopReason }),
     attempt: last?.n ?? 0,
     attemptState: last?.state ?? "queued",
+    // The uncommitted work the last attempt left when it settled without a
+    // report, so a parent can apply it or delegate a run that starts from it.
+    patch: last?.patch ?? null,
     task: record.task,
     head,
     base: record.base,
@@ -1516,6 +1556,13 @@ async function statusOf(ctx: Context, root: string, id: string) {
       history: record.history.filter((h): h is BudgetHistoryEntry => "reason" in h),
     },
     retrying: activeRetrying(record.retrying),
+    ...(cooldown === undefined || cooling === undefined
+      ? {}
+      : { cooldown: { provider: cooling, untilMs: cooldown.untilMs, text: cooldownText(cooldown, Date.now()), run: cooldown.run } }),
+    ...(last?.blockedUntil === undefined ? {} : { blockedUntil: last.blockedUntil }),
+    // Why the parent has not been told of this settlement: a dead or terminal
+    // parent, or a failed inbox write. The next idle retries it.
+    notifyError: last?.notifyError ?? null,
   }
 }
 

@@ -3,20 +3,18 @@
 // The writes themselves go through the existing create operations and one
 // guarded layout write (tools.ts duplicateRow).
 //
-// A copy is independent: it never inherits a preset link from the original,
-// and it carries the original's effective configuration as its own records
-// (tools.ts materializes them by pasting the original onto the copy).
+// A copy holds only changes: it follows the preset its original follows (a
+// built-in agent's or a shipped preset's copy follows that shipped preset)
+// and carries the original's own records, re-addressed (ownerRecordsCopy).
+// It is never linked to its original, and nothing it inherits is written.
 
 import { folderSlug } from "./folders.js"
-import { upstreamFor } from "./inherited.js"
-import { parseModelItemId, resolveModelFields, scopedTo, type PresetOrigin, type PresetRef, type RecordScope } from "./model.js"
+import { aboveActiveModelKey, presetOrigin, type Level, type PresetOrigin, type PresetRef, type Scopes, type TeamRef } from "./model.js"
+import { owns, type NodeCopy } from "./owner-records.js"
 import type { LayoutRecords } from "./ops.js"
-import { isValueRow } from "./permission-catalog.js"
-import { rowTeamOf, splitOf, wholeOf } from "./resolve-memo.js"
-import { gateAnswer, requiresGateRecords } from "./rowlinks.js"
-import { resolveModelCompactionFields } from "./model-settings.js"
+import { rowTeamOf, wholeOf } from "./resolve-memo.js"
 import { agentsMdItemId, isAgentsFile, isModelPrompt, toolsItemId } from "./system-order.js"
-import { collectSkeleton, findLazy, lazyPath, type Memo, type MemoInput } from "./tree.js"
+import { lazyPath, type Memo, type MemoInput } from "./tree.js"
 
 export type DuplicateSource =
   | { readonly kind: "folder"; readonly row: string; readonly name: string; readonly parent: string; readonly siblings: readonly string[] }
@@ -146,89 +144,105 @@ function skillIds(memo: Memo): string[] {
 
 type StoredRow = MemoInput["records"][number]
 
-/** The records an owner holds at one level, re-addressed to a new agent id: its row edits, splits, models, rules and links between its rows. */
-export function ownerRecordsCopy(records: readonly StoredRow[], from: RecordScope, agent: string): StoredRow[] {
-  return records.filter((record) => scopedTo(record, from)).map((record) => ({ ...record, agent }))
+export { ownerRecordsCopy, withoutCopyNodes, type NodeCopy } from "./owner-records.js"
+
+/**
+ * Where an agent's or a member's own records go in its copy, most specific
+ * node first. An agent's: its own node (`L/A`), then the Global node a
+ * project agent also reads when an agent of that name is global; the copy has
+ * the same nodes under its own name, and a Global node the copy does not read
+ * (a built-in agent's copy is a project file) folds into its most specific
+ * own node. A member's own node is its team's (`L/A@T`); the Global agent of
+ * its name a project member also reads folds into the copy's own node, so the
+ * copy never writes a stand-alone agent's records.
+ */
+export function ownNodeCopies(
+  scopes: Scopes,
+  source: { readonly level: "project" | "global"; readonly agent: string; readonly team?: TeamRef },
+  copy: { readonly agent: string; readonly team?: TeamRef; readonly global: boolean },
+): NodeCopy[] {
+  if (source.team !== undefined && copy.team !== undefined) {
+    const to = { level: source.level, agent: copy.agent, team: copy.team }
+    return [
+      { from: { level: source.level, agent: source.agent, team: source.team }, to },
+      ...(source.level === "project" && scopes.global.has(source.agent) ? [{ from: { level: "global" as const, agent: source.agent }, to }] : []),
+    ]
+  }
+  const levels = (global: boolean): Level[] => (source.level === "project" && global ? ["project", "global"] : [source.level])
+  const to = levels(copy.global)
+  return levels(scopes.global.has(source.agent)).map((level) => ({
+    from: { level, agent: source.agent },
+    to: { level: to.includes(level) ? level : to[0]!, agent: copy.agent },
+  }))
 }
 
 /**
- * An owner's whole configuration as its copy's own records: every row of the
- * original's tree resolved to the values it shows now (text, on/off, pin, its
- * condition), its models with their effective settings and the active one, its
- * rules, and the links between its rows. Item ids are shared, so a copy needs
- * no remapping: only the owner (level, agent, team) changes. Nothing is left
- * pointing at the original or at a preset either of them followed.
+ * A copy's active models, based on what the copy inherits. An active model
+ * records the one active above it (`basedOn`) to ask for review once that
+ * changes; the original's records name what is above the original, and a
+ * copy can inherit another (a built-in's copy reads no Global node and
+ * follows the shipped preset). So each is based on what the chain above it
+ * resolves now, in `memo`, the store with the copy and its link in it, as
+ * activating it there would record.
  */
-export function materializedOwnerRecords(
-  memo: Memo,
-  source: { readonly row: string; readonly level: RecordScope["level"]; readonly agent: string | null; readonly team?: RecordScope["team"] },
-  copy: { readonly level: RecordScope["level"]; readonly agent: string | null; readonly team?: RecordScope["team"] },
-  updated: string,
-): StoredRow[] {
-  const root = findLazy(memo, source.row)
-  if (root === undefined) return []
-  const owner = { level: source.level, agent: source.agent, ...(source.team === undefined ? {} : { team: source.team }) }
-  const target = { level: copy.level, agent: copy.agent, ...(copy.team === undefined ? {} : { team: copy.team }) }
-  const out: StoredRow[] = []
-  for (const row of collectSkeleton([root])) {
-    const address = row.address
-    if (address === undefined || address.section !== null) continue
-    const item = upstreamFor(memo.ctx.items, address)
-    if (item === undefined) continue
-    const at = { ...target, ...(address.catalogue === undefined ? {} : { catalogue: address.catalogue }) }
-    const model = parseModelItemId(address.item)
-    if (model !== undefined) {
-      const chain = { ...address, models: memo.ctx.models, scopes: memo.ctx.scopes }
-      const fields = { ...resolveModelFields(chain, model), ...resolveModelCompactionFields(chain, model) }
-      out.push({
-        type: "model", ...at, ...model,
-        ...Object.fromEntries(Object.entries(fields).map(([field, resolved]) => [field, resolved?.value])),
-        ...(row.partial().active === true ? { active: true } : {}),
-        updated,
-      })
-      continue
-    }
-    const resolved = wholeOf(memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
-    // Only values the copy would not resolve on its own: a value still coming
-    // from upstream needs no record (the copy reads it too), and skipping it
-    // keeps a copy's store at the size of what actually differs.
-    const own = resolved.fullText ?? resolved.text
-    const text = item.kind === "perm" && !isValueRow(item) ? undefined : row.actions.edit && resolved.textFrom.kind !== "upstream" ? own : undefined
-    const state = row.actions.toggle && resolved.from.kind !== "upstream" ? (resolved.enabled ? "on" as const : "off" as const) : undefined
-    const pin = row.actions.pin && resolved.pinFrom.kind !== "upstream" ? resolved.pinned : undefined
-    if (text !== undefined || state !== undefined || pin !== undefined)
-      out.push({
-        type: "customization", ...at, item: address.item, section: null,
-        ...(text === undefined ? {} : { text }),
-        ...(state === undefined ? {} : { state }),
-        ...(pin === undefined ? {} : { pin }),
-        basedOn: item.fingerprint,
-        ...(text === undefined ? {} : { basedOnText: item.text }),
-        updated,
-      })
-    if (row.actions.split) {
-      const split = splitOf(memo, address.level, address.agent, item, address.catalogue, rowTeamOf(address))
-      if (split.kind === "manual")
-        out.push({ type: "split", ...at, item: address.item, boundaries: split.sections.map((section) => ({ id: section.id, name: section.name, start: section.start })), updated })
-    }
-    // "Shown when": the copy carries the condition the original resolves to,
-    // as its own gate links (rowlinks.ts).
-    const gate = memo.ctx.scopes.rowlinks === undefined ? undefined : gateAnswer(memo.ctx.scopes.rowlinks, memo.ctx.scopes, address)
-    if (row.actions.requires === true && gate !== undefined && gate.ids.length > 0)
-      out.push(...requiresGateRecords([], { ...at }, { item: address.item, section: null }, gate.ids, updated))
-  }
-  // The owner's own rules (a custom rule's patterns and words) and the links
-  // between its rows move to the copy; inherited ones still resolve above it.
-  out.push(...memo.ctx.rules.filter((record) => scopedTo(record, owner)).map((record) => ({ ...record, ...target, updated })))
-  out.push(...(memo.ctx.scopes.rowlinks ?? []).filter((record) => scopedTo(record, owner)).map((record) => ({ ...record, ...target, updated })))
-  return out
+export function copyActiveModelsRebased(copied: readonly StoredRow[], memo: Memo, records: readonly StoredRow[]): StoredRow[] {
+  const models = records.filter((record) => record.type === "model")
+  return copied.map((record) => {
+    if (record.type !== "model" || record.active !== true || record.basedOn === undefined) return record
+    const agents = memo.ctx.agents
+    const upstream = agents.find((entry) => entry.id === record.agent && entry.scope === record.level)?.model ?? agents.find((entry) => entry.id === record.agent)?.model
+    const basedOn = aboveActiveModelKey({
+      models,
+      scopes: memo.ctx.scopes,
+      level: record.level,
+      agent: record.agent,
+      ...(record.team === undefined ? {} : { team: record.team }),
+      ...(record.catalogue === undefined ? {} : { catalogue: record.catalogue }),
+      ...(upstream === undefined ? {} : { upstream }),
+    })
+    return basedOn === record.basedOn ? record : { ...record, basedOn }
+  })
 }
 
-/** A team owner's records (its settings, rules and links), re-addressed to a new team name. */
-export function teamRecordsCopy(records: readonly StoredRow[], level: "project" | "global", from: string, to: string): StoredRow[] {
-  return records
-    .filter((record) => scopedTo(record, { level, agent: null, team: { level, team: from } }))
-    .map((record) => ({ ...record, team: { level, team: to } }))
+/**
+ * The preset a copy follows: the original's own link — the nearest of its own
+ * nodes, as the chain finds it — or, for a built-in agent or a shipped preset
+ * that has none, the shipped preset of that name itself. A copy is never linked
+ * to a user original.
+ */
+export function copyLink(scopes: Scopes, nodes: readonly NodeCopy[], shipped?: PresetRef): PresetRef | undefined {
+  const own = nodes.map((node) => scopes.links?.find((link) => owns(node.from, link) && node.from.agent !== undefined)?.preset).find((ref) => ref !== undefined)
+  if (own !== undefined) return own
+  if (shipped === undefined) return undefined
+  const origin = presetOrigin(scopes, shipped)
+  return origin === "native" || origin === "plus" ? shipped : undefined
+}
+
+const NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/
+
+/**
+ * Why a copy cannot take `name`: a name with characters an id cannot carry,
+ * or one an agent already has. Agent and member copies refuse every agent's
+ * name, built-in ones included (a stand-alone agent of a member's name wins
+ * over the member when both run), and a member's copy a name its team has.
+ */
+export function copyNameRefusal(memo: Memo, source: DuplicateSource, name: string): string | undefined {
+  if (source.kind === "folder" || source.kind === "system" || source.kind === "skill") return undefined
+  const nested = source.kind === "agent" && name.split("/").every((part) => NAME.test(part))
+  if (!NAME.test(name) && !nested)
+    return `name.invalid: "${name}" cannot name a copy: use letters, digits, ".", "_" and "-" (no spaces)`
+  if (source.kind === "agent") {
+    const taken = memo.ctx.agents.find((agent) => agent.id === name && agent.team === undefined)
+    if (taken !== undefined)
+      return `name.taken: an agent named "${name}" exists already${taken.origin === "native" || taken.origin === "special" || taken.origin === "plus" ? " (a built-in agent)" : ""}; give the copy another name`
+  }
+  if (source.kind === "member") {
+    if (memo.ctx.teams.some((entry) => entry.level === source.level && entry.team === source.team && entry.agents.includes(name)))
+      return `name.taken: team ${source.team} has a member named "${name}" already; give the copy another name`
+    if (memo.ctx.agents.some((agent) => agent.id === name && agent.team === undefined))
+      return `name.taken: an agent named "${name}" exists already, and it would run instead of a member of that name; give the copy another name`
+  }
+  return undefined
 }
 
 /** A team's member list order, stored for `group:team:<level>:<team>`, carried to its copy. */

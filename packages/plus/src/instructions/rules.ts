@@ -6,21 +6,7 @@ const ruleIndexes = new WeakMap<readonly RuleRecord[], Map<string, RuleRecord[]>
 export function ownRule(records: readonly RuleRecord[], address: Address): RuleRecord | undefined {
   const parsed = parsePermItemId(address.item)
   if (parsed === undefined) return undefined
-  let index = ruleIndexes.get(records)
-  if (index === undefined) {
-    index = new Map<string, RuleRecord[]>()
-    for (const record of records) {
-      const key = `${record.tool}\u0000${record.id}`
-      const rows = index.get(key)
-      if (rows === undefined) {
-        index.set(key, [record])
-        continue
-      }
-      rows.push(record)
-    }
-    ruleIndexes.set(records, index)
-  }
-  const candidates = index.get(`${parsed.tool}\u0000${parsed.ruleId}`)
+  const candidates = ruleIndexOf(records).get(`${parsed.tool}\u0000${parsed.ruleId}`)
   if (candidates === undefined) return undefined
   const owners = address.level === "defaults" && address.agent === null
     ? (["project", "global", "defaults"] as const).map((level) => ({ ...address, level }))
@@ -36,12 +22,23 @@ export function ownRule(records: readonly RuleRecord[], address: Address): RuleR
 export function ruleAt(records: readonly RuleRecord[], scopes: Scopes, address: Address): RuleRecord | undefined {
   const parsed = parsePermItemId(address.item)
   if (parsed === undefined) return undefined
+  // Most rule rows have no record anywhere: answer before resolving the chain.
+  if (!ruleIndexOf(records).has(`${parsed.tool}\u0000${parsed.ruleId}`)) return undefined
   for (const node of resolutionChain(address, scopes)) {
     if (node.shipped !== undefined) continue
     const record = ownRule(records, { ...node, item: address.item, section: null })
     if (record !== undefined) return record
   }
   return undefined
+}
+
+// Rule records by tool and rule id, once per record list.
+function ruleIndexOf(records: readonly RuleRecord[]): Map<string, RuleRecord[]> {
+  const known = ruleIndexes.get(records)
+  if (known !== undefined) return known
+  const index = Map.groupBy(records, (record) => `${record.tool}\u0000${record.id}`)
+  ruleIndexes.set(records, index)
+  return index
 }
 
 export function ruleItem(item: Item, records: readonly RuleRecord[], scopes: Scopes, address: Address): Item | undefined {

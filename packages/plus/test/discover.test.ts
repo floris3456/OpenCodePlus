@@ -1243,6 +1243,28 @@ test("discovery lists the shipped rules, never the commands, paths and sites a p
   expect(discovered.minedRules).toBeUndefined()
 })
 
+test("a discovered subagent row carries no scrub keywords", async () => {
+  const directory = await tempDir("plus-discover-")
+  const discovered = await discover({
+    ctx: fullContext({
+      directory,
+      agents: [agent("runner", "runner prompt"), agent("fixer-god", "fixer prompt")],
+      tools: [nativeTool("subagent", "Run a subagent.")],
+    }),
+    records: [],
+    baseTemplates: noTemplates,
+    activeBase: noBase,
+  })
+  // Core already lists only the subagents an agent may run (its subagent tool
+  // description filters by permission), so a keyword would cut only prose.
+  const subagent = discovered.items.filter((item) => item.permTool === "subagent")
+  expect(subagent.filter((item) => item.ruleId === item.title).map((item) => [item.ruleId, item.keywords])).toEqual([
+    ["fixer-god", []],
+    ["runner", []],
+  ])
+  expect(subagent.some((item) => (item.keywords ?? []).length > 0)).toBe(false)
+})
+
 test("OpenCodePlus's own plugins list under Plus, and OpenCode's fetch keeps its Sites rows in Code Mode", async () => {
   const directory = await tempDir("plus-discover-")
   const codeMode = (id: string, namespace: string, origin?: { type: "plugin"; name: string }) => ({
