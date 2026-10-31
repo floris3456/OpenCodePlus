@@ -56,7 +56,7 @@ An agent behaves exactly as its rows say; nothing is read from its name. A row i
 - Presets: \`agent:preset:<id>\` (OpenCode: build, plan, general, explore, title; User: yours) and team presets \`team:preset:<team>\` with member presets \`team:preset:<team>:<member>\`. Plus ships the team preset \`basic\` (planner, orchestrator, implementer, reviewer, scout, build-seat). Shipped presets' rows are editable; the presets cannot be deleted.
 - Name a preset \`"<id>"\` (agent preset) or \`"<team>/<member>"\` (member preset, e.g. \`"basic/planner"\`); a team takes a team preset id. \`set({ id, preset })\` links an agent, member, team, entry or user preset (live); \`preset: null\` unlinks.
 - Defaults entries match agents by exact name or pattern (\`*\` or \`%\` = any text, ignoring case): \`agent:defaults:<name>\` for agents, \`team:defaults:<team pattern>:<name>\` for team members. An exact name beats a pattern.
-- Catalogues: a stand-alone agent inherits the Agents catalogue's shared Defaults rows; a team member inherits the Teams catalogue's, then its team's, then its own.
+- Catalogues: a stand-alone agent inherits the Agents catalogue's shared Defaults rows; a team member inherits the Teams catalogue's, then its team's, then its own. Team tools (\`tool:team_*\`) are rows for every agent: a member's come from its member preset; a stand-alone agent's are off until its row, Defaults or a preset turns one on.
 
 ## find
 
