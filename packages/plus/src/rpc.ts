@@ -551,6 +551,8 @@ export const LogEntry = Schema.Struct({
   target: Schema.String,
   summary: Schema.String,
   revision: Schema.Number,
+  /** A write of several rows: every row it changed in this store. */
+  rows: Schema.optionalKey(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Plus.LogEntry" })
 
 export interface LogInput extends Schema.Schema.Type<typeof LogInput> {}

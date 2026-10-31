@@ -2611,16 +2611,18 @@ export type ToolResolve = "keep" | "take" | "edit"
 // query.ts rowTypes, the filter's `type:` values.
 export type RowType = "agent" | "team" | "member" | "preset" | "entry" | "tool" | "param" | "rule" | "skill" | "system" | "base" | "model" | "setting" | "compaction" | "mcp" | "section" | "group"
 // find's parameters compile to filter terms (each value quoted whole) before where's own.
+// A list matches any of its values; inside one string a comma separates values too.
+type OneOrMore<T> = T | readonly T[]
 export interface FindFilter {
-  readonly agent?: string
-  readonly team?: string
-  readonly level?: Level
-  readonly type?: RowType
-  readonly name?: string
+  readonly agent?: OneOrMore<string>
+  readonly team?: OneOrMore<string>
+  readonly level?: OneOrMore<Level>
+  readonly type?: OneOrMore<RowType>
+  readonly name?: OneOrMore<string>
   readonly in?: string
   readonly state?: "on" | "off"
   readonly text?: string
-  readonly is?: "review" | "changed" | "hidden" | "orphaned"
+  readonly is?: OneOrMore<"review" | "changed" | "hidden" | "orphaned">
   readonly where?: string
 }
 export interface FindInput extends FindFilter {
@@ -2631,12 +2633,25 @@ export interface FindInput extends FindFilter {
 }
 // The rows an operation acts on (eachRow): one id, a list, or what a filter matches; never both.
 export interface Rows { readonly id?: string | readonly string[]; readonly find?: FindFilter }
+// Every write (set, edit, reset, delete, split, create, move, link, batch) takes these.
+export interface WriteOptions { readonly dryRun?: boolean; readonly verbose?: boolean }
+// What a write over several rows answers (eachStep).
+export interface Many {
+  readonly status: string // counts, and "written once: revision …" when it wrote
+  readonly changed: readonly string[]
+  readonly already: number // rows that were already so
+  readonly notDone: readonly { readonly id: string; readonly reason: string }[]
+  readonly dryRun?: true
+  readonly revision?: number
+  readonly globalRevision?: number
+  readonly results?: readonly ({ readonly id: string; readonly output: unknown } | { readonly id: string; readonly error: string })[] // verbose
+}
 export interface ReadInput extends Rows { readonly view?: ToolView }
-export interface EditInput extends Rows { readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
+export interface EditInput extends Rows, WriteOptions { readonly oldString: string; readonly newString: string; readonly replaceAll?: boolean }
 // A preset as tools name it: "<id>" (agent preset), "<team>/<member>" (member preset), or the RPC PresetRef.
 export type PresetInput = string | PresetRef
-export interface SetInput extends Rows { readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
-export interface ResetInput extends Rows {}
+export interface SetInput extends Rows, WriteOptions { readonly like?: string; readonly text?: string; readonly state?: "on" | "off"; readonly resolve?: ToolResolve; readonly pin?: boolean; readonly active?: boolean; readonly label?: string; readonly patterns?: readonly string[]; readonly keywords?: readonly string[]; readonly message?: string; readonly preset?: PresetInput | null }
+export interface ResetInput extends Rows, WriteOptions {}
 export interface SplitInput { readonly id: string; readonly boundaries?: readonly Boundary[]; readonly add?: { readonly name: string; readonly text: string } }
 export type CreateInput =
   | { readonly kind: "agent"; readonly id: string; readonly scope?: "project" | "global"; readonly preset?: PresetInput }
@@ -2659,7 +2674,15 @@ export type CreateInput =
 // beside them. A create whose written row is not in the tree fails with
 // create.failed and never returns a hand-formatted id.
 export interface CreatedRow { readonly id: string; readonly item: string }
-export interface DeleteInput extends Rows { readonly confirm: true }
+export interface DeleteInput extends Rows, WriteOptions { readonly confirm: true }
+// create: id and agent also take lists (one create each); kind team also takes
+// members: (string | { id, preset? })[], created right after the team.
+// move: id takes a list; link: id and target take lists (every id × every target).
+export type BatchInput =
+  | ({ readonly changes: readonly ({ readonly op: "set" | "edit" | "reset" | "delete" | "create" | "move" | "link" | "split" } & Record<string, unknown>)[] } & WriteOptions)
+  // The TUI's multi-select form, unchanged: answers { applied, skipped, failed }.
+  | ({ readonly op: "set" | "edit" | "reset" | "split" | "create" | "delete" | "move" | "link"; readonly id: string; readonly selected: readonly string[]; readonly input: Record<string, unknown> } & WriteOptions)
+export interface UndoInput { readonly ts?: string; readonly dryRun?: boolean }
 ```
 
 - `find` returns `{ total, columns, rows }`, one `id | badges | from` line
@@ -2676,15 +2699,41 @@ export interface DeleteInput extends Rows { readonly confirm: true }
 - `read`, `set`, `edit`, `reset` and `delete` take the rows as `id` (one row
   id, answered exactly as before, or a list) or as `find` (`find`'s filter
   parameters, no paging), never both (`tools.ts` `eachRow`). A list or a
-  filter runs the operation once per row, in order, each against the store
-  as the previous one left it, and answers `{ total, failed, results }` with
-  one `{ id, output }` or `{ id, error }` per row: a row that refuses does not
-  stop the rest, and every row that succeeded stays saved. A filter selects
+  filter runs the operation once per row, in order, against one staged store
+  (`instructions/staged.ts`: each row's snapshot carries the rows before it)
+  and writes once at the end: one store revision per store, one log entry
+  per store listing every row in `rows`, one publish. A write answers `Many`
+  (counts, `changed`, `already`, `notDone` with each reason; `verbose` adds
+  each row's own answer); `read` still answers `{ total, failed, results }`.
+  A row that refuses does not stop the rest; if the one write refuses, every
+  row it carried is in `notDone`. An op that writes outside records (an
+  agent, skill or MCP file, a team, a link) first writes what is staged, then
+  runs as itself; a dry run refuses it. `dryRun` stages the same way and
+  writes nothing; a single id with `dryRun` answers its own shape with
+  `dryRun: true`. A filter selects
   what `find` lists, over every page, except that agents' copies are not
   folded (`foundRows`): without `agent` or `team` it reaches each agent's copy
   and the shared Defaults rows, the shared rows first; each copy then stores
   the value as its own, also when it now equals what it inherits. More than 200 rows is
   refused before anything runs; `delete` asks for `confirm: true` once.
+- `batch({ changes })` runs different ops in order against the same staged
+  store and writes once; a later change sees what an earlier one made (a row
+  it created, a state it set). Each change is decoded with its op's own
+  input; an unknown op or invalid input is a `notDone` entry named
+  `<n>. <op> <id>`. The TUI's form (`op`, `id`, `selected`, `input`) is
+  unchanged and now also writes once.
+- `set({ id, like: "<agent>" })` takes that agent's on/off and text (rows
+  that hold text) for the same row, from the row's own level first, then
+  project, global, defaults, preset; only what differs is set; `like` with
+  `state` or `text` is refused. A member is `"<team>/<member>"`.
+- `undo({ ts? })` takes back one log entry's write (both stores' entries
+  share the `ts`; no `ts` is the newest): every record it changed goes back
+  to its value before, except a row changed again since, which keeps the
+  later value and is named in `notUndone` with the write that changed it.
+  The data is `undo.jsonl` beside each `log.jsonl` (appended by every record
+  or layout write: the records it changed, before and after; `undo.ts`).
+  Undo is itself logged (`op: "undo"`), so undo of an undo redoes. Files
+  (agents, skills, teams) are not undone.
 - `read` defaults to view
   `resolved`. On a perm row every view but `record` returns the rule view
   (`tool`, `rule`, `label`, `patterns`, `keywords`, `custom`,

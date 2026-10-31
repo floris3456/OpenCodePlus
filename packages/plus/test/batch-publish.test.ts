@@ -1,5 +1,5 @@
-// A list of Instructions rows must save row by row but publish once at the
-// end: every publish rediscovers and reinstalls everything.
+// A list of Instructions rows is written once at the end, which publishes
+// once: every publish rediscovers and reinstalls everything.
 import { afterEach, expect, test } from "bun:test"
 import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
@@ -110,9 +110,10 @@ test("instructions_set over a list of rows publishes once at the end", async () 
   const ids = ["item:defaults:alpha:tool:browser_preview", "item:defaults:alpha:tool:browser_navigate", "item:defaults:alpha:tool:browser_cpu_cpu-prof"]
 
   // Alpha inherits these three tool rows off, so on is what the write stores.
-  const output = (await runOk(set, { id: ids, state: "on" })) as { total: number; failed: number }
-  expect(output).toMatchObject({ total: 3, failed: 0 })
-  expect(calls).toEqual({ publishFalse: 3, publishDefault: 0, refresh: 1 })
+  const output = (await runOk(set, { id: ids, state: "on" })) as { changed: string[]; notDone: unknown[] }
+  expect(output).toMatchObject({ changed: ids, notDone: [] })
+  // One write for the three rows; that write publishes, with no extra refresh.
+  expect(calls).toEqual({ publishFalse: 0, publishDefault: 1, refresh: 0 })
   const after = await api.snapshot()
   if (!after.ok) throw new Error("snapshot failed")
   const stored = after.value.records.filter((record) => record.type === "customization").filter((record) => record.state === "on")
@@ -121,10 +122,10 @@ test("instructions_set over a list of rows publishes once at the end", async () 
   // A single row still publishes the old way, with no extra refresh.
   const one = (await runOk(set, { id: ids[0], state: "off" })) as { status: string }
   expect(one.status.length).toBeGreaterThan(0)
-  expect(calls).toEqual({ publishFalse: 3, publishDefault: 1, refresh: 1 })
+  expect(calls).toEqual({ publishFalse: 0, publishDefault: 2, refresh: 0 })
 })
 
-test("an interrupted list still publishes the rows it already saved", async () => {
+test("an interrupted list saves nothing: its rows are one write", async () => {
   const { project } = await tempProject()
   const ctx = fullContext({
     directory: project,
@@ -139,8 +140,7 @@ test("an interrupted list still publishes the rows it already saved", async () =
     ...api,
     mutate: (input, options) => {
       calls.writes++
-      if (calls.writes === 1) return api.mutate(input, options)
-      // The second row's write never finishes: the call is interrupted while it waits.
+      // The list's one write never finishes: the call is interrupted while it waits.
       second.resolve()
       return new Promise(() => {})
     },
@@ -156,9 +156,8 @@ test("an interrupted list still publishes the rows it already saved", async () =
   const fiber = Effect.runFork(set.execute({ id: ids, state: "on" }, toolContext()))
   await second.promise
   await Effect.runPromise(Fiber.interrupt(fiber))
-  expect(calls).toEqual({ writes: 2, refresh: 1 })
+  expect(calls).toEqual({ writes: 1, refresh: 0 })
   const after = await api.snapshot()
   if (!after.ok) throw new Error("snapshot failed")
-  const stored = after.value.records.filter((record) => record.type === "customization").filter((record) => record.state === "on")
-  expect(stored.map((record) => record.item)).toEqual(["tool:browser_preview"])
+  expect(after.value.records.filter((record) => record.type === "customization")).toEqual([])
 })

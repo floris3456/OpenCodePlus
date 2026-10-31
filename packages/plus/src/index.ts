@@ -61,6 +61,8 @@ import {
 import { learnMcpTools, loadKnownMcpTools, saveKnownMcpTools, type KnownMcpTools } from "./instructions/mcp-tools.js"
 import { activateModel, addModelRecord, catalogueField, catalogueMatches, fingerprint, hasModelActiveAt, modelItemId, parseMemberOwnerPath, permItemId, presetKey, resolve, resolveActiveModel, resolveModelFields, runtimeScope, sameTeam, scopedTo, scopesOf, type AgentSource, type Catalogue, type CustomizationRecord, type Item, type Level, type ModelRecord, type PresetRef, type RecordScope, type RuleRecord, type Scopes, type SplitRecord, type TeamRef } from "./instructions/model.js"
 import { append, appendForLevel, readBoth } from "./instructions/log.js"
+import { appendUndo, changedSides, planUndo, readUndo } from "./instructions/undo.js"
+import { ruleRecordFor } from "./instructions/rule-record.js"
 import { globalLogPath, globalRecordsPath, globalTeamsPath, projectTeamsPath, resolveInstructionPath, teamsDataDir, userSystemFile } from "./instructions/paths.js"
 import { canonical, ensureCatalogues, linkedProjects, load, loadedFromSave, projectLinks, save, stable, updateGated, type EntryRecord, type FolderRecord, type LinkRecord, type OrderRecord, type PresetRecord, type StoredRecord } from "./instructions/store.js"
 import { deltaRows, keyIdentity, recordIdentity, recordTarget, snapshotRecordOf } from "./instructions/delta.js"
@@ -770,7 +772,24 @@ export interface PlusApi {
   readonly addPresetMember: (input: Plus.PresetAddMemberInput) => Promise<AddPresetMemberResult>
   readonly deletePreset: (input: Plus.PresetDeleteInput) => Promise<DeletePresetResult>
   readonly setLink: (input: Plus.LinkSetInput) => Promise<SetLinkResult>
+  /** Take back one logged write (both stores' entries of its ts; newest when ts is omitted) to the records before it. */
+  readonly undo: (input: { readonly ts?: string; readonly dryRun?: boolean; readonly actor?: Plus.Actor }) => Promise<UndoResult>
 }
+
+export type UndoResult =
+  | {
+      ok: true
+      value: {
+        status: string
+        ts: string
+        undone: string[]
+        notUndone: { id: string; reason: string }[]
+        dryRun?: true
+        revision: number
+        globalRevision: number
+      }
+    }
+  | { ok: false; error: { code: "undo.nothing" | "agent.protected" | "undo.failed"; message: string } }
 
 export interface PlusApiOptions {
   /** Defaults-tier teams. None ship (the shipped teams are Plus team presets); tests inject fixtures. */
@@ -980,7 +999,71 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     }
   }
 
+  const undo = async (input: { readonly ts?: string; readonly dryRun?: boolean; readonly actor?: Plus.Actor }): Promise<UndoResult> => {
+    const directory = await activationDirectory(ctx.location.directory)
+    const config = await read(directory)
+    const entries = await readUndo(directory)
+    const ts = input.ts ?? entries.at(-1)?.ts
+    const target = entries.filter((entry) => entry.ts === ts)
+    if (ts === undefined || target.length === 0)
+      return {
+        ok: false,
+        error: {
+          code: "undo.nothing",
+          message: ts === undefined
+            ? "nothing to undo: no record change is logged yet"
+            : `nothing to undo at ${ts}: that log entry changed no records (agents, skills, teams and other files are not undone: delete or create them again)`,
+        },
+      }
+    const later = entries.filter((entry) => Date.parse(entry.ts) > Date.parse(ts))
+    const seen: { before?: readonly StoredRecord[] } = {}
+    type Decision = { kind: "refusal"; message: string } | { kind: "plan"; plan: ReturnType<typeof planUndo> }
+    const outcome = await updateGated<Decision>(directory, async (loaded) => {
+      const plan = planUndo(loaded.records, target, later)
+      const refusal = protectedRefusal(input.actor, deltaRows(loaded.records, plan.records), config)
+      if (refusal !== undefined) return { result: { kind: "refusal", message: refusal.message } }
+      seen.before = loaded.records
+      if (input.dryRun === true || plan.undone.length === 0) return { result: { kind: "plan", plan } }
+      return { result: { kind: "plan", plan }, records: plan.records }
+    })
+    if (outcome.result.kind === "refusal") return { ok: false, error: { code: "agent.protected", message: outcome.result.message } }
+    const plan = outcome.result.plan
+    const saved = outcome.saved
+    if (saved !== undefined && !saved.ok) return { ok: false, error: { code: "undo.failed", message: "the store changed while undoing; retry" } }
+    const summary = `undo ${ts}: ${plan.undone.length} row${plan.undone.length === 1 ? "" : "s"} back${plan.kept.length === 0 ? "" : `, ${plan.kept.length} changed again since and kept`}`
+    if (saved !== undefined) {
+      await logMutate({
+        directory,
+        actor: normalizeActor(input.actor),
+        before: seen.before ?? [],
+        after: plan.records,
+        projectRevision: saved.projectRevision,
+        globalRevision: saved.globalRevision,
+        projectChanged: saved.changed.project,
+        globalChanged: saved.changed.global,
+        op: "undo",
+        summary,
+      })
+      const next = { ...loadedFromSave(saved, plan.records), protectedAgents: config.protectedAgents }
+      await Effect.runPromise(publishFresh(ctx, state, next, builtins))
+    }
+    const stored = saved?.ok === true ? saved : await load(directory)
+    return {
+      ok: true,
+      value: {
+        status: `${input.dryRun === true ? "Dry run, nothing written: would undo" : "Undid"} ${ts} (${target[0]!.summary}): ${plan.undone.length} row${plan.undone.length === 1 ? "" : "s"} back${plan.kept.length === 0 ? "" : `; ${plan.kept.length} not undone, changed again since`}`,
+        ts,
+        undone: plan.undone,
+        notUndone: plan.kept,
+        ...(input.dryRun === true ? { dryRun: true as const } : {}),
+        revision: stored.projectRevision,
+        globalRevision: stored.globalRevision,
+      },
+    }
+  }
+
   return {
+    undo,
     snapshot: async () => {
       const directory = await activationDirectory(ctx.location.directory)
       const config = await read(directory)
@@ -1942,16 +2025,21 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
         records,
       })
       if (!saved.ok) return invalidLayout("the store changed concurrently; retry")
+      const delta = deltaRows(current.records, records)
       for (const level of ["project", "global"] as const) {
         if (!saved.changed[level]) continue
+        const revision = level === "project" ? saved.projectRevision : saved.globalRevision
+        const rows = canonical(delta.filter((record) => (record.level === "project") === (level === "project")))
         await appendForLevel(directory, level, {
           ts: updated,
           actor,
           op: "layout",
           target: input.target,
           summary: input.status,
-          revision: level === "project" ? saved.projectRevision : saved.globalRevision,
+          revision,
+          ...rowsOf(rows),
         })
+        await journal(directory, level, { ts: updated, revision, actor, summary: input.status, before: current.records, after: records, delta })
       }
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
       return {
@@ -2560,46 +2648,17 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // A preset's rows are not an agent's, whatever its id.
       const refusal = refuseProtectedForTool(input.actor, input.level === "preset" ? null : input.agent, config)
       if (refusal !== undefined) return { ok: false as const, error: refusal }
-      const validated = validateRuleRef(input.tool, input.id, input.label, input.patterns, input.keywords, input.message)
-      if (!validated.ok)
-        return {
-          ok: false as const,
-          error: { code: "rule.invalid" as const, message: validated.reason, data: { tool: input.tool, id: input.id, reason: validated.reason } },
-        }
       const stored = await load(directory)
       const loaded = { ...stored, protectedAgents: config.protectedAgents }
-      const existing = loaded.records.find(
-        (record): record is RuleRecord => record.type === "rule" && record.tool === validated.tool && record.id === validated.id && scopedTo(record, input),
-      )
-      if (existing !== undefined)
-        return {
-          ok: false as const,
-          error: {
-            code: "rule.exists" as const,
-            message: `Rule ${validated.tool}:${validated.id} already exists`,
-            data: { level: existing.level, agent: existing.agent, tool: validated.tool, id: validated.id },
-          },
-        }
-      const next: RuleRecord = {
-        type: "rule",
-        level: input.level,
-        agent: input.agent,
-        ...catalogueField({ agent: input.agent, ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }) }),
-        ...(input.team === undefined ? {} : { team: input.team }),
-        tool: validated.tool,
-        id: validated.id,
-        label: validated.label,
-        patterns: validated.patterns,
-        keywords: validated.keywords,
-        ...(validated.message === undefined ? {} : { message: validated.message }),
-        updated: new Date().toISOString(),
-      }
+      const made = ruleRecordFor(input, loaded.records)
+      if (!made.ok) return made
+      const next = made.record
       const saved = await saveRuleRecords(directory, loaded, [...loaded.records, next])
       if (!saved.ok) {
-        const reason = `Rule ${validated.tool}:${validated.id} changed concurrently; retry`
+        const reason = `Rule ${next.tool}:${next.id} changed concurrently; retry`
         return {
           ok: false as const,
-          error: { code: "rule.invalid" as const, message: reason, data: { tool: validated.tool, id: validated.id, reason } },
+          error: { code: "rule.invalid" as const, message: reason, data: { tool: next.tool, id: next.id, reason } },
         }
       }
       if (saved.changed)
@@ -2608,7 +2667,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
           actor: normalizeActor(input.actor),
           op: "rule.add",
           target: ruleRecordTarget(next),
-          summary: `rule.add ${validated.tool}:${validated.id} (${input.level})`,
+          summary: `rule.add ${next.tool}:${next.id} (${input.level})`,
           revision: saved.revision,
         })
       await Effect.runPromise(refreshAfterFileChange(ctx, state, directory, builtins))
@@ -5245,31 +5304,57 @@ async function logMutate(input: {
   globalRevision: number
   projectChanged: boolean
   globalChanged: boolean
+  /** An undo names itself; a plain write is "mutate". */
+  op?: string
+  summary?: string
 }): Promise<void> {
   const ts = new Date().toISOString()
   const delta = deltaRows(input.before, input.after)
+  const op = input.op ?? "mutate"
   if (input.projectChanged) {
     const rows = canonical(delta.filter((record) => record.level === "project"))
+    const summary = input.summary ?? mutateSummary(rows, "project")
     await appendForLevel(input.directory, "project", {
       ts,
       actor: { ...input.actor },
-      op: "mutate",
+      op,
       target: mutateTarget(rows),
-      summary: mutateSummary(rows, "project"),
+      summary,
       revision: input.projectRevision,
+      ...rowsOf(rows),
     })
+    await journal(input.directory, "project", { ts, revision: input.projectRevision, actor: input.actor, summary, before: input.before, after: input.after, delta })
   }
   if (input.globalChanged) {
     const rows = canonical(delta.filter((record) => record.level !== "project"))
+    const summary = input.summary ?? mutateSummary(rows, "global")
     await append(globalLogPath(), {
       ts,
       actor: { ...input.actor },
-      op: "mutate",
+      op,
       target: mutateTarget(rows),
-      summary: mutateSummary(rows, "global"),
+      summary,
       revision: input.globalRevision,
+      ...rowsOf(rows),
     })
+    await journal(input.directory, "global", { ts, revision: input.globalRevision, actor: input.actor, summary, before: input.before, after: input.after, delta })
   }
+}
+
+// A write of several rows lists every one (the summary is cut at 200 chars).
+function rowsOf(rows: readonly StoredRecord[]): { rows?: string[] } {
+  return rows.length > 1 ? { rows: [...new Set(rows.map(recordTarget))] } : {}
+}
+
+// The undo data of one store write (undo.ts): the records it changed there.
+async function journal(
+  directory: string,
+  store: "project" | "global",
+  input: { ts: string; revision: number; actor: Plus.Actor; summary: string; before: readonly StoredRecord[]; after: readonly StoredRecord[]; delta: readonly StoredRecord[] },
+): Promise<void> {
+  const sides = changedSides(input.before, input.after, input.delta, store)
+  if (sides === undefined) return
+  await appendUndo(directory, { ts: input.ts, store, revision: input.revision, actor: { ...input.actor }, summary: input.summary.slice(0, 200), ...sides })
 }
 
 // File operations and team toggles log to the store that owns the file:

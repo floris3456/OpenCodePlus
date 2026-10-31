@@ -441,6 +441,7 @@ test("activation in a child worktree installs the parent project's agents and to
           "instructions_reset",
           "instructions_set",
           "instructions_split",
+          "instructions_undo",
         ])
         const listed = await Effect.runPromise(ctx.agent.list())
         expect(listed.data.map((agent) => String(agent.id))).toContain("alpha")
