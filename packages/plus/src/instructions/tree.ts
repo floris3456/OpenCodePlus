@@ -3044,7 +3044,7 @@ function lazyTools(
     depth,
     actions: noActions(),
     children: () => {
-      const tools = sortedKind(ctx, "tool", owner).filter((item) => visibleInCatalogue(item, catalogue))
+      const tools = sortedKind(ctx, "tool", owner)
       return [
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:native`, "OpenCode", depth + 1, tools.filter((item) => item.group === "native"), teamRef, catalogue, ownerPath),
         toolOriginGroup(ctx, memo, level, owner, agent, `${prefix}:plus`, "OpenCodePlus", depth + 1, tools.filter((item) => item.group === "plus"), teamRef, catalogue, ownerPath),
@@ -3055,17 +3055,6 @@ function lazyTools(
     },
   })
 }
-
-// Team tools live in the Teams catalogue only. A stand-alone agent never
-// calls them (apply denies the whole namespace for every non-member), so
-// listing them under Agents would advertise rows that can never resolve to a
-// usable tool.
-function visibleInCatalogue(item: Item, catalogue?: Catalogue): boolean {
-  if (catalogueOf(catalogue) === "teams") return true
-  return !(item.namespace === teamNamespace || item.id.startsWith(`tool:${teamNamespace}_`))
-}
-
-const teamNamespace = "team"
 
 // A member's rule rows list under the tool they govern (Permissions → Team
 // role). The rows whose tool is not in this owner's inventory (a tool the host

@@ -230,7 +230,7 @@ export async function apply(ctx: Context, input: ApplyInput): Promise<Applied> {
     input.records.length === 0 &&
     models.length === 0 &&
     !teamRules &&
-    teamNamespaceDenials(input).length === 0 &&
+    teamToolDenials(input).length === 0 &&
     input.agents.every((agent) => plain(input.scopes, agent.id)) &&
     systemOrders(input).length === 0
   )
@@ -1242,7 +1242,7 @@ interface Rule {
   readonly resource: string
   readonly effect: PolicyRule["effect"]
   readonly message?: string
-  /** A row's own refusal (a rule row that is off, the non-member namespace deny): always lands last. */
+  /** A row's own refusal (a rule row or a team tool row that is off): always lands last. */
   readonly refusal?: boolean
   /** An allow-list (shellAllowList, externalAllowList): its closing deny, then what its allow rows open, both before the refusals. */
   readonly allowList?: "closing" | "opening"
@@ -1296,39 +1296,29 @@ function policyRules(input: ApplyInput): { agent: string; action: string; resour
   )
 }
 
-// What hides the team namespace from everyone else (item 4): an agent that is
-// not a member of an enabled team gets one wildcard deny on the namespace's
-// permission action, which is exactly the shape core drops a tool for
-// (`packages/core/src/tool.ts` whollyDisabled matches the action by wildcard
-// against `options.permission`). Nothing is emitted when the namespace is not
-// registered at all, so an inventory without team tools installs nothing.
-function teamNamespaceDenials(input: ApplyInput): { agent: string; action: string; resource: string; effect: "deny" }[] {
-  const registered = input.items.some(
-    (item) => item.kind === "tool" && (item.namespace === teamNamespace || item.id.startsWith(`tool:${teamNamespace}_`)),
-  )
-  if (!registered) return []
-  const members = new Set(input.teamAgents ?? [])
-  return input.agents
-    .filter((agent) => !members.has(agent.id))
-    .map((agent) => ({ agent: agent.id, action: `${teamNamespace}.*`, resource: "*", effect: "deny" as const, refusal: true }))
-}
-
-const teamNamespace = "team"
+const teamToolPrefix = "tool:team_"
 
 // A `tool:team_<name>` row that resolves off refuses the call itself: one
 // core deny on the tool's own permission (`team.<name>`, teams/tools.ts
-// teamOptions), for direct and Code Mode team tools alike. Hiding a direct
-// tool from the model is not a refusal, and the Code Mode denial keyed on the
-// registry id never matches `team.<name>`; the old per-kind team tool ceiling
-// installed exactly this deny. A non-member already has the whole namespace
-// denied (teamNamespaceDenials).
-function teamToolDenials(candidates: readonly ToolCandidate[], members: readonly string[] = []): Rule[] {
-  const prefix = `tool:${teamNamespace}_`
-  return candidates.flatMap((candidate): Rule[] => {
-    if (candidate.enabled || !candidate.item.id.startsWith(prefix) || !members.includes(candidate.agent)) return []
-    const action = `${teamNamespace}.${candidate.item.id.slice(prefix.length)}`
-    return [{ agent: candidate.agent, action, resource: "*", effect: "deny", refusal: true }]
-  })
+// teamOptions), for direct and Code Mode team tools alike, and for every agent
+// (a stand-alone agent's team tool rows are off until something turns them
+// on, model.ts standAloneTeamTool). The deny is also the shape core drops a
+// direct tool for (`packages/core/src/tool.ts` whollyDisabled), so the model
+// never sees a team tool it may not call. Hiding a direct tool from the model
+// is not a refusal, and the Code Mode denial keyed on the registry id never
+// matches `team.<name>`.
+// A team's Special agent (title, summary, compaction) runs under its team's
+// chain but is no member: its team tool rows answer as a stand-alone agent's.
+function teamToolDenials(input: ApplyInput): Rule[] {
+  const tools = input.items.filter((item) => item.kind === "tool" && item.id.startsWith(teamToolPrefix))
+  const members = new Set(input.teamAgents ?? [])
+  return input.agents.flatMap((agent) =>
+    tools.flatMap((item): Rule[] => {
+      const caller = members.has(agent.id) ? agent : { id: agent.id, level: agent.level }
+      if (!applies(item, agent.id) || resolvedFor(item, caller, input).enabled) return []
+      return [{ agent: agent.id, action: `team.${item.id.slice(teamToolPrefix.length)}`, resource: "*", effect: "deny", refusal: true }]
+    }),
+  )
 }
 
 // Disabled-rule scrub keywords per agent: the union of keywords from every
@@ -1712,8 +1702,7 @@ export function sessionPlans(
     ...shellAllowList(input),
     ...externalAllowList(input),
     ...policyRules(input),
-    ...teamNamespaceDenials(input),
-    ...teamToolDenials(candidates, input.teamAgents),
+    ...teamToolDenials(input),
   ]).map((rule) => ({
     agent: rule.agent,
     action: rule.action,

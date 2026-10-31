@@ -1899,7 +1899,7 @@ refused, a requirement demands nothing, a bound is absent.
 | former hidden rule | row now (id, category → label) | read for |
 | --- | --- | --- |
 | every team call needs a kind; caller/target must name one | gone: members are the enabled teams' agents | — |
-| team tool ceiling per kind | `tool:team_<tool>` (the tool rows; off installs the core deny `team.<tool>` `*` for a member, direct and Code Mode alike) | the caller (tool plans, Code Mode denies, core deny) |
+| team tool ceiling per kind | `tool:team_<tool>` (the tool rows; off installs the core deny `team.<tool>` `*` for any agent, direct and Code Mode alike) | the caller (tool plans, Code Mode denies, core deny) |
 | root-run bootstrap only for planner/orchestrator/build | `perm:team_get_context:bootstrap.chat`, Team runs → Start a team run from a chat | the calling member |
 | delegated planner may not delegate | `perm:team_delegate:access.delegated`, Access → Delegate from a delegated run | the caller |
 | implementer target needs `scope.paths` | `perm:team_get_context:accepts.scope-paths`, Briefs it accepts → Scope paths for a commit (`E_PATHS`) | the target |
@@ -2149,20 +2149,23 @@ then refusals. A role row's own order — `deny *`, the allowed paths, the
 never-editable state — is that order, so it survives unchanged, and a role's
 `allow shell *` can no longer undo a shell row that is off.
 
-Team tools appear only under the Teams catalogue's `Tools` inventory; the
-Agents catalogue never lists them. An agent that is not a member of an enabled
-team receives one wildcard deny, `{ action: "team.*", resource: "*", effect:
-"deny" }`, which is the shape core drops a tool for
-(`packages/core/src/tool.ts` `whollyDisabled` matches the action by wildcard
-against `options.permission`). `E_NOT_ACTOR` is therefore never the answer to
-"why can't build call this": `build` never sees a `team_*` tool at all, unless
-it is a member of an enabled team. A member's id says nothing about what it
-may do. A member whose `tool:team_<tool>` row resolves off gets one more
-refusal, `{ action: "team.<tool>", resource: "*", effect: "deny" }` on the
-tool's own permission (`apply.ts` `teamToolDenials`), whether the tool is
-direct (hidden from the model by the tool plan) or Code Mode (denied by its
-registry id): hiding is not refusing, and the registry-id deny never matches
-`team.<tool>`.
+Team tools are rows like any other, for every agent: both the Agents and the
+Teams catalogue list them. A team member's `tool:team_<tool>` row resolves
+through its chain as before (its member preset ships today's team tool set).
+A stand-alone agent's resolves off unless something turns it on — its own row,
+Defaults, or a preset it is linked to; a Native (OpenCode) preset ships nothing
+for it (`model.ts` `standAloneTeamTool`), so an upgrade gives `build` no team
+tool. There is no namespace-wide deny: every agent whose `tool:team_<tool>` row
+resolves off gets one refusal, `{ action: "team.<tool>", resource: "*", effect:
+"deny" }`, on the tool's own permission (`apply.ts` `teamToolDenials`), which
+is the shape core drops a tool for (`packages/core/src/tool.ts`
+`whollyDisabled`), whether the tool is direct (hidden from the model by the
+tool plan) or Code Mode (denied by its registry id): hiding is not refusing,
+and the registry-id deny never matches `team.<tool>`. A team's Special agent
+is no member and answers like a stand-alone agent. An agent's id says nothing
+about what it may do. A stand-alone agent given a team tool that needs a run
+hears `E_NOT_ACTOR: team_<tool> acts on a team run, and this chat is not one.
+<agent> is not a member of an enabled team, so it cannot start one: …`.
 
 A refusal renders as `${code}: ${message}`. When the error carries `accepted`,
 one more line follows: `accepted: ${JSON.stringify(accepted)}`. For example,
@@ -3213,7 +3216,7 @@ permission hook not installed`); the rows still list and show their state.
 #### Rule order (`apply.ts` `orderRules`)
 
 Every Plus rule — rule-kind rows' denies (`permDenials`), role rows'
-`policy` (`policyRules`), the non-member `team.*` deny and a member's
+`policy` (`policyRules`), and an agent's
 `team.<tool>` deny for a team tool row that is off — lands in one
 stable order: first a role row's whole-resource defaults (`*`; `allow`, then
 `ask`, then `deny`), then the role rules that let a specific resource through

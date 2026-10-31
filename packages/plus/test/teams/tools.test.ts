@@ -67,10 +67,19 @@ const removedNames = [
 const notActor = (id: string): string =>
   `E_NOT_ACTOR: This session is not the owner of run ${id}. Call team tools from the run's own chat.`
 
+// A chat that is no team run: what the tool needs, then why this caller has
+// none. A call that names a run says it does not own that run instead.
+const noRun = (tool: string, id?: string): string =>
+  id === undefined ? `E_NOT_ACTOR: ${tool} acts on a team run, and this chat is not one.` : notActor(id)
+
 // A member whose "Start a team run from a chat" row is off (the implementer
-// preset's) hears the same refusal plus the row's own words.
-const noChatRun = (id: string): string =>
-  `${notActor(id)} You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`
+// preset's) hears the row's own words.
+const noChatRun = (tool: string, id?: string): string =>
+  `${noRun(tool, id)} You do not start a team run from a chat; team tools work only inside a run delegated to you (team_get_context → Team runs → Start a team run from a chat).`
+
+// An agent of no enabled team (team tools can be on for any agent) hears that.
+const notMember = (tool: string, agent: string): string =>
+  `${noRun(tool)} ${agent} is not a member of an enabled team, so it cannot start one: a team run starts in the chat of a member of an enabled team (its team_get_context → Team runs → Start a team run from a chat row on), or through that member's team_delegate.`
 
 interface TestToolHarness {
   readonly ctx: Context
@@ -422,10 +431,11 @@ test("a session with no run fails E_NOT_ACTOR with the exact message", async () 
     const ctx = toolContext("ses_team_none", "implementer")
     for (const name of teamNames) {
       const message = await runMessage(need(tools, `team_${name}`), {}, ctx)
-      expect(message).toBe(noChatRun("unknown"))
+      expect(message).toBe(noChatRun(`team_${name}`))
     }
-    // An agent that is no team member keeps the byte-exact message.
-    expect(await runMessage(need(tools, "team_status"), {}, toolContext("ses_team_none_outsider", "build"))).toBe(notActor("unknown"))
+    // An agent that is no team member hears that it is none, for every tool.
+    for (const name of teamNames)
+      expect(await runMessage(need(tools, `team_${name}`), {}, toolContext("ses_team_none_outsider", "build"))).toBe(notMember(`team_${name}`, "build"))
   })
 })
 
@@ -434,7 +444,7 @@ test("a session with no run names the input run id in E_NOT_ACTOR", async () => 
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_none_named", "implementer")
     const message = await runMessage(need(tools, "team_followup"), { run: "w-aaaaaaaaaaaaaaaa", requestID: "r1", prompt: "again" }, ctx)
-    expect(message).toBe(noChatRun("w-aaaaaaaaaaaaaaaa"))
+    expect(message).toBe(noChatRun("team_followup", "w-aaaaaaaaaaaaaaaa"))
   })
 })
 
@@ -596,7 +606,7 @@ test("team_status from a no-run implementer session still fails E_NOT_ACTOR", as
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_prep_impl", "implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
-    expect(message).toBe(noChatRun("unknown"))
+    expect(message).toBe(noChatRun("team_status"))
   })
 })
 
@@ -764,7 +774,7 @@ test("refused gated call writes tool.call with E_NOT_ACTOR and no input", async 
     const tools = await registeredTools()
     const ctx = toolContext("ses_team_audit_refuse", "implementer")
     const message = await runMessage(need(tools, "team_status"), {}, ctx)
-    expect(message).toBe(noChatRun("unknown"))
+    expect(message).toBe(noChatRun("team_status"))
     const lines = await auditLines(root)
     expect(lines).toHaveLength(1)
     const line = lines[0] as Record<string, unknown>
@@ -790,7 +800,7 @@ test("successful gated call writes tool.call with run id and chain verifies acro
       const tools = await registeredTools()
       const refuseCtx = toolContext("ses_team_audit_none", "implementer")
       const refused = await runMessage(need(tools, "team_status"), {}, refuseCtx)
-      expect(refused).toBe(noChatRun("unknown"))
+      expect(refused).toBe(noChatRun("team_status"))
       const okCtx = toolContext(session, "implementer")
       const output = await runSuccess(need(tools, "team_status"), {}, okCtx)
       expect(output).toBeDefined()

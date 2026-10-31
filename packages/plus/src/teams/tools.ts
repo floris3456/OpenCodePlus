@@ -584,16 +584,18 @@ function runGatedInner<A>(
     if (run === undefined) {
       // Root-run bootstrap: a chat of a member whose "Start a team run from a
       // chat" row is on becomes that member's main run on its first team
-      // tool call, then continues through the normal gate. A member whose row
-      // is off hears E_NOT_ACTOR plus the row's own words; every other no-run
-      // call keeps the byte-exact E_NOT_ACTOR message.
+      // tool call, then continues through the normal gate. Every other no-run
+      // call says why it cannot act: a member whose row is off hears the row's
+      // own words, an agent of no enabled team (team tools can be on for any
+      // agent) that it is none.
       const member = table?.teamMembers.has(agent) === true
-      const start = member ? rowState(table, agent, "team_get_context", "bootstrap.chat") : undefined
-      if (member && start?.on !== true) {
+      if (!member) return yield* Effect.fail(new Tool.Error({ message: noRunError(name, input, notMemberWords(agent, table)) }))
+      const start = rowState(table, agent, "team_get_context", "bootstrap.chat")
+      if (start?.on !== true) {
         const words = start?.item.message ?? "you do not start a team run from a chat"
         return yield* Effect.fail(
           new Tool.Error({
-            message: `${notActorError(runIdOf(input) ?? "unknown").message} ${words.charAt(0).toUpperCase()}${words.slice(1)} (team_get_context → Team runs → Start a team run from a chat).`,
+            message: noRunError(name, input, `${words.charAt(0).toUpperCase()}${words.slice(1)} (team_get_context → Team runs → Start a team run from a chat).`),
           }),
         )
       }
@@ -718,6 +720,22 @@ function requireActor(
   if (run === undefined) return Effect.fail(notActorError(runIdOf(input) ?? "unknown"))
   if (run.role !== agent) return Effect.fail(notActorError(runIdOf(input) ?? run.id))
   return Effect.succeed(run)
+}
+
+// A call from a chat that is no team run: what the tool needs (a team run)
+// and why this caller has none. A call that names a run says it is not that
+// run's owner.
+function noRunError(name: TeamTool, input: unknown, why: string): string {
+  const id = runIdOf(input)
+  const head = id === undefined
+    ? `E_NOT_ACTOR: team_${name} acts on a team run, and this chat is not one.`
+    : `${notActorError(id).message}`
+  return `${head} ${why}`
+}
+
+function notMemberWords(agent: string, table: PermissionTable | undefined): string {
+  if (table === undefined) return `Plus has not loaded its Instructions yet, so it cannot tell whether ${agent} is a team member; call again once the chat has started.`
+  return `${agent} is not a member of an enabled team, so it cannot start one: a team run starts in the chat of a member of an enabled team (its team_get_context → Team runs → Start a team run from a chat row on), or through that member's team_delegate.`
 }
 
 function notActorError(id: string): Tool.Error {

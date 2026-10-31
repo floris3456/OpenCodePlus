@@ -2738,6 +2738,18 @@ function createRow(
             : createdMemberRow(memo, level, team, created.value.id),
         `team member "${created.value.id}"`,
       )
+      // An agent preset is allowed (an agent takes an agent or member preset),
+      // but it brings an agent's rows and no team role: say so, so nobody
+      // mistakes it for a member preset.
+      if (preset?.kind === "agent")
+        return {
+          output: {
+            ...created.value,
+            id: row.id,
+            item: row.item,
+            status: `Linked member ${created.value.id} to the agent preset ${preset.id}, not a member preset: it takes ${preset.id}'s rows (its tools, skills and role text), not a team member's role. For a team role pick a member preset ("<team>/<member>", e.g. "basic/implementer").`,
+          },
+        }
       return { output: { ...created.value, id: row.id, item: row.item } }
     }
     if (input.kind === "model") {

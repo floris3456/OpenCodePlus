@@ -730,7 +730,8 @@ test("a tool actor may not relink a team whose relinked members include a protec
 
 // DESIGN §6: a `tool:team_<tool>` row that is off refuses the call itself —
 // one core deny on the tool's own permission `team.<tool>` — for direct and
-// Code Mode team tools alike, as the old per-kind ceiling did.
+// Code Mode team tools alike, as the old per-kind ceiling did, for a team
+// member and a stand-alone agent alike.
 test("a team tool row that is off installs a core team.<tool> deny for direct and Code Mode team tools", async () => {
   const teamTool = (name: string, codemode: boolean): Item => ({
     id: `tool:team_${name}`,
@@ -748,7 +749,7 @@ test("a team tool row that is off installs a core team.<tool> deny for direct an
     const agents = agentHarness([agentInfo("ocp-alice", "")])
     const team = { level: "project" as const, team: "crew" }
     const links: LinkRecord[] =
-      preset === undefined ? [] : [{ type: "link", level: "project", agent: "ocp-alice", team, preset: { kind: "member", team: "basic", id: preset }, updated: UPDATED }]
+      preset === undefined ? [] : [{ type: "link", level: "project", agent: "ocp-alice", ...(member ? { team } : {}), preset: { kind: "member", team: "basic", id: preset }, updated: UPDATED }]
     await apply(context({ agent: agents.domain, session: { hook: () => Effect.succeed({ dispose: Effect.void }) } }), {
       items,
       agents: [{ id: "ocp-alice", level: "project", ...(member ? { team } : {}) }],
@@ -767,9 +768,16 @@ test("a team tool row that is off installs a core team.<tool> deny for direct an
   // No preset: every team tool falls back to off and refuses.
   const bare = await run(undefined, true)
   expect(bare).toEqual(expect.arrayContaining(["deny team.delegate *", "deny team.integrate *", "deny team.check *"]))
-  // A non-member has the whole namespace denied, and nothing per tool.
+  // A stand-alone agent: no namespace deny, its rows govern like a member's.
+  // With no preset every team tool is off and refuses; linked to the
+  // implementer member preset it gets exactly that preset's team tools.
   const outsider = await run(undefined, false)
-  expect(outsider).toContain("deny team.* *")
-  expect(outsider.some((rule) => /^deny team\.(delegate|integrate|check) /.test(rule))).toBe(false)
+  expect(outsider).not.toContain("deny team.* *")
+  expect(outsider).toEqual(expect.arrayContaining(["deny team.delegate *", "deny team.integrate *", "deny team.check *"]))
+  const linked = await run("implementer", false)
+  expect(linked).not.toContain("deny team.* *")
+  expect(linked).toContain("deny team.delegate *")
+  expect(linked).toContain("deny team.integrate *")
+  expect(linked).not.toContain("deny team.check *")
 })
 
