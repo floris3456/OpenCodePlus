@@ -194,22 +194,36 @@ function isDescriptionAlias(candidate: Candidate): boolean {
 // text fold into one: the shared Defaults row when it is one of them (the
 // Teams catalogue's shared row with it), else the first. Answers each kept
 // row and how many agents' copies it stands for.
+//
+// A row holding its own edit never folds into another: a fold's representative
+// would then be the shared Defaults row for a row somebody changed, so a plain
+// find after a write showed "off by default" and hid the edit (c-14). The
+// edited row keeps its own line reading "set here", and the copies that still
+// agree with each other fold as before.
 function foldCopies(state: QueryState, candidates: readonly Candidate[]): Map<Candidate, number> {
   const groups = new Map<string, Candidate[]>()
+  // A row holding its own edit stands alone: it is its own representative.
+  const own = new Set<Candidate>()
   for (const candidate of candidates) {
     const address = candidate.address
     if (address === undefined) continue
+    if (actionsOf(state, candidate).reset) {
+      own.add(candidate)
+      continue
+    }
     const key = JSON.stringify([address.item, address.section, nodeOf(state, candidate)?.badges.state ?? null, resolvedTextOf(state, candidate)])
     const group = groups.get(key)
     if (group === undefined) groups.set(key, [candidate])
     else group.push(candidate)
   }
-  return new Map(
+  const kept = new Map<Candidate, number>(
     [...groups.values()].map((group) => {
-      const kept = group.find((candidate) => candidate.address?.agent === null) ?? group[0]!
-      return [kept, group.filter((candidate) => candidate !== kept && candidate.address?.agent !== null).length]
+      const winner = group.find((candidate) => candidate.address?.agent === null) ?? group[0]!
+      return [winner, group.filter((candidate) => candidate !== winner && candidate.address?.agent !== null).length]
     }),
   )
+  for (const candidate of own) kept.set(candidate, 0)
+  return kept
 }
 
 // The same row at project, global and defaults (its id differs only in the

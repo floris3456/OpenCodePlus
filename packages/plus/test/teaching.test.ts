@@ -412,3 +412,14 @@ test("the release workflow is listed under Plus skills without relabeling unrela
   expect(native.rows).toEqual([])
   await Effect.runPromise(registration.dispose)
 })
+
+// L5 / c-12: an off allow row does not refuse what it matches. The skill said
+// every off rule refuses, which made an agent read an off allow row as a
+// command blocker.
+test("the skill tells an allow row from a deny-list rule", async () => {
+  expect(teachingSkillContent).toContain("A deny-list rule row that is off refuses what it matches")
+  expect(teachingSkillContent).toContain("An allow row")
+  expect(teachingSkillContent).toContain("off, it opens nothing and refuses nothing")
+  expect(teachingSkillContent).toContain("allow row (opens nothing)")
+  expect(teachingSkillContent).not.toContain("A rule row that is off refuses what it matches, whether")
+})

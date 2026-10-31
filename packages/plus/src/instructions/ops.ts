@@ -128,7 +128,9 @@ export interface MoveTarget {
   readonly after?: string | undefined
 }
 
-export type LayoutChange = { readonly target: string; readonly status: string; readonly layout: LayoutRecords } | { readonly refusal: string }
+export type LayoutChange =
+  | { readonly target: string; readonly status: string; readonly layout: LayoutRecords; /** The tree row id of the folder this change created. */ readonly row?: string }
+  | { readonly refusal: string }
 
 export type LayoutPlan = LayoutRecords | { readonly refusal: string }
 
@@ -676,7 +678,14 @@ export function planFolderCreate(memo: MemoInput, layout: LayoutRecords, rowId: 
   if (folder === undefined) return { refusal: "the folder was not created" }
   const orders =
     parent === undefined ? setOrder(created.orders, tab, [...container.children().flatMap((row) => { const token = rowToken(row); return token === undefined ? [] : [local.token(token)] }), folderRef(folder.id)], updated) : created.orders
-  return { target: folderRef(folder.id), status: `Created folder "${folder.name}" in ${tab}`, layout: local.finish({ folders: created.folders, orders }, updated) }
+  return {
+    target: folderRef(folder.id),
+    // The row create answers with is the folder row read, moved, renamed and
+    // deleted: `folder:` alone is a layout ref no tree op finds (a-22).
+    row: `${owner}${FOLDER_MARK}${folder.id}`,
+    status: `Created folder "${folder.name}" in ${tab}`,
+    layout: local.finish({ folders: created.folders, orders }, updated),
+  }
 }
 
 // `owner` is the tab the folder shows in; `from` the tab its layout comes from
@@ -1066,6 +1075,13 @@ export type TeamRowEntity =
       readonly member: string
       readonly registered: boolean
     }
+  | {
+      /** A team's Special agent row: an OpenCode agent every team runs, addressed inside the team. */
+      readonly kind: "special"
+      readonly level: Level
+      readonly team: string
+      readonly agent: string
+    }
 
 export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity | undefined {
   if (node.kind !== "team") return undefined
@@ -1081,6 +1097,13 @@ export function teamRowEntity(input: MemoInput, node: TreeNode): TeamRowEntity |
       members: [...exact.agents],
       ...(exact.overlay === undefined ? {} : { overlay: [...exact.overlay] }),
     }
+  const special = node.id.match(/^team:(project|global|defaults|preset):(.+):special:(.+)$/)
+  if (special !== null) {
+    const level = special[1] as Level
+    const team = teams.find((candidate) => candidate.level === level && candidate.team === special[2])
+    if (team === undefined) return undefined
+    return { kind: "special", level, team: team.team, agent: special[3] ?? "" }
+  }
   if (node.depth !== 3) return undefined
   const parent = teams.find((candidate) =>
     candidate.agents.some((member) => node.id === `team:${candidate.level}:${candidate.team}:${member}`),

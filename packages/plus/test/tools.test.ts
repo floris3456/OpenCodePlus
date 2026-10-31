@@ -3590,6 +3590,8 @@ test("create kind member adds members at project level, refuses a Defaults team,
   expect(memberRows).toContain(subtreeTool)
   round3Capture("member flow: project member subtree rows", { subtreeTool, memberRows }, project)
   const toggled = (await runOk(need(tools, "instructions_set"), { id: subtreeTool, state: "off" })) as { status: string }
+  // The row already resolves off: the set stores off as its own value (the
+  // owner's decision, 2026-10-31), so it is a write and has no "no change" note.
   expect(toggled.status).toBe('Disabled "shell"')
   round3Capture("member flow: subtree row set", { request: { id: subtreeTool, state: "off" }, output: toggled }, project)
   const enabled = await api.setTeamEnabled({ level: "project", team: "crew:one", enabled: true, actor: { type: "tui" } })
@@ -4756,4 +4758,215 @@ test("team tool rows reach every agent, a disabled team's member keeps its role,
   const role = nodes.find((node) => node.id === "item:project:crew/:hand:system:role")
   expect(role?.badges.state).toBe("on")
   expect(nodes.some((node) => node.id.startsWith("section:project:crew/:hand:system:role:"))).toBe(true)
+})
+
+// c-09: a team's Special rows are listed by find --type agent, so `read` must
+// accept the same id instead of answering row.unknown.
+test("read renders a team's Special agent row", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream alpha"), agentInfo("title", "upstream title")],
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project" })
+  const id = "team:project:crew:special:title"
+  const listed = (await runOk(need(tools, "instructions_find"), { type: "agent", limit: 200 })) as { rows: readonly string[] }
+  expect(listed.rows.some((row) => row.startsWith(`${id} |`))).toBe(true)
+  expect(await runOk(need(tools, "instructions_read"), { id })).toMatchObject({
+    kind: "special",
+    level: "project",
+    team: "crew",
+    agent: "title",
+  })
+  expect(await runOk(need(tools, "instructions_read"), { id, view: "record" })).toMatchObject({
+    record: { kind: "special", level: "project", team: "crew", agent: "title" },
+  })
+})
+
+// c-10: a member's own model row named two sources: `stateFrom`/`textFrom`
+// pointed at the member preset (which ships no model) while `from` said
+// "set here". A model row names the one source its candidate has.
+test("a member's own model row names one source, not the preset that has none", async () => {
+  const { project } = await tempProject()
+  const ctx = fullContext({
+    directory: project,
+    tools: [{ id: "bash", description: "Run commands.", options: { codemode: false } }],
+    models: [modelInfo("acme", "nova-2")],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  await runOk(need(tools, "instructions_create"), { kind: "team", team: "crew", level: "project", preset: "basic" })
+  const created = (await runOk(need(tools, "instructions_create"), {
+    kind: "model",
+    providerID: "acme",
+    modelID: "nova-2",
+    level: "project",
+    team: "crew",
+    agent: "implementer",
+  })) as { id: string }
+  expect(created.id).toBe("item:project:crew/:implementer:model:acme/nova-2")
+  const shown = (await runOk(need(tools, "instructions_read"), { id: created.id })) as Record<string, unknown>
+  expect(shown).toMatchObject({
+    source: "project",
+    stateFrom: { kind: "level", level: "project" },
+    textFrom: { kind: "level", level: "project" },
+    from: "set here",
+  })
+  const found = (await runOk(need(tools, "instructions_find"), { team: "crew", agent: "implementer", type: "model", fields: ["id", "from", "source"] })) as {
+    rows: readonly string[]
+  }
+  expect(found.rows).toEqual([`${created.id} | set here | project`])
+})
+
+// c-14: after `set` on one agent's copy, a plain find folded that copy into
+// the shared Defaults row, so the edit read as "off by default" and looked
+// lost. An own edit keeps its own row.
+test("find keeps an agent's own edit out of the shared Defaults row", async () => {
+  const { project } = await tempProject()
+  for (const id of ["alpha", "beta"]) await Bun.write(path.join(project, ".opencode", "agent", `${id}.md`), formatMarkdown({}, "role\n"))
+  const ctx = fullContext({
+    directory: project,
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+    session: { hook: () => Effect.succeed({ dispose: Effect.void }) },
+  })
+  // alpha follows the native build preset, so it inherits the host's git-push
+  // rule on; beta inherits the shared Defaults row's off.
+  await linkToBuild(project, "project", ["alpha"])
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const find = need(tools, "instructions_find")
+  const set = need(tools, "instructions_set")
+  const read = need(tools, "instructions_read")
+  const shared = "item:defaults::perm:shell:git-push"
+  const alpha = "item:project:alpha:perm:shell:git-push"
+  await runOk(set, { id: shared, state: "off" })
+  // alpha's inherited value is on, so switching it off is its own edit — and
+  // its state then equals the shared row's, which is what folded it away.
+  expect(await runOk(read, { id: alpha })).toMatchObject({ enabled: true })
+  await runOk(set, { id: alpha, state: "off" })
+  const rows = (await runOk(find, { name: "git-push", limit: 20 })) as { rows: readonly string[] }
+  expect(rows.rows).toContain(`${alpha} | off | set here`)
+})
+
+// a-18/a-21/d-07/b-08/b-09: the texts the tools answer. A write that saved
+// nothing says so, an unknown clipboard token is refused, a copied owner is
+// named instead of counted, a shipped preset row's save says what it reaches,
+// and a missing create-member field is the field that is missing.
+test("the tool answers say what actually happened", async () => {
+  const { project } = await tempProject()
+  for (const id of ["alpha", "beta"]) await Bun.write(path.join(project, ".opencode", "agent", `${id}.md`), formatMarkdown({}, "role\n"))
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("alpha", "upstream role"), agentInfo("beta", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const create = need(tools, "instructions_create")
+  const set = need(tools, "instructions_set")
+  const read = need(tools, "instructions_read")
+  const find = need(tools, "instructions_find")
+  const clipboard = need(tools, "instructions_clipboard")
+
+  // a-18: a set that writes nothing says it wrote nothing.
+  const rule = rowIds((await runOk(find, { agent: "alpha", type: "rule", where: "tool:shell", limit: 200 })) as { rows: readonly string[] })
+    .find((id) => id.endsWith("perm:shell:git-push"))
+  if (rule === undefined) throw new Error("expected alpha's git-push row")
+  // It already reads off: the first set stores off as its own value (the
+  // owner's decision, 2026-10-31); the same set again stores nothing.
+  const own = (await runOk(set, { id: rule, state: "off" })) as { status: string; revision: number }
+  expect(own.status).toBe('Disabled "Git push"')
+  const nothing = (await runOk(set, { id: rule, state: "off" })) as { status: string; revision: number }
+  expect(nothing.status).toBe('Disabled "Git push" (no change: it was already so)')
+  expect(nothing.revision).toBe(own.revision)
+  // A set that writes does not carry the note.
+  const wrote = (await runOk(set, { id: rule, state: "on" })) as { status: string }
+  expect(wrote.status).toBe('Enabled "Git push"')
+
+  // a-21: an unknown clipboard token is refused, not answered as "cleared".
+  const unknown = await runFail(clipboard, { action: "clear", clipboard: "not-a-clipboard" })
+  expect(unknown.message).toContain("clipboard.unknown")
+
+  // d-07: copying an agent names it, since its whole configuration moves.
+  const copied = (await runOk(clipboard, { action: "copy", ids: ["agent:project:alpha"] })) as { status: string; clipboard: string }
+  expect(copied.status).toBe("agent alpha copied")
+  const pasted = (await runOk(clipboard, { action: "paste", clipboard: copied.clipboard, into: "agent:project:beta" })) as { status: string }
+  expect(pasted.status).toBe("Pasted agent alpha into agent:project:beta")
+
+  // b-08: a shipped preset row's save names the preset it reaches.
+  const presetRow = "item:preset:build:tool:shell"
+  const savedPreset = (await runOk(set, { id: presetRow, state: "off" })) as { status: string }
+  expect(savedPreset.status).toContain('Disabled "shell"')
+  expect(savedPreset.status).toContain("ships with the release")
+  expect(savedPreset.status).toContain("every agent linked to it")
+
+  // b-09: the refusal names only the field that is missing.
+  const noTeam = await runFail(create, { kind: "member", level: "defaults", id: "worker3*" })
+  expect(noTeam.message).toBe("create member requires team")
+  const noId = await runFail(create, { kind: "member", team: "crew", level: "project" })
+  expect(noId.message).toBe("create member requires id")
+  void read
+})
+
+// b-10/c-15: read of a preset or a member answered only an identity stub, so
+// comparing an agent with its preset, or seeing a member's on counts, needed
+// two ~150 kB find dumps. Resolved lists the rows directly under it.
+test("read of a preset, an entry and a member lists their rows", async () => {
+  const { project } = await tempProject()
+  const ctx = fixtureContext(project, {
+    agents: [agentInfo("alpha", "upstream role")],
+    tools: [{ id: "shell", description: "Run shell.", options: { codemode: false } }],
+  })
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const show = need(tools, "instructions_read")
+  const create = need(tools, "instructions_create")
+
+  // A shipped agent preset: its groups, with on counts, beside its identity.
+  const preset = (await runOk(show, { id: "agent:preset:build" })) as { kind: string; rows?: readonly string[]; columns?: string }
+  expect(preset).toMatchObject({ kind: "preset", columns: "id | badges | from" })
+  expect(preset.rows?.map((row) => row.split(" | ")[0])).toEqual([
+    "group:preset:build:models",
+    "group:preset:build:tools",
+    "group:preset:build:skills",
+    "group:preset:build:system",
+    "group:preset:build:settings",
+  ])
+  expect(preset.rows?.some((row) => row.startsWith("group:preset:build:tools |") && row.includes("on"))).toBe(true)
+
+  // A member preset.
+  const member = (await runOk(show, { id: "team:preset:basic:implementer" })) as { kind: string; rows?: readonly string[] }
+  expect(member.kind).toBe("preset")
+  expect(member.rows?.map((row) => row.split(" | ")[0])).toContain("group:preset:basic/:implementer:tools")
+
+  // A Defaults entry.
+  await runOk(create, { kind: "entry", catalogue: "agents", name: "*orchestrator*" })
+  const entry = (await runOk(show, { id: "agent:defaults:*orchestrator*" })) as { kind: string; rows?: readonly string[] }
+  expect(entry.kind).toBe("entry")
+  expect(entry.rows?.map((row) => row.split(" | ")[0])).toEqual([
+    "group:defaults:*orchestrator*:models",
+    "group:defaults:*orchestrator*:tools",
+    "group:defaults:*orchestrator*:skills",
+    "group:defaults:*orchestrator*:system",
+    "group:defaults:*orchestrator*:settings",
+  ])
+
+  // A live team member: its groups and their on counts.
+  await runOk(create, { kind: "team", team: "crew", level: "project", preset: "basic" })
+  const live = (await runOk(show, { id: "team:project:crew:implementer" })) as { kind: string; team: string; rows?: readonly string[] }
+  expect(live).toMatchObject({ kind: "member", team: "crew" })
+  expect(live.rows?.map((row) => row.split(" | ")[0])).toContain("group:project:crew/:implementer:tools")
+  // The record view stays the identity, with no rows: it is the stored record.
+  const record = (await runOk(show, { id: "team:project:crew:implementer", view: "record" })) as { record: Record<string, unknown> }
+  expect(record.record).toMatchObject({ kind: "member", team: "crew", member: "implementer" })
+  expect("rows" in record.record).toBe(false)
 })
