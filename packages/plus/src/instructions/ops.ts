@@ -61,7 +61,6 @@ import {
   setModelWarming,
   shadowOf,
   tombstoneModelRecord,
-  upstreamForEdit,
 } from "./model.js"
 import type {
   Address,
