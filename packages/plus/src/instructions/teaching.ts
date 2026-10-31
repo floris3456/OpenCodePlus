@@ -25,21 +25,71 @@ export const teachingContent =
   "Patterns are core wildcards, not regex; shell resource is the parsed command, so `git *` matches bare `git`. " +
   "More: skill `instructions-tools`."
 
-// Detailed, on-demand guidance keeps the seed instruction within its size budget.
+// The skill's main text: the forms that do more in one call, the ids, each op
+// and its errors. The details are reference files beside it
+// (teachingReferences): installTeaching writes them into the skill's directory,
+// the skill tool lists them, and the agent reads the one a task needs.
 export const teachingSkillContent = `# instructions-tools
 
-\`tools.instructions.*\` (Code Mode) reads and changes the Instructions tree: agent settings, models, compaction, tools, base prompts, skills, system rows, MCP servers, teams and members, and per-tool permission rules. Every write is logged with actor \`tool\`; \`log\` reads the history.
+\`tools.instructions.*\` (Code Mode) reads and changes the Instructions tree: agents, their tools, base prompts, skills, system rows, MCP servers, models, settings and permission rules, teams and members. Every write is logged with actor \`tool\`.
 
-## Quick start
+## Do more in one call
 
-- Find rows: \`find({ agent: "alpha", type: "tool" })\` returns \`{ total, columns, rows }\`, one line per row: \`id | badges | from\`.
-- Read one: \`read({ id })\` gives its \`text\` and where it comes from. On an agent or a group, \`read\` lists the rows under it.
-- Change part of a text: \`edit({ id, oldString, newString })\`, like the edit tool for a file.
-- Replace a whole text: \`set({ id, text })\`. Switch a row: \`set({ id, state: "off" })\`. Drop this level's change: \`reset({ id })\`. Take back a whole call: \`undo({ ts })\` (\`ts\` from \`log\`; none = the newest).
-- Pass ids exactly as \`find\`, \`read\` or \`create\` returned them.
-- Several rows in one call: \`id\` takes a list (\`set({ id: [a, b], state: "off" })\`), or \`find\` takes find's filters instead of \`id\`, and filters take lists (\`set({ find: { agent: ["alpha", "beta"], type: "tool", name: ["edit", "write"] }, state: "off" })\`). The rows are written once (one revision, one log entry) and the answer is short: \`{ status, changed, already, notDone: [{ id, reason }] }\` (\`verbose: true\` adds each row's answer); a row that refuses does not stop the rest. Without \`agent\` or \`team\`, \`find\` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
-- Different changes in one call: \`batch({ changes: [{ op: "create", kind: "agent", id: "lead", scope: "project" }, { op: "set", find: { agent: "lead", type: "tool", name: "edit" }, state: "off" }] })\`: in order, each change sees the earlier ones, row changes written once (a new agent's file is written as it is created). Copy another agent's choice for the same row: \`set({ id, like: "alpha" })\`.
-- Check first: every write takes \`dryRun: true\` and answers what would change, writing nothing.
+- Filters take lists, matching any of them: \`find({ agent: ["build", "plan"], type: "tool", name: ["edit", "write"] })\` (a comma in one string works too: \`agent: "build,plan"\`).
+- Every write takes several rows: \`id\` as a list, or \`find\` (find's filters) instead of \`id\`: \`set({ find: { agent: ["build", "plan", "general"], type: "tool", name: "edit" }, state: "off" })\`. Without \`agent\` or \`team\`, \`find\` reaches each agent's copy. At most 200 rows per call.
+- Several rows are written once (one revision, one log entry). The answer is \`{ status, changed, already, notDone: [{ id, reason }] }\`: a row that refuses is named with its reason and the rest are still written; \`verbose: true\` adds each row's answer.
+- \`dryRun: true\` on any write answers the same way and writes nothing (it refuses, with the reason, what writes its own files: new agents, skills, teams, links).
+- Different changes in one call: \`batch({ changes: [{ op: "create", kind: "agent", id: "lead", scope: "project" }, { op: "set", find: { agent: "lead", type: "tool", name: "edit" }, state: "off" }] })\`, applied in order; a later change sees what an earlier one created.
+- Take another agent's choice for the same rows: \`set({ find: { agent: "lead", type: "skill" }, like: "general" })\` (on/off and text; \`"<team>/<member>"\` for a member).
+- \`undo({ ts? })\` takes back one log entry (one whole call; none = the newest) to the values before it. \`reset({ id })\` only drops this level's change.
+
+## Ids
+
+- \`item:<level>:<owner>:<itemId>\` is a row, e.g. \`item:project:build:tool:read\`. \`<level>\`: \`project\`, \`global\`, \`defaults\` or \`preset\`. \`<owner>\`: the agent id; \`<team>/:<member>\` for a member's row (\`item:project:crew/:implementer:tool:edit\`); \`''\` for the Agents catalogue's shared Defaults row (\`item:defaults::tool:read\`), \`/teams\` for the Teams one.
+- Item ids: \`tool:<id>\`, \`param:<tool>:<name>\`, \`base:<id>\`, \`system:<id>\`, \`skill:<id>\`, \`mcp:<name>\`, \`setting:<field>\`, \`compaction:<field>\`, \`perm:<tool>:<rule>\` (\`perm:shell:git-push\`), \`model:<provider>/<model>[@variant]\`.
+- \`section:…:<sectionId>\`: one section of a row. \`agent:<level>:<id>\`: an agent. \`team:<level>:<name>[:<member>]\`: a team or member. \`group:…\`: a group (Tools, Skills, Models…); \`set({ id, state })\` on it switches every row in it.
+- Pass ids exactly as \`find\`, \`read\` or \`create\` returned them. A new agent's row ids follow from its name.
+
+## Ops
+
+- \`find({ agent?, team?, level?, type?, name?, in?, state?, text?, is?, where?, fields?, limit?, offset? })\` returns \`{ total, columns, rows }\`, one \`id | badges | from\` line per row (\`row.split(" | ")[0]\` is the id); \`limit\` defaults to 40, so compare \`total\`. \`type\`: tool, skill, rule, system, base, model, setting, agent, member, team, section, group… \`name\`: a row's own name (\`edit\`, \`git-push\`), \`*\` any text. \`is\`: \`review\`, \`changed\`, \`overruled\`, \`orphaned\`, \`held-back\`. A row appears once, at its most specific level; without \`agent\`, agents' copies that agree are one row ending \`(+N agents)\`, and \`agent: "*"\` lists each.
+- \`read({ id, view? })\`: \`text\`, \`enabled\` and \`from\`; on an agent or group, the rows under it. Views: \`upstream\`, \`mine\`, \`record\`, \`sections\`, \`diff\` (review), \`assembled\` (an agent's whole prompt; \`part: "names"\` lists its tool and skill ids, \`"system"\`, \`"tools"\` or \`"skills"\` gives one part).
+- \`edit({ id, oldString, newString, replaceAll? })\`: part of a row's text, like the edit tool on a file; \`oldString\` must match \`read\`'s text once.
+- \`set({ id | find, … })\`: \`text\` (whole text), \`state\` on|off (a bare id toggles), \`mode\`, \`active\` (models), \`resolve\` (review), \`preset\` (links; \`null\` unlinks), \`rename\`, \`requires\` (system rows), \`message\`/\`label\`/\`patterns\` (rules), model and compaction fields.
+- \`reset({ id | find })\`, \`delete({ id, confirm: true })\` (user-owned rows only), \`undo({ ts? })\`.
+- \`create({ kind, … })\` returns \`{ id, item }\`. Kinds: agent, team, member, entry, preset, teamPreset, presetMember, skill, base, system, mcp, model, rule, folder; \`id\` and \`agent\` take lists.
+- \`log({ where?, limit?, offset? })\`: newest first, 20 by default; its \`where\` takes \`since:1d\`, \`target:<row id prefix>\`, \`actor:tui|tool|cli\`, \`op:<text>\`.
+- \`move({ id, into | before | after })\`, \`link({ id, target?, type? })\`, \`split({ id, boundaries? | add? })\`, \`clipboard\` (copy, cut, paste, duplicate).
+
+## Where a value comes from
+
+A row an agent does not set comes from its levels (project, global, defaults), its linked preset, the Defaults entries matching its name, Defaults for every agent, then the fallback: OpenCode agents keep their upstream value, other tool and instruction rows are off. A value you set is the row's own, also when it equals what it inherits; \`reset\` makes it follow again. \`from\` says it: "set here", "from preset Basic › orchestrator", "from Defaults (every agent)", "OpenCode", "off by default".
+
+## Permission rules
+
+\`perm:<tool>:<rule>\` rows hang under each tool. A deny-list rule row that is off refuses what it matches; on, it refuses nothing. An allow row (badges \`allow row (opens its patterns)\` / \`allow row (opens nothing)\`, e.g. \`perm:shell:commands.pilotty\`, \`perm:read:where.tmp\`) is the opposite: on, it lets its patterns through; off, it opens nothing and refuses nothing, and its category's fallback row decides (\`perm:shell:commands.*\`, \`perm:read:where.external\`). To let one command through where \`perm:shell:commands.*\` is off: \`create({ kind: "rule", tool: "shell", id: "allow.<name>", label, patterns, agent })\`; where nothing refuses a command, it already runs. Every refusal ends \`(denied by <row id> …)\`: \`set\` that id. Patterns are core wildcards, not regex; \`git *\` also matches a bare \`git\`.
+
+## Errors
+
+\`row.unknown\`: no such id, \`find\` again (the message names the row to use when it can). \`agent.protected\`: the agent is in \`protectedAgents\`. \`delete.unconfirmed\`: add \`confirm: true\`. \`view.unsupported\`: that view needs another kind of row. \`create.failed\`: written but not listed yet, \`find\` before retrying. Other codes: \`reference/create.md\`.
+
+## Reference
+
+Read one of these files (beside this skill: \`<base directory>/reference/…\`) when the task needs it:
+
+| file | what it covers |
+|---|---|
+| \`reference/find.md\` | every id shape, find's filters and columns, \`where\` terms, how rows fold |
+| \`reference/values.md\` | presets, Defaults entries, catalogues, team tools: where each value comes from |
+| \`reference/set.md\` | read views, edit, every \`set\` field per row kind (settings, skills, system rows, Code Mode tools), reset |
+| \`reference/models.md\` | model rows, keep-alive warming, per-model compaction and images |
+| \`reference/permissions.md\` | rule rows in full: deny-list and allow rows, creating rules, refusals |
+| \`reference/review.md\` | review and merge, system order, sections, links, folders |
+| \`reference/create.md\` | create kinds and fields, delete, the CLI, every error code, worked examples |
+`
+
+export const teachingReferences: Readonly<Record<string, string>> = {
+  "reference/find.md": `# Row ids and find
 
 ## Row ids
 
@@ -51,35 +101,46 @@ export const teachingSkillContent = `# instructions-tools
 - Defaults › Models rows: \`item:defaults:/models:modeldefault:*\` (every model) and \`…:modeldefault:<provider>/<model>\`; their fields are \`item:defaults:/models:modelsetting:<field>:<* or provider/model>\`. A model row's fields are the \`modelfield:<field>:<provider>/<model>[@variant]\` rows under it.
 - Model rows sit in built-in groups per provider and AI lab: \`<Models group id>:provider=<provider>\` and \`…:provider=<provider>:lab=<lab>\`, e.g. \`group:project:build:models:provider=opencode:lab=claude\` (\`find({ type: "group", in: "group:project:build:models" })\` lists them); row ids do not change.
 
-## Where a value comes from
+## find
+
+\`find({ agent?, team?, level?, type?, name?, in?, state?, text?, is?, where?, fields?, sort?, limit?, offset? })\`: every parameter given must match; \`limit\` defaults to 40. It returns \`{ total, columns, rows }\`: each row is one line in the order of \`columns\`, by default \`id | badges | from\`, with \`-\` for an empty value, so \`row.split(" | ")[0]\` is its id. \`fields\` picks the columns after \`id\`: \`label\`, \`badges\`, \`from\`, \`source\`, \`tokens\`, \`text\`, \`upstream\`, \`record\`, \`path\`, \`updated\`, \`sections\`. \`agent\`, \`team\`, \`level\`, \`type\`, \`name\` and \`is\` take lists (any of them); in one string a comma separates values too.
+
+- \`agent\`: an agent or team member by name, ignoring case; \`*\` stands for any text; \`_\` is the shared rows. \`team\`: a team's rows and its members'.
+- \`type\`: agent, team, member, preset, entry, tool, param, rule, skill, system, base, model, setting, compaction, mcp, section or group.
+- \`name\`: a row's own name (\`reader\`, \`git-push\`, \`role\`, a section's name), ignoring case; \`*\` stands for any text. A short tool name also matches a namespaced tool ending in it (\`edit\` matches \`instructions_edit\`): check the ids before writing.
+- \`level\`: project, global, defaults or preset. \`in\`: only the rows under that row id (its sections, a tool's parameters and rules).
+- \`state\`: on or off. \`text\`: the text contains it, ignoring case.
+- \`is\`: rows holding an edit. \`review\`: what it was based on changed since (see \`reference/review.md\`); \`changed\`: any (\`reset\` drops it); \`overruled\`: an agent's edit a more specific level sets too, so it never applies; \`orphaned\`: its row is gone. And \`held-back\`: rows and sections that are on, but the agent does not get them because their "shown when" does not hold; \`badges\` names what it needs (\`held back (needs tool:shell on)\`).
+
+One row per thing: a row appears once, at its most specific level (what runs here); \`level\` picks another. Without \`agent\` or \`team\`, agents' copies with the same on/off and text are one row whose \`from\` ends \`(+N agents)\`; \`agent: "*"\` lists each. Sections appear only with \`type: "section"\`, \`name\`, \`in\` or \`is: "held-back"\` (a text match shows on the item row), preset rows only with \`level\` or \`type\` \`preset\`. \`is\` keeps every level's own edit (\`held-back\`: one row per thing, like a plain find). A write with \`find\` instead of \`id\` takes every page, and without \`agent\` or \`team\` each agent's copy (at most 200 rows).
+
+\`where\` adds terms in the Instructions filter's language (the parameters are these terms too): \`key:value\` terms are ANDed; \`!key:value\` negates one; \`a,b\` is OR within one key; \`key:"two words"\` quotes a value; a bare word matches label or id, ignoring case; \`key:>7d\` and \`key:<N\` compare ages and counts. More keys: \`tool\` (a tool's own rows: the tool, its parameters and rules), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`catalogue\` (agents|teams), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\`, \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\` (an id prefix; every level and section), \`label\`, \`updated\`, \`acked\`, \`excluded\`; slower, reading row text: \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`upstream\`.
+
+Examples: an agent's instruction tools \`find({ agent: "plan", type: "tool", where: "namespace:instructions" })\`; one tool's rows for one agent \`find({ in: "<the tool row's id>" })\`; what anyone changed \`find({ is: "changed" })\`; a tool's rules \`find({ type: "rule", where: "tool:shell" })\`.
+
+The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and shows every match in the tree; the CLI takes the parameters as flags (\`opencodeplus instructions find --agent build --type tool --state off\`).
+`,
+  "reference/values.md": `# Where a value comes from
 
 An agent behaves exactly as its rows say; nothing is read from its name. A row it does not set comes, in order, from its own levels (project, global, defaults), its **preset** (linked, live), the **Defaults entries** matching its name, Defaults "for every agent", and last the fallback: OpenCode agents and agent-owned rows keep their upstream value, other tool and instruction rows are **off**; settings and compaction keep the configuration's values. No preset means unlinked, not exempt from Defaults. A value you set is the row's own, also when it equals what the row inherits, and no preset or Defaults change removes it; \`reset({ id })\` makes the row follow again. \`from\` says it in words: "set here", "from preset Basic › orchestrator", "from default *orchestrator*", "from Defaults (every agent)", "OpenCode", "off by default".
 
 - Presets: \`agent:preset:<id>\` (OpenCode: build, plan, general, explore, title; User: yours) and team presets \`team:preset:<team>\` with member presets \`team:preset:<team>:<member>\`. Plus ships the team preset \`basic\` (planner, orchestrator, implementer, reviewer, scout, build-seat). Shipped presets' rows are editable; the presets cannot be deleted.
-- Name a preset \`"<id>"\` (agent preset) or \`"<team>/<member>"\` (member preset, e.g. \`"basic/planner"\`); a team takes a team preset id. \`set({ id, preset })\` links an agent, member, team, entry or user preset (live); \`preset: null\` unlinks.
-- Defaults entries match agents by exact name or pattern (\`*\` or \`%\` = any text, ignoring case): \`agent:defaults:<name>\` for agents, \`team:defaults:<team pattern>:<name>\` for team members. An exact name beats a pattern.
+- Name a preset \`"<id>"\` (agent preset) or \`"<team>/<member>"\` (member preset, e.g. \`"basic/planner"\`); a team takes a team preset id. \`set({ id, preset })\` links an agent, member, team, entry or user preset (live); \`preset: null\` unlinks. \`create({ kind: "agent", id, scope: "project", preset: "basic/orchestrator" })\` makes an agent linked to that member preset.
+- Defaults entries match agents by exact name or pattern (\`*\` or \`%\` = any text, ignoring case): \`agent:defaults:<name>\` for agents, \`team:defaults:<team pattern>:<name>\` for team members. An exact name beats a pattern. \`create({ kind: "entry", catalogue: "agents", name: "*orchestrator*", preset: "basic/orchestrator" })\` then \`find({ level: "defaults", agent: "*orchestrator*", type: "tool" })\` changes every orchestrator at once.
 - Catalogues: a stand-alone agent inherits the Agents catalogue's shared Defaults rows; a team member inherits the Teams catalogue's, then its team's, then its own. Team tools (\`tool:team_*\`) are rows for every agent: a member's come from its member preset; a stand-alone agent's are off until its row, Defaults or a preset turns one on.
-
-## find
-
-\`find({ agent?, team?, level?, type?, name?, in?, state?, text?, is?, where?, fields?, sort?, limit?, offset? })\`: every parameter given must match; \`limit\` defaults to 40. It returns \`{ total, columns, rows }\`: each row is one line in the order of \`columns\`, by default \`id | badges | from\`, with \`-\` for an empty value, so \`row.split(" | ")[0]\` is its id. \`fields\` picks the columns after \`id\`: \`label\`, \`badges\`, \`from\`, \`source\`, \`tokens\`, \`text\`, \`upstream\`, \`record\`, \`path\`, \`updated\`, \`sections\`.
-
-- \`agent\`: an agent or team member by name, ignoring case; \`*\` stands for any text; \`_\` is the shared rows. \`team\`: a team's rows and its members'.
-- \`type\`: agent, team, member, preset, entry, tool, param, rule, skill, system, base, model, setting, compaction, mcp, section or group.
-- \`name\`: a row's own name (\`reader\`, \`git-push\`, \`role\`, a section's name), ignoring case; \`*\` stands for any text.
-- \`level\`: project, global, defaults or preset. \`in\`: only the rows under that row id (its sections, a tool's parameters and rules).
-- \`state\`: on or off. \`text\`: the text contains it, ignoring case.
-- \`is\`: rows holding an edit. \`review\`: what it was based on changed since (see Review); \`changed\`: any (\`reset\` drops it); \`overruled\`: an agent's edit a more specific level sets too, so it never applies; \`orphaned\`: its row is gone. And \`held-back\`: rows and sections that are on, but the agent does not get them because their "shown when" does not hold; \`badges\` names what it needs (\`held back (needs tool:shell on)\`).
-
-One row per thing: a row appears once, at its most specific level (what runs here); \`level\` picks another. Without \`agent\` or \`team\`, agents' copies with the same on/off and text are one row whose \`from\` ends \`(+N agents)\`; \`agent: "*"\` lists each. Sections appear only with \`type: "section"\`, \`name\`, \`in\` or \`is: "held-back"\` (a text match shows on the item row), preset rows only with \`level\` or \`type\` \`preset\`. \`is\` keeps every level's own edit (\`held-back\`: one row per thing, like a plain find).
-
-\`where\` adds terms in the Instructions filter's language (the parameters are these terms too): \`key:value\` terms are ANDed; \`!key:value\` negates one; \`a,b\` is OR within one key; \`key:"two words"\` quotes a value; a bare word matches label or id, ignoring case; \`key:>7d\` and \`key:<N\` compare ages and counts. More keys: \`tool\` (a tool's own rows: the tool, its parameters and rules), \`group\` (native|plus|mcp|project|none), \`server\`, \`namespace\`, \`catalogue\` (agents|teams), \`modified\`, \`review\`, \`source\`, \`overridden\`, \`active\`, \`inactive\`, \`unsupported\`, \`codemode\`, \`pinned\`, \`execute\`, \`can\`, \`has\`, \`id\` (an id prefix; every level and section), \`label\`, \`updated\`, \`acked\`, \`excluded\`; slower, reading row text: \`shadowed\`, \`orphan\`, \`dead\`, \`identical\`, \`tokens\`, \`delta\`, \`overriders\`, \`upstream\`.
-
-The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and shows every match in the tree; the CLI takes the parameters as flags (\`opencodeplus instructions find --agent build --type tool --state off\`).
+- A team member without a stand-alone agent is addressed through its member row, e.g. \`item:global:Basic/:Planner:model:acme/x\`; a flat \`item:global:Planner:model:…\` id is refused with the row to use.
+`,
+  "reference/set.md": `# read, edit, set and reset
 
 ## read
 
-\`read({ id, view? })\`, \`view\` defaults to \`resolved\`: the row's \`text\` (a whole row includes its sections), \`enabled\` and \`from\`, plus \`assembled\` only when what reaches the model differs (a section off, a gate, a marker). On an agent, group or root, \`resolved\` lists the rows under it as \`id | badges | from\` lines. Other views: \`upstream\` (the text above yours), \`mine\` (your stored text), \`record\` (the raw override), \`sections\` (section ids), \`diff\` (original→mine and original→upstream unified diffs, a summary and merge units) and \`assembled\` (an agent's whole prompt; \`agent:\` ids at project, global or defaults only). A perm row shows its \`patterns\`, \`keywords\`, refusal \`message\` and the prompt lines it would scrub.
+\`read({ id, view? })\`, \`view\` defaults to \`resolved\`: the row's \`text\` (a whole row includes its sections), \`enabled\` and \`from\`, plus \`assembled\` only when what reaches the model differs (a section off, a gate, a marker). On an agent, group or root, \`resolved\` lists the rows under it as \`id | badges | from\` lines. Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source. Other views:
+
+- \`upstream\` (the text above yours), \`mine\` (your stored text), \`record\` (the raw override), \`sections\` (section ids).
+- \`diff\`: the original→mine and original→upstream unified diffs, a summary and the merge units (\`reference/review.md\`).
+- \`assembled\`: an agent's whole prompt as the model gets it (\`agent:\` ids at project, global or defaults only): \`system\` (its parts in order), \`tools\` (\`{ id, description }\` each), \`skills\` (\`{ id, content }\` each) and \`dropped\` (every line an off rule cut from a tool description, with the rule). It is large (tens of thousands of characters); \`part\` takes one piece: \`"names"\` (the tool and skill ids and each system part's first line), \`"system"\`, \`"tools"\` or \`"skills"\`.
+
+A perm row shows its \`patterns\`, \`keywords\`, refusal \`message\` and the prompt lines it would scrub. \`read\` also takes an id list or \`find\`; that answers \`{ total, failed, results: [{ id, output } or { id, error }] }\`.
 
 ## edit
 
@@ -87,19 +148,21 @@ The TUI filter takes the same terms (\`agent:build type:tool state:off\`) and sh
 
 ## set and reset
 
-\`set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, subagent?, prompt?, effort? })\` changes one row, or several (Quick start).
+\`set({ id, text?, state?, pin?, active?, resolve?, warming?, interval?, waiting?, subagent?, prompt?, effort? })\` changes one row, or several (\`id\` as a list, or \`find\`).
 
 - \`text\` replaces the row's text (a whole row or one section; saving a whole row replaces this level's section texts inside it). \`state\` is \`on\`|\`off\`; a bare \`set({ id })\` toggles. \`pin\` (\`true\`|\`false\`) pins a Code Mode tool. When a more specific level hides the write, \`status\` names that row.
-- Agent and member rows: \`set({ id, state: "off" })\` (the agent stays editable but cannot run) and \`set({ id, mode: "primary" })\` / \`"subagent"\` / \`"all"\`. \`set({ id, rename })\` renames a Project/Global user agent, team member or team; every record that names it follows.
+- \`like: "<agent>"\` (or \`"<team>/<member>"\`): each selected row takes the on/off, and text where it has one, of the same row for that agent.
+- Agent and member rows: \`set({ id, state: "off" })\` (the agent stays editable but cannot run) and \`set({ id, mode: "primary" })\` / \`"subagent"\` / \`"all"\`. \`set({ id, rename })\` renames a Project/Global user agent, team member or team; every record that names it follows. Enabling a team disables the others.
 - Settings \`item:<level>:<owner>:setting:<field>\`: \`enabled\` and \`hidden\` (pickers only) take \`state\`; \`mode\`, \`description\`, \`color\` (#RRGGBB), \`steps\` (a positive integer) and \`tool-output\` (a positive integer of at least 1000, \`off\`, or empty) take \`text\`; empty \`color\`/\`steps\` clear. \`tool-output\` caps a tool result in tokens: above it the result is saved to a file and the model gets its head and the path (read continues by offset instead; skills, team and instructions results are never capped). Empty means 10000 for a team member and no cap for other agents; \`off\` means no cap.
 - Agent-wide compaction rows take \`text\`: \`compaction:strategy\` (\`auto\`, \`local\` or \`remote\`; auto uses the provider's own compaction where it has one), \`compaction:model\` (\`provider/model#variant\`) and \`compaction:instructions\` (empty is an explicit empty prompt; \`reset\` inherits again).
 - Skills: one row per skill in the owner's Skills group (\`group:<level>:<owner>:skills\`); \`state\` switches it for that agent, and changing its text gives that agent its own copy.
 - System rows and their sections: \`requires: ["tool:<id>", "skill:<id>", "!perm:<tool>:<rule>"]\` sends it only while those rows are on (\`!\`: off) for the agent; \`[]\` always, \`null\` drops this level's condition. A model prompt row (\`system:model/<id>\`) takes \`models\`, the patterns of the models it is sent for.
-- \`reset({ id })\` drops this level's override of the row (a model row: only this level's active flag; an agent row: its settings and compaction controls).
+- Rule rows take \`state\`, \`message\`, \`label\`, \`patterns\` and \`keywords\` (\`reference/permissions.md\`); model rows their fields (\`reference/models.md\`); \`resolve\` settles a review (\`reference/review.md\`).
+- \`reset({ id })\` drops this level's override of the row (a model row: only this level's active flag; an agent row: its settings and compaction controls; a Defaults › Models row: its values). \`undo({ ts })\` instead takes back a whole logged call, also where there was an earlier own value.
 
 Code Mode tools: \`off\` denies the tool, \`text\` rewrites its catalog line (the first line, up to 120 characters), \`pin\` overrides the default; \`tool:execute\` off removes Code Mode, so none of that agent's Code Mode tools can be called even when on (their rows read \`unreachable (execute off)\`): give it execute, or set the tool's Exposure row (\`toolmode:<id>\`) to \`direct\`. Filter with \`codemode:true\`, \`pinned:true|false\`, \`namespace:<name>\`.
-
-## Models
+`,
+  "reference/models.md": `# Models
 
 Each agent has a Models group: the candidates down its chain plus its upstream model.
 
@@ -120,18 +183,18 @@ Compaction, warming and the cold-cache list are model settings at any level; edi
 - \`compactionInput\` / \`compactionOutput\`: early compaction thresholds in tokens (positive whole numbers as strings), or \`"off"\` to suppress an inherited one.
 - \`imageConvert\` (\`webp-90\` default, \`webp-75\`, \`webp-lossless\`, \`original\`), \`imageShrink\` (the longest edge in pixels, 256–65535, default \`2000\`) and \`imagesFull\` (\`compact\` default, \`leave-out\`, \`error\`) apply to images that arrive afterwards.
 - Resolution: the agent's model row chain, then Defaults › this model, Every model and the built-in value; strategy, model and instructions also read the agent-wide \`compaction:*\` rows after the model chain, and Defaults for every agent before the built-in.
-
-## Permission rules
+`,
+  "reference/permissions.md": `# Permission rules
 
 \`perm:<tool>:<rule>\` rows hang under each tool (\`find({ type: "rule", where: "tool:shell" })\`). \`set({ id, state: "off" })\` refuses what the rule matches for that agent and drops matching lines from its tool description (never from system text or skills; a subagent row drops nothing, and \`read({ view: "assembled" })\` lists every dropped line with its rule); \`set({ id, message })\` sets the refusal the model reads; \`label\`, \`patterns\` and \`keywords\` rewrite the rule. \`create({ kind: "rule", tool, id, label, patterns, keywords?, message?, level?, agent? })\` adds one (no \`agent\`: a shared Defaults rule); only user-created rules delete. Definitions are per owner: editing an inherited one makes a local copy. \`edit\` is decided by \`set\`'s rows (Rows it may change, Override text, approval).
 
-A rule row that is off refuses what it matches, whether a level turned it off or nothing sets it: a member with no preset starts with every rule off ("off by default"), so its shell runs no command until \`perm:shell:commands.*\` (Every other command) is on, and its other rules (\`perm:shell:git\`, \`perm:read:git\`, …) refuse until they are on. A rule you \`create\` is a deny-list row: on, it refuses nothing — except a shell rule whose id starts with \`allow.\` (\`create({ kind: "rule", tool: "shell", id: "allow.<name>", … })\`), which is an allow row of Commands: while \`perm:shell:commands.*\` (Every other command) is off, it lets exactly its patterns through while it is on, and the rows that are off (git, rm, …) still refuse inside it. Patterns match the whole command, so a wrapper such as \`timeout *\` lets through any command run under it. Read's \`perm:read:where.tmp\` (Temporary directories) on keeps \`/tmp\` and \`run/plus/tmp\` open for the external_directory check every tool asks, also while \`perm:read:where.external\` is off; edit's Where and glob's and grep's Search roots are rows of their own. Every refusal ends with the row that refused it, as \`(denied by <row id> "<label>": <state>, <where the state comes from>)\`; \`set\` that id to change it.
+A deny-list rule row that is off refuses what it matches, whether a level turned it off or nothing sets it: a member with no preset starts with every rule off ("off by default"), so its shell runs no command until \`perm:shell:commands.*\` (Every other command) is on, and its other rules (\`perm:shell:git\`, \`perm:read:git\`, …) refuse until they are on. An allow row (the badges read \`allow row (opens its patterns)\` / \`allow row (opens nothing)\`, e.g. \`perm:shell:commands.pilotty\` or \`perm:read:where.tmp\`) is the opposite: on, it lets its patterns through; off, it opens nothing and refuses nothing — what it names is then decided by its category's fallback row (\`perm:shell:commands.*\` for commands, \`perm:read:where.external\` for outside paths), so an off allow row never refuses by itself. A rule you \`create\` is a deny-list row: on, it refuses nothing — except a shell rule whose id starts with \`allow.\` (\`create({ kind: "rule", tool: "shell", id: "allow.<name>", … })\`), which is an allow row of Commands: while \`perm:shell:commands.*\` (Every other command) is off, it lets exactly its patterns through while it is on, and the rows that are off (git, rm, …) still refuse inside it. Patterns match the whole command, so a wrapper such as \`timeout *\` lets through any command run under it. Read's \`perm:read:where.tmp\` (Temporary directories) on keeps \`/tmp\` and \`run/plus/tmp\` open for the external_directory check every tool asks, also while \`perm:read:where.external\` is off; edit's Where and glob's and grep's Search roots are rows of their own. Every refusal ends with the row that refused it, as \`(denied by <row id> "<label>": <state>, <where the state comes from>)\`; \`set\` that id to change it.
 
 Patterns are core wildcards, not regex: \`*\` is any run (including spaces), \`?\` one character. For shell the resource is the parsed command, so \`git *\` also matches a bare \`git\`; for file tools the path (\`*.env*\`, \`**/.git/**\`); for opencode_fetch (permission \`webfetch\`) the URL; for subagent and skill the exact id. A \`team_*\` tool row that is off refuses the call.
+`,
+  "reference/review.md": `# Review
 
-## Review
-
-A row whose upstream changed under your text is to review (\`find({ is: "review" })\`). \`read({ id, view: "diff" })\` gives \`mineDiff\`, \`upstreamDiff\`, a \`summary\` and \`merge: { units, text }\`: each unit is \`{ id, kind, yours, upstream, base, included }\` with \`kind\` \`yours\`, \`upstream\`, \`both\` or \`same\`; a \`both\` unit has a second id \`<id>:upstream\`, excluded by default. Then:
+A row whose upstream changed under your text is to review (\`find({ is: "review" })\`). \`read({ id, view: "diff" })\` gives \`mineDiff\` (original→mine) and \`upstreamDiff\` (original→upstream) as unified diffs, a \`summary\` and \`merge: { units }\`. Each unit is \`{ id, kind, included, base, … }\` with \`kind\` \`yours\` (only you changed it: \`yours\`), \`upstream\` (only upstream did: \`upstream\`), \`both\` (both did, differently: \`yours\` and \`upstream\`) or \`same\` (both made the same change: \`yours\`); a side equal to \`base\` is left out. A \`both\` unit has a second id \`<id>:upstream\`, \`{ id, kind, included, of }\`, the upstream side of unit \`of\`, excluded by default. \`included\` marks the default merge: what \`resolve: "merge"\` without \`include\` saves. Then:
 
 - \`set({ id, resolve: "keep" })\` keeps your text, \`resolve: "take"\` follows upstream, and \`resolve: "edit"\` with \`text\` stores new text against upstream;
 - \`set({ id, resolve: "merge", include: [unit ids] })\` saves that merge (no \`include\` = the defaults; a merge equal to upstream is a take). A merge takes \`include\`, not \`text\`.
@@ -145,10 +208,10 @@ Texts compare without their final newline, and units without trailing whitespace
 - \`split({ id, boundaries?, add? })\`: \`boundaries\` \`[{ id, name, start }]\` sets manual sections by character offset; \`add: { name, text }\` appends one. \`move\` on a section reorders it within its item.
 - \`link({ id, target?, type?, enabled? })\`: without \`target\` it lists the row's links; with it, stores one: \`either\` (turning one on switches the other off), \`shownWhenOn\` / \`shownWhenOff\` (the target is sent only while \`id\` is on / off). \`enabled: false\` masks the pair at this level.
 - Folders are display only: \`create({ kind: "folder", name, id: "<tab or folder row id>" })\`, \`set({ id, rename })\`, \`move({ id, into | before | after })\`, \`delete({ id, confirm: true })\`. A tab without folders and order of its own shows the first ones down its chain (preset, Defaults, Global); its first change copies them. When they change above after that, the tab is to review (layout): \`set({ id: "<tab id>", resolve: "keep" })\` keeps yours, \`"take"\` drops yours.
+`,
+  "reference/create.md": `# create and delete
 
-## create and delete
-
-\`create({ kind, ...fields })\` makes one row and returns \`{ id, item }\`; pass that \`id\` to \`read\`, \`set\`, \`edit\` and \`delete\`.
+\`create({ kind, ...fields })\` makes one row and returns \`{ id, item }\`; pass that \`id\` to \`read\`, \`set\`, \`edit\` and \`delete\`. \`id\` and \`agent\` take lists: one row each (e.g. a rule for \`agent: ["a", "b"]\`), answered like a write of several rows. A team is created switched off; \`set\` it \`on\` to enable it.
 
 | kind | fields |
 | agent | \`id\` (+ \`scope\` project\\|global, \`preset\`) |
@@ -156,7 +219,7 @@ Texts compare without their final newline, and units without trailing whitespace
 | base | \`id\`, \`title\`, \`text\` |
 | system | \`id\` (lowercase letters, digits, hyphens), \`text\` (+ \`title\`; \`models\` for a model prompt) |
 | mcp | \`name\`, \`config\` |
-| team | \`team\`, \`level\` project\\|global (+ \`preset\`: a team preset whose members are created) |
+| team | \`team\`, \`level\` project\\|global (+ \`preset\`: a team preset whose members are created; \`members\`: \`["<id>"\` or \`{ id, preset }]\`) |
 | member | \`team\`, \`level\` project\\|global\\|defaults, \`id\` (+ \`preset\`; at defaults, patterns) |
 | entry | \`catalogue\` agents\\|teams, \`name\` (+ \`team\` pattern, \`preset\`) |
 | preset, teamPreset, presetMember | \`id\` (+ \`from\`; presetMember also \`team\`) |
@@ -195,14 +258,34 @@ A tool's writes to an agent listed in \`.opencodeplus/project.json\` \`protected
 6. Scaffold a team: \`create({ kind: "team", team, level: "project", preset: "basic" })\`.
 7. Change every orchestrator: \`create({ kind: "entry", catalogue: "agents", name: "*orchestrator*", preset: "basic/orchestrator" })\` → \`find({ level: "defaults", agent: "*orchestrator*", type: "tool" })\` → \`set({ id, state: "off" })\`.
 8. See what anyone changed: \`find({ is: "changed" })\`; one tool's rows for one agent: \`find({ in: "<the tool row's id>" })\`.
-`
-
+9. The same tools off for several agents, checked first: \`set({ find: { agent: ["plan", "explore"], type: "tool", name: ["edit", "write"] }, state: "off", dryRun: true })\` → the same call without \`dryRun\`.
+10. A new agent with another agent's skills: \`batch({ changes: [{ op: "create", kind: "agent", id: "lead", scope: "project", preset: "basic/orchestrator" }, { op: "set", find: { agent: "lead", type: "skill" }, like: "general" }] })\`.
+`,
+}
 
 const teachingSkillDescription =
-  "Read and write the Instructions tree: filter grammar, views, create/delete, and error meanings for tools.instructions.*."
+  "Read and write the Instructions tree with tools.instructions.*: many rows in one call, ids, every op and its errors; reference files for filters, models, rules and review."
 
-function teachingSkillLocation(): string {
+export function teachingSkillLocation(): string {
   return path.join(globalConfigDir(), "opencodeplus", "skills", teachingSkillId, "SKILL.md")
+}
+
+// Writes the reference files into the skill's directory, where the skill tool
+// lists them (core Skill.prepare) and the agent reads them on demand. They are
+// shipped text, not the person's: each start writes the current release's.
+export async function seedSkillReferences(): Promise<string[]> {
+  const directory = path.dirname(teachingSkillLocation())
+  return Promise.all(
+    Object.entries(teachingReferences).map(async ([name, content]) => {
+      const file = path.join(directory, name)
+      if ((await fs.readFile(file, "utf8").catch(() => undefined)) === content) return file
+      // A read-only config directory must not stop the plugin: the skill
+      // still loads, without its reference files.
+      await fs.mkdir(path.dirname(file), { recursive: true }).catch(() => undefined)
+      await fs.writeFile(file, content).catch(() => undefined)
+      return file
+    }),
+  )
 }
 
 // sha256 of every text an earlier release seeded. A file that still holds one
@@ -234,9 +317,11 @@ export async function seedSystemInstruction(): Promise<{ path: string; content: 
 
 // Registers the seeded file as a plugin instruction source (core keys its
 // system part by the absolute path) and the skill beside it. Returns both
-// registrations so the caller can dispose them together.
+// registrations so the caller can dispose them together. The skill's
+// reference files are written first, so a loaded skill always lists them.
 export async function installTeaching(ctx: Context): Promise<Registration[]> {
   const seeded = await seedSystemInstruction()
+  await seedSkillReferences()
   const instruction = await runRegistration(ctx.instruction.transform, (editor) => {
     if (editor.list().some((file) => file.path === seeded.path)) {
       editor.update(seeded.path, (file) => {
