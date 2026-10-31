@@ -182,6 +182,19 @@ test("a built-in agent's copy follows its shipped preset and folds the Global ed
   expect(differing(await resolvedRows(api, "build"), await resolvedRows(api, "builder"))).toEqual([])
 })
 
+test("a built-in agent's copy keeps one active model: the project's, not a Global one folded onto a project record", async () => {
+  const { api, tools, project } = await fixture()
+  await ok(tools, "create", { kind: "model", providerID: "acme", modelID: "nova-3", level: "global", agent: "build" })
+  await ok(tools, "set", { id: "item:global:build:model:acme/nova-3", active: true })
+  await ok(tools, "create", { kind: "model", providerID: "acme", modelID: "nova-2", level: "project", agent: "build" })
+  await ok(tools, "set", { id: "item:project:build:model:acme/nova-2", active: true })
+  await ok(tools, "set", { id: "item:project:build:model:acme/nova-3", warming: "45m" })
+  await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:project:build"], name: "builder" })
+  const actives = (await load(project)).records.filter((record) => record.type === "model" && record.agent === "builder" && record.active === true)
+  expect(actives.map((record) => record.type === "model" ? record.modelID : undefined)).toEqual(["nova-2"])
+  expect(differing(await resolvedRows(api, "build"), await resolvedRows(api, "builder"))).toEqual([])
+})
+
 test("a member's copy follows its member's preset and carries its own records; a team's copy every member's, row for row", async () => {
   const { api, tools, project } = await fixture()
   await ok(tools, "create", { kind: "team", team: "crew", level: "project" })

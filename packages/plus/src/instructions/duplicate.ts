@@ -193,7 +193,9 @@ export function ownNodeCopies(
  * first, the one the chain reads.
  */
 export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly NodeCopy[], updated: string): StoredRow[] {
-  const merged = new Map<string, { record: StoredRow; rank: number }>()
+  // `active`: the original node a model's active flag comes from, which a merge
+  // can make another than the node of the record it lands on.
+  const merged = new Map<string, { record: StoredRow; rank: number; active?: number }>()
   nodes.forEach((node, rank) => {
     if (sameNode(node.from, node.to)) return
     records.forEach((record) => {
@@ -201,21 +203,22 @@ export function ownerRecordsCopy(records: readonly StoredRow[], nodes: readonly 
       const next = readdressed(record, node.to, updated)
       const key = recordIdentity(next)
       const known = merged.get(key)
-      if (known === undefined) return void merged.set(key, { record: next, rank })
+      const active = next.type === "model" && next.active === true ? rank : undefined
+      if (known === undefined) return void merged.set(key, { record: next, rank, ...(active === undefined ? {} : { active }) })
       // A second record at one address of the same node is one the chain never reads.
       if (known.rank === rank && next.type !== "model") return
-      merged.set(key, { ...known, record: mergedRecord(known.record, next) })
+      merged.set(key, { ...known, record: mergedRecord(known.record, next), ...(known.active === undefined && active !== undefined ? { active } : {}) })
     })
   })
   // One active model per node: the most specific original node's.
   const active = new Map<string, number>()
   for (const entry of merged.values())
-    if (entry.record.type === "model" && entry.record.active === true) {
+    if (entry.active !== undefined) {
       const owner = ownerKey(entry.record)
-      active.set(owner, Math.min(active.get(owner) ?? Infinity, entry.rank))
+      active.set(owner, Math.min(active.get(owner) ?? Infinity, entry.active))
     }
   return [...merged.values()].map((entry) =>
-    entry.record.type === "model" && entry.record.active === true && active.get(ownerKey(entry.record)) !== entry.rank
+    entry.record.type === "model" && entry.record.active === true && active.get(ownerKey(entry.record)) !== entry.active
       ? withoutKeys(entry.record, ["active", "basedOn"])
       : entry.record,
   )
