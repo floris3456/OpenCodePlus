@@ -90,16 +90,8 @@ export function contextOf(input: MemoInput): BuildContext {
     listing,
     labels: presetLabels(listing),
     entries: input.entries ?? [],
-    // Every reader of the tree sees an edit equal to what its row inherits as none (inherited.ts).
-    customizations: withoutInherited({
-      items,
-      rules,
-      customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
-      splits,
-      scopes,
-      agents: input.agents,
-      teams: input.teams ?? [],
-    }),
+    // As stored: a value equal to what its row inherits is an own value too.
+    customizations: input.records.filter((record): record is CustomizationRecord => record.type === "customization"),
     splits,
     models: input.records.filter((record): record is ModelRecord => record.type === "model"),
     rules,
@@ -114,13 +106,18 @@ export function contextOf(input: MemoInput): BuildContext {
 }
 
 /**
- * Records as they are stored: the customizations without what their rows
- * already inherit (inherited.ts), the rest as they are. A write compares and
- * sends these, so it stores no edit equal to its row's inherited value.
+ * A copy's records (a paste or a duplicate) without the copied values their
+ * rows already inherit (inherited.ts): only customizations not in `before`,
+ * the ones the copy wrote, are looked at; every other record stays as stored,
+ * so a copy never drops anyone's own change.
  */
-export function storedRecords<R extends { readonly type: string }>(input: MemoInput, records: readonly R[]): (R | CustomizationRecord)[] {
+export function withoutCopiedInherited<R extends { readonly type: string }>(input: MemoInput, records: readonly R[], before: ReadonlySet<unknown>): (R | CustomizationRecord)[] {
+  const customizations = records.filter((record): record is R & CustomizationRecord => record.type === "customization")
+  if (customizations.every((record) => before.has(record))) return [...records]
   const read = records.filter((record): record is R & MemoInput["records"][number] => memoTypes.has(record.type))
-  return [...records.filter((record) => record.type !== "customization"), ...contextOf({ ...input, records: read }).customizations]
+  const ctx = contextOf({ ...input, records: read })
+  const kept = withoutInherited({ ...ctx, customizations, copied: (record) => !before.has(record) })
+  return [...records.filter((record) => record.type !== "customization"), ...kept]
 }
 
 const memoTypes = new Set(["customization", "split", "model", "rule", "rowlink"])

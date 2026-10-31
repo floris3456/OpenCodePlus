@@ -787,19 +787,23 @@ export interface Resolved {
   without raising it on sibling sections.
 - Roll-up: `countReview(entries, prefix)` counts reviewable descendants under
   an address prefix so ancestors can display "N to review".
-- A value equal to what the row inherits is no edit (`inherited.ts`
-  `withoutInherited`): the memo's customizations drop a text, state or pin
-  (whole rows only) when no row that reads it resolves differently without
-  it, and a record left with nothing goes. Readers are known only for an
-  existing agent's own records (its level and the more specific ones, alone,
-  as a team member and in the Teams catalogue) and a shared Defaults row's
-  text and pin; preset, team-scoped, pattern-entry and orphan records stay as
-  stored. What reaches the model is unchanged. Writes store records in that
-  form (`storedRecords`): the TUI's `persist` sends its whole set so, and a
-  tool write compares both sides so, which stores no equal value and leaves
-  other rows' stored copies alone (a tool may not touch a protected agent's
-  rows). On/off has two values, so a change above can only meet an override
-  that differed from it: new writes never leave a state or pin to review.
+- Own changes win. A value set on a row is stored and read as that row's own,
+  also when it equals what the row inherits; only `reset` makes the row follow
+  again (its status names what it follows now). The memo reads records as
+  stored, and a write sends only the records its op changed: a preset,
+  Defaults or upstream change never removes or overrides a linked row's own
+  record, also when it makes the two equal (the own state or pin is then to
+  review, since the value above changed). Records an earlier release stored
+  equal to their inherited value count as own values.
+- Copies are the exception (`resolve-memo.ts` `withoutCopiedInherited`,
+  `inherited.ts` `withoutInherited`): of the records a paste or a duplicate
+  writes, a text, state or pin (whole rows only) is not stored when no row
+  that reads it resolves differently without it, so the copy's rows keep
+  following what they inherit. Records the copy did not write stay as they
+  are. Readers are known only for an existing agent's own records (its level
+  and the more specific ones, alone, as a team member and in the Teams
+  catalogue) and a shared Defaults row's text and pin; preset, team-scoped,
+  pattern-entry and orphan records are stored as copied.
 
 ```ts
 export interface ThreeWay {
@@ -2675,8 +2679,8 @@ export interface DeleteInput extends Rows { readonly confirm: true }
   stop the rest, and every row that succeeded stays saved. A filter selects
   what `find` lists, over every page, except that agents' copies are not
   folded (`foundRows`): without `agent` or `team` it reaches each agent's copy
-  and the shared Defaults rows, the shared rows first, so a copy changed after
-  its shared row inherits the change and stores nothing. More than 200 rows is
+  and the shared Defaults rows, the shared rows first; each copy then stores
+  the value as its own, also when it now equals what it inherits. More than 200 rows is
   refused before anything runs; `delete` asks for `confirm: true` once.
 - `read` defaults to view
   `resolved`. On a perm row every view but `record` returns the rule view

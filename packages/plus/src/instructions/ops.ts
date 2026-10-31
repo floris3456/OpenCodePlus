@@ -1672,20 +1672,9 @@ export function saveText(input: MemoInput, rowId: string, text: string, sharedMe
         const newSecText = slice(text, sec)
         const prevSec = currentSplit.sections.find((s) => s.id === sec.id)
         const prevSecText = prevSec !== undefined ? slice(currentText, prevSec) : undefined
-        if (prevSecText === undefined || newSecText.trimEnd() !== prevSecText.trimEnd()) {
-          const upstreamSecText = upstreamForEdit({
-            upstream: chain.upstream,
-            records: customizations,
-            splits: chain.splits,
-            scopes: memo.ctx.scopes,
-            address: { ...chain.address, section: sec.id },
-          })
-          if (newSecText.trimEnd() === upstreamSecText.trimEnd()) {
-            customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: null }, chain.upstream, memo.ctx.scopes, chain.splits)
-          } else {
-            customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: newSecText }, chain.upstream, memo.ctx.scopes, chain.splits)
-          }
-        }
+        // A section changed back to what it inherits is an own value too; reset follows again.
+        if (prevSecText === undefined || newSecText.trimEnd() !== prevSecText.trimEnd())
+          customizations = merge(customizations, { ...chain.address, section: sec.id }, { text: newSecText }, chain.upstream, memo.ctx.scopes, chain.splits)
       }
 
       for (const prevSec of currentSplit.sections) {
@@ -1836,11 +1825,15 @@ export function reset(input: MemoInput, rowId: string, sharedMemo?: Memo): OpRes
     (link.link === "shownWhenOn" || link.link === "shownWhenOff" || link.link === "shownAlways") &&
     link.target === chain.address.item &&
     link.targetSection === chain.address.section
+  // Say what the row follows now, from this one row's chain (no tree rebuild).
+  const after = resolve({ upstream: chain.upstream, records: next, splits: chain.splits, scopes: memo.ctx.scopes, address: chain.address })
+  const own = presetOfAddress(memo.ctx.listing, chain.address)
+  const from = fromLabel(after.from, { labels: memo.ctx.labels, level: chain.address.level, ...(own === undefined ? {} : { own }) })
   return {
     records: next,
     splits: chain.splits,
     rowlinks: (memo.ctx.scopes.rowlinks ?? []).filter((link) => !localGate(link)),
-    status: `Reset "${node.label}" to default`,
+    status: `Reset "${node.label}": it follows what it inherits again (${after.enabled ? "on" : "off"}, ${from})`,
     retryHint: `reset "${node.label}" against a stale revision; retry to apply`,
   }
 }

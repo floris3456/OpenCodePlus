@@ -89,7 +89,7 @@ import { ownRule, ruleAt, ruleItem } from "./instructions/rules.js"
 import type { Memo, MemoInput, TreeNode } from "./instructions/tree.js"
 import { isModelPrompt } from "./instructions/system-order.js"
 import { contextOfSnapshot, memoInputOf, presetOf } from "./instructions/snapshot.js"
-import { rowlinksOf, storedRecords } from "./instructions/resolve-memo.js"
+import { rowlinksOf, withoutCopiedInherited } from "./instructions/resolve-memo.js"
 import { markerIn } from "./instructions/requires.js"
 import { sameEndpoint, sameOwnerView, writeRowlink, rowlinkView, type RowlinkEndpoint, type RowlinkRecord, type RowlinkType } from "./instructions/rowlinks.js"
 import { deltaOf, snapshotRecordOf } from "./instructions/delta.js"
@@ -975,8 +975,8 @@ function eachRow<Input extends { readonly id?: string | readonly string[]; reado
 
 // The rows a find filter selects: every row find lists (all pages), with each
 // agent's copy rather than one row standing for them, and the shared Defaults
-// rows first, so an agent's copy changed after its shared row inherits the
-// change instead of storing its own.
+// rows first. Each copy then stores the value as its own, as a set of that row
+// alone does.
 function foundRows(api: PlusApi, filter: typeof FindFilter.Type): Effect.Effect<string[], Tool.Error> {
   return Effect.gen(function* () {
     const memo = memoFromSnapshot(yield* snapshotOrFail(api))
@@ -1524,10 +1524,10 @@ function mutateDelta(
   status: string,
 ): Effect.Effect<{ revision: number; globalRevision: number; status: string }, Tool.Error> {
   return Effect.gen(function* () {
-    // Both sides as stored: an edit equal to what its row inherits is not
-    // written, and one already stored is not removed for a row this op did
-    // not touch (a tool may not change a protected agent's rows).
-    const delta = deltaOf(storedRecords(before, before.records), storedRecords(before, next))
+    // Records as written: a value equal to what its row inherits is an own
+    // value, and a write never removes another row's record because a change
+    // made it equal (a preset's edit leaves its linked agents' changes alone).
+    const delta = deltaOf(before.records, next)
     const upsert = delta.upsert.flatMap((record) => {
       const snapshot = snapshotRecordOf(record)
       return snapshot === undefined ? [] : [snapshot]
@@ -3205,7 +3205,8 @@ function builtInSystem(tree: Memo, item: string): boolean {
 
 function writeCopy(api: PlusApi, snapshot: Plus.Snapshot, before: MemoInput, records: MemoInput["records"], layout: LayoutRecords, row: string, status: string, actor: Plus.Actor) {
   return Effect.gen(function* () {
-    const delta = deltaOf(before.records, records)
+    // The copy's values its rows already inherit are not stored: they keep following.
+    const delta = deltaOf(before.records, withoutCopiedInherited(before, records, new Set(before.records)))
     const written = yield* Effect.promise(() => api.layoutWrite({
       folders: [...layout.folders], orders: [...layout.orders],
       changes: { upsert: delta.upsert.flatMap((record) => { const next = snapshotRecordOf(record); return next === undefined ? [] : [next] }), remove: delta.remove },

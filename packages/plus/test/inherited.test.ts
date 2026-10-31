@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { fingerprint, type AgentSource, type CustomizationRecord, type Item, type LinkRecord } from "../src/instructions/model.js"
-import { buildMemo, storedRecords, type MemoInput } from "../src/instructions/resolve-memo.js"
+import { buildMemo, withoutCopiedInherited, type MemoInput } from "../src/instructions/resolve-memo.js"
 import { query } from "../src/instructions/query.js"
 
 const OLD = "2026-01-01T00:00:00.000Z"
@@ -36,9 +36,24 @@ function input(records: readonly CustomizationRecord[]): MemoInput {
   }
 }
 
-const kept = (records: readonly CustomizationRecord[]) => buildMemo(input(records)).ctx.customizations
+// What a copy (paste, duplicate) stores of the records it wrote: here every record is the copy's.
+const kept = (records: readonly CustomizationRecord[]) => withoutCopiedInherited(input([]), records, new Set())
 
-test("an agent's text or on/off equal to what its row inherits is no edit", () => {
+test("an own value equal to what its row inherits stays an own value", () => {
+  const own = [record({ text: "run commands" }), record({ item: "tool:sectioned", state: "on", basedOnState: "on" })]
+  expect(buildMemo(input(own)).ctx.customizations).toEqual(own)
+  const found = query(input([record({ state: "on", text: "run commands" })]), { where: "id:item:project:Implementer:tool:bash", fields: ["id", "badges", "from"], withoutAliases: true }).rows
+  expect(found).toEqual([{ id: "item:project:Implementer:tool:bash", badges: "on modified", from: "set here" }])
+  expect(query(input([record({ text: "run commands" })]), { where: "is:changed", withoutAliases: true }).rows.map((row) => row.id)).toEqual(["item:project:Implementer:tool:bash"])
+})
+
+test("a copy keeps every record it did not write", () => {
+  const before = record({ text: "run commands" })
+  const copied = record({ agent: "Helper", level: "global", text: "run commands" })
+  expect(withoutCopiedInherited(input([]), [before, copied], new Set([before]))).toEqual([before])
+})
+
+test("a copied text or on/off equal to what its row inherits is not stored", () => {
   // The upstream text, and the on its preset gives.
   expect(kept([record({ text: "run commands" })])).toEqual([])
   expect(kept([record({ state: "on", basedOnState: "on" })])).toEqual([])
@@ -53,13 +68,7 @@ test("an agent's text or on/off equal to what its row inherits is no edit", () =
   expect(kept([changed])).toEqual([changed])
 })
 
-test("the row then shows where its value comes from, not an edit", () => {
-  const found = query(input([record({ state: "on" }), record({ text: "run commands" })]), { where: "id:item:project:Implementer:tool:bash", fields: ["id", "badges", "from"], withoutAliases: true }).rows
-  expect(found).toEqual([{ id: "item:project:Implementer:tool:bash", badges: "on", from: "from preset Build" }])
-  expect(query(input([record({ text: "run commands" })]), { where: "is:changed" }).rows).toEqual([])
-})
-
-test("a value a more specific level repeats is no edit there", () => {
+test("a copied value a more specific level repeats is not stored there", () => {
   const global = record({ level: "global", agent: "Helper", text: "mine" })
   expect(kept([global, record({ agent: "Helper", text: "mine" })])).toEqual([global])
 })
@@ -91,7 +100,7 @@ test("orphans, presets, team-scoped rows and pattern entries are left alone", ()
   for (const left of [ghost, gone, section, preset, team, pattern]) expect(kept([left])).toEqual([left])
 })
 
-test("records are stored as the tree reads them", () => {
+test("records other than customizations pass through a copy", () => {
   const split = { type: "split" as const, level: "project" as const, agent: "Implementer", item: "tool:sectioned", boundaries: [], updated: OLD }
-  expect(storedRecords(input([]), [record({ text: "run commands" }), split])).toEqual([split])
+  expect(withoutCopiedInherited(input([]), [record({ text: "run commands" }), split], new Set())).toEqual([split])
 })
