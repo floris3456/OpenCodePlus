@@ -749,8 +749,12 @@ test("model field rows name the level that set an inherited value, not the Defau
   const rows = expandedTree(memo)
   const fields = rows.filter((row) => row.id.startsWith("item:project:alpha:modelfield:"))
   // The row's layout (plus-1.1.18 §2): Model, Effort, then Warming's fields
-  // (Warming, Ping every, Keep-alive prompt, Compact before cold) and
-  // Compaction's (Strategy, Model, Instructions).
+  // (Warming, Ping every, Warm while waiting, Warm as subagent, Keep-alive
+  // prompt, Compact before cold, Compact cold chats first), Compaction's
+  // (Strategy, Input/Output token threshold, Model, Instructions) and Images'
+  // (Convert large image, Shrink large image, When image context is full).
+  // The thresholds came with 8baab5d111, the image rows with a81272d051 and
+  // Compact cold chats first with 702a7b69a6.
   expect(fields.map((row) => [row.label, row.badges.value, row.actions?.reset])).toEqual([
     ["Model", "acme/nova@high · global", false],
     ["Effort", "high · global", false],
@@ -762,8 +766,13 @@ test("model field rows name the level that set an inherited value, not the Defau
     ["Compact before cold", "off · built-in", false],
     ["Compact cold chats first", "as in Settings", false],
     ["Strategy", "Auto · built-in", false],
+    ["Input token threshold", "off · built-in", false],
+    ["Output token threshold", "off · built-in", false],
     ["Model", "Inherited model · built-in", false],
     ["Instructions", "Empty prompt · built-in", false],
+    ["Convert large image", "WebP 90 · built-in", false],
+    ["Shrink large image", "Max: 2,000 px · built-in", false],
+    ["When image context is full", "Compact the chat · built-in", false],
   ])
 })
 

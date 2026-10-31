@@ -581,8 +581,10 @@ test("agent.rename moves the agent's link and its own records to the new id", as
 })
 
 // DESIGN §3.3: an item the agent owns — its own user rule — falls back to its
-// upstream value, not off. The rule row must say whose it is.
-test("an unlinked agent's own user rule falls back to upstream; another agent's copy stays off", async () => {
+// upstream value, not off. The rule row must say whose it is. Since rule
+// definitions are scoped to their owners (993f78b2cf), another agent has no
+// row for it at all and runs without it.
+test("an unlinked agent's own user rule falls back to upstream; another agent has no copy", async () => {
   const { project } = await setup()
   const agents = [agentInfo("build", "Build the thing."), agentInfo("alice", ""), agentInfo("bob", "")]
   const ctx = fullContext({
@@ -601,13 +603,18 @@ test("an unlinked agent's own user rule falls back to upstream; another agent's 
   const nodes = expandedTree(memoInputOf(snapshot))
   const shown = (id: string) => nodes.find((node) => node.id === id)?.badges
   expect(shown("item:project:alice:perm:shell:mine")).toMatchObject({ state: "on", fromLabel: "upstream" })
-  expect(shown("item:project:bob:perm:shell:mine")).toMatchObject({ state: "off", fromLabel: "off by default" })
-  // What runs agrees: alice's own rule installs no deny, bob's does.
+  // A definition belongs to the agent whose rule it is; bob's subtree lists
+  // no row for it (scoped-rules "an owner-only rule is absent for other
+  // owners"), so bob cannot switch or edit alice's rule from there.
+  expect(shown("item:project:bob:perm:shell:mine")).toBeUndefined()
+  expect(nodes.some((node) => node.id === "item:project:bob:perm:shell:mine")).toBe(false)
+  // What runs agrees: alice's own rule installs no deny, bob's shell has no
+  // such rule at all.
   const listed = await Effect.runPromise(ctx.agent.list())
-  const denies = (id: string) =>
-    listed.data.find((agent) => String(agent.id) === id)?.permissions.some((rule) => rule.action === "shell" && rule.resource === "mine *" && rule.effect === "deny")
-  expect(denies("alice")).toBe(false)
-  expect(denies("bob")).toBe(true)
+  const mine = (id: string) =>
+    listed.data.find((agent) => String(agent.id) === id)?.permissions.filter((rule) => rule.action === "shell" && rule.resource === "mine *") ?? []
+  expect(mine("alice")).toEqual([])
+  expect(mine("bob")).toEqual([])
 
   // Turning her own rule off records the ON above it (its upstream), so the
   // override is not "to review" the moment it is written.

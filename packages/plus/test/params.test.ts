@@ -127,24 +127,29 @@ test("each tool row lists its parameters; an optional one switches off, a requir
   const input = memoInput()
   const nodes = expandedTree(input)
   const tool = nodes.findIndex((node) => node.id === "item:project:alpha:tool:reader")
-  const group = nodes.findIndex((node) => node.id === "group:project:alpha:tool:reader:parameters")
   expect(tool).toBeGreaterThan(-1)
-  expect(group).toBeGreaterThan(tool)
-  expect(nodes[group]?.label).toBe("Parameters")
+  // Since b8a14f7499 a tool's parameters are its direct children, each before
+  // the permissions of the argument it constrains; no Parameters group sits
+  // between them (parameter-tree.test.ts holds that layout).
+  expect(nodes[tool + 1]?.id).toBe("item:project:alpha:tool:reader:description")
   expect(rowOf(input, "param:reader:path").label).toBe("path: string (required)")
   expect(rowOf(input, "param:reader:offset").label).toBe("offset: number")
-  // A parameter row only ever shows inside its tool's Parameters group, at every level.
+  const index = (id: string) => nodes.findIndex((node) => node.id === id)
+  expect(index("item:project:alpha:param:reader:path")).toBeGreaterThan(tool)
+  expect(index("item:project:alpha:param:reader:offset")).toBeGreaterThan(index("item:project:alpha:param:reader:path"))
+  // A parameter row only ever shows inside its tool's row, at every level.
   const parents = nodes.flatMap((node, index) => {
     if (node.kind !== "item" || !node.id.includes(":param:")) return []
     return [nodes.slice(0, index).findLast((above) => above.depth === node.depth - 1)?.label]
   })
   expect(parents.length).toBeGreaterThan(2)
-  expect(new Set(parents)).toEqual(new Set(["Parameters"]))
+  expect(new Set(parents)).toEqual(new Set(["reader"]))
 
   // B7: a parameter's description is a text row, so it now exposes sections
   // and is expandable (line 150's "leaf" assertion moved to the Description).
   expect(rowOf(input, "param:reader:offset").add).toBe("section")
-  expect(nodes.some((node) => node.id === "section:project:alpha:param:reader:offset:whole")).toBe(true)
+  expect(nodes.some((node) => node.id === "item:project:alpha:param:reader:offset:description")).toBe(true)
+  expect(nodes.some((node) => node.id.startsWith("section:project:alpha:param:reader:offset:"))).toBe(false)
 
   const refused = toggle(input, rowOf(input, "param:reader:path").id)
   if (!("refusal" in refused)) throw new Error("expected a refusal")
@@ -276,6 +281,9 @@ test("discovery lists every tool's parameters as rows of that tool", async () =>
     ["param:web_tavily_search:include_domains", "string[]", false, "Only these domains"],
     ["param:web_tavily_search:depth", `"basic" | "advanced"`, false, "How deep to search"],
     ["param:web_tavily_search:limit", "integer | null", false, ""],
+    // The host-owned Code Mode entry point is a synthetic tool row
+    // (cf30f307ee), so its one argument is a row too (b8a14f7499).
+    ["param:execute:code", "string", true, "JavaScript to run in the Code Mode runtime."],
   ])
 })
 
