@@ -327,5 +327,8 @@ test("r on a member-preset entity resets all nine scoped controls while retainin
   expect(dispatch(fixture, "r")).toBe(true)
   await fixture.waitForFrame((frame) => frame.includes('Reset agent controls for "planner"'))
   expect(fixture.fake.mutateInputs[0].records).toEqual(retained)
-  expect(dispatch(fixture, "r")).toBe(false)
+  // Nothing is left to reset: r says so and writes nothing (d-09).
+  expect(dispatch(fixture, "r")).toBe(true)
+  await fixture.waitForFrame((frame) => frame.includes('"planner" has no override to reset'))
+  expect(fixture.fake.mutateInputs).toHaveLength(1)
 })

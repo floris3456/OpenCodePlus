@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test"
 import { fingerprint } from "../src/instructions/model.js"
 import type { Plus } from "../src/rpc.js"
-import { dispatch, footer, reach, selectedRow } from "./instructions-nav.js"
+import { dispatch, footer, reach, selectedRow, sleep } from "./instructions-nav.js"
 import { createSnapshot, renderInstructionsRoute } from "./tui.js"
 
 const build = { id: "build", scope: "defaults" as const, fileBacked: false, origin: "native" as const }
@@ -60,6 +60,33 @@ test("ctrl+d on a user System row asks for the copy's name, offering \"<name> co
   await fixture.waitForFrame((frame) => frame.includes('Duplicated "Mine" as "Team rules"'))
   expect(fixture.fake.promptInputs.at(-1)).toMatchObject({ title: "Duplicate Mine", value: "Mine copy" })
   expect(runs).toEqual([expect.objectContaining({ op: "clipboard", input: { action: "duplicate", ids: ["item:project:build:system:mine"], name: "Team rules" } })])
+})
+
+// d-02: a team copy ran 19 minutes with nothing on screen, then the server
+// died and the screen said only "Transport: The socket connection was closed…".
+test("a duplicate that takes long shows it is running and how long, and a lost connection says what it means", async () => {
+  let fail: (error: unknown) => void = () => {}
+  await using fixture = await renderInstructionsRoute({
+    snapshots: [snapshot], width: 150, height: 40,
+    dialogs: { prompts: [undefined] },
+    rpc: {
+      "instructions.run": () => new Promise((_, reject) => {
+        fail = reject
+      }),
+    },
+  })
+  await reach(fixture, "item:project:build:system:mine", "Mine")
+  await fixture.waitForFrame((frame) => footer(frame).includes("ctrl+d duplicate"))
+  expect(dispatch(fixture, "ctrl+d")).toBe(true)
+  await fixture.waitForFrame((frame) => /Duplicating "Mine"… \ds/.test(frame))
+  // A reload while it runs empties the status line, not the progress.
+  await fixture.emitChanged()
+  await sleep(1100)
+  await fixture.waitForFrame((frame) => /Duplicating "Mine"… [1-9]s/.test(frame))
+  fail(Object.assign(new Error("Transport: The socket connection was closed unexpectedly."), { reason: "Transport" }))
+  const frame = await fixture.waitForFrame((next) => next.includes('Duplicating "Mine" got no answer after'))
+  expect(frame).not.toMatch(/Duplicating "Mine"… \d/)
+  expect(fixture.fake.toasts.at(-1)).toMatchObject({ variant: "error", message: expect.stringContaining("the server closed the connection or stopped") })
 })
 
 // Decision: the key bar shows only what acts on this row (or the whole

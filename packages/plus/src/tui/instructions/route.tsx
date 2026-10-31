@@ -378,6 +378,7 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
         level: current,
         navCollapsed: navCollapsed(),
         ...(owner === undefined ? {} : { owner }),
+        ...(navSelected()[current] === undefined ? {} : { selected: navSelected()[current] }),
         ...(owner === undefined || categories()[owner] === undefined ? {} : { category: categories()[owner] }),
         listOpen: listOpen(),
         listCollapsed: listCollapsed(),
@@ -683,7 +684,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
   function selectNav(row: Row) {
     batch(() => {
       setNavSelected({ ...navSelected(), [level()]: row.key })
-      // Moving onto an owner shows it; groups and teams keep the owner shown.
+      // Moving onto an owner shows it. On a group or a team the list shows
+      // no owner (workspace.ts): its rows would read as that row's own.
       if (row.role === "owner" || row.role === "every") setOwners({ ...owners(), [level()]: row.key })
     })
   }
@@ -1842,7 +1844,8 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
           group: "Instructions",
           run: () => void renameCurrent(),
         },
-        ...(canReset(node) ? [{ bind: "r", title: "Reset override", group: "Instructions", run: resetRow }] : []),
+        // r says why on a row with nothing to reset instead of doing nothing (d-09).
+        ...(node === undefined ? [] : [{ bind: "r", title: "Reset override", group: "Instructions", run: canReset(node) ? resetRow : () => state.setStatus(state.resetRefusal(node)) }]),
         ...(node?.actions?.split === true ? [{ bind: "s", title: "Split", group: "Instructions", run: split }] : []),
         { bind: "n", title: "Next to review", group: "Instructions", run: () => nextReview(1) },
         { bind: "shift+n", title: "Previous to review", group: "Instructions", run: () => nextReview(-1) },
@@ -2025,15 +2028,17 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
       <Show
         when={listHasChildren()}
         fallback={
-          <text paddingLeft={1} fg={theme().text.muted}>
-            {filtering()
-              ? state.filter().trim().length === 0
-                ? "Type to filter"
-                : "No matches"
-              : workspace().category?.add === undefined
-                  ? "Nothing here"
-                  : "Nothing here yet · a adds one"}
-          </text>
+          <Show when={filtering() || workspace().owner !== undefined}>
+            <text paddingLeft={1} fg={theme().text.muted}>
+              {filtering()
+                ? state.filter().trim().length === 0
+                  ? "Type to filter"
+                  : "No matches"
+                : workspace().category?.add === undefined
+                    ? "Nothing here"
+                    : "Nothing here yet · a adds one"}
+            </text>
+          </Show>
         }
       >
         <scrollbox flexGrow={1} minHeight={0} ref={(next: ScrollBoxRenderable) => (listScroll = next)} verticalScrollbarOptions={{ visible: false }}>
@@ -2229,6 +2234,13 @@ export function InstructionsRoute(props: InstructionsRouteProps) {
             />
           )}
         </Show>
+      </Show>
+      <Show when={state.progress()}>
+        {(line) => (
+          <text flexShrink={0} paddingLeft={1} wrapMode="none" truncate fg={theme().text.feedback.info.base}>
+            {line()}
+          </text>
+        )}
       </Show>
       <Show when={state.status()}>
         {(line) => (

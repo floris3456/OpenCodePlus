@@ -116,6 +116,23 @@ test("Defaults shows the catalogue's own settings as an Every agent owner", () =
   expect(ws.nav.find((row) => row.label === "Every member")?.node.id).toBe("group:defaults:teams")
 })
 
+// d-04: with Implementer's Tools open, moving the sidebar cursor to Teams kept
+// Implementer's tools in the list beside "Project › Teams".
+test("the list follows the sidebar cursor: a group or a team shows no owner's rows", () => {
+  const source = rowsOf()
+  const view = { owner: "agent:project:Implementer", category: "group:project:Implementer:tools" }
+  expect(workspaceOf(input(source.rows, { ...view, selected: "agent:project:Implementer" })).owner?.key).toBe("agent:project:Implementer")
+  for (const selected of ["group:project:teams", "team:project:crew", "group:project:agents"]) {
+    const ws = workspaceOf(input(source.rows, { ...view, selected }))
+    expect(ws.nav.find((row) => row.key === selected)).toBeDefined()
+    expect(ws.owner).toBeUndefined()
+    expect(ws.categories).toEqual([])
+    expect(ws.list).toEqual([])
+  }
+  // A team's member is an owner of its own.
+  expect(workspaceOf(input(source.rows, { ...view, owner: "team:project:crew:helper", selected: "team:project:crew:helper" })).owner?.key).toBe("team:project:crew:helper")
+})
+
 test("a steady view builds the tree once; structure is remembered between calls", () => {
   const source = rowsOf()
   const known = new Set<string>()
