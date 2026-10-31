@@ -206,6 +206,20 @@ test("batch changes apply in order to one store, a later change uses what an ear
   expect(Exit.isSuccess(decode({ op: "set", id: "x", selected: ["x"], input: { state: "on" } }))).toBe(true)
 })
 
+test("batch creates an agent and a later change sets that agent's rows", async () => {
+  const { api, tools } = await fixture()
+  const answer = (await run(tools, "batch", {
+    changes: [
+      { op: "create", kind: "agent", id: "lead", scope: "project" },
+      { op: "set", find: { agent: "lead", type: "tool", name: ["t0", "t1"] }, state: "on" },
+    ],
+  })) as Written
+  expect(answer.notDone).toEqual([])
+  expect(answer.changed).toContain("agent:project:lead")
+  expect(await stateOf(api, "lead", "tool:t0")).toBe("on")
+  expect(await stateOf(api, "lead", "tool:t1")).toBe("on")
+})
+
 test("create takes lists: several agents in one call", async () => {
   const { api, tools } = await fixture()
   const answer = (await run(tools, "create", { kind: "agent", id: ["scout", "pilot"], scope: "project" })) as Written

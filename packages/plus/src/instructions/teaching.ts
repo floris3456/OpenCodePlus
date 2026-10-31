@@ -35,9 +35,11 @@ export const teachingSkillContent = `# instructions-tools
 - Find rows: \`find({ agent: "alpha", type: "tool" })\` returns \`{ total, columns, rows }\`, one line per row: \`id | badges | from\`.
 - Read one: \`read({ id })\` gives its \`text\` and where it comes from. On an agent or a group, \`read\` lists the rows under it.
 - Change part of a text: \`edit({ id, oldString, newString })\`, like the edit tool for a file.
-- Replace a whole text: \`set({ id, text })\`. Switch a row: \`set({ id, state: "off" })\`. Undo at this level: \`reset({ id })\`.
+- Replace a whole text: \`set({ id, text })\`. Switch a row: \`set({ id, state: "off" })\`. Drop this level's change: \`reset({ id })\`. Take back a whole call: \`undo({ ts })\` (\`ts\` from \`log\`; none = the newest).
 - Pass ids exactly as \`find\`, \`read\` or \`create\` returned them.
-- Several rows in one call: \`id\` takes a list (\`set({ id: [a, b], state: "off" })\`), or \`find\` takes find's filters instead of \`id\` (\`set({ find: { agent: "alpha", type: "rule", where: "tool:edit" }, state: "off" })\`). \`read\`, \`set\`, \`edit\`, \`reset\` and \`delete\` then answer \`{ total, failed, results }\` with one \`{ id, output }\` or \`{ id, error }\` per row, and every row that succeeded stays saved. Without \`agent\` or \`team\`, \`find\` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
+- Several rows in one call: \`id\` takes a list (\`set({ id: [a, b], state: "off" })\`), or \`find\` takes find's filters instead of \`id\`, and filters take lists (\`set({ find: { agent: ["alpha", "beta"], type: "tool", name: ["edit", "write"] }, state: "off" })\`). The rows are written once (one revision, one log entry) and the answer is short: \`{ status, changed, already, notDone: [{ id, reason }] }\` (\`verbose: true\` adds each row's answer); a row that refuses does not stop the rest. Without \`agent\` or \`team\`, \`find\` reaches each agent's copy, the shared Defaults rows first; one call takes at most 200 rows.
+- Different changes in one call: \`batch({ changes: [{ op: "create", kind: "agent", id: "lead", scope: "project" }, { op: "set", find: { agent: "lead", type: "tool", name: "edit" }, state: "off" }] })\`: in order, each change sees the earlier ones, row changes written once (a new agent's file is written as it is created). Copy another agent's choice for the same row: \`set({ id, like: "alpha" })\`.
+- Check first: every write takes \`dryRun: true\` and answers what would change, writing nothing.
 
 ## Row ids
 
@@ -186,7 +188,7 @@ A tool's writes to an agent listed in \`.opencodeplus/project.json\` \`protected
 ## Examples
 
 1. Reword one sentence of a tool for one agent: \`find({ agent: "alpha", type: "tool", name: "read" })\` → \`edit({ id, oldString: "Reads a file.", newString: "Reads one file at a time." })\`.
-2. Switch a skill off for one agent, then undo: \`find({ agent: "alpha", type: "skill" })\` → \`set({ id, state: "off" })\` → \`reset({ id })\`.
+2. Switch a skill off for one agent, then take it back: \`find({ agent: "alpha", type: "skill" })\` → \`set({ id, state: "off" })\` → \`reset({ id })\` (or \`undo({})\` for the whole last call).
 3. Work the review queue: \`find({ is: "review" })\` → \`read({ id, view: "diff" })\` → \`set({ id, resolve: "keep" })\`.
 4. Switch an agent's model: \`find({ agent: "alpha", type: "model" })\` → \`set({ id, active: true })\`.
 5. Warm Claude chats: \`find({ level: "defaults", type: "model", name: "*claude*" })\` → \`set({ id, warming: "on", interval: "4m" })\`.

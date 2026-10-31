@@ -139,7 +139,7 @@ const FindDescription =
   "Find instruction rows: one \"id | badges | from\" line per thing; every parameter given must match.\n" +
   "Each row appears once, at its most specific level (what runs here). Without agent or team, agents' copies with the same on/off and text are one row, ending \"(+N agents)\"; agent \"*\" lists each. " +
   "level, in, type section|preset and is (each level's own edits) show the rest. " +
-  "e.g. {agent:\"build\",type:\"tool\",state:\"off\"}, {is:\"review\"}. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
+  "agent, team, level, type, name and is take lists (any of them). e.g. {agent:[\"build\",\"plan\"],type:\"tool\",state:\"off\"}, {is:\"review\"}. fields picks columns after id; limit defaults to 40. Returns { total, columns, rows }."
 
 const ReadDescription =
   "Read one row: its text and where it comes from (view resolved, the default).\n" +
@@ -148,30 +148,35 @@ const ReadDescription =
   "Team, member, preset and entry rows return what they stand for; a Defaults › Models row each effective keep-alive value and its source.\n" +
   "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] }."
 
+// What a write over several rows answers (eachStep).
+const ManyWrites =
+  "Several rows: id as a list, or find with find's filters (lists match any: name:[\"edit\",\"write\"]). They are written once (one revision, one log entry); the answer is { status, changed, already, notDone: [{ id, reason }] }, verbose adds each row's answer. dryRun writes nothing."
+
 const SetDescription =
   "Change one row: its text, on/off state, pin, model, review, preset link or a field (TUI Enter/Space/p/w/k/t/e/l).\n" +
   "text replaces the whole text (edit changes part of it). state on|off switches the row; a bare id toggles it (models: activates). On a group, state switches every row under it (protected rows are skipped).\n" +
   "Agent and member rows take state and mode primary|subagent|all; setting:* and compaction:* rows take text (enabled and hidden take state); empty clears.\n" +
   "resolve keep|take|edit settles a review (keep|take also a tab's layout); resolve merge with include:[unit ids from read's diff] saves a merge. preset links an agent, member, team, entry or user preset (\"<id>\" or \"<team>/<member>\"; null unlinks). rename renames an agent, member, team or folder.\n" +
   "Model rows: active true activates; text replaces the candidate (provider/model#variant); warming, interval, waiting (warm while waiting on its own work: off or a time, built-in 2h), subagent (Warm as subagent: off, on = the warming time, or its own time such as 15m; built-in off, independent of warming; chat switch wins) and prompt set keep-alive; compactWarm, coldFirst (Compact cold chats first for this model, over the Settings switch), coldModels, compactionStrategy|Model|Instructions|Input|Output, imageConvert, imageShrink and imagesFull set per-model compaction and images (null inherits; coldCompact is refused). Defaults › Models rows also take effort, and state for warming.\n" +
-  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). More in skill instructions-tools.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  "Perm rows take state, message (the refusal the model reads) and label+patterns(+keywords). System rows take requires (when sent); model prompt rows take models. Enabling a team disables the others (disabledTeams). like:\"<agent>\" (or \"<team>/<member>\") takes that agent's on/off and text for the same row. More in skill instructions-tools.\n" +
+  ManyWrites
 
 const EditDescription =
   "Change part of a row's text: replace oldString with newString, like the edit tool does for a file.\n" +
   "oldString must match the row's current text (read's text) exactly once; replaceAll replaces every occurrence. Saves like set({ id, text }) and set's permissions apply.\n" +
   "Works on any row with text (tools, parameters, sections, base, system, skills, settings); models, rules, teams and groups change with set. Returns { id, status, replacements }.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  ManyWrites
 
 const MoveDescription =
   "Move a row, folder or section before or after a sibling, or a row or folder into a folder or a tab's top level.\n" +
   "Rows move only inside their own tab; folders are display only. A section moves within its item (the item's text is rewritten).\n" +
-  "In a System list, moving a row reorders that part of the owner's system prompt (before/after only; a base prompt moves with Role/persona; OpenCode's parts move but are not edited)."
+  "In a System list, moving a row reorders that part of the owner's system prompt (before/after only; a base prompt moves with Role/persona; OpenCode's parts move but are not edited).\n" +
+  "id takes a list: the rows move in that order to the same place, written once; dryRun writes nothing."
 
 const ResetDescription =
   "Drop the override at this level only (TUI `r`).\n" +
   "Agent and member rows reset their settings and compaction controls; model rows clear only this level's active flag; a Defaults › Models row clears its values.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  ManyWrites
 
 const SplitDescription =
   "Set manual sections or append one (TUI `s` / `a` on an item).\n" +
@@ -183,21 +188,23 @@ const CreateDescription =
   "member (team, level, id, preset; at level defaults a Teams entry, team and id are patterns); entry (catalogue agents|teams, name with * or %, team pattern, preset); " +
   "preset, teamPreset, presetMember (id, from; presetMember also team); skill (name, body, scope); base (id, title, text); system (id, text, title; models makes a model prompt); mcp (name, config); " +
   "model (providerID, modelID, variant, level, agent; it becomes the active one there); rule (tool, id, label, patterns as core wildcards not regex, keywords, message, level, agent); folder (name, id of the tab or folder).\n" +
-  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); without one an agent is unlinked and Defaults still apply. catalogue agents|teams picks where a shared Defaults model or rule lands."
+  "A preset is \"<id>\" (agent preset) or \"<team>/<member>\" (member preset); without one an agent is unlinked and Defaults still apply. catalogue agents|teams picks where a shared Defaults model or rule lands.\n" +
+  "id and agent take lists (one create each, e.g. a rule for agent:[\"a\",\"b\"]); a team takes members:[\"<id>\" or {id,preset}]. Several are answered like set's several rows. dryRun previews record rows only, not new files."
 
 const DeleteDescription =
   "Delete a user-owned row: agent, team, member, file, Defaults entry, user preset, custom rule or folder.\n" +
   "Needs confirm:true. A model row deletes its candidate at this level (the active model refuses: activate another first); a Defaults › Models row clears its values. A preset still linked is refused (preset.inUse names the rows); force:true overrides links only other projects hold.\n" +
-  "Several rows: id as a list, or find with find's filters; that answers { total, failed, results: [{ id, output } or { id, error }] } and saves every row that succeeds."
+  ManyWrites
 
 const LogDescription =
   "Change history (who/what/when).\n" +
-  "Reads the change log newest-first with where/limit/offset filtering."
+  "Reads the change log newest-first with where/limit/offset filtering. A write of several rows lists them in rows; undo with its ts takes the whole write back."
 
 const LinkDescription =
   "Inspect or set a link between two rows of the same owner and level.\n" +
   "Without target: list the row's links in and out. With target: store a link from id to target; type either (default: turning one on switches the other off), shownWhenOn or shownWhenOff (target is sent only while id is on / off; id must be a whole row).\n" +
-  "enabled:false masks the pair at this level, including an inherited link."
+  "enabled:false masks the pair at this level, including an inherited link.\n" +
+  "id and target take lists: every id is linked to every target in one call (links are their own store: one write per pair); dryRun refuses them."
 
 const Field = Schema.Union([
   Schema.Literal("id"),
@@ -271,7 +278,7 @@ const FindInput = Schema.Struct({
 // find filter matches (eachRow).
 const Rows = {
   id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(Schema.String)])).annotate({
-    description: "A row id, or a list of row ids: a list answers one result per row.",
+    description: "A row id, or a list of row ids: a list is written once and answers counts and the rows not done.",
   }),
   find: Schema.optionalKey(FindFilter).annotate({
     description:
