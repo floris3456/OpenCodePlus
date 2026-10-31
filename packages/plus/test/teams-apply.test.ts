@@ -9,6 +9,8 @@ import { formatMarkdown } from "../src/agents/files.js"
 import { createHandlers, createState, deactivate } from "../src/index.js"
 import { fingerprint } from "../src/instructions/model.js"
 import { projectTeamsPath } from "../src/instructions/paths.js"
+import { saveText } from "../src/instructions/ops.js"
+import { memoInputOf } from "../src/instructions/snapshot.js"
 import { load, save } from "../src/instructions/store.js"
 import { Plus } from "../src/rpc.js"
 import { agentHarness, agentInfo, context, fullContext, skillHarness, toolHarness } from "./harness.js"
@@ -304,6 +306,10 @@ test("a built-in member with fields installs through the shared applyTeamAgent s
   ).toBe(false)
 })
 
+// A member's own rows are stored with its team (phase 4, member-scope): the
+// role records these tests write carry the member's team. Before, they were
+// written per agent name; in a store marked `members: "team"` (every store
+// this release writes) a per-name record is a stand-alone agent's.
 test("a customized team member role survives publication while an uncustomized sibling keeps its shipped body", async () => {
   const { project } = await tempRoot()
   const teamDir = path.join(projectTeamsPath(project), "crew")
@@ -322,6 +328,7 @@ test("a customized team member role survives publication while an uncustomized s
       type: "customization",
       level: "project",
       agent: "alpha",
+      team: { level: "project", team: "crew" },
       item: "system:role",
       section: null,
       text: "edited alpha role",
@@ -348,6 +355,7 @@ test("a customized team member role survives publication while an uncustomized s
       type: "customization",
       level: "project",
       agent: "alpha",
+      team: { level: "project", team: "crew" },
       item: "system:role",
       section: null,
       text: "edited alpha role",
@@ -358,6 +366,7 @@ test("a customized team member role survives publication while an uncustomized s
       type: "customization",
       level: "project",
       agent: "beta",
+      team: { level: "project", team: "crew" },
       item: "system:role",
       section: null,
       text: "edited beta role",
@@ -392,6 +401,7 @@ test("a member role record with a requires marker keeps the fingerprint across r
       type: "customization",
       level: "project",
       agent: "alpha",
+      team: { level: "project", team: "crew" },
       item: "system:role",
       section: null,
       text: "edited alpha role\n\n## Tests\n<!-- requires: tool:read -->\n\nrun them",
@@ -436,6 +446,7 @@ test("a member role record with a requires marker on an empty-body member keeps 
       type: "customization",
       level: "project",
       agent: "alpha",
+      team: { level: "project", team: "crew" },
       item: "system:role",
       section: null,
       text: "edited alpha role\n\n## Tests\n<!-- requires: tool:read -->\n\nrun them",
@@ -707,6 +718,7 @@ test("a project-level role edit wins over the shipped body for a project team sh
       type: "customization",
       level: "project",
       agent: "shared",
+      team: { level: "project", team: "crew" },
       item: "system:role",
       section: null,
       text: "project edit",
@@ -912,4 +924,35 @@ test("ownership does not transfer between teams sharing an id", async () => {
   expect(agents.transforms).toBe(installs)
   expect(agents.disposes).toBe(disposes)
   expect(await hostSystem(ctx, "shared")).toBe(regular)
+})
+
+test("a member's role edit from its Teams row (the TUI's write) reaches the running member, not a stand-alone agent of its name", async () => {
+  const { project } = await tempRoot()
+  await writeTeamAgent(path.join(projectTeamsPath(project), "crew"), "alpha", "crew alpha body")
+  const ctx = fullContext({ directory: project })
+  const handlers = createHandlers(ctx, createState())
+  await Effect.runPromise(handlers["team.setEnabled"]({ level: "project", team: "crew", enabled: true }, throwingContext({})))
+  const snapshot = await Effect.runPromise(handlers["instructions.snapshot"](undefined, throwingContext({})))
+  const edit = saveText(memoInputOf(snapshot), "item:project:crew/:alpha:system:role", "edited alpha role")
+  if ("refusal" in edit) throw new Error(edit.refusal)
+  expect(edit.records.filter((record) => record.item === "system:role" && record.agent === "alpha")).toMatchObject([{ level: "project", team: { level: "project", team: "crew" }, text: "edited alpha role" }])
+  const mutated = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: snapshot.revision, expectedGlobalRevision: snapshot.globalRevision, records: edit.records as Plus.SnapshotCustomizationRecord[] },
+      throwingContext({}),
+    ),
+  )
+  expect(mutated.ok).toBe(true)
+  expect(await hostSystem(ctx, "alpha")).toBe("edited alpha role")
+  // A per-name record is the stand-alone agent's: it does not reach the member.
+  if (!mutated.ok) throw new Error("expected mutate to succeed")
+  const perName: Plus.SnapshotCustomizationRecord = { type: "customization", level: "project", agent: "alpha", item: "system:role", section: null, text: "stand-alone alpha", basedOn: "x", updated: UPDATED }
+  const second = await Effect.runPromise(
+    handlers["instructions.mutate"](
+      { expectedRevision: mutated.revision, expectedGlobalRevision: mutated.globalRevision, records: [...(edit.records as Plus.SnapshotCustomizationRecord[]), perName] },
+      throwingContext({}),
+    ),
+  )
+  expect(second.ok).toBe(true)
+  expect(await hostSystem(ctx, "alpha")).toBe("edited alpha role")
 })
