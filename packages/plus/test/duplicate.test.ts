@@ -99,21 +99,23 @@ test("a user System row's copy carries its text and every agent's settings, and 
   await ok(tools, "set", { id: "item:project:alpha:system:mine", state: "on" })
   await ok(tools, "set", { id: "item:project:build:system:mine", text: "Build's own rules" })
   const first = await ok(tools, "clipboard", { action: "duplicate", ids: ["item:project:alpha:system:mine"] })
-  expect(first).toEqual({ status: 'Duplicated "Mine" as "Mine copy"', rows: ["item:project:alpha:system:mine-copy"] })
+  expect(first).toEqual({ status: 'Duplicated "Mine" as "Mine copy" (off for every agent: turn it on where it should be sent instead of the original)', rows: ["item:project:alpha:system:mine-copy"] })
   const after = await rows(api)
-  expect(after.find((row) => row.id === "item:project:alpha:system:mine-copy")).toMatchObject({ label: "Mine copy", badges: { state: "on" } })
+  // Decision (a-09): the copy starts off, so the text is not sent twice.
+  expect(after.find((row) => row.id === "item:project:alpha:system:mine-copy")).toMatchObject({ label: "Mine copy", badges: { state: "off" } })
   const read = await ok(tools, "read", { id: "item:project:build:system:mine-copy" })
   expect(JSON.stringify(read)).toContain("Build's own rules")
   expect(JSON.stringify(await ok(tools, "read", { id: "item:defaults::system:mine-copy" }))).toContain("My rules")
   const second = await ok(tools, "clipboard", { action: "duplicate", ids: ["item:project:alpha:system:mine"] })
-  expect(second.status).toBe('Duplicated "Mine" as "Mine copy 2"')
+  expect(second.status).toStartWith('Duplicated "Mine" as "Mine copy 2"')
   const named = await ok(tools, "clipboard", { action: "duplicate", ids: ["item:project:alpha:system:mine"], name: "Team rules" })
   expect(named.rows).toEqual(["item:project:alpha:system:team-rules"])
 })
 
-// Decision: a copy is never linked, so a preset-linked agent's copy carries the
-// values it resolves to now as its own records, not a link to the preset.
-test("a user agent's copy is its file, its rows and its folders, placed right after it, and is not linked to the original's preset", async () => {
+// Decision (2026-10-30): a copy holds only changes. It follows the preset its
+// original follows and carries the original's own records; it is never linked
+// to the original itself.
+test("a user agent's copy is its file, its rows and its folders, placed right after it, and follows the original's preset", async () => {
   const { api, tools, project } = await fixture()
   await ok(tools, "set", { id: "agent:project:alpha", preset: "build" })
   await ok(tools, "set", { id: "item:project:alpha:tool:reader", text: "Alpha reads carefully." })
@@ -121,12 +123,11 @@ test("a user agent's copy is its file, its rows and its folders, placed right af
   await ok(tools, "set", { id: "item:project:alpha:setting:mode", text: "subagent" })
   await ok(tools, "create", { kind: "folder", id: "group:project:alpha:tools", name: "Files" })
   const copy = await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:project:alpha"] })
-  expect(copy).toEqual({ status: "Duplicated alpha as alpha-copy", rows: ["agent:project:alpha-copy"] })
+  expect(copy).toEqual({ status: "Duplicated alpha as alpha-copy, following preset Build as alpha does", rows: ["agent:project:alpha-copy"] })
   expect(await Bun.file(path.join(project, ".opencode", "agent", "alpha-copy.md")).text()).toBe(await Bun.file(path.join(project, ".opencode", "agent", "alpha.md")).text())
   const after = await rows(api)
-  // No link at all, to the original or to its preset.
-  expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "alpha-copy")).toEqual([])
-  expect(after.find((row) => row.id === "agent:project:alpha-copy")?.owner?.link).toBeUndefined()
+  // The original's preset, never the original.
+  expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "alpha-copy").map((record) => record.type === "link" ? record.preset : undefined)).toEqual([{ kind: "agent", id: "build" }])
   // The same effective values, row for row, for a few rows.
   expect(after.find((row) => row.id === "item:project:alpha:tool:reader")?.badges.state).toBe("off")
   for (const suffix of ["tool:reader", "tool:execute", "setting:mode", "setting:enabled", "skill:notes", "system:role"]) {
@@ -165,37 +166,38 @@ test("an agent's copy goes right after its original in its catalogue list", asyn
   expect(agents).toEqual(["agent:project:alpha", "agent:project:yyy", "agent:project:zulu"])
 })
 
-test("a built-in agent's copy is a user agent with the built-in's effective configuration, and no link", async () => {
+test("a built-in agent's copy is a user agent that follows the built-in's shipped preset and carries its edits", async () => {
   const { tools, project, api } = await fixture()
   await ok(tools, "set", { id: "item:project:build:tool:reader", state: "off" })
   const copy = await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:project:build"], name: "builder" })
-  expect(copy).toEqual({ status: "Duplicated build as builder", rows: ["agent:project:builder"] })
+  expect(copy).toEqual({ status: "Duplicated build as builder, following preset Build as build does", rows: ["agent:project:builder"] })
   expect(await Bun.file(path.join(project, ".opencode", "agent", "builder.md")).exists()).toBe(true)
-  expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "builder")).toEqual([])
+  expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "builder").map((record) => record.type === "link" ? record.preset : undefined)).toEqual([{ kind: "agent", id: "build" }])
   expect(await state(api, "item:project:builder:tool:reader")).toBe("off")
   expect(await state(api, "item:project:builder:tool:reader")).toBe(await state(api, "item:project:build:tool:reader"))
 })
 
-test("a team member's copy carries its file and rows; a preset's copy its rows, and neither stays linked", async () => {
+test("a team member's copy carries its file and rows; a preset's copy its rows; each follows what its original follows", async () => {
   const { tools, project, api } = await fixture()
   await ok(tools, "create", { kind: "team", team: "crew", level: "project" })
   await ok(tools, "create", { kind: "member", team: "crew", level: "project", id: "lead", preset: "build" })
   await ok(tools, "set", { id: "item:project:crew/:lead:tool:reader", state: "off" })
-  expect(await ok(tools, "clipboard", { action: "duplicate", ids: ["team:project:crew:lead"] })).toEqual({ status: "Duplicated lead as lead-copy", rows: ["team:project:crew:lead-copy"] })
+  expect(await ok(tools, "clipboard", { action: "duplicate", ids: ["team:project:crew:lead"] })).toEqual({ status: "Duplicated lead as lead-copy, following preset Build as lead does", rows: ["team:project:crew:lead-copy"] })
   const team = path.join(project, ".opencodeplus", "teams", "crew")
   expect(await Bun.file(path.join(team, "lead-copy.md")).text()).toBe(await Bun.file(path.join(team, "lead.md")).text())
   expect(await state(api, "item:project:crew/:lead-copy:tool:reader")).toBe("off")
-  expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "lead-copy")).toEqual([])
+  expect((await load(project)).records.filter((record) => record.type === "link" && record.agent === "lead-copy").map((record) => record.type === "link" ? record.preset : undefined)).toEqual([{ kind: "agent", id: "build" }])
 
   await ok(tools, "create", { kind: "preset", id: "careful", from: "build" })
   await ok(tools, "set", { id: "item:preset:careful:tool:reader", state: "off" })
-  expect(await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:preset:careful"] })).toEqual({ status: "Duplicated preset careful as careful-copy", rows: ["agent:preset:careful-copy"] })
+  expect(await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:preset:careful"] })).toEqual({ status: "Duplicated preset careful as careful-copy, following preset Build", rows: ["agent:preset:careful-copy"] })
   expect(await state(api, "item:preset:careful-copy:tool:reader")).toBe("off")
-  // The copy is its own records: it neither follows careful nor careful's preset.
-  expect((await load(project)).records.filter((record) => record.type === "link" && record.level === "preset" && record.agent === "careful-copy")).toEqual([])
-  // A built-in preset's copy copies its values too (no link, no "created from it").
-  expect((await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:preset:build"] })).status).toBe("Duplicated preset build as build-copy")
-  expect((await load(project)).records.filter((record) => record.type === "link" && record.level === "preset" && record.agent === "build-copy")).toEqual([])
+  // The copy follows careful's preset, not careful.
+  const presetLink = async (agent: string) => (await load(project)).records.filter((record) => record.type === "link" && record.level === "preset" && record.agent === agent).map((record) => record.type === "link" ? record.preset : undefined)
+  expect(await presetLink("careful-copy")).toEqual([{ kind: "agent", id: "build" }])
+  // A built-in preset's copy is a user preset made from it.
+  expect((await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:preset:build"] })).status).toBe("Duplicated preset build as build-copy, following preset Build")
+  expect(await presetLink("build-copy")).toEqual([{ kind: "agent", id: "build" }])
 })
 
 test("a folder's copy holds a copy of every subfolder and row inside it that can exist twice, in order, and says what it skipped", async () => {
@@ -238,7 +240,7 @@ test("rows that exist once refuse with the reason and write nothing; a mixed sel
   expect(await load(project)).toEqual(before)
   const mixed = await ok(tools, "clipboard", { action: "duplicate", ids: ["agent:project:alpha", "item:project:alpha:tool:reader"] })
   expect(mixed.rows).toEqual(["agent:project:alpha-copy"])
-  expect(mixed.status).toContain('Duplicated alpha as alpha-copy; not duplicated: "reader" exists once for each agent')
+  expect(mixed.status).toContain('Duplicated 1 of 2 rows: Duplicated alpha as alpha-copy; not duplicated (1): item:project:alpha:tool:reader: "reader" exists once for each agent')
 })
 
 test("a skill row duplicates as a new skill file with the same text", async () => {
@@ -256,7 +258,7 @@ test("a built-in System row duplicates as a user System row with the text this o
   const { tools, api, project } = await fixture()
   await ok(tools, "set", { id: "item:project:alpha:system:tools-and-rules", text: "Alpha's own tools text" })
   const made = await ok(tools, "clipboard", { action: "duplicate", ids: ["item:project:alpha:system:tools-and-rules"] })
-  expect(made).toEqual({ status: 'Duplicated "Tools and rules" as "Tools and rules copy"', rows: ["item:project:alpha:system:tools-and-rules-copy"] })
+  expect(made).toEqual({ status: 'Duplicated "Tools and rules" as "Tools and rules copy" (off for every agent: turn it on where it should be sent instead of the original)', rows: ["item:project:alpha:system:tools-and-rules-copy"] })
   const after = await rows(api)
   expect(after.find((row) => row.id === "item:project:alpha:system:tools-and-rules-copy")?.label).toBe("Tools and rules copy")
   // The copy is a user System row whose file carries the text this owner saw,
@@ -274,7 +276,7 @@ test("a team duplicates as <team>-copy at the same level, with independent copie
   await ok(tools, "set", { id: "item:project:crew/:lead:tool:reader", state: "off" })
   const copy = await ok(tools, "clipboard", { action: "duplicate", ids: ["team:project:crew"] })
   expect(copy).toMatchObject({ rows: ["team:project:crew-copy"] })
-  expect(copy.status).toContain('Duplicated team "crew" as "crew-copy": 2 members copied')
+  expect(copy.status).toContain('Duplicated team "crew" as "crew-copy": 2 of 2 members copied')
   const after = await rows(api)
   const copied = after.find((row) => row.id === "team:project:crew-copy")
   expect(copied?.label).toBe("crew-copy")
@@ -284,7 +286,8 @@ test("a team duplicates as <team>-copy at the same level, with independent copie
   for (const member of ["lead", "hand"]) expect(await Bun.file(path.join(dir, `${member}.md`)).exists()).toBe(true)
   expect(after.find((row) => row.id === "team:project:crew-copy:lead")).toBeDefined()
   expect(await state(api, "item:project:crew-copy/:lead:tool:reader")).toBe("off")
-  // No link keeps any of them following the original's presets.
-  expect((await load(project)).records.filter((record) => record.type === "link" && (record.team?.team === "crew-copy" || record.agent === "lead" && record.team === undefined))).toEqual([])
+  // Each member follows its original member's preset; nothing links to the original team.
+  expect((await load(project)).records.filter((record) => record.type === "link" && record.team?.team === "crew-copy").map((record) => record.type === "link" ? [record.agent, record.preset] : []).toSorted())
+    .toEqual([["hand", { kind: "agent", id: "build" }], ["lead", { kind: "agent", id: "build" }]])
   expect((await ok(tools, "clipboard", { action: "duplicate", ids: ["team:project:crew"] })).status).toContain('as "crew-copy-2"')
 })

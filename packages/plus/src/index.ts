@@ -742,7 +742,7 @@ export interface PlusApi {
   readonly deleteSkill: (input: Plus.DeleteSkillInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSkillResult>
   readonly createBase: (input: Plus.CreateBaseInput & { readonly actor?: Plus.Actor }) => Promise<CreateBaseResult>
   readonly deleteBase: (input: Plus.DeleteBaseInput & { readonly actor?: Plus.Actor }) => Promise<DeleteBaseResult>
-  readonly createSystem: (input: Plus.CreateSystemInput & { readonly actor?: Plus.Actor }) => Promise<CreateSystemResult>
+  readonly createSystem: (input: Plus.CreateSystemInput & { readonly actor?: Plus.Actor; readonly off?: boolean }) => Promise<CreateSystemResult>
   readonly deleteSystem: (input: Plus.DeleteSystemInput & { readonly actor?: Plus.Actor }) => Promise<DeleteSystemResult>
   readonly setSystemModels: (input: Plus.SetSystemModelsInput & { readonly actor?: Plus.Actor }) => Promise<SetSystemModelsResult>
   readonly createInstruction: (input: Plus.CreateInstructionInput & { readonly actor?: Plus.Actor }) => Promise<CreateInstructionApiResult>
@@ -754,7 +754,7 @@ export interface PlusApi {
   readonly setModelSettings: (input: Plus.SetModelSettingsInput & { readonly actor?: Plus.Actor }) => Promise<SetModelSettingsResult>
   readonly layoutWrite: (input: Plus.LayoutWriteInput & { readonly actor?: Plus.Actor }) => Promise<LayoutWriteResult>
   /** `from` (Duplicate, not on the RPC): copy that member's file instead of writing the preset's fields. */
-  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor; readonly from?: string }) => Promise<AddTeamAgentResult>
+  readonly addTeamAgent: (input: Plus.TeamAddAgentInput & { readonly actor?: Plus.Actor; readonly from?: string; readonly fromTeam?: string }) => Promise<AddTeamAgentResult>
   readonly removeTeamAgent: (input: Plus.TeamRemoveAgentInput & { readonly actor?: Plus.Actor }) => Promise<RemoveTeamAgentResult>
   readonly deleteTeam: (input: Plus.DeleteTeamInput & { readonly actor?: Plus.Actor }) => Promise<DeleteTeamResult>
   readonly renameTeam: (input: Plus.RenameTeamInput & { readonly actor?: Plus.Actor }) => Promise<RenameTeamResult>
@@ -1509,7 +1509,7 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
     },
     createSystem: async (input) => {
       const directory = await activationDirectory(ctx.location.directory)
-      const result = await createSystemRow(input.id, input.title, input.text, input.models)
+      const result = await createSystemRow(input.id, input.title, input.text, input.models, input.off === true)
       if (!result.ok && result.reason === "exists")
         return {
           ok: false as const,
@@ -2127,9 +2127,11 @@ export function createPlusApi(ctx: Context, state: PlusState, options?: PlusApiO
       // empty body; a team-scoped link makes the rest follow the preset.
       const preset = input.preset === undefined ? undefined : await agentPresetEntry(ctx, directory, input.preset)
       if (input.preset !== undefined && preset === undefined) return { ok: false as const, error: unknownPreset(input.preset) }
-      const source = input.from === undefined ? undefined : found.agents.find((agent) => agent.id === input.from)?.path
+      // `fromTeam`: the member to copy is another team's at this level (a team's copy).
+      const sourceTeam = input.fromTeam === undefined ? found : known.find((team) => team.team === input.fromTeam)
+      const source = input.from === undefined ? undefined : sourceTeam?.agents.find((agent) => agent.id === input.from)?.path
       if (input.from !== undefined && source === undefined) {
-        const reason = `Member ${input.from} of team ${validatedTeam.team} has no file to copy`
+        const reason = `Member ${input.from} of team ${input.fromTeam ?? validatedTeam.team} has no file to copy`
         return { ok: false as const, error: { code: "agent.invalid" as const, message: reason, data: { id: input.from, reason } } }
       }
       await fs.mkdir(path.dirname(target), { recursive: true })
