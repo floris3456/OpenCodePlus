@@ -2,7 +2,6 @@ import { expect, test } from "bun:test"
 import { addModelRecord, fingerprint, resolve, resolveResolution, resolveSplit } from "../src/instructions/model.js"
 import type { CustomizationRecord, ModelRecord } from "../src/instructions/model.js"
 import { modelFieldItemId } from "../src/instructions/model-settings.js"
-import { storedRecords } from "../src/instructions/resolve-memo.js"
 import { expandedTree } from "../src/instructions/tree.js"
 import type { MemoInput } from "../src/instructions/tree.js"
 import {
@@ -439,7 +438,7 @@ test("reset success clears the override and refusal names a missing override", (
   const rowId = findId(input, "mcp:sample")
   const ok = reset(input, rowId)
   if ("refusal" in ok) throw new Error(`expected success ${ok.refusal}`)
-  expect(ok.status).toBe(`Reset "sample" to default`)
+  expect(ok.status).toBe(`Reset "sample": it follows what it inherits again (on, upstream)`)
   expect(ok.records.length).toBe(0)
   const empty = baseInput()
   const missing = reset(empty, findId(empty, "mcp:sample"))
@@ -707,14 +706,13 @@ test("setPin sets and clears a Code Mode pin", () => {
   const unpinned = setPin(withPinned, rowId, false)
   if ("refusal" in unpinned) throw new Error(`expected unpin success ${unpinned.refusal}`)
   expect(unpinned.status).toBe(`Unpinned "coder"`)
-  // Unpinned is what the row inherits, so as stored no record is left, and
-  // unpinning again stores nothing new.
-  const stored = (records: MemoInput["records"]) => storedRecords(withPinned, records).filter((record) => record.type === "customization" && record.item === "tool:coder")
-  expect(stored(unpinned.records)).toEqual([])
-  const withUnpinned: MemoInput = { ...input, records: [...unpinned.records, ...unpinned.splits] }
-  const again = setPin(withUnpinned, rowId, false)
+  // Unpinned is what the row inherits, and still an own value: reset follows again.
+  expect(unpinned.records.some((record) => record.item === "tool:coder" && record.pin === false)).toBe(true)
+  const aged = unpinned.records.map((record) => ({ ...record, updated: "2020-01-01T00:00:00.000Z" }))
+  const withAged: MemoInput = { ...input, records: [...aged, ...unpinned.splits] }
+  const again = setPin(withAged, rowId, false)
   if ("refusal" in again) throw new Error(`expected second unpin: ${again.refusal}`)
-  expect(stored(again.records)).toEqual([])
+  expect(again.records).toEqual(aged)
 })
 
 test("setPin refuses rows that cannot be pinned", () => {

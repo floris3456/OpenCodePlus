@@ -413,12 +413,12 @@ test("excluded follows section state, own or inherited", () => {
 })
 
 test("identical pins a byte-identical override", () => {
-  // An agent's copy of the text it inherits is no edit at all (inherited.ts);
-  // a preset's copy is kept, since agents linked to it read it too.
-  expect(ids("identical:true")).not.toContain("item:project:Implementer:base:custom")
+  // An agent's copy of the text it inherits is an own value, and found here;
+  // so is a preset's.
+  expect(ids("identical:true")).toContain("item:project:Implementer:base:custom")
   const preset = makeRecord({ level: "preset", agent: "build", item: "base:custom", text: "custom base", basedOn: fingerprint("custom base") })
   const found = query(input({ records: [...records(), preset] }), { where: "identical:true", withoutAliases: true }).rows.map((row) => row.id)
-  expect(found).toEqual(["item:preset:build:base:custom"])
+  expect(found).toEqual(["item:project:Implementer:base:custom", "item:preset:build:base:custom"])
   expect(ids("identical:true")).not.toContain(bash)
   expect(ids("identical:false")).toContain(bash)
 })

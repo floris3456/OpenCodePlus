@@ -7,7 +7,7 @@ import { resolveModelCompactionFields } from "./model-settings.js"
 import { isValueRow } from "./permission-catalog.js"
 import { activateModelRow, addSection, planFolderCreate, planFolderDelete, planRowMove, removeModelRow, reset, rowToken, saveSplit, saveText, setEnabled, setPin, setRequires, type LayoutRecords, type OpResult } from "./ops.js"
 import { correspondingRow } from "./reflection.js"
-import { rowTeamOf, sectionResolveOf, splitOf, wholeOf } from "./resolve-memo.js"
+import { rowTeamOf, sectionResolveOf, splitOf, wholeOf, withoutCopiedInherited } from "./resolve-memo.js"
 import { buildTreeMemo, collectSkeleton, findLazy, lazyPath, materialize, tabLayout, type Lazy, type Memo, type MemoInput } from "./tree.js"
 
 export interface Clipboard {
@@ -384,7 +384,8 @@ export function pasteRows(current: MemoInput, clipboard: Clipboard, destination:
     const refusal = transfer(id, destination)
     if (refusal !== undefined) return { refusal }
   }
-  return draft
+  // A pasted value its row already inherits is not stored: the row keeps following.
+  return { ...draft, memo: { ...draft.memo, records: withoutCopiedInherited(draft.memo, draft.memo.records, new Set(current.records)) } }
 }
 
 // The category a group row is: a layout tab, or an owner's Skills list (which

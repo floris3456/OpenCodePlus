@@ -552,24 +552,65 @@ test("folders flow down the chain; a copy reads to review when they change above
   expect(await find({ in: project, type: "group", name: "Renamed" })).toHaveLength(1)
 })
 
-test("an edit back to the inherited text stores nothing; a stored copy goes with the row's next save", async () => {
+test("an edit back to the inherited text stays an own value until reset; a copy an earlier release stored stays too", async () => {
   const { api, tools, project } = await freshFixture()
   const id = await readerRowId(api)
   const reader = async () => (await load(project)).records.filter((record) => record.type === "customization" && record.item === "tool:reader")
+  const changed = async () => rowIds((await runOk(need(tools, "instructions_find"), { is: "changed" })) as { rows: string[] })
   await runOk(need(tools, "instructions_edit"), { id, oldString: "read things", newString: "scan things" })
   expect(await reader()).toHaveLength(1)
   await runOk(need(tools, "instructions_edit"), { id, oldString: "scan things", newString: "read things" })
+  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", text: "read things" })])
+  expect(await changed()).toEqual([id])
+  // reset makes it follow again, and says so; a second reset has nothing to reset.
+  const reset = (await runOk(need(tools, "instructions_reset"), { id })) as { status: string }
+  expect(reset.status).toContain("it follows what it inherits again")
   expect(await reader()).toEqual([])
-  // A copy of the inherited text an earlier release stored is no edit…
+  expect((await runFail(need(tools, "instructions_reset"), { id })).message).toContain("has no override to reset")
+  // A copy of the inherited text an earlier release stored is an own value as well…
   const loaded = await load(project)
   const copy = { type: "customization" as const, level: "defaults" as const, agent: "alpha", item: "tool:reader", section: null, text: "read things", basedOn: "x", updated: "2026-01-01T00:00:00.000Z" }
   expect((await save(project, { expectedProjectRevision: loaded.projectRevision, expectedGlobalRevision: loaded.globalRevision, records: [...loaded.records, copy] })).ok).toBe(true)
   expect(id).toBe("item:defaults:alpha:tool:reader")
-  expect(rowIds((await runOk(need(tools, "instructions_find"), { is: "changed" })) as { rows: string[] })).toEqual([])
-  // …and goes when the row is saved next; what the save sets stays.
+  expect(await changed()).toEqual([id])
+  // …and the row's next save keeps it beside what the save sets.
   await runOk(need(tools, "instructions_set"), { id, state: "on" })
-  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", state: "on" })])
-  expect((await reader())[0]).not.toHaveProperty("text")
+  expect(await reader()).toEqual([expect.objectContaining({ agent: "alpha", text: "read things", state: "on" })])
+})
+
+test("a preset change never removes or overrides a linked agent's own change (b-06)", async () => {
+  const { project } = await tempProject()
+  await linkToBuild(project, "defaults", ["alpha"])
+  const ctx = fixtureContext(project)
+  const api = createPlusApi(ctx, createState())
+  await registerInstructionTools(ctx, api)
+  const tools = await readTools(ctx)
+  const set = need(tools, "instructions_set")
+  const own = "item:defaults:alpha:tool:reader"
+  const preset = "item:preset:build:tool:reader"
+  const row = async () => (await runOk(need(tools, "instructions_find"), { where: `id:${own}`, fields: ["id", "badges", "from"] })) as { rows: unknown[] }
+  const records = async () => (await load(project)).records.filter((record) => record.type === "customization" && record.agent === "alpha")
+  await runOk(set, { id: own, state: "off" })
+  expect(await records()).toEqual([expect.objectContaining({ level: "defaults", item: "tool:reader", state: "off" })])
+  // The preset now says off too: the agent's off stays its own.
+  await runOk(set, { id: preset, state: "off" })
+  expect(await records()).toEqual([expect.objectContaining({ level: "defaults", item: "tool:reader", state: "off" })])
+  // Its own row, not the preset's; the change above puts it to review (keep or take).
+  expect((await row()).rows).toEqual(["item:defaults:alpha:tool:reader | off to review (state) | from default alpha"])
+  // The preset goes back on: the agent stays off.
+  await runOk(set, { id: preset, state: "on" })
+  expect(await records()).toEqual([expect.objectContaining({ level: "defaults", item: "tool:reader", state: "off" })])
+  expect(await rowState(api, own)).toBe("off")
+  // Set to what it inherits (on): an own value, kept through a later preset change.
+  await runOk(set, { id: own, state: "on" })
+  expect(await records()).toEqual([expect.objectContaining({ item: "tool:reader", state: "on" })])
+  await runOk(set, { id: preset, state: "off" })
+  expect(await rowState(api, own)).toBe("on")
+  // reset follows the preset again.
+  const reset = (await runOk(need(tools, "instructions_reset"), { id: own })) as { status: string }
+  expect(reset.status).toBe('Reset "reader": it follows what it inherits again (off, from preset Build)')
+  expect(await records()).toEqual([])
+  expect(await rowState(api, own)).toBe("off")
 })
 
 for (const baseline of ["", "Unheaded baseline", "# Previous\nPrevious body."]) {
@@ -2303,8 +2344,10 @@ test("perm rules toggle, show, list by item:perm and tool, create custom, and de
   }
   expect(curatedShownRecord.record?.type).toBe("customization")
   expect(curatedShownRecord.record?.state).toBe("on")
-  // …and off again is what it inherits: no record is left.
+  // …and off again, what it inherits, is an own off until reset.
   expect(((await runOk(need(tools, "instructions_set"), { id: row.id, state: "off" })) as { status: string }).status).toContain("Disabled")
+  expect(((await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as { record: { state?: string } | null }).record?.state).toBe("off")
+  expect(((await runOk(need(tools, "instructions_reset"), { id: row.id })) as { status: string }).status).toContain("it follows what it inherits again (off")
   expect(((await runOk(need(tools, "instructions_read"), { id: row.id, view: "record" })) as { record: unknown }).record).toBeNull()
   const textError = await runFail(need(tools, "instructions_set"), { id: row.id, text: "nope" })
   expect(textError.message).toContain("cannot be edited")
@@ -4365,9 +4408,9 @@ test("set state:on persists its either partner off in one save, and it stays off
   const before = await load(project)
   const on = (await runOk(set, { id: reader, text: "updated reader", state: "on" })) as { status: string }
   expect(on.status).toBe(`Enabled "reader"; disabled tool:question`)
-  // Off is what question inherits here, so it reads off with no record of its own.
+  // The switch replaces question's own on with an own off, durable after reload.
   expect(await rowState(api, question)).toBe("off")
-  expect(await customizationState(project, "tool:question")).toBeUndefined()
+  expect(await customizationState(project, "tool:question")).toBe("off")
   const saved = await load(project)
   expect(saved.projectRevision + saved.globalRevision).toBe(before.projectRevision + before.globalRevision + 1)
   expect(saved.records.filter((record) => record.type === "rowlink")).toEqual(before.records.filter((record) => record.type === "rowlink"))
