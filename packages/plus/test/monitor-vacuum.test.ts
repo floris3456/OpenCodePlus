@@ -148,9 +148,9 @@ test("a ledger whose disk is too full is skipped rather than rewritten", () => {
 test("pruning returns free pages, and only once an hour", () => {
   const file = fileFor("prune")
   const clock = { at: 0 }
-  const db = createLedger(file, { now: () => clock.at, incrementalPages: 2000 })
+  const db = createLedger(file, { now: () => clock.at, incrementalPages: 200 })
   ledgers.push(db)
-  fill(db, 80_000, 100_000)
+  fill(db, 8_000, 100_000)
   // No hour has passed since the ledger opened, so this prune freed pages
   // without returning any of them.
   const freed = free(db)
